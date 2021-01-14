@@ -565,12 +565,16 @@ void gdrom_hle_op()
 			{
 				for (int i = 0; i < 4; i++)
 				{
+#ifndef NO_MMU
 					try {
+#endif
 						gd_hle_state.params[i] = r[5] == 0 ? 0 : ReadMem32(r[5] + i * 4);
+#ifndef NO_MMU
 					} catch (SH4ThrownException& ex) {
 						// Ignore page faults. happens for commands not taking params
 						gd_hle_state.params[i] = 0;
 					}
+#endif
 				}
 				memset(gd_hle_state.result, 0, sizeof(gd_hle_state.result));
 				if (gd_hle_state.next_request_id == ~0u || gd_hle_state.next_request_id == 0)
@@ -595,13 +599,17 @@ void gdrom_hle_op()
 			//	2 - request has completed (if queried again, you will get a 0)
 			//	3 - multi request has data available
 			//	-1 - request has failed (examine extended status information for cause of failure)
+#ifndef NO_MMU
 			try {
+#endif
 				WriteMem32(r[5], gd_hle_state.result[0]);
 				WriteMem32(r[5] + 4, gd_hle_state.result[1]);
 				WriteMem32(r[5] + 8, gd_hle_state.result[2]);
 				WriteMem32(r[5] + 12, gd_hle_state.result[3]);
+#ifndef NO_MMU
 			} catch (SH4ThrownException& ex) {
 			}
+#endif
 			if (gd_hle_state.status == BIOS_INACTIVE || gd_hle_state.status == BIOS_ACTIVE)
 			{
 				r[0] = gd_hle_state.status;	// no such request active or still being processed

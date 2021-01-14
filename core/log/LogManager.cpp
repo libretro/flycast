@@ -42,8 +42,9 @@ public:
 	{
 		if (!IsEnabled() || !IsValid())
 			return;
-
+#ifndef VITA
 		std::lock_guard<std::mutex> lk(m_log_lock);
+#endif
 		m_logfile << msg << std::flush;
 	}
 
@@ -52,7 +53,9 @@ public:
 	void SetEnable(bool enable) { m_enable = enable; }
 
 private:
+#ifndef VITA
 	std::mutex m_log_lock;
+#endif
 	std::ofstream m_logfile;
 	bool m_enable;
 };

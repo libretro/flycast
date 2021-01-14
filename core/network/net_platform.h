@@ -12,6 +12,10 @@
 #define INADDR_NONE 0xffffffff
 #define INET_ADDRSTRLEN sizeof(struct sockaddr_in)
 #define SOL_TCP 6 // Shrug
+#elif defined(VITA)
+#include <vitasdk.h>
+#define SOL_TCP 6 // Shrug
+#define inet_ntop sceNetInetNtop
 #else
 #include <netinet/ip.h>
 #endif // HAVE_LIBNX

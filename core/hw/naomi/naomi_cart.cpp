@@ -53,7 +53,9 @@ typedef int fd_t;
 #define INVALID_FD -1
 
 #include <fcntl.h>
+#ifndef VITA
 #include <sys/mman.h>
+#endif
 #include <errno.h>
 #endif
 #include <unistd.h>

@@ -284,7 +284,45 @@ else ifeq ($(platform), classic_armv8_a35)
 	CORE_DEFINES += -DLOW_END -DLOW_RES
 	
 #########################################
+# (armv7 a9, hard point, neon based) ###
+# PlayStation Vita
+else ifeq ($(platform), vita)
+	PREFIX = arm-vita-eabi
+	CC = $(PREFIX)-gcc
+	CXX = $(PREFIX)-g++
+	AR  = $(PREFIX)-ar
+	EXT    ?= a
+	TARGET := $(TARGET_NAME)_libretro.$(EXT)
+	fpic =
+	ARM_FLOAT_ABI_HARD = 1
+	HAVE_VITAGL = 1
+	STATIC_LINKING = 1
+	FORCE_GLES = 1
+	SINGLE_PREC_FLAGS = 1
+	HAVE_LTCG = 0
+	NO_EXCEPTIONS = 1
+	NO_NVMEM = 1
+	HAVE_OPENMP = 0
+	HAVE_TEXUPSCALE = 0
+	CFLAGS += -g -fsingle-precision-constant -DVITA -ftree-vectorize \
+		-ffast-math -fno-optimize-sibling-calls -fno-exceptions -O2 \
+		-marm -mtune=cortex-a9 -march=armv7-a -mfpu=neon -mfloat-abi=hard
+	CXXFLAGS += $(CFLAGS)
+	ASFLAGS += $(CFLAGS)
+	PLATFORM_EXT := unix
+	WITH_DYNAREC = arm
+	HAVE_GENERIC_JIT = 0
+	CORE_DEFINES += -DLOW_END -DNO_MMU
+	
+	ifeq ($(smc),1)
+		CFLAGS += -DVITA_SAFE -DVITA_FAST_SMC
+	endif
+	
+	ifeq ($(smc),2)
+		CFLAGS += -DVITA_SAFE
+	endif
 
+#########################################
 # sun8i Allwinner H2+ / H3 for mainline Builds
 # like Orange PI, Nano PI, Banana PI, Tritium, Sunvell R69, AlphaCore2
 # by MPCORE-HUB/Liontek1985
@@ -1123,8 +1161,13 @@ endif
 %.o: %.c
 	$(CC) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $< -o $@
 
+ifeq ($(platform), vita)
+%.o: %.S
+	$(CC) $(CFLAGS) $(ASFLAGS) -c $(INCFLAGS) $< -o $@
+else
 %.o: %.S
 	$(CC_AS) $(ASFLAGS) $(INCFLAGS) $< -o $@
+endif
 
 %.o: %.cc
 	$(CXX) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $(CXXFLAGS) $< -o $@

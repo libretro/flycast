@@ -3,7 +3,7 @@
 
 #include "hw/sh4/sh4_sched.h"
 
-#if defined(HAVE_LIBNX)
+#if defined(HAVE_LIBNX) || defined(VITA)
 #include <malloc.h>
 #endif
 
@@ -26,7 +26,7 @@ void* OS_aligned_malloc(size_t align, size_t size)
    return __mingw_aligned_malloc(size, align);
 #elif defined(_WIN32)
    return _aligned_malloc(size, align);
-#elif defined(HAVE_LIBNX)
+#elif defined(HAVE_LIBNX) || defined(VITA)
    return memalign(align, size);
 #else
    void *p = NULL;

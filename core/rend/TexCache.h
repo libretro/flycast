@@ -7,6 +7,10 @@
 #include <memory>
 #include <unordered_map>
 
+#ifdef VITA
+#include <vitaGL.h>
+#endif
+
 extern u8* vq_codebook;
 extern u32 palette_index;
 extern u32 palette16_ram[1024];
@@ -28,7 +32,9 @@ class PixelBuffer
 	pixel_type* p_current_pixel = nullptr;
 
 	u32 pixels_per_line = 0;
-
+#ifdef VITA
+	bool uses_vgl_mem = false;
+#endif
 public:
 	~PixelBuffer()
    {
@@ -50,6 +56,12 @@ public:
 			while (width != 0 && height != 0);
 		}
 		p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)malloc(size);
+#ifdef VITA
+		if (!p_buffer_start) {
+			p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)vglForceAlloc(size);
+			uses_vgl_mem = true;
+		}
+#endif
 		this->pixels_per_line = 1;
 	}
 
@@ -57,6 +69,12 @@ public:
    {
       deinit();
 		p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)malloc(width * height * sizeof(pixel_type));
+#ifdef VITA
+		if (!p_buffer_start) {
+			p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)vglForceAlloc(width * height * sizeof(pixel_type));
+			uses_vgl_mem = true;
+		}
+#endif
 		this->pixels_per_line = width;
    }
 
@@ -64,7 +82,13 @@ public:
 	{
 		if (p_buffer_start != NULL)
 		{
+#ifdef VITA
+			if (uses_vgl_mem) vglFree(p_buffer_start);
+			else free(p_buffer_start);
+			uses_vgl_mem = false;
+#else
 			free(p_buffer_start);
+#endif
 			p_buffer_start = p_current_mipmap = p_current_line = p_current_pixel = NULL;
 		}
 	}
@@ -678,6 +702,11 @@ public:
 	u32 vq_codebook;            // VQ quantizers table for compressed textures
 	u32 texture_hash;			// xxhash of texture data, used for custom textures
 	u32 old_texture_hash;		// legacy hash
+#ifdef VITA
+	u32 texture_update_hash = 0;// xxhash of texture data, used for textures updating when mprotect is not available
+	bool texture_hash_dirty;    // Flag for when a texture update should be performed when mprotect is not available
+	u32 texture_frame_count;    // Last frame when texture got checked for updates when mprotect is not available
+#endif
 	u8* custom_image_data;		// loaded custom image data
 	u32 custom_width;
 	u32 custom_height;
@@ -740,6 +769,10 @@ public:
 	}
 };
 
+#ifdef VITA
+	int CollectCleanupThread(unsigned int argc, void* argv);
+#endif
+
 template<typename Texture>
 class BaseTextureCache
 {
@@ -777,7 +810,45 @@ public:
 
 		return texture;
 	}
+#ifdef VITA
+	void CollectCleanupInstance()
+	{
+		for (;;) {
+			sceKernelWaitSema(cleanup_mutex, 1, NULL);
+			vector<u64> list;
 
+			for (const auto& pair : cache)
+			{
+				if (FrameCount - pair.second.texture_frame_count < 120)
+					continue;
+
+				if (pair.second.NeedsUpdate())
+					list.push_back(pair.first);
+			}
+
+			for (u64 id : list)
+			{
+				if (cache[id].Delete())
+					cache.erase(id);
+			}
+		}
+	}
+	
+	void CollectCleanup()
+	{
+		if (cleanup_thread == 0xDEADBEEF) {
+			cleanup_mutex = sceKernelCreateSema("Cleanup Mutex", 0, 0, 1, NULL);
+			cleanup_thread = sceKernelCreateThread("Cleanup Thread", &CollectCleanupThread, 0x10000100, 0x10000, 0, 0, NULL);
+			sceKernelStartThread(cleanup_thread, 0, NULL);
+			last_cleanup_frame = FrameCount;
+		}
+		
+		if (FrameCount - last_cleanup_frame > 60) {
+			sceKernelSignalSema(cleanup_mutex, 1);
+			last_cleanup_frame = FrameCount;
+		}
+	}
+#else
 	void CollectCleanup()
 	{
 		std::vector<u64> list;
@@ -799,7 +870,7 @@ public:
 				cache.erase(id);
 		}
 	}
-
+#endif
 	void Clear()
 	{
 		for (auto& pair : cache)
@@ -811,6 +882,11 @@ public:
 	}
 
 private:
+#ifdef VITA
+	SceUID cleanup_thread = 0xDEADBEEF;
+	SceUID cleanup_mutex;
+	u32 last_cleanup_frame;
+#endif
 	std::unordered_map<u64, Texture> cache;
 	// Only use TexU and TexV from TSP in the cache key
 	//     TexV : 7, TexU : 7

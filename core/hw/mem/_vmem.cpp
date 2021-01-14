@@ -3,7 +3,7 @@
 #include "hw/aica/aica_if.h"
 #include "hw/sh4/dyna/blockmanager.h"
 
-#if defined(HAVE_LIBNX)
+#if defined(HAVE_LIBNX) || defined(VITA)
 #include <malloc.h>
 #endif
 
@@ -455,7 +455,7 @@ void* malloc_pages(size_t size) {
 	return _aligned_malloc(size, PAGE_SIZE);
 #elif defined(_ISOC11_SOURCE)
 	return aligned_alloc(PAGE_SIZE, size);
-#elif defined(HAVE_LIBNX)
+#elif defined(HAVE_LIBNX) || defined(VITA)
    return memalign(PAGE_SIZE, size);
 #else
 	void *data;
@@ -527,7 +527,7 @@ bool _vmem_reserve(void)
 
 	// Use vmem only if settings mandate so, and if we have proper exception handlers.
 #ifndef TARGET_NO_EXCEPTIONS
-#ifdef HAVE_LIBNX
+#if defined(HAVE_LIBNX) || defined(VITA)
 	settings.dynarec.disable_nvmem = 1;
 #endif // HAVE_LIBNX
 	if (!settings.dynarec.disable_nvmem)

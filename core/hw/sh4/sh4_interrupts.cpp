@@ -14,6 +14,12 @@
 #include "sh4_core.h"
 #include "sh4_mmr.h"
 
+#ifdef VITA
+extern "C"{
+	void *memcpy_neon(void *destination, const void *source, size_t num);
+};
+#endif
+
 /*
 
 */
@@ -225,8 +231,11 @@ void interrupts_init(void)
 	};
 
 	verify(sizeof(InterruptSourceList)==sizeof(InterruptSourceList2));
-
+#ifdef VITA
+	memcpy_neon(InterruptSourceList,InterruptSourceList2,sizeof(InterruptSourceList));
+#else
 	memcpy(InterruptSourceList,InterruptSourceList2,sizeof(InterruptSourceList));
+#endif
 }
 
 void interrupts_reset(void)

@@ -158,7 +158,9 @@ bool NaomiNetwork::findServer()
         if (sendto(sockfd, "flycast", 6, 0, (struct sockaddr *)&addr, sizeof addr) == -1)
         {
             WARN_LOG(NETWORK, "Send datagram failed. errno=%d", get_last_error());
+#ifndef VITA
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#endif
             continue;
         }
 
@@ -242,12 +244,16 @@ bool NaomiNetwork::startNetwork()
 			else
 			{
 				NOTICE_LOG(NETWORK, "Slave connection accepted");
+#ifndef VITA
 				std::lock_guard<std::mutex> lock(mutex);
+#endif
 				slaves.push_back(clientSock);
 				if (slaves.size() == 3)
 					break;
 			}
+#ifndef VITA
 			std::this_thread::sleep_for(milliseconds(100));
+#endif
 		}
 		slot_id = 0;
 		slot_count = slaves.size() + 1;
@@ -258,7 +264,7 @@ bool NaomiNetwork::startNetwork()
 			{
 				buf[1] = { (u8)slot_num };
 				slot_num++;
-				::send(socket, (const char *)buf, 2, 0);
+				write(socket, buf, 2);
 				set_non_blocking(socket);
 				set_tcp_nodelay(socket);
 			}
@@ -311,7 +317,9 @@ bool NaomiNetwork::startNetwork()
 				ERROR_LOG(NETWORK, "Socket connect failed");
 				closesocket(client_sock);
 				client_sock = INVALID_SOCKET;
+#ifndef VITA
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#endif
 			}
 			else
 			{
@@ -464,7 +472,9 @@ void NaomiNetwork::shutdown()
 {
 	network_stopping = true;
 	{
+#ifndef VITA
 		std::lock_guard<std::mutex> lock(mutex);
+#endif
 		for (auto& clientSock : slaves)
 		{
 			closesocket(clientSock);

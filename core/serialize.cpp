@@ -22,7 +22,11 @@
 #include "reios/gdrom_hle.h"
 #include <map>
 #include <set>
+#ifdef VITA
+#include "rend/vita/vita.h"
+#else
 #include "rend/gles/gles.h"
+#endif
 #include "hw/sh4/dyna/blockmanager.h"
 #include "hw/sh4/dyna/ngen.h"
 #include "hw/naomi/naomi_cart.h"

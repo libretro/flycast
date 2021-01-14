@@ -27,7 +27,20 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#ifdef VITA
+#define PROT_READ 0
+#define PROT_WRITE 0
+#define PROT_NONE 0
+#define MAP_FAILED 0
+#define MAP_PRIVATE 0
+#define MAP_FIXED 0
+#define MAP_ANON 0
+#define MAP_SHARED 0
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) { return nullptr; }
+int	mprotect(const void *, size_t, int) { return 0; }
+#else
 #include <sys/mman.h>
+#endif
 #include <sys/stat.h>        /* For mode constants */
 #include <fcntl.h>           /* For O_* constants */
 #include <unistd.h>

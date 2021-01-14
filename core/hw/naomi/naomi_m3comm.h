@@ -49,7 +49,9 @@ private:
 	int slot_count = 0;
 	int slot_id = 0;
 	std::atomic<bool> network_stopping{ false };
+#ifndef VITA
 	std::unique_ptr<std::thread> thread;
 	std::mutex mem_mutex;
+#endif
 	NaomiNetwork network;
 };

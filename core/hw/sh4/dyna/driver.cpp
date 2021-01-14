@@ -24,6 +24,7 @@
 
 #if FEAT_SHREC != DYNAREC_NONE
 
+#ifndef VITA
 u8 SH4_TCB[CODE_SIZE + TEMP_CODE_SIZE + 4096]
 #if defined(_WIN32) || FEAT_SHREC != DYNAREC_JIT
 	;
@@ -35,6 +36,9 @@ u8 SH4_TCB[CODE_SIZE + TEMP_CODE_SIZE + 4096]
 	__attribute__((section("__TEXT,.text")));
 #else
 	#error SH4_TCB ALLOC
+#endif
+#else
+extern void *sh4_ptr;
 #endif
 
 u8* CodeCache;
@@ -438,7 +442,7 @@ static void recSh4_Init(void)
 			verify(mem_b.data==((u8*)p_sh4rcb->sq_buffer+512+0x8C000000));
 		}
 	}
-	
+#ifndef VITA
 	// Prepare some pointer to the pre-allocated code cache:
 	void *candidate_ptr = (void*)(((unat)SH4_TCB + 4095) & ~4095);
 
@@ -451,7 +455,9 @@ static void recSh4_Init(void)
 	#endif
 	// Ensure the pointer returned is non-null
 	verify(CodeCache != NULL);
-
+#else
+	CodeCache = sh4_ptr;
+#endif
 	memset(CodeCache, 0xFF, CODE_SIZE + TEMP_CODE_SIZE);
 	TempCodeCache = CodeCache + CODE_SIZE;
 	ngen_init();

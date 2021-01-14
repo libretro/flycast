@@ -6,6 +6,23 @@
 #include <sys/time.h>
 #endif
 
+#ifdef VITA
+static int frame_reset_counter = 0;
+#define FRAME_RESET_NUM 3
+#include <vitasdk.h>
+extern uint16_t *gIndices;
+extern float *gVertexBuffer;
+extern uint16_t *gIndicesPtr;
+extern float *gVertexBufferPtr;
+int _newlib_vm_size_user = 16 * 1024 * 1024;
+extern "C" {
+	extern int getVMBlock();
+};
+SceUID vm_memblock;
+void *arm7_ptr = nullptr;
+void *sh4_ptr = nullptr;
+#endif
+
 #ifdef HAVE_LIBNX
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +48,9 @@ char* strdup(const char *str)
 
 #include <libretro.h>
 
-#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
+#ifdef VITA
+#include <vitaGL.h>
+#elif defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
 #include <glsm/glsm.h>
 #endif
 #ifdef HAVE_VULKAN
@@ -354,6 +373,13 @@ void retro_init(void)
    if (environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
       libretro_supports_bitmasks = true;
 
+#ifdef VITA
+   vm_memblock = getVMBlock();
+   sceKernelGetMemBlockBase(vm_memblock, (void**)&arm7_ptr);
+   sh4_ptr = (uint8_t*)arm7_ptr + 1024 * 1024;
+   sceKernelOpenVMDomain();
+#endif
+
    init_disk_control_interface();
 }
 
@@ -651,7 +677,7 @@ static void update_variables(bool first_startup)
 	  renderer_changed = true;
 
    var.key = CORE_OPTION_NAME "_mipmapping";
-
+#ifndef VITA
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (!strcmp(var.value, "enabled"))
@@ -661,7 +687,9 @@ static void update_variables(bool first_startup)
    }
    else
       settings.rend.UseMipmaps      = 1;
-
+#else
+   settings.rend.UseMipmaps      = 0;
+#endif
    var.key = CORE_OPTION_NAME "_fog";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -721,7 +749,9 @@ static void update_variables(bool first_startup)
    }
 
    var.key = CORE_OPTION_NAME "_volume_modifier_enable";
-
+#ifdef VITA
+   settings.rend.ModifierVolumes      = false;
+#else
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (!strcmp(var.value, "disabled"))
@@ -731,7 +761,7 @@ static void update_variables(bool first_startup)
    }
    else
    	settings.rend.ModifierVolumes      = true;
-
+#endif
    var.key = CORE_OPTION_NAME "_cable_type";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -880,7 +910,7 @@ static void update_variables(bool first_startup)
 #endif
 
    var.key = CORE_OPTION_NAME "_enable_rttb";
-
+#ifndef VITA
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (!strcmp("enabled", var.value))
@@ -889,6 +919,7 @@ static void update_variables(bool first_startup)
          settings.rend.RenderToTextureBuffer = false;
    }
    else
+#endif
       settings.rend.RenderToTextureBuffer = false;
 
    var.key = CORE_OPTION_NAME "_render_to_texture_upscaling";
@@ -1197,7 +1228,9 @@ void retro_run (void)
 {
    bool fastforward = false;
    bool updated     = false;
-
+#ifdef VITA // Temporary hack to force fullscreen
+   glViewport(0, 0, 960, 544);
+#endif
    if (environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &fastforward) && settings.rend.ThreadedRendering)
       settings.aica.LimitFPS = !fastforward;
 
@@ -1217,15 +1250,16 @@ void retro_run (void)
 	   }
 
 	   poll_cb();
-
+#ifndef VITA
 	   if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
 	   	glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
-
+#endif
 	   // Render
 	   is_dupe = !rend_single_frame();
-
+#ifndef VITA
 	   if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
 	   	glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+#endif
    }
    else
 #endif
@@ -1239,6 +1273,14 @@ void retro_run (void)
    if (!settings.rend.ThreadedRendering)
 #endif
 	   is_dupe = true;
+	   
+#ifdef VITA
+   frame_reset_counter = (frame_reset_counter + 1) % FRAME_RESET_NUM;
+   if (!frame_reset_counter) {
+      gVertexBuffer = gVertexBufferPtr;
+      gIndices = gIndicesPtr;
+   }
+#endif 
 }
 
 void retro_reset (void)
@@ -1275,17 +1317,21 @@ void retro_reset (void)
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
 static void context_reset(void)
 {
-	INFO_LOG(RENDERER, "context_reset.");
+   INFO_LOG(RENDERER, "context_reset.");
    gl_ctx_resetting = false;
+#ifndef VITA
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
    glsm_ctl(GLSM_CTL_STATE_SETUP, NULL);
+#endif
 }
 
 static void context_destroy(void)
 {
    gl_ctx_resetting = true;
    renderer_changed = true;
+#ifndef VITA
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_DESTROY, NULL);
+#endif
 }
 #endif
 
@@ -1776,6 +1822,7 @@ static bool set_vulkan_hw_render()
 
 static bool set_opengl_hw_render(u32 preferred)
 {
+#ifndef VITA
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
 	glsm_ctx_params_t params = {0};
 
@@ -1835,6 +1882,9 @@ static bool set_opengl_hw_render(u32 preferred)
 	return glsm_ctl(GLSM_CTL_STATE_CONTEXT_INIT, &params);
 #else
 	return false;
+#endif
+#else
+	return true;
 #endif
 }
 

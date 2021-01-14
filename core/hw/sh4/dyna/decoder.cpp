@@ -1004,9 +1004,11 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 						blk->guest_opcodes++;
 						if (!mmu_enabled())
 						{
+#ifndef VITA
 							if (op>=0xF000)
 								blk->guest_cycles+=0;
 							else
+#endif
 								blk->guest_cycles+=CPU_RATIO;
 						}
 						else
@@ -1133,8 +1135,10 @@ _end:
 	{
 		blk->guest_cycles*=1.5;
 	}
+#ifndef VITA
 	// Win CE boost
 	if (mmu_enabled())
+#endif
 		blk->guest_cycles *= 1.5f;
 
 	//make sure we don't use wayy-too-many cycles

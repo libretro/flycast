@@ -24,7 +24,7 @@ int vasprintf(char **s, const char *fmt, va_list ap)
 }
 #endif
 
-#if !defined(_WIN32) && !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX)
+#if !defined(_WIN32) && !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX) && !defined(VITA)
 static locale_t GetCLocale()
 {
   static locale_t c_locale = newlocale(LC_ALL_MASK, "C", nullptr);
@@ -69,11 +69,11 @@ bool CharArrayFromFormatV(char* out, int outsize, const char* format, va_list ar
   writtenCount = vsnprintf(out, outsize, format, args);
 #endif
 #else
-#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX)
+#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX) && !defined(VITA)
   locale_t previousLocale = uselocale(GetCLocale());
 #endif
   writtenCount = vsnprintf(out, outsize, format, args);
-#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX)
+#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX) && !defined(VITA)
   uselocale(previousLocale);
 #endif
 #endif
@@ -101,7 +101,7 @@ std::string StringFromFormatV(const char* format, va_list args)
   std::string temp = buf;
   delete[] buf;
 #else
-#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX)
+#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX) && !defined(VITA)
   locale_t previousLocale = uselocale(GetCLocale());
 #endif
   if (vasprintf(&buf, format, args) < 0)
@@ -110,7 +110,7 @@ std::string StringFromFormatV(const char* format, va_list args)
     buf = nullptr;
   }
 
-#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX)
+#if !defined(ANDROID) && !defined(__HAIKU__) && !defined(__OpenBSD__) && !defined(HAVE_LIBNX) && !defined(VITA)
   uselocale(previousLocale);
 #endif
 

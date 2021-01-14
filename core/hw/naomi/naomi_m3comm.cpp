@@ -28,8 +28,10 @@ void NaomiM3Comm::closeNetwork()
 {
 	network_stopping = true;
 	network.shutdown();
+#ifndef VITA
 	if (thread && thread->joinable())
 		thread->join();
+#endif
 }
 
 void NaomiM3Comm::connectNetwork()
@@ -58,7 +60,9 @@ void NaomiM3Comm::receiveNetwork()
 	if (network.receive(buf, packet_size))
 	{
 		*(u16*)&comm_ram[6] = swap16(network.packetNumber());
+#ifndef VITA
 		std::unique_lock<std::mutex> lock(mem_mutex);
+#endif
 		memcpy(&comm_ram[0x100 + slot_size], buf, packet_size);
 	}
 }
@@ -68,7 +72,9 @@ void NaomiM3Comm::sendNetwork()
 	if (network.hasToken())
 	{
 		const u32 packet_size = swap16(*(u16*)&m68k_ram[0x204]) * slot_count;
+#ifndef VITA
 		std::unique_lock<std::mutex> lock(mem_mutex);
+#endif
 		network.send(&comm_ram[0x100], packet_size);
 		*(u16*)&comm_ram[6] = swap16(network.packetNumber());
 	}
@@ -233,7 +239,9 @@ bool NaomiM3Comm::DmaStart(u32 addr, u32 data)
 		return false;
 
 	DEBUG_LOG(NAOMI, "NaomiM3Comm: DMA addr %08X <-> %04x len %d %s", SB_GDSTAR, comm_offset, SB_GDLEN, SB_GDDIR == 0 ? "OUT" : "IN");
+#ifndef VITA
 	std::unique_lock<std::mutex> lock(mem_mutex);
+#endif
 	if (SB_GDDIR == 0)
 	{
 		// Network write
@@ -263,7 +271,9 @@ bool NaomiM3Comm::DmaStart(u32 addr, u32 data)
 void NaomiM3Comm::startThread()
 {
 	network_stopping = false;
+#ifndef VITA
 	thread = std::unique_ptr<std::thread>(new std::thread([this]() {
+#endif
 		using the_clock = std::chrono::high_resolution_clock;
 
 		connectNetwork();
@@ -282,7 +292,9 @@ void NaomiM3Comm::startThread()
 				if (duration < target_duration)
 				{
 					DEBUG_LOG(NAOMI, "Sleeping for %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(target_duration - duration).count());
+#ifndef VITA
 					std::this_thread::sleep_for(target_duration - duration);
+#endif
 				}
 				token_time = the_clock::now();
 			}
@@ -291,5 +303,7 @@ void NaomiM3Comm::startThread()
 
 		}
 		DEBUG_LOG(NAOMI, "Network thread exiting");
+#ifndef VITA
 	}));
+#endif
 }

@@ -66,7 +66,8 @@ private:
 	bool got_token = false;
 	u16 packet_number = 0;
 	std::atomic<bool> network_stopping{ false };
+#ifndef VITA
 	std::mutex mutex;
-
+#endif
 	static const uint16_t SERVER_PORT = 37391;
 };

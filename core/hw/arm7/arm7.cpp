@@ -1,6 +1,11 @@
 #include "arm7.h"
 #include "arm_mem.h"
 
+#ifdef VITA
+#include <vitasdk.h>
+extern void *arm7_ptr;
+#endif
+
 #define arm_printf(...) DEBUG_LOG(AICA_ARM, __VA_ARGS__)
 
 #define CPUReadMemoryQuick(addr) (*(u32*)&aica_ram[addr&ARAM_MASK])
@@ -593,11 +598,11 @@ extern const u32 ICacheSize=1024*1024;
 #ifdef _WIN32
 u8 ARM7_TCB[ICacheSize+4096];
 #elif defined(__linux__) || defined(HAVE_LIBNX)
-
 u8 ARM7_TCB[ICacheSize+4096] __attribute__((section(".text")));
-
 #elif defined(__MACH__)
 u8 ARM7_TCB[ICacheSize+4096] __attribute__((section("__TEXT, .text")));
+#elif defined(VITA)
+u8 *ARM7_TCB = nullptr;
 #else
 #error ARM7_TCB ALLOC
 #endif
@@ -1441,8 +1446,9 @@ naked void arm_exit()
  */
 
 //mprotect and stuff ..
-
+#ifndef VITA
 #include <sys/mman.h>
+#endif
 
 void  armEmit32(u32 emit32)
 {
@@ -1458,6 +1464,16 @@ void  armEmit32(u32 emit32)
 extern "C" void armFlushICache(void *code, void *pEnd) {
     sys_dcache_flush(code, (u8*)pEnd - (u8*)code + 1);
     sys_icache_invalidate(code, (u8*)pEnd - (u8*)code + 1);
+}
+#elif defined(VITA)
+typedef unsigned int SceSize;
+typedef int SceUID;
+extern "C" {
+	int sceKernelSyncVMDomain(SceUID uid, void *data, SceSize size);
+};
+extern SceUID vm_memblock;
+extern "C" void armFlushICache(void *code, void *pEnd) {
+    sceKernelSyncVMDomain(vm_memblock, code, (u8*)pEnd - (u8*)code + 1);
 }
 #else
 extern "C" void armFlushICache(void *bgn, void *end) {
@@ -2053,7 +2069,7 @@ void *armGetEmitPtr()
 void armt_init()
 {
 	InitHash();
-
+#ifndef VITA
 	//align to next page ..
 	ICache = (u8*)(((unat)ARM7_TCB+4095)& ~4095);
 
@@ -2064,9 +2080,12 @@ void armt_init()
 	#endif
 
 	mem_region_set_exec(ICache, ICacheSize);
-
+#endif
 #if TARGET_IPHONE
 	memset((u8*)mmap(ICache, ICacheSize, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_FIXED | MAP_PRIVATE | MAP_ANON, 0, 0),0xFF,ICacheSize);
+#elif defined(VITA)
+	ICache = (u8*)arm7_ptr;
+	memset(ICache,0xFF,ICacheSize);
 #else
 	memset(ICache,0xFF,ICacheSize);
 #endif

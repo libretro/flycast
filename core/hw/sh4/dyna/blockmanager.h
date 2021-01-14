@@ -10,7 +10,11 @@
 typedef void (*DynarecCodeEntryPtr)();
 typedef std::shared_ptr<RuntimeBlockInfo> RuntimeBlockInfoPtr;
 
+#ifdef VITA
+#define CODE_SIZE   (15*1024*1024)
+#else
 #define CODE_SIZE   (16*1024*1024)
+#endif
 
 #ifdef NO_MMU
 #define TEMP_CODE_SIZE (0)

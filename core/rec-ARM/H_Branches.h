@@ -26,15 +26,18 @@ namespace ARM
 		ptrdiff_t lit = Literal(FnAddr);
 
 		if(0==lit) {
+#ifndef VITA
 			printf("Error, Compiler caught NULL literal, CALL(%08X)\n", FnAddr);
 			verify(false);
+#endif
 			return;
 		}
 		if( (lit<-33554432) || (lit>33554428) )     // ..28 for BL ..30 for BLX
 		{
+#ifndef VITA
 			printf("Warning, CALL(%08X) is out of range for literal(%08X)\n", FnAddr, lit);
 			// verify(false);
-
+#endif
 			MOV32(IP, FnAddr, CC);
 			BLX(IP, CC);
 			return;
@@ -65,9 +68,10 @@ namespace ARM
 		}*/
 		if( (lit<-33554432) || (lit>33554428) )     // ..28 for BL ..30 for BLX
 		{
+#ifndef VITA
 			printf("Warning, %X is out of range for imm jump! \n", FnAddr);
 			//verify(false);
-
+#endif
 			MOV32(IP, FnAddr, CC);
 			BX(IP, CC);
 			return;

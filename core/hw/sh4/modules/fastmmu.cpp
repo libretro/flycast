@@ -335,9 +335,11 @@ template u32 mmu_data_translation<MMU_TT_DWRITE, u16>(u32 va, u32& rv);
 template u32 mmu_data_translation<MMU_TT_DWRITE, u32>(u32 va, u32& rv);
 template u32 mmu_data_translation<MMU_TT_DWRITE, u64>(u32 va, u32& rv);
 
+#ifndef NO_MMU
 void mmu_flush_table()
 {
 	lru_entry = NULL;
 	flush_cache();
 }
+#endif
 #endif 	// FAST_MMU

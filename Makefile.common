@@ -316,6 +316,11 @@ ifeq ($(HAVE_MODEM), 1)
 endif
 
 ifeq ($(HAVE_GL), 1)
+ifeq ($(HAVE_VITAGL), 1)
+	SOURCES_CXX += $(CORE_DIR)/core/rend/vita/vita.cpp \
+						$(CORE_DIR)/core/rend/vita/gldraw.cpp \
+						$(CORE_DIR)/core/rend/vita/gltex.cpp
+else
 	SOURCES_CXX += $(CORE_DIR)/core/rend/gles/gles.cpp \
 						$(CORE_DIR)/core/rend/gles/gldraw.cpp \
 						$(CORE_DIR)/core/rend/gles/gltex.cpp \
@@ -333,6 +338,7 @@ ifeq ($(HAVE_GL), 1)
 	else
 		SOURCES_C += $(LIBRETRO_COMM_DIR)/glsym/glsym_gl.c
 	endif
+endif
 endif
 
 ifeq ($(HAVE_VULKAN), 1)

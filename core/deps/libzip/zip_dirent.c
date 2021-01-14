@@ -360,7 +360,7 @@ _zip_dirent_torrent_normalize(struct zip_dirent *de)
     static time_t last_mod = 0;
 
     if (last_mod == 0) {
-#ifdef HAVE_STRUCT_TM_TM_ZONE
+#if defined(HAVE_STRUCT_TM_TM_ZONE) && !defined(VITA)
 	time_t now;
 	struct tm *l;
 #endif
@@ -375,7 +375,7 @@ _zip_dirent_torrent_normalize(struct zip_dirent *de)
 	torrenttime.tm_yday = 0;
 	torrenttime.tm_isdst = 0;
 
-#ifdef HAVE_STRUCT_TM_TM_ZONE
+#if defined(HAVE_STRUCT_TM_TM_ZONE) && !defined(VITA)
 	time(&now);
 	l = localtime(&now);
 #ifndef _WIN32

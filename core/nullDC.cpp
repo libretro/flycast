@@ -400,8 +400,10 @@ int dc_init()
 	setbuf(stdin,0);
 	setbuf(stdout,0);
 	setbuf(stderr,0);
-   extern void common_libretro_setup(void);
-   common_libretro_setup();
+#ifndef VITA	
+	extern void common_libretro_setup(void);
+	common_libretro_setup();
+#endif
 
 	if (!_vmem_reserve())
 	{
@@ -414,33 +416,33 @@ int dc_init()
 
 	int rv= 0;
 
-   extern char game_dir_no_slash[1024];
+	extern char game_dir_no_slash[1024];
 
-   char new_system_dir[1024];
+	char new_system_dir[1024];
 
 #ifdef _WIN32
-   sprintf(new_system_dir, "%s\\", game_dir_no_slash);
+	sprintf(new_system_dir, "%s\\", game_dir_no_slash);
 #else
-   sprintf(new_system_dir, "%s/", game_dir_no_slash);
+	sprintf(new_system_dir, "%s/", game_dir_no_slash);
 #endif
 
-   if (settings.System == DC_PLATFORM_DREAMCAST)
-   {
-      if (settings.bios.UseReios || !LoadRomFiles(new_system_dir))
-      {
-      	if (boot_to_bios)
-      		// Booting the BIOS requires a BIOS file
-      		return -3;
-         if (!LoadHle(new_system_dir))
-            return -3;
-         WARN_LOG(COMMON, "Did not load bios, using reios");
-      }
-   }
-   else
-   {
-   	LoadRomFiles(new_system_dir);
-   }
-   LoadSpecialSettingsCPU();
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+	{
+		if (settings.bios.UseReios || !LoadRomFiles(new_system_dir))
+		{
+			if (boot_to_bios)
+				// Booting the BIOS requires a BIOS file
+				return -3;
+			if (!LoadHle(new_system_dir))
+				return -3;
+			WARN_LOG(COMMON, "Did not load bios, using reios");
+		}
+	}
+	else
+	{
+		LoadRomFiles(new_system_dir);
+	}
+	LoadSpecialSettingsCPU();
 
 	sh4_cpu.Init();
 	mem_Init();
@@ -525,7 +527,11 @@ void LoadSettings(void)
 {
 	settings.dynarec.Enable			= 1;
 	settings.dynarec.idleskip		= 1;
+#ifdef VITA
+	settings.dynarec.unstable_opt	= 1; 
+#else
 	settings.dynarec.unstable_opt	= 0; 
+#endif
 	//settings.dynarec.DisableDivMatching       = 0;
 	//disable_nvmem can't be loaded, because nvmem init is before cfg load
 	settings.dynarec.disable_vmem32 = false;

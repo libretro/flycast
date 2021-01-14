@@ -12,37 +12,39 @@ u32 ITLB_LRU_USE[64];
 // Used when FullMMU is off
 u32 sq_remap[64];
 
+extern const u32 mmu_mask[4] =
+{
+	((0xFFFFFFFF) >> 10) << 10,	//1 kb page
+	((0xFFFFFFFF) >> 12) << 12,	//4 kb page
+	((0xFFFFFFFF) >> 16) << 16,	//64 kb page
+	((0xFFFFFFFF) >> 20) << 20	//1 MB page
+};
+
+extern const u32 fast_reg_lut[8] =
+{
+	0, 0, 0, 0	//P0-U0
+	, 1		//P1
+	, 1		//P2
+	, 0		//P3
+	, 1		//P4
+};
+
 #if defined(NO_MMU)
 
-//Sync memory mapping to MMU , suspend compiled blocks if needed.entry is a UTLB entry # , -1 is for full sync
-bool UTLB_Sync(u32 entry)
-{	
-	if ((UTLB[entry].Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
-	{
-		u32 vpn_sq = ((UTLB[entry].Address.VPN & 0x7FFFF) >> 10) & 0x3F;//upper bits are always known [0xE0/E1/E2/E3]
-		sq_remap[vpn_sq] = UTLB[entry].Data.PPN << 10;
-		INFO_LOG(SH4, "SQ remap %d : 0x%X to 0x%X", entry, UTLB[entry].Address.VPN << 10, UTLB[entry].Data.PPN << 10);
-	}
-	else
-	{
-		INFO_LOG(SH4, "MEM remap %d : 0x%X to 0x%X", entry, UTLB[entry].Address.VPN << 10, UTLB[entry].Data.PPN << 10);
-	}
-
-	return true;
-}
-//Sync memory mapping to MMU, suspend compiled blocks if needed.entry is a ITLB entry # , -1 is for full sync
-void ITLB_Sync(u32 entry)
+void mmu_raise_exception(u32 mmu_error, u32 address, u32 am)
 {
-	INFO_LOG(SH4, "ITLB MEM remap %d : 0x%X to 0x%X",entry,ITLB[entry].Address.VPN<<10,ITLB[entry].Data.PPN<<10);
 }
 
 void mmu_set_state()
 {
 }
 
+u32 mmu_instruction_lookup(u32 va, const TLB_Entry** tlb_entry_ret, u32& rv)
+{
+}
+
 void MMU_init()
 {
-
 }
 
 void MMU_reset()
@@ -78,23 +80,6 @@ template<bool internal = false>
 u32 mmu_full_lookup(u32 va, u32& idx, u32& rv);
 
 #define printf_mmu(...) DEBUG_LOG(SH4, __VA_ARGS__)
-
-extern const u32 mmu_mask[4] =
-{
-	((0xFFFFFFFF) >> 10) << 10,	//1 kb page
-	((0xFFFFFFFF) >> 12) << 12,	//4 kb page
-	((0xFFFFFFFF) >> 16) << 16,	//64 kb page
-	((0xFFFFFFFF) >> 20) << 20	//1 MB page
-};
-
-extern const u32 fast_reg_lut[8] =
-{
-	0, 0, 0, 0	//P0-U0
-	, 1		//P1
-	, 1		//P2
-	, 0		//P3
-	, 1		//P4
-};
 
 const u32 ITLB_LRU_OR[4] =
 {

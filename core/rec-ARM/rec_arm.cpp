@@ -64,6 +64,17 @@ void CacheFlush(void* code, void* pEnd)
     sys_dcache_flush(code, (u8*)pEnd - (u8*)code + 1);
     sys_icache_invalidate(code, (u8*)pEnd - (u8*)code + 1);
 }
+#elif defined(VITA)
+typedef unsigned int SceSize;
+typedef int SceUID;
+extern "C" {
+	int sceKernelSyncVMDomain(SceUID uid, void *data, SceSize size);
+};
+extern SceUID vm_memblock;
+void CacheFlush(void* code, void* pEnd)
+{
+	sceKernelSyncVMDomain(vm_memblock, code, (u8*)pEnd - (u8*)code + 1);
+}
 #elif !defined(ARMCC)
 void CacheFlush(void* code, void* pEnd)
 {
@@ -2229,11 +2240,15 @@ void ngen_Compile_arm(RuntimeBlockInfo* block,bool force_checks, bool reset, boo
 	//pre-load the first reg alloc operations, for better efficiency ..
 	if (!block->oplist.empty())
 		reg.OpBegin(&block->oplist[0],0);
-
+#if defined(VITA_SAFE) || !defined(VITA)
 	//scheduler
 	if (force_checks)
 	{
+#ifdef VITA_FAST_SMC
+		s32 sz = 4;
+#else
 		s32 sz = block->sh4_code_size;
+#endif
 		u32 addr = block->addr;
 		MOV32(r0,addr);
 
@@ -2271,7 +2286,7 @@ void ngen_Compile_arm(RuntimeBlockInfo* block,bool force_checks, bool reset, boo
 			}
 		}
 	}
-
+#endif
 	u32 cyc=block->guest_cycles;
 	if (!is_i8r4(cyc))
 	{
