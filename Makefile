@@ -362,31 +362,6 @@ else ifeq ($(platform), sun8i_legacy)
 	WITH_DYNAREC = arm
 	HAVE_GENERIC_JIT = 0
 	CORE_DEFINES += -DLOW_END
-	
-#######################################
-
-# ARM64 (switch-lakka)
-else ifeq ($(platform), arm64)
-	EXT ?= so
-	TARGET := $(TARGET_NAME)_libretro.$(EXT)
-	SHARED += -shared -Wl,--version-script=link.T
-	LDFLAGS +=  -Wl,--no-undefined
-	fpic = -fPIC
-	LIBS += -lrt
-	ARM_FLOAT_ABI_HARD = 0
-	FORCE_GLES = 1
-	SINGLE_PREC_FLAGS = 1
-	CPUFLAGS += -DTARGET_LINUX_ARMv8 -frename-registers
-	CFLAGS += $(CPUFLAGS)
-	CXXFLAGS += $(CPUFLAGS)
-	ASFLAGS += $(CFLAGS) -c -frename-registers -fno-strict-aliasing -ffast-math -ftree-vectorize
-	PLATFORM_EXT := unix
-	WITH_DYNAREC=arm64
-	HAVE_GENERIC_JIT = 0
-	HAVE_LTCG = 0
-	LDFLAGS := $(filter-out -flto, $(LDFLAGS))
-	CFLAGS := $(filter-out -flto, $(CFLAGS))
-	CXXFLAGS := $(filter-out -flto, $(CXXFLAGS))
 #######################################
 
 # nvidia developer jetson nano kit (jetson-nano)
