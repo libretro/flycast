@@ -71,13 +71,12 @@ extern "C" {
       { "LIGHT_CYAN_2 19",   "Light Cyan (2)" }, \
       { "LIGHT_RED_2 20",    "Light Red (2)" }, \
       { "MAGENTA 21",        "Magenta" }, \
-      { "LIGHT_PURPLE_2 22", "Light Purple (2)" }, \
-      { "LIGHT_ORANGE 23",   "Light Orange" }, \
-      { "ORANGE 24",         "Orange" }, \
-      { "LIGHT_PURPLE_3 25", "Light Purple (3)" }, \
-      { "LIGHT_YELLOW 26",   "Light Yellow" }, \
-      { "LIGHT_YELLOW_2 27", "Light Yellow (2)" }, \
-      { "WHITE 28",          "White" }, \
+      { "LIGHT_ORANGE 22",   "Light Orange" }, \
+      { "ORANGE 23",         "Orange" }, \
+      { "LIGHT_PURPLE_3 24", "Light Purple (3)" }, \
+      { "LIGHT_YELLOW 25",   "Light Yellow" }, \
+      { "LIGHT_YELLOW_2 26", "Light Yellow (2)" }, \
+      { "WHITE 27",          "White" }, \
       { NULL, NULL },
 
 #define VMU_SCREEN_PARAMS(num) \
@@ -177,7 +176,7 @@ extern "C" {
    "disabled", \
 },
 
-struct retro_core_option_definition option_defs_us[] = {
+struct retro_core_option_definition option_defs[] = {
 #if ((FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X86) || (HOST_CPU == CPU_ARM) || (HOST_CPU == CPU_ARM64) || (HOST_CPU == CPU_X64)) && defined(TARGET_NO_JIT)
    {
       CORE_OPTION_NAME "_cpu_mode",
@@ -772,36 +771,6 @@ struct retro_core_option_definition option_defs_us[] = {
 
 /*
  ********************************
- * Language Mapping
- ********************************
-*/
-
-#ifndef HAVE_NO_LANGEXTRA
-struct retro_core_option_definition *option_defs_intl[RETRO_LANGUAGE_LAST] = {
-   option_defs_us, /* RETRO_LANGUAGE_ENGLISH */
-   NULL,           /* RETRO_LANGUAGE_JAPANESE */
-   NULL,           /* RETRO_LANGUAGE_FRENCH */
-   NULL,           /* RETRO_LANGUAGE_SPANISH */
-   NULL,           /* RETRO_LANGUAGE_GERMAN */
-   NULL,           /* RETRO_LANGUAGE_ITALIAN */
-   NULL,           /* RETRO_LANGUAGE_DUTCH */
-   NULL,           /* RETRO_LANGUAGE_PORTUGUESE_BRAZIL */
-   NULL,           /* RETRO_LANGUAGE_PORTUGUESE_PORTUGAL */
-   NULL,           /* RETRO_LANGUAGE_RUSSIAN */
-   NULL,           /* RETRO_LANGUAGE_KOREAN */
-   NULL,           /* RETRO_LANGUAGE_CHINESE_TRADITIONAL */
-   NULL,           /* RETRO_LANGUAGE_CHINESE_SIMPLIFIED */
-   NULL,           /* RETRO_LANGUAGE_ESPERANTO */
-   NULL,           /* RETRO_LANGUAGE_POLISH */
-   NULL,           /* RETRO_LANGUAGE_VIETNAMESE */
-   NULL,           /* RETRO_LANGUAGE_ARABIC */
-   NULL,           /* RETRO_LANGUAGE_GREEK */
-   option_defs_tr, /* RETRO_LANGUAGE_TURKISH */
-};
-#endif
-
-/*
- ********************************
  * Functions
  ********************************
 */
@@ -823,21 +792,7 @@ static INLINE void libretro_set_core_options(retro_environment_t environ_cb)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && (version >= 1))
    {
-#ifndef HAVE_NO_LANGEXTRA
-      struct retro_core_options_intl core_options_intl;
-      unsigned language = 0;
-
-      core_options_intl.us    = option_defs_us;
-      core_options_intl.local = NULL;
-
-      if (environ_cb(RETRO_ENVIRONMENT_GET_LANGUAGE, &language) &&
-          (language < RETRO_LANGUAGE_LAST) && (language != RETRO_LANGUAGE_ENGLISH))
-         core_options_intl.local = option_defs_intl[language];
-
-      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL, &core_options_intl);
-#else
-      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS, &option_defs_us);
-#endif
+      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS, &option_defs);
    }
    else
    {
@@ -855,7 +810,7 @@ static INLINE void libretro_set_core_options(retro_environment_t environ_cb)
        *   keep the code 'cleaner' */
       while (true)
       {
-         if (option_defs_us[num_options].key)
+         if (option_defs[num_options].key)
             num_options++;
          else
             break;
@@ -868,13 +823,13 @@ static INLINE void libretro_set_core_options(retro_environment_t environ_cb)
       if (!variables || !values_buf)
          goto error;
 
-      /* Copy parameters from option_defs_us array */
+      /* Copy parameters from option_defs array */
       for (i = 0; i < num_options; i++)
       {
-         const char *key                        = option_defs_us[i].key;
-         const char *desc                       = option_defs_us[i].desc;
-         const char *default_value              = option_defs_us[i].default_value;
-         struct retro_core_option_value *values = option_defs_us[i].values;
+         const char *key                        = option_defs[i].key;
+         const char *desc                       = option_defs[i].desc;
+         const char *default_value              = option_defs[i].default_value;
+         struct retro_core_option_value *values = option_defs[i].values;
          size_t buf_len                         = 3;
          size_t default_index                   = 0;
 

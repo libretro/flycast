@@ -95,6 +95,7 @@ char slash = '/';
 
 #include "libretro_core_option_defines.h"
 #include "libretro_core_options.h"
+#include "msg_hash.h"
 
 u32 fskip;
 extern int screen_width;
@@ -283,6 +284,1176 @@ static void input_set_deadzone_trigger( int percent )
 
 void retro_set_environment(retro_environment_t cb)
 {
+   size_t   coreOptionSize = 0;
+   unsigned language = 0;
+
+#ifndef HAVE_NO_LANGEXTRA
+   if (!(cb(RETRO_ENVIRONMENT_GET_LANGUAGE, &language) &&
+        (language < RETRO_LANGUAGE_LAST)))
+       language = 0;
+#endif
+
+#if ((FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X86) || (HOST_CPU == CPU_ARM) || (HOST_CPU == CPU_ARM64) || (HOST_CPU == CPU_X64)) && defined(TARGET_NO_JIT)
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_cpu_mode",
+      msg_hash_to_str(MSG_HASH_REICAST_CPU_MODE_DESC, language),
+      "",
+      {
+#if (FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X86) || (HOST_CPU == CPU_ARM) || (HOST_CPU == CPU_ARM64) || (HOST_CPU == CPU_X64)
+         { "dynamic_recompiler", msg_hash_to_str(MSG_HASH_OPTION_VAL_DYNAMIC_RECOMPILER, language) },
+#endif
+#ifdef TARGET_NO_JIT
+         { "generic_recompiler", msg_hash_to_str(MSG_HASH_OPTION_VAL_GENERIC_RECOMPILER, language) },
+#endif
+         { NULL, NULL },
+      },
+#if (FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X86) || (HOST_CPU == CPU_ARM) || (HOST_CPU == CPU_ARM64) || (HOST_CPU == CPU_X64)
+      "dynamic_recompiler",
+#elif defined(TARGET_NO_JIT)
+      "generic_recompiler",
+#endif
+   };
+#endif
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_boot_to_bios",
+      msg_hash_to_str(MSG_HASH_REICAST_BOOT_TO_BIOS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_BOOT_TO_BIOS_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_system",
+      msg_hash_to_str(MSG_HASH_REICAST_SYSTEM_DESC, language),
+      "",
+      {
+         { "auto",       msg_hash_to_str(MSG_HASH_OPTION_VAL_AUTO, language) },
+         { "dreamcast",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DREAMCAST, language) },
+         { "naomi",      msg_hash_to_str(MSG_HASH_OPTION_VAL_NAOMI, language) },
+         { "atomiswave", msg_hash_to_str(MSG_HASH_OPTION_VAL_ATOMISWAVE, language) },
+         { NULL, NULL },
+      },
+      "auto",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_hle_bios",
+      msg_hash_to_str(MSG_HASH_REICAST_HLE_BIOS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_HLE_BIOS_INFO, language),
+      {
+         { "disabled",  NULL },
+         { "enabled",  NULL },
+         { NULL, NULL},
+      },
+      "disabled",
+   };
+#if defined(HAVE_OIT) || defined(HAVE_VULKAN)
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_oit_abuffer_size",
+      msg_hash_to_str(MSG_HASH_REICAST_OIT_ABUFFER_SIZE_DESC, language),
+      "",
+      {
+         { "512MB", msg_hash_to_str(MSG_HASH_OPTION_VAL_512MB, language) },
+         { "1GB",   msg_hash_to_str(MSG_HASH_OPTION_VAL_1GB, language) },
+         { "2GB",   msg_hash_to_str(MSG_HASH_OPTION_VAL_2GB, language) },
+         { "4GB",   msg_hash_to_str(MSG_HASH_OPTION_VAL_4GB, language) },
+         { NULL, NULL },
+      },
+      "512MB",
+   };
+#endif
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_internal_resolution",
+      msg_hash_to_str(MSG_HASH_REICAST_INTERNAL_RESOLUTION_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_INTERNAL_RESOLUTION_INFO, language),
+      {
+         { "320x240",    msg_hash_to_str(MSG_HASH_OPTION_VAL_320X240, language) },
+         { "640x480",    msg_hash_to_str(MSG_HASH_OPTION_VAL_640X480, language) },
+         { "800x600",    msg_hash_to_str(MSG_HASH_OPTION_VAL_800X600, language) },
+         { "960x720",    msg_hash_to_str(MSG_HASH_OPTION_VAL_960X720, language) },
+         { "1024x768",   msg_hash_to_str(MSG_HASH_OPTION_VAL_1024X768, language) },
+         { "1280x960",   msg_hash_to_str(MSG_HASH_OPTION_VAL_1280X960, language) },
+         { "1440x1080",  msg_hash_to_str(MSG_HASH_OPTION_VAL_1440X1080, language) },
+         { "1600x1200",  msg_hash_to_str(MSG_HASH_OPTION_VAL_1600X1200, language) },
+         { "1920x1440",  msg_hash_to_str(MSG_HASH_OPTION_VAL_1920X1440, language) },
+         { "2560x1920",  msg_hash_to_str(MSG_HASH_OPTION_VAL_2560X1920, language) },
+         { "2880x2160",  msg_hash_to_str(MSG_HASH_OPTION_VAL_2880X2160, language) },
+         { "3200x2400",  msg_hash_to_str(MSG_HASH_OPTION_VAL_3200X2400, language) },
+         { "3840x2880",  msg_hash_to_str(MSG_HASH_OPTION_VAL_3840X2880, language) },
+         { "4480x3360",  msg_hash_to_str(MSG_HASH_OPTION_VAL_4480X3360, language) },
+         { "5120x3840",  msg_hash_to_str(MSG_HASH_OPTION_VAL_5120X3840, language) },
+         { "5760x4320",  msg_hash_to_str(MSG_HASH_OPTION_VAL_5760X4320, language) },
+         { "6400x4800",  msg_hash_to_str(MSG_HASH_OPTION_VAL_6400X4800, language) },
+         { "7040x5280",  msg_hash_to_str(MSG_HASH_OPTION_VAL_7040X5280, language) },
+         { "7680x5760",  msg_hash_to_str(MSG_HASH_OPTION_VAL_7680X5760, language) },
+         { "8320x6240",  msg_hash_to_str(MSG_HASH_OPTION_VAL_8320X6240, language) },
+         { "8960x6720",  msg_hash_to_str(MSG_HASH_OPTION_VAL_8960X6720, language) },
+         { "9600x7200",  msg_hash_to_str(MSG_HASH_OPTION_VAL_9600X7200, language) },
+         { "10240x7680", msg_hash_to_str(MSG_HASH_OPTION_VAL_10240X7680, language) },
+         { "10880x8160", msg_hash_to_str(MSG_HASH_OPTION_VAL_10880X8160, language) },
+         { "11520x8640", msg_hash_to_str(MSG_HASH_OPTION_VAL_11520X8640, language) },
+         { "12160x9120", msg_hash_to_str(MSG_HASH_OPTION_VAL_12160X9120, language) },
+         { "12800x9600", msg_hash_to_str(MSG_HASH_OPTION_VAL_12800X9600, language) },
+         { NULL, NULL },
+      },
+#ifdef LOW_RES
+      "320x240",
+#else
+      "640x480",
+#endif
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_screen_rotation",
+      msg_hash_to_str(MSG_HASH_REICAST_SCREEN_ROTATION_DESC, language),
+      "",
+      {
+         { "horizontal", msg_hash_to_str(MSG_HASH_OPTION_VAL_HORIZONTAL, language) },
+         { "vertical",   msg_hash_to_str(MSG_HASH_OPTION_VAL_VERTICAL, language) },
+         { NULL, NULL },
+      },
+      "horizontal",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_alpha_sorting",
+      msg_hash_to_str(MSG_HASH_REICAST_ALPHA_SORTING_DESC, language),
+      "",
+      {
+         { "per-strip (fast, least accurate)", msg_hash_to_str(MSG_HASH_OPTION_VAL_PERSTRIP_FAST_LEAST_ACCURATE, language) },
+         { "per-triangle (normal)",            msg_hash_to_str(MSG_HASH_OPTION_VAL_PERTRIANGLE_NORMAL, language) },
+#if defined(HAVE_OIT) || defined(HAVE_VULKAN)
+         { "per-pixel (accurate)",             msg_hash_to_str(MSG_HASH_OPTION_VAL_PERPIXEL_ACCURATE_BUT_SLOWEST, language) },
+#endif
+         { NULL, NULL },
+      },
+#if defined(LOW_END)
+      "per-strip (fast, least accurate)",
+#else
+      "per-triangle (normal)",
+#endif
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_gdrom_fast_loading",
+      msg_hash_to_str(MSG_HASH_REICAST_GDROM_FAST_LOADING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_GDROM_FAST_LOADING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+#ifdef LOW_END
+      "enabled",
+#else
+      "disabled",
+#endif
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_mipmapping",
+      msg_hash_to_str(MSG_HASH_REICAST_MIPMAPPING_DESC, language),
+      "",
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
+      "enabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_fog",
+      msg_hash_to_str(MSG_HASH_REICAST_FOG_DESC, language),
+      "",
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
+      "enabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_volume_modifier_enable",
+      msg_hash_to_str(MSG_HASH_REICAST_VOLUME_MODIFIER_ENABLE_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_VOLUME_MODIFIER_ENABLE_INFO, language),
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
+      "enabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_widescreen_hack",
+      msg_hash_to_str(MSG_HASH_REICAST_WIDESCREEN_HACK_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_widescreen_cheats",
+      msg_hash_to_str(MSG_HASH_REICAST_WIDESCREEN_CHEATS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_WIDESCREEN_CHEATS_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_cable_type",
+      msg_hash_to_str(MSG_HASH_REICAST_CABLE_TYPE_DESC, language),
+      "",
+      {
+         { "TV (RGB)",       msg_hash_to_str(MSG_HASH_OPTION_VAL_TV_RGB, language) },
+         { "TV (Composite)", msg_hash_to_str(MSG_HASH_OPTION_VAL_TV_COMPOSITE, language) },
+         { "VGA (RGB)",      msg_hash_to_str(MSG_HASH_OPTION_VAL_VGA_RGB, language) },
+         { NULL, NULL },
+      },
+#ifdef LOW_END
+      "VGA (RGB)"   ,
+#else
+      "TV (Composite)",
+#endif
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_broadcast",
+      msg_hash_to_str(MSG_HASH_REICAST_BROADCAST_DESC, language),
+      "",
+      {
+         { "Default", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT, language) },
+         { "PAL_M",   msg_hash_to_str(MSG_HASH_OPTION_VAL_PALM_BRAZIL, language) },
+         { "PAL_N",   msg_hash_to_str(MSG_HASH_OPTION_VAL_PALN_ARGENTINA_PARAGUAY_URUGUAY, language) },
+         { "NTSC",    msg_hash_to_str(MSG_HASH_OPTION_VAL_NTSC, language) },
+         { "PAL",     msg_hash_to_str(MSG_HASH_OPTION_VAL_PAL_WORLD, language) },
+         { NULL, NULL },
+      },
+      "Default",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_framerate",
+      msg_hash_to_str(MSG_HASH_REICAST_FRAMERATE_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_FRAMERATE_INFO, language),
+      {
+         { "fullspeed", msg_hash_to_str(MSG_HASH_OPTION_VAL_FULL_SPEED, language) },
+         { "normal",    msg_hash_to_str(MSG_HASH_OPTION_VAL_NORMAL, language) },
+         { NULL, NULL },
+      },
+      "fullspeed",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_region",
+      msg_hash_to_str(MSG_HASH_REICAST_REGION_DESC, language),
+      "",
+      {
+         { "Default", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT, language) },
+         { "Japan",   msg_hash_to_str(MSG_HASH_OPTION_VAL_JAPAN, language) },
+         { "USA",     msg_hash_to_str(MSG_HASH_OPTION_VAL_USA, language) },
+         { "Europe",  msg_hash_to_str(MSG_HASH_OPTION_VAL_EUROPE, language) },
+         { NULL, NULL },
+      },
+      "Default",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_language",
+      msg_hash_to_str(MSG_HASH_REICAST_LANGUAGE_DESC, language),
+      "",
+      {
+         { "Default",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT, language) },
+         { "Japanese", msg_hash_to_str(MSG_HASH_OPTION_VAL_JAPANESE, language) },
+         { "English",  msg_hash_to_str(MSG_HASH_OPTION_VAL_ENGLISH, language) },
+         { "German",   msg_hash_to_str(MSG_HASH_OPTION_VAL_GERMAN, language) },
+         { "French",   msg_hash_to_str(MSG_HASH_OPTION_VAL_FRENCH, language) },
+         { "Spanish",  msg_hash_to_str(MSG_HASH_OPTION_VAL_SPANISH, language) },
+         { "Italian",  msg_hash_to_str(MSG_HASH_OPTION_VAL_ITALIAN, language) },
+         { NULL, NULL },
+      },
+      "Default",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_div_matching",
+      msg_hash_to_str(MSG_HASH_REICAST_DIV_MATCHING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_DIV_MATCHING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "auto",     msg_hash_to_str(MSG_HASH_OPTION_VAL_AUTO, language) },
+         { NULL, NULL },
+      },
+      "auto",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_force_wince",
+      msg_hash_to_str(MSG_HASH_REICAST_FORCE_WINCE_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_FORCE_WINCE_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_analog_stick_deadzone",
+      msg_hash_to_str(MSG_HASH_REICAST_ANALOG_STICK_DEADZONE_DESC, language),
+      "",
+      {
+         { "0%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_0, language) },
+         { "5%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_5, language) },
+         { "10%", msg_hash_to_str(MSG_HASH_OPTION_VAL_10, language) },
+         { "15%", msg_hash_to_str(MSG_HASH_OPTION_VAL_15, language) },
+         { "20%", msg_hash_to_str(MSG_HASH_OPTION_VAL_20, language) },
+         { "25%", msg_hash_to_str(MSG_HASH_OPTION_VAL_25, language) },
+         { "30%", msg_hash_to_str(MSG_HASH_OPTION_VAL_30, language) },
+         { NULL, NULL },
+      },
+      "15%",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_trigger_deadzone",
+      msg_hash_to_str(MSG_HASH_REICAST_TRIGGER_DEADZONE_DESC, language),
+      "",
+      {
+         { "0%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_0, language) },
+         { "5%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_5, language) },
+         { "10%", msg_hash_to_str(MSG_HASH_OPTION_VAL_10, language) },
+         { "15%", msg_hash_to_str(MSG_HASH_OPTION_VAL_15, language) },
+         { "20%", msg_hash_to_str(MSG_HASH_OPTION_VAL_20, language) },
+         { "25%", msg_hash_to_str(MSG_HASH_OPTION_VAL_25, language) },
+         { "30%", msg_hash_to_str(MSG_HASH_OPTION_VAL_30, language) },
+         { NULL, NULL },
+      },
+      "0%",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_digital_triggers",
+      msg_hash_to_str(MSG_HASH_REICAST_DIGITAL_TRIGGERS_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_enable_dsp",
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_DSP_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_DSP_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+#ifdef LOW_END
+      "disabled",
+#else
+      "enabled",
+#endif
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_anisotropic_filtering",
+      msg_hash_to_str(MSG_HASH_REICAST_ANISOTROPIC_FILTERING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_ANISOTROPIC_FILTERING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "2",  NULL },
+         { "4",  NULL },
+         { "8",  NULL },
+         { "16",  NULL },
+         { NULL, NULL },
+      },
+      "4",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_pvr2_filtering",
+      msg_hash_to_str(MSG_HASH_REICAST_PVR2_FILTERING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_PVR2_FILTERING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+#ifdef HAVE_TEXUPSCALE
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_texupscale",
+      msg_hash_to_str(MSG_HASH_REICAST_TEXUPSCALE_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_TEXUPSCALE_INFO, language),
+      {
+         { "disabled", NULL },
+         { "2x",  msg_hash_to_str(MSG_HASH_OPTION_VAL_2X, language) },
+         { "4x",  msg_hash_to_str(MSG_HASH_OPTION_VAL_4X, language) },
+         { "6x",  msg_hash_to_str(MSG_HASH_OPTION_VAL_6X, language) },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_texupscale_max_filtered_texture_size",
+      msg_hash_to_str(MSG_HASH_REICAST_TEXUPSCALE_MAX_FILTERED_TEXTURE_SIZE_DESC, language),
+      "",
+      {
+         { "256",  NULL },
+         { "512",  NULL },
+         { "1024", NULL },
+         { NULL, NULL },
+      },
+      "256",
+   };
+#endif
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_enable_rttb",
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_RTTB_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_render_to_texture_upscaling",
+      msg_hash_to_str(MSG_HASH_REICAST_RENDER_TO_TEXTURE_UPSCALING_DESC, language),
+      "",
+      {
+         { "1x", msg_hash_to_str(MSG_HASH_OPTION_VAL_1X, language) },
+         { "2x", msg_hash_to_str(MSG_HASH_OPTION_VAL_2X, language) },
+         { "3x", msg_hash_to_str(MSG_HASH_OPTION_VAL_3X, language) },
+         { "4x", msg_hash_to_str(MSG_HASH_OPTION_VAL_4X, language) },
+         { "8x", msg_hash_to_str(MSG_HASH_OPTION_VAL_8X, language) },
+         { NULL, NULL },
+      },
+      "1x",
+   };
+#if !defined(TARGET_NO_THREADS)
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_threaded_rendering",
+      msg_hash_to_str(MSG_HASH_REICAST_THREADED_RENDERING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_THREADED_RENDERING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "enabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_synchronous_rendering",
+      msg_hash_to_str(MSG_HASH_REICAST_SYNCHRONOUS_RENDERING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_SYNCHRONOUS_RENDERING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+#ifdef LOW_END
+      "disabled",
+#else
+      "enabled",
+#endif
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_delay_frame_swapping",
+      msg_hash_to_str(MSG_HASH_REICAST_DELAY_FRAME_SWAPPING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_DELAY_FRAME_SWAPPING_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+#endif
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_frame_skipping",
+      msg_hash_to_str(MSG_HASH_REICAST_FRAME_SKIPPING_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_FRAME_SKIPPING_INFO, language),
+      {
+         { "disabled",  NULL },
+         { "1",         NULL },
+         { "2",         NULL },
+         { "3",         NULL },
+         { "4",         NULL },
+         { "5",         NULL },
+         { "6",         NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_enable_purupuru",
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_PURUPURU_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_PURUPURU_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "enabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_allow_service_buttons",
+      msg_hash_to_str(MSG_HASH_REICAST_ALLOW_SERVICE_BUTTONS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_ALLOW_SERVICE_BUTTONS_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_enable_naomi_15khz_dipswitch",
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_NAOMI_15KHZ_DIPSWITCH_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_ENABLE_NAOMI_15KHZ_DIPSWITCH_INFO, language),
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_custom_textures",
+      msg_hash_to_str(MSG_HASH_REICAST_CUSTOM_TEXTURES_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_dump_textures",
+      msg_hash_to_str(MSG_HASH_REICAST_DUMP_TEXTURES_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_per_content_vmus",
+      msg_hash_to_str(MSG_HASH_REICAST_PER_CONTENT_VMUS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_PER_CONTENT_VMUS_INFO, language),
+      {
+         { "disabled", NULL },
+         { "VMU A1",   msg_hash_to_str(MSG_HASH_OPTION_VAL_VMU_A1, language) },
+         { "All VMUs", msg_hash_to_str(MSG_HASH_OPTION_VAL_ALL_VMUS, language) },
+         { NULL, NULL},
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_show_vmu_screen_settings",
+      msg_hash_to_str(MSG_HASH_REICAST_SHOW_VMU_SCREEN_SETTINGS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_SHOW_VMU_SCREEN_SETTINGS_INFO, language),
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL},
+      },
+      "disabled"
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu1_screen_display",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU1_SCREEN_DISPLAY_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu1_screen_position",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU1_SCREEN_POSITION_DESC, language),
+      "",
+      {
+         { "Upper Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_LEFT, language) },
+         { "Upper Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_RIGHT, language) },
+         { "Lower Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_LEFT, language) },
+         { "Lower Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_RIGHT, language) },
+         { NULL, NULL },
+      },
+      "Upper Left",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu1_screen_size_mult",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU1_SCREEN_SIZE_MULT_DESC, language),
+      "",
+      {
+         { "1x", msg_hash_to_str(MSG_HASH_OPTION_VAL_1X, language) },
+         { "2x", msg_hash_to_str(MSG_HASH_OPTION_VAL_2X, language) },
+         { "3x", msg_hash_to_str(MSG_HASH_OPTION_VAL_3X, language) },
+         { "4x", msg_hash_to_str(MSG_HASH_OPTION_VAL_4X, language) },
+         { "5x", msg_hash_to_str(MSG_HASH_OPTION_VAL_5X, language) },
+         { NULL, NULL },
+      },
+      "1x",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu1_pixel_on_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU1_PIXEL_ON_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_ON 00",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu1_pixel_off_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU1_PIXEL_OFF_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_OFF 01",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu1_screen_opacity",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU1_SCREEN_OPACITY_DESC, language),
+      "",
+      {
+         { "10%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_10, language) },
+         { "20%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_20, language) },
+         { "30%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_30, language) },
+         { "40%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_40, language) },
+         { "50%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_50, language) },
+         { "60%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_60, language) },
+         { "70%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_70, language) },
+         { "80%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_80, language) },
+         { "90%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_90, language) },
+         { "100%", msg_hash_to_str(MSG_HASH_OPTION_VAL_100, language) },
+         { NULL,   NULL },
+      },
+      "100%",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu2_screen_display",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU2_SCREEN_DISPLAY_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu2_screen_position",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU2_SCREEN_POSITION_DESC, language),
+      "",
+      {
+         { "Upper Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_LEFT, language) },
+         { "Upper Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_RIGHT, language) },
+         { "Lower Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_LEFT, language) },
+         { "Lower Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_RIGHT, language) },
+         { NULL, NULL },
+      },
+      "Upper Left",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu2_screen_size_mult",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU2_SCREEN_SIZE_MULT_DESC, language),
+      "",
+      {
+         { "1x", msg_hash_to_str(MSG_HASH_OPTION_VAL_1X, language) },
+         { "2x", msg_hash_to_str(MSG_HASH_OPTION_VAL_2X, language) },
+         { "3x", msg_hash_to_str(MSG_HASH_OPTION_VAL_3X, language) },
+         { "4x", msg_hash_to_str(MSG_HASH_OPTION_VAL_4X, language) },
+         { "5x", msg_hash_to_str(MSG_HASH_OPTION_VAL_5X, language) },
+         { NULL, NULL },
+      },
+      "1x",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu2_pixel_on_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU2_PIXEL_ON_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+      },
+      "DEFAULT_ON 00",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu2_pixel_off_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU2_PIXEL_OFF_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_OFF 01",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu2_screen_opacity",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU2_SCREEN_OPACITY_DESC, language),
+      "",
+      {
+         { "10%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_10, language) },
+         { "20%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_20, language) },
+         { "30%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_30, language) },
+         { "40%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_40, language) },
+         { "50%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_50, language) },
+         { "60%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_60, language) },
+         { "70%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_70, language) },
+         { "80%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_80, language) },
+         { "90%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_90, language) },
+         { "100%", msg_hash_to_str(MSG_HASH_OPTION_VAL_100, language) },
+         { NULL,   NULL },
+      },
+      "100%",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu3_screen_display",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU3_SCREEN_DISPLAY_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu3_screen_position",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU3_SCREEN_POSITION_DESC, language),
+      "",
+      {
+         { "Upper Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_LEFT, language) },
+         { "Upper Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_RIGHT, language) },
+         { "Lower Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_LEFT, language) },
+         { "Lower Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_RIGHT, language) },
+         { NULL, NULL },
+      },
+      "Upper Left",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu3_screen_size_mult",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU3_SCREEN_SIZE_MULT_DESC, language),
+      "",
+      {
+         { "1x", msg_hash_to_str(MSG_HASH_OPTION_VAL_1X, language) },
+         { "2x", msg_hash_to_str(MSG_HASH_OPTION_VAL_2X, language) },
+         { "3x", msg_hash_to_str(MSG_HASH_OPTION_VAL_3X, language) },
+         { "4x", msg_hash_to_str(MSG_HASH_OPTION_VAL_4X, language) },
+         { "5x", msg_hash_to_str(MSG_HASH_OPTION_VAL_5X, language) },
+         { NULL, NULL },
+      },
+      "1x",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu3_pixel_on_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU3_PIXEL_ON_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_ON 00",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu3_pixel_off_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU3_PIXEL_OFF_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_OFF 01",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu3_screen_opacity",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU3_SCREEN_OPACITY_DESC, language),
+      "",
+      {
+         { "10%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_10, language) },
+         { "20%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_20, language) },
+         { "30%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_30, language) },
+         { "40%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_40, language) },
+         { "50%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_50, language) },
+         { "60%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_60, language) },
+         { "70%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_70, language) },
+         { "80%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_80, language) },
+         { "90%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_90, language) },
+         { "100%", msg_hash_to_str(MSG_HASH_OPTION_VAL_100, language) },
+         { NULL,   NULL },
+      },
+      "100%",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu4_screen_display",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU4_SCREEN_DISPLAY_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu4_screen_position",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU4_SCREEN_POSITION_DESC, language),
+      "",
+      {
+         { "Upper Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_LEFT, language) },
+         { "Upper Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_UPPER_RIGHT, language) },
+         { "Lower Left",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_LEFT, language) },
+         { "Lower Right", msg_hash_to_str(MSG_HASH_OPTION_VAL_LOWER_RIGHT, language) },
+         { NULL, NULL },
+      },
+      "Upper Left",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu4_screen_size_mult",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU4_SCREEN_SIZE_MULT_DESC, language),
+      "",
+      {
+         { "1x", msg_hash_to_str(MSG_HASH_OPTION_VAL_1X, language) },
+         { "2x", msg_hash_to_str(MSG_HASH_OPTION_VAL_2X, language) },
+         { "3x", msg_hash_to_str(MSG_HASH_OPTION_VAL_3X, language) },
+         { "4x", msg_hash_to_str(MSG_HASH_OPTION_VAL_4X, language) },
+         { "5x", msg_hash_to_str(MSG_HASH_OPTION_VAL_5X, language) },
+         { NULL, NULL },
+      },
+      "1x",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu4_pixel_on_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU4_PIXEL_ON_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_ON 00",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu4_pixel_off_color",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU4_PIXEL_OFF_COLOR_DESC, language),
+      "",
+      {
+         { "DEFAULT_ON 00",  msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_ON, language) },
+         { "DEFAULT_OFF 01", msg_hash_to_str(MSG_HASH_OPTION_VAL_DEFAULT_OFF, language) },
+         { "BLACK 02",          msg_hash_to_str(MSG_HASH_OPTION_VAL_BLACK, language) },
+         { "BLUE 03",           msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { "LIGHT_BLUE 04",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_BLUE, language) },
+         { "GREEN 05",          msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "CYAN 06",           msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN, language) },
+         { "CYAN_BLUE 07",      msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_BLUE, language) },
+         { "LIGHT_GREEN 08",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN, language) },
+         { "CYAN_GREEN 09",     msg_hash_to_str(MSG_HASH_OPTION_VAL_CYAN_GREEN, language) },
+         { "LIGHT_CYAN 10",     msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN, language) },
+         { "RED 11",            msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "PURPLE 12",         msg_hash_to_str(MSG_HASH_OPTION_VAL_PURPLE, language) },
+         { "LIGHT_PURPLE 13",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE, language) },
+         { "YELLOW 14",         msg_hash_to_str(MSG_HASH_OPTION_VAL_YELLOW, language) },
+         { "GRAY 15",           msg_hash_to_str(MSG_HASH_OPTION_VAL_GRAY, language) },
+         { "LIGHT_PURPLE_2 16", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_2, language) },
+         { "LIGHT_GREEN_2 17",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_2, language) },
+         { "LIGHT_GREEN_3 18",  msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_GREEN_3, language) },
+         { "LIGHT_CYAN_2 19",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_CYAN_2, language) },
+         { "LIGHT_RED_2 20",    msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_RED_2, language) },
+         { "MAGENTA 21",        msg_hash_to_str(MSG_HASH_OPTION_VAL_MAGENTA, language) },
+         { "LIGHT_ORANGE 22",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_ORANGE, language) },
+         { "ORANGE 23",         msg_hash_to_str(MSG_HASH_OPTION_VAL_ORANGE, language) },
+         { "LIGHT_PURPLE_3 24", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_PURPLE_3, language) },
+         { "LIGHT_YELLOW 25",   msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW, language) },
+         { "LIGHT_YELLOW_2 26", msg_hash_to_str(MSG_HASH_OPTION_VAL_LIGHT_YELLOW_2, language) },
+         { "WHITE 27",          msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { NULL, NULL },
+      },
+      "DEFAULT_OFF 01",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_vmu4_screen_opacity",
+      msg_hash_to_str(MSG_HASH_REICAST_VMU4_SCREEN_OPACITY_DESC, language),
+      "",
+      {
+         { "10%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_10, language) },
+         { "20%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_20, language) },
+         { "30%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_30, language) },
+         { "40%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_40, language) },
+         { "50%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_50, language) },
+         { "60%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_60, language) },
+         { "70%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_70, language) },
+         { "80%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_80, language) },
+         { "90%",  msg_hash_to_str(MSG_HASH_OPTION_VAL_90, language) },
+         { "100%", msg_hash_to_str(MSG_HASH_OPTION_VAL_100, language) },
+         { NULL,   NULL },
+      },
+      "100%",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_show_lightgun_settings",
+      msg_hash_to_str(MSG_HASH_REICAST_SHOW_LIGHTGUN_SETTINGS_DESC, language),
+      msg_hash_to_str(MSG_HASH_REICAST_SHOW_LIGHTGUN_SETTINGS_INFO, language),
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL},
+      },
+      "disabled"
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_lightgun1_crosshair",
+      msg_hash_to_str(MSG_HASH_REICAST_LIGHTGUN1_CROSSHAIR_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "White",    msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { "Red",      msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "Green",    msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "Blue",     msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { NULL,       NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_lightgun2_crosshair",
+      msg_hash_to_str(MSG_HASH_REICAST_LIGHTGUN2_CROSSHAIR_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "White",    msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { "Red",      msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "Green",    msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "Blue",     msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { NULL,       NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_lightgun3_crosshair",
+      msg_hash_to_str(MSG_HASH_REICAST_LIGHTGUN3_CROSSHAIR_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "White",    msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { "Red",      msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "Green",    msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "Blue",     msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { NULL,       NULL },
+      },
+      "disabled",
+   };
+   option_defs[coreOptionSize++] = (struct retro_core_option_definition) {
+      "reicast_lightgun4_crosshair",
+      msg_hash_to_str(MSG_HASH_REICAST_LIGHTGUN4_CROSSHAIR_DESC, language),
+      "",
+      {
+         { "disabled", NULL },
+         { "White",    msg_hash_to_str(MSG_HASH_OPTION_VAL_WHITE, language) },
+         { "Red",      msg_hash_to_str(MSG_HASH_OPTION_VAL_RED, language) },
+         { "Green",    msg_hash_to_str(MSG_HASH_OPTION_VAL_GREEN, language) },
+         { "Blue",     msg_hash_to_str(MSG_HASH_OPTION_VAL_BLUE, language) },
+         { NULL,       NULL },
+      },
+      "disabled",
+   };
+
    environ_cb = cb;
 
    libretro_set_core_options(environ_cb);
