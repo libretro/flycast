@@ -2,6 +2,7 @@
 //
 
 //initialse Emu
+#include <atomic>
 #include "types.h"
 #include "hw/mem/_vmem.h"
 #include "hw/mem/vmem32.h"
@@ -36,7 +37,7 @@ settings_t settings;
 extern char game_dir[1024];
 extern char *game_data;
 extern bool boot_to_bios;
-extern bool reset_requested;
+extern std::atomic<bool> reset_requested;
 
 /*
 	libndc

@@ -37,6 +37,8 @@ char* strdup(const char *str)
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
 #endif
+#include <atomic>
+#include <retro_timers.h>
 #include "emulator.h"
 #include "../rend/rend.h"
 #include "../hw/sh4/sh4_mem.h"
@@ -193,15 +195,20 @@ char game_dir_no_slash[1024];
 char vmu_dir_no_slash[PATH_MAX];
 char content_name[PATH_MAX];
 char g_roms_dir[PATH_MAX];
-static bool emu_in_thread = false;
-static bool performed_serialization = false;
+/* These three are written on one thread and read on the other (emu thread vs.
+ * the libretro/main thread that drives serialize/reset/unload). They were plain
+ * bools, i.e. a data race / UB. Make them atomic; relaxed ordering is enough
+ * since each is a standalone flag with no piggybacked data, and the mutex
+ * handshakes below provide the ordering that actually matters. */
+static std::atomic<bool> emu_in_thread{false};
+static std::atomic<bool> performed_serialization{false};
 #if !defined(TARGET_NO_THREADS)
 static void *emu_thread_func(void *);
 static cThread emu_thread(&emu_thread_func, 0);
 static cMutex mtx_serialization ;
 static cMutex mtx_mainloop ;
 static bool gl_ctx_resetting = false;
-bool reset_requested;
+std::atomic<bool> reset_requested{false};
 
 // Disk swapping
 static struct retro_disk_control_callback retro_disk_control_cb;
@@ -2126,6 +2133,9 @@ bool wait_until_dc_running()
 			//timeout elapsed - dc not getting a chance to run - just bail
 			return false ;
 		}
+		/* Nothing useful to do until the emu thread reaches dc_run; sleep a
+		 * millisecond instead of burning a core hot-spinning on the flag. */
+		retro_sleep(1);
 	}
 	return true ;
 }
@@ -2139,6 +2149,10 @@ bool acquire_mainloop_lock()
     while ( ( start_time+FIVE_SECONDS > perf_cb.get_time_usec() ) && !(result = mtx_mainloop.trylock())  )
    	{
     	rend_cancel_emu_wait();
+    	/* Kick the emu thread out of any render wait, then back off a
+    	 * millisecond so this loop doesn't peg a core while the emu thread
+    	 * unwinds dc_run and releases mtx_mainloop. */
+    	retro_sleep(1);
    	}
 
     return result ;
