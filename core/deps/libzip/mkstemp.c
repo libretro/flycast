@@ -43,7 +43,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if defined(__APPLE__) || defined(__SWITCH__)
+#if defined(_MSC_VER)
+/* MSVC has no unistd.h; getpid lives in process.h as _getpid. */
+#include <process.h>
+#define getpid _getpid
+#else
+/* POSIX targets plus MinGW all provide getpid() via unistd.h. It was
+ * previously only included for Apple/Switch, which left getpid implicitly
+ * declared everywhere else -- tolerated by glibc but a hard error on MinGW. */
 #include <unistd.h>
 #endif
 
