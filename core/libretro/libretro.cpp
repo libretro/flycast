@@ -2423,11 +2423,14 @@ void os_DoEvents(void)
 		is_dupe = false;
 		poll_cb();
 
-		if (settings.UpdateMode || settings.UpdateModeForced)
-		{
-			rend_end_render();
-			dc_stop();
-		}
+		/* Always return control to retro_run here, at the vblank frame
+		 * boundary. Previously this was gated on the Framerate option: in
+		 * 'Normal' mode control returned only when a frame was presented, so a
+		 * static screen with no rendering (e.g. disc loading) never yielded and
+		 * dc_run() blocked, freezing retro_run and wrecking the frontend's A/V
+		 * sync. The frame boundary must not depend on whether the game rendered. */
+		rend_end_render();
+		dc_stop();
 	}
 }
 

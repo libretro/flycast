@@ -45,17 +45,13 @@ struct Renderer
 	virtual bool Process(TA_context* ctx)=0;
 	virtual bool Render()=0;
 
-	virtual void Present() 
+	virtual void Present()
    {
-      /* co_dc_yield - yields back to main cooperative thread */
-#if !defined(TARGET_NO_THREADS)
-      if (!settings.rend.ThreadedRendering)
-#endif
-      {
-         if (settings.UpdateMode || settings.UpdateModeForced)
-            return;
-         dc_stop();
-      }
+      /* Presentation only. Control returns to retro_run at the vblank boundary
+       * in os_DoEvents(), never here, so that a frame not being rendered (a
+       * static screen such as disc loading) can never stall control flow.
+       * Hardware renderers present via video_cb in retro_run; this base does
+       * nothing. */
    }
 
 	virtual void DrawOSD() { }
