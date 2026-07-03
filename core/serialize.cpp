@@ -257,6 +257,33 @@ extern int SerStep2;
 extern unsigned char BSerial[];
 extern unsigned char GSerial[];
 
+/*
+ * Deserialization input-buffer bounds tracking.
+ *
+ * The libretro frontend hands retro_unserialize() a buffer and its length.
+ * Historically that length was only used to disambiguate two legacy save-state
+ * versions and never to bound the reads, so a truncated or malformed state
+ * (netplay peer, runahead, on-disk corruption) walked memcpy() straight off the
+ * end of the input buffer. dc_unserialize() now publishes the input base and
+ * length here; ra_unserialize() refuses to read past the end and latches a
+ * failure that propagates to the retro_unserialize() return value.
+ */
+static const u8 *unserialize_base  = NULL;
+static size_t    unserialize_limit = 0;
+static bool      unserialize_failed = false;
+
+void ra_unserialize_init(const void *base, size_t limit)
+{
+	unserialize_base   = (const u8 *)base;
+	unserialize_limit  = limit;
+	unserialize_failed = false;
+}
+
+bool ra_unserialize_failed(void)
+{
+	return unserialize_failed;
+}
+
 bool ra_serialize(const void *src, unsigned int src_size, void **dest, unsigned int *total_size)
 {
 	if ( *dest != NULL )
@@ -273,6 +300,22 @@ bool ra_unserialize(void *src, unsigned int src_size, void **dest, unsigned int 
 {
 	if ( *dest != NULL )
 	{
+		/* Reject any read that would run past the end of the frontend-supplied
+		 * input buffer. base==NULL means the limit is unknown (legacy callers);
+		 * fall back to the original unchecked behavior in that case only. */
+		if (unserialize_base != NULL)
+		{
+			size_t offset = (size_t)((const u8 *)*dest - unserialize_base);
+			if (offset > unserialize_limit || src_size > unserialize_limit - offset)
+			{
+				unserialize_failed = true;
+				/* Leave the destination zero-initialized rather than reading
+				 * out of bounds, and stop consuming input. */
+				memset(src, 0, src_size);
+				*total_size += src_size ;
+				return false ;
+			}
+		}
 		memcpy(src, *dest, src_size) ;
 		*dest = ((unsigned char*)*dest) + src_size ;
 	}
@@ -610,6 +653,11 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 
 	*total_size = 0 ;
 
+	/* Publish the input buffer bounds so ra_unserialize() can reject reads
+	 * past the end of a truncated or malformed state. *data points at the
+	 * start of the frontend-supplied buffer on entry. */
+	ra_unserialize_init(*data, actual_data_size);
+
 	LIBRETRO_US(version) ;
 
 	//This normally isn't necessary - but we need some way to differentiate between save states
@@ -680,14 +728,30 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(SB_FFST);
 
 
-	LIBRETRO_US(sys_nvmem_sram.size);
-	LIBRETRO_US(sys_nvmem_sram.mask);
-	LIBRETRO_USA(sys_nvmem_sram.data,sys_nvmem_sram.size);
+	/* size/mask describe the live, already-allocated nvmem buffers. Read the
+	 * stored values into temporaries and only copy up to the real allocation,
+	 * so a corrupt state whose size exceeds the buffer can't overflow data[]
+	 * (and can't clobber the live size/mask either). */
+	{
+		u32 stored_size, stored_mask;
+		LIBRETRO_US(stored_size);
+		LIBRETRO_US(stored_mask);
+		u32 copy = stored_size < sys_nvmem_sram.size ? stored_size : sys_nvmem_sram.size;
+		LIBRETRO_USA(sys_nvmem_sram.data, copy);
+		if (stored_size > copy)
+			LIBRETRO_SKIP(stored_size - copy);
+	}
 
-	LIBRETRO_US(sys_nvmem_flash.size);
-	LIBRETRO_US(sys_nvmem_flash.mask);
-	LIBRETRO_US(sys_nvmem_flash.state);
-	LIBRETRO_USA(sys_nvmem_flash.data,sys_nvmem_flash.size);
+	{
+		u32 stored_size, stored_mask;
+		LIBRETRO_US(stored_size);
+		LIBRETRO_US(stored_mask);
+		LIBRETRO_US(sys_nvmem_flash.state);
+		u32 copy = stored_size < sys_nvmem_flash.size ? stored_size : sys_nvmem_flash.size;
+		LIBRETRO_USA(sys_nvmem_flash.data, copy);
+		if (stored_size > copy)
+			LIBRETRO_SKIP(stored_size - copy);
+	}
 
 
 	LIBRETRO_US(GD_HardwareInfo) ;
@@ -1135,5 +1199,8 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	if (version >= V7)
 		gd_hle_state.Unserialize(data, total_size);
 
-	return true ;
+	/* Fail the whole load if any read was rejected for running past the end
+	 * of the input buffer. Callers (retro_unserialize) then bail cleanly
+	 * instead of continuing on partially-garbage state. */
+	return !ra_unserialize_failed() ;
 }

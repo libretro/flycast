@@ -313,15 +313,28 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
 	SetCurrentTARC(address);
 	u32 size;
 	LIBRETRO_US(size);
+	/* size is attacker-controlled (comes straight from the state). The TA
+	 * buffer is a fixed TA_DATA_SIZE allocation, so a corrupt/malicious state
+	 * with a larger size would memcpy past the end of the heap block. Clamp. */
+	if (size > TA_DATA_SIZE)
+		size = TA_DATA_SIZE;
 	LIBRETRO_USA(ta_ctx->tad.thd_root, size);
 	ta_ctx->tad.thd_data = ta_ctx->tad.thd_root + size;
    if (version >= V12)
 	{
+		const u32 max_passes = (u32)(sizeof(ta_ctx->tad.render_passes)
+			/ sizeof(ta_ctx->tad.render_passes[0]));
 		LIBRETRO_US(ta_ctx->tad.render_pass_count);
+		/* render_passes is a fixed [10] array; reject an out-of-range count
+		 * from the state before it indexes past the end. */
+		if (ta_ctx->tad.render_pass_count > max_passes)
+			ta_ctx->tad.render_pass_count = max_passes;
 		for (u32 i = 0; i < ta_ctx->tad.render_pass_count; i++)
 		{
 			u32 offset;
 			LIBRETRO_US(offset);
+			if (offset > size)
+				offset = size;
 			ta_ctx->tad.render_passes[i] = ta_ctx->tad.thd_root + offset;
 		}
 	}
