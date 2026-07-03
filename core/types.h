@@ -795,6 +795,9 @@ bool ra_unserialize_failed(void);
 
 extern "C" void DYNACALL TAWriteSQ(u32 address,u8* sqb) ;
 
+struct DynarecStats { u64 full_flushes, temp_flushes, blockcheck_fails, blocks_compiled; };
+extern DynarecStats dynarec_stats;
+
 struct SoundFrame
 {
    s16 l;

@@ -49,6 +49,13 @@ u32* emit_ptr_limit = nullptr;
 
 std::unordered_set<u32> smc_hotspots;
 
+/* Diagnostic counters for the FLYCAST_FRAMESTATS probe. full_flushes: whole
+ * 16MB cache flushed + recompiled (recSh4_ClearCache, incl. every non-MMU
+ * block-check failure); temp_flushes: 1MB SMC temp cache flushed;
+ * blockcheck_fails: cached RAM block found stale (SMC / code overwrite);
+ * blocks_compiled: SH4 blocks JITed. */
+DynarecStats dynarec_stats = { 0, 0, 0, 0 };
+
 void* emit_GetCCPtr(void)
 {
    if (emit_ptr)
@@ -65,12 +72,14 @@ void emit_SetBaseAddr(void)
 void clear_temp_cache(bool full)
 {
 	//printf("recSh4:Temp Code Cache clear at %08X\n", curr_pc);
+	dynarec_stats.temp_flushes++;
 	TempLastAddr = 0;
 	bm_ResetTempCache(full);
 }
 
 static void recSh4_ClearCache(void)
 {
+	dynarec_stats.full_flushes++;
 	INFO_LOG(DYNAREC, "recSh4:Dynarec Cache clear at %08X free space %d", next_pc, emit_FreeSpace());
 	LastAddr=LastAddr_min;
 	bm_ResetCache();
@@ -205,6 +214,7 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 
 DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 {
+	dynarec_stats.blocks_compiled++;
 	u32 pc=next_pc;
 	//printf("rdv_CompilePC next_pc %p\n", next_pc);
 
@@ -286,6 +296,7 @@ u32 DYNACALL rdv_DoInterrupts(void* block_cpde)
 // addr must be the physical address of the start of the block
 DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
 {
+	dynarec_stats.blockcheck_fails++;
 	u32 blockcheck_failures = 0;
 	if (mmu_enabled())
 	{
@@ -301,8 +312,30 @@ DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
 	}
 	else
 	{
+		/* Discard only the stale block instead of flushing the whole code
+		 * cache. The full flush forced every block in the working set to be
+		 * recompiled -- tens of milliseconds of host time in a single frame,
+		 * re-triggered every time a game overwrote any code (level loads,
+		 * overlays, SMC) -- measured as frame-time spikes of up to hundreds of
+		 * ms. bm_DiscardBlock unlinks incoming direct links via pre_refs and
+		 * removes the block from the dispatch table, so execution safely falls
+		 * back to rdv_CompilePC for just this block; it is the exact mechanism
+		 * the MMU path has always used on block-check failure. The SMC hotspot
+		 * tracking likewise now applies to non-MMU titles, moving repeat
+		 * offenders to the temp cache so they stop paying the block-check. */
+		RuntimeBlockInfoPtr block = bm_GetBlock(addr);
+		if (block)
+		{
+			blockcheck_failures = block->blockcheck_failures + 1;
+			if (blockcheck_failures > 5)
+			{
+				bool inserted = smc_hotspots.insert(addr).second;
+				if (inserted)
+					DEBUG_LOG(DYNAREC, "rdv_BlockCheckFail SMC hotspot @ %08x fails %d", addr, blockcheck_failures);
+			}
+			bm_DiscardBlock(block.get());
+		}
 		next_pc = addr;
-		recSh4_ClearCache();
 	}
 	return (DynarecCodeEntryPtr)CC_RW2RX(rdv_CompilePC(blockcheck_failures));
 }
