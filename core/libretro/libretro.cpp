@@ -1211,6 +1211,69 @@ static void update_variables(bool first_startup)
    set_variable_visibility();
 }
 
+/*
+ * Opt-in frame-timing probe. Set the environment variable FLYCAST_FRAMESTATS=1
+ * before launching to log, once every 300 frames, the distribution of:
+ *   - SH4 cycles advanced per retro_run  (frame-period consistency)
+ *   - audio samples emitted per retro_run (audio-delivery consistency)
+ *   - the duplicate-frame ratio
+ * This measures the actual per-frame behaviour in whichever path is active
+ * (threaded or not), so frame-time deviation can be diagnosed from data instead
+ * of inferred. Zero cost when the variable is unset.
+ */
+extern u32 total_audio_samples;
+
+static void framestats_probe(u64 cyc_delta, bool dupe)
+{
+	static int enabled = -1;
+	if (enabled == -1)
+	{
+		const char *e = getenv("FLYCAST_FRAMESTATS");
+		enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+	}
+	if (!enabled)
+		return;
+
+	static u32 last_samples = 0;
+	static u64 n = 0;
+	static u64 cyc_sum = 0, cyc_min = ~0ull, cyc_max = 0;
+	static double cyc_sq = 0.0;
+	static u64 smp_sum = 0, smp_min = ~0ull, smp_max = 0;
+	static double smp_sq = 0.0;
+	static u64 dupes = 0;
+
+	u32 smp = total_audio_samples - last_samples;
+	last_samples = total_audio_samples;
+
+	n++;
+	cyc_sum += cyc_delta; cyc_sq += (double)cyc_delta * (double)cyc_delta;
+	if (cyc_delta < cyc_min) cyc_min = cyc_delta;
+	if (cyc_delta > cyc_max) cyc_max = cyc_delta;
+	smp_sum += smp; smp_sq += (double)smp * (double)smp;
+	if (smp < smp_min) smp_min = smp;
+	if (smp > smp_max) smp_max = smp;
+	if (dupe) dupes++;
+
+	if (n >= 300)
+	{
+		double cyc_mean = (double)cyc_sum / n;
+		double cyc_sd   = sqrt(cyc_sq / n - cyc_mean * cyc_mean);
+		double smp_mean = (double)smp_sum / n;
+		double smp_sd   = sqrt(smp_sq / n - smp_mean * smp_mean);
+		INFO_LOG(COMMON,
+			"[framestats] cyc/frame mean=%.0f sd=%.0f (%.3f%%) min=%llu max=%llu | "
+			"smp/frame mean=%.1f sd=%.1f min=%llu max=%llu | dupe=%.0f%% | fps~%.3f",
+			cyc_mean, cyc_sd, cyc_mean > 0 ? cyc_sd / cyc_mean * 100.0 : 0.0,
+			(unsigned long long)cyc_min, (unsigned long long)cyc_max,
+			smp_mean, smp_sd,
+			(unsigned long long)smp_min, (unsigned long long)smp_max,
+			(double)dupes / n * 100.0,
+			cyc_mean > 0 ? (double)SH4_MAIN_CLOCK / cyc_mean : 0.0);
+		n = 0; cyc_sum = 0; cyc_sq = 0; cyc_min = ~0ull; cyc_max = 0;
+		smp_sum = 0; smp_sq = 0; smp_min = ~0ull; smp_max = 0; dupes = 0;
+	}
+}
+
 /* If the game reprograms the video timing to a different refresh rate, re-report
  * it so the frontend's frame pacing and audio-buffer sizing track the core.
  * av_info is otherwise sent only once at load -- before the game sets its real
@@ -1253,6 +1316,7 @@ static void update_av_info_if_changed(void)
 void retro_run (void)
 {
    bool updated     = false;
+   u64  frame_cyc0  = sh4_sched_now64();
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
       update_variables(false);
@@ -1302,6 +1366,7 @@ void retro_run (void)
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
 #endif
+   bool dupe_this_frame = is_dupe;
 #if !defined(TARGET_NO_THREADS)
    if (!settings.rend.ThreadedRendering)
 #endif
@@ -1309,6 +1374,8 @@ void retro_run (void)
 
    /* Keep timing.fps in step with the actual emulated refresh rate. */
    update_av_info_if_changed();
+
+   framestats_probe(sh4_sched_now64() - frame_cyc0, dupe_this_frame);
 }
 
 void retro_reset (void)

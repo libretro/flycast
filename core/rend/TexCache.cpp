@@ -401,6 +401,20 @@ void BaseTextureCacheData::PrintTextureName()
 	DEBUG_LOG(RENDERER, "%s", str);
 }
 
+/* Hash of the vram content backing this texture, over the same range the
+ * write-protection lock would cover, clamped to VRAM like the lock is. Used to
+ * detect changes for frequently-updated textures that run unprotected. */
+u32 BaseTextureCacheData::ComputeVramHash()
+{
+	u32 start = sa_tex & VRAM_MASK;
+	u32 end = sa + size;
+	if (end > VRAM_SIZE)
+		end = VRAM_SIZE;
+	if (end <= start)
+		return 0;
+	return XXH32(&vram[start], end - start, 7);
+}
+
 //true if : dirty or paletted texture and hashes don't match
 bool BaseTextureCacheData::NeedsUpdate() {
 	bool rc = dirty != 0;
@@ -411,6 +425,11 @@ bool BaseTextureCacheData::NeedsUpdate() {
 		else if (tcw.PixelFmt == PixelPal8 && palette_hash != pal_hash_256[tcw.PalSelect >> 4])
 			rc = true;
 	}
+	/* Frequently-updated texture running unprotected (see Update): compare the
+	 * content hash of the vram range instead of relying on a write fault. */
+	if (!rc && lock_block == nullptr && Updates >= FREQUENT_UPDATE_COUNT
+			&& ComputeVramHash() != vram_hash)
+		rc = true;
 
 	return rc;
 }
@@ -731,8 +750,19 @@ void BaseTextureCacheData::Update()
 	// Restore the original texture height if it was constrained to VRAM limits above
 	h = original_h;
 
-	//lock the texture to detect changes in it
-   libCore_vramlock_Lock(sa_tex, sa + size - 1, this);
+	//lock the texture to detect changes in it, unless it is frequently
+	//updated: each update of a protected texture costs a SIGSEGV (the write
+	//fault), the invalidation, a full re-upload, and a re-protect -- measured
+	//as 1-2 faults per frame sustained, with matching frame-time jitter, on
+	//titles that rewrite textures every frame (e.g. VF3tb). Past the update
+	//threshold, leave the pages writable and detect changes with a content
+	//hash at lookup time instead (see NeedsUpdate): a hash over the same range
+	//is cheaper than the fault path, and when the game rewrites identical
+	//content it avoids the re-upload entirely.
+	if (Updates < FREQUENT_UPDATE_COUNT)
+		libCore_vramlock_Lock(sa_tex, sa + size - 1, this);
+	else
+		vram_hash = ComputeVramHash();
 
 	UploadToGPU(upscaled_w, upscaled_h, (u8*)temp_tex_buffer, IsMipmapped(), mipmapped);
 	if (settings.rend.DumpTextures)

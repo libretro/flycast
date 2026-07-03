@@ -652,6 +652,11 @@ typedef void TexConvFP8(PixelBuffer<u8>* pb, u8* p_in, u32 Width, u32 Height);
 typedef void TexConvFP32(PixelBuffer<u32>* pb,u8* p_in,u32 Width,u32 Height);
 enum class TextureType { _565, _5551, _4444, _8888, _8 };
 
+/* After this many updates a texture is treated as frequently updated: its vram
+ * is left writable and changes are detected by content hash instead of a write
+ * fault (see BaseTextureCacheData::Update / NeedsUpdate). */
+#define FREQUENT_UPDATE_COUNT 8
+
 class BaseTextureCacheData
 {
 public:
@@ -675,6 +680,8 @@ public:
 	vram_block* lock_block;
 
 	u32 Updates;
+	u32 vram_hash;				// content hash of the locked vram range, used instead of
+								// write-protection for frequently-updated textures
 
 	u32 palette_index;
 	//used for palette updates
@@ -722,6 +729,7 @@ public:
 
 	void Create();
 	void ComputeHash();
+	u32 ComputeVramHash();
 	void Update();
 	virtual void UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) = 0;
 	virtual bool Force32BitTexture(TextureType type) const { return false; }
