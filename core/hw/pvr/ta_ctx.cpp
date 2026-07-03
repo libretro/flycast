@@ -91,28 +91,13 @@ bool QueueRender(TA_context* ctx)
 
    if (settings.pvr.SynchronousRendering)
    {
-      //Try to limit speed to a "sane" level
-      //Speed is also limited via audio, but audio
-      //is sometimes not accurate enough (android, vista+)
-      static double last_frame = 0;
-      static u64 last_cycles   = 0;
-      u64 sched_now            = sh4_sched_now64();
-      u32 cycle_span           = (u32)(sched_now - last_cycles);
-      last_cycles              = sched_now;
-      double time_in_secs      = os_GetSeconds();
-      double time_span         = time_in_secs - last_frame;
-      last_frame               = time_in_secs;
-      bool too_fast            = (cycle_span / time_span) > SH4_MAIN_CLOCK;
-
-      // Vulkan: RTT frames seem to be discarded often
-      if (rqueue && (too_fast || ctx->rend.isRTT))
-      {
-         //wait for a frame if
-         //  we have another one queue'd and
-         //  sh4 run at > 120% on the last slice
-         //  and SynchronousRendering is enabled
+      /* A render-to-texture frame must be rendered before the SH4 reads the
+       * result back, so if one is already queued, wait for it. Emulation speed
+       * is paced by the frontend (audio/video sync); a libretro core must not
+       * throttle itself against the host wall clock, which would be both
+       * non-deterministic and at odds with the frontend's pacing. */
+      if (rqueue && ctx->rend.isRTT)
          frame_finished.Wait();
-      }
    }
 
 

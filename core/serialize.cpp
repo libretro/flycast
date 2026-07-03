@@ -61,6 +61,7 @@ extern VArray2 aica_ram;
 extern u32 VREG;//video reg =P
 extern u32 ARMRST;//arm reset reg
 extern u32 rtc_EN;
+extern u32 RealTimeClock;
 extern int dma_sched_id;
 
 //./core/hw/aica/aica_mem.o
@@ -640,6 +641,13 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	gd_hle_state.Serialize(data, total_size);
    settings.network.EmulateBBA = false;
 
+	/* V14: the AICA RTC. Its per-second increment is already deterministic
+	 * (driven by the SH4 scheduler), but the initial value is seeded from the
+	 * host clock and was never serialized, so netplay peers and runahead
+	 * rollbacks diverged whenever a game read the clock. Carry it in the state
+	 * so it is synced along with everything else. */
+	LIBRETRO_S(RealTimeClock);
+
 	return true ;
 }
 
@@ -1198,6 +1206,9 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	if (version >= V7)
 		gd_hle_state.Unserialize(data, total_size);
+
+	if (version >= V14)
+		LIBRETRO_US(RealTimeClock);
 
 	/* Fail the whole load if any read was rejected for running past the end
 	 * of the input buffer. Callers (retro_unserialize) then bail cleanly
