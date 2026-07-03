@@ -76,6 +76,7 @@ extern u32 fb_watch_addr_end;
 extern bool fb_dirty;
 
 void check_framebuffer_write();
+bool rend_frame_produced(void);
 
 void rend_create_renderer();
 void rend_init_renderer();

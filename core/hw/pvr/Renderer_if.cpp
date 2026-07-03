@@ -86,6 +86,7 @@ int max_idx,max_mvo,max_op,max_pt,max_tr,max_vtx,max_modt, ovrn;
 bool pend_rend = false;
 
 static bool render_called = false;
+static bool frame_produced = false;	/* new frame produced this vblank (for is_dupe) */
 u32 fb_watch_addr_start;
 u32 fb_watch_addr_end;
 bool fb_dirty;
@@ -357,6 +358,13 @@ void rend_term(void)
 
 void rend_vblank()
 {
+   /* Did the guest produce a new frame during this vblank interval? A 3D frame
+    * sets render_called via STARTRENDER; a direct framebuffer write is turned
+    * into a render just below. If neither happened the displayed image is
+    * unchanged, so the frontend must be told this frame is a duplicate --
+    * otherwise stale content (a 480i off-field, a 30fps title's repeat field,
+    * a static loading screen) is delivered as a fresh frame and pacing breaks. */
+   bool produced = render_called;
    if (!render_called && fb_dirty && FB_R_CTRL.fb_enable)
 	{
 		DEBUG_LOG(PVR, "Direct framebuffer write detected");
@@ -372,12 +380,23 @@ void rend_vblank()
 		if (restore_ctx)
 			SetCurrentTARC(CORE_CURRENT_CTX);
 		fb_dirty = false;
+		produced = true;
 	}
+	frame_produced = produced;
 	render_called = false;
 	check_framebuffer_write();
 	cheatManager.Apply();
 
    os_DoEvents();
+}
+
+/* Consume the "new frame produced this vblank" flag. Used by os_DoEvents to set
+ * is_dupe for the frontend. One-shot: cleared on read. */
+bool rend_frame_produced(void)
+{
+	bool r = frame_produced;
+	frame_produced = false;
+	return r;
 }
 
 void check_framebuffer_write()

@@ -2476,7 +2476,13 @@ void os_DoEvents(void)
 	if (!settings.rend.ThreadedRendering)
 #endif
 	{
-		is_dupe = false;
+		/* Mark this frame a duplicate unless the guest actually produced new
+		 * content this vblank. Without this every vblank is reported VALID, so
+		 * 480i off-fields, sub-refresh-rate titles and static screens are all
+		 * delivered as unique frames and the frontend's pacing/frame-time
+		 * tracking breaks. Threaded mode derives is_dupe from rend_single_frame;
+		 * this is the non-threaded equivalent. */
+		is_dupe = !rend_frame_produced();
 		poll_cb();
 
 		/* Always return control to retro_run here, at the vblank frame
