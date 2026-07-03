@@ -59,6 +59,24 @@ void CalculateSync(void)
 	sh4_sched_request(vblank_schid, Line_Cycles);
 }
 
+/*
+ * Actual emulated vertical refresh rate, derived from the same SPG timing the
+ * scheduler runs on: pixel_clock / ((hcount+1) * (vcount+1)), i.e.
+ * SH4_MAIN_CLOCK / (Line_Cycles * pvr_numscanlines). This is the rate at which
+ * frames (and thus audio) are actually produced, so reporting it to the
+ * frontend via retro_get_system_av_info keeps timing.fps in step with the core
+ * instead of a bucketed 60/59.94/50 guess. It naturally yields the hardware
+ * figures: ~59.94 for VGA and 480i, ~59.83 for 240p NTSC, 50.00 for PAL 480i,
+ * and the higher NAOMI rates for boards that program the SPG accordingly.
+ * Falls back to 60 before CalculateSync has run.
+ */
+double spg_get_refresh_rate(void)
+{
+	if (Line_Cycles == 0 || pvr_numscanlines == 0)
+		return 60.0;
+	return (double)SH4_MAIN_CLOCK / ((double)Line_Cycles * (double)pvr_numscanlines);
+}
+
 
 //called from sh4 context , should update pvr/ta state and everything else
 int spg_line_sched(int tag, int cycl, int jit)

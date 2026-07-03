@@ -2304,10 +2304,6 @@ void retro_get_system_info(struct retro_system_info *info)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-   /*                        00=VGA    01=NTSC   10=PAL,   11=illegal/undocumented */
-   const int spg_clks[4] = { 26944080, 13458568, 13462800, 26944080 };
-   u32 pixel_clock= spg_clks[(SPG_CONTROL.full >> 6) & 3];
-
    if (cheatManager.Reset())
    {
       info->geometry.aspect_ratio = 16.0 / 9.0;
@@ -2336,24 +2332,11 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    if (rotate_screen)
       info->geometry.aspect_ratio = 1 / info->geometry.aspect_ratio;
 
-   switch (pixel_clock)
-   {
-      case 26944080:
-         info->timing.fps = 60.00; /* (VGA  480 @ 60.00) */
-         break;
-      case 26917135:
-         info->timing.fps = 59.94; /* (NTSC 480 @ 59.94) */
-         break;
-      case 13462800:
-         info->timing.fps = 50.00; /* (PAL 240  @ 50.00) */
-         break;
-      case 13458568:
-         info->timing.fps = 59.94; /* (NTSC 240 @ 59.94) */
-         break;
-      case 25925600:
-         info->timing.fps = 50.00; /* (PAL 480  @ 50.00) */
-         break;
-   }
+   /* Report the actual emulated refresh rate, derived from the SPG timing the
+    * scheduler runs on, so the frontend's frame pacing matches the rate frames
+    * and audio are really produced at (~59.94 VGA/480i, ~59.83 240p NTSC,
+    * 50.00 PAL 480i, higher for NAOMI) rather than a bucketed 60/59.94/50. */
+   info->timing.fps = spg_get_refresh_rate();
 
    info->timing.sample_rate = 44100.0;
 }
