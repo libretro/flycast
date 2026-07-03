@@ -21,6 +21,8 @@ Plugins:
 		ImageUpdate(data);
 */
 void UpdateInputState(u32 port);
+void LockInput(void);
+void UnlockInput(void);
 void UpdateVibration(u32 port, u32 value, u32 max_duration);
 
 extern u32 kcode[4];
@@ -157,7 +159,11 @@ struct MapleConfigMap : IMapleConfigMap
 	void GetInput(PlainJoystickState* pjs)
 	{
 	   int pnum = player_num == -1 ? dev->bus_id : player_num;
-	   UpdateInputState(pnum);
+	   LockInput();
+	   /* Threaded mode latches input on the libretro thread via CaptureInput();
+	    * sample live only when not threaded. */
+	   if (!settings.rend.ThreadedRendering)
+	      UpdateInputState(pnum);
 
 	   pjs->kcode=kcode[pnum];
 	   pjs->joy[PJAI_X1]=GetBtFromSgn(joyx[pnum]);
@@ -172,6 +178,7 @@ struct MapleConfigMap : IMapleConfigMap
 	   pjs->joy[PJAI_Y2]=GetBtFromSgn(joyry[pnum]);
 	   pjs->trigger[PJTI_R]=rt[pnum];
 	   pjs->trigger[PJTI_L]=lt[pnum];
+	   UnlockInput();
 	}
 	void SetImage(void* img)
 	{
@@ -186,7 +193,9 @@ struct MapleConfigMap : IMapleConfigMap
 	void GetMouse(u32 *buttons, f32 *delta_x, f32 *delta_y, f32 *delta_wheel)
 	{
 	   int pnum = player_num == -1 ? dev->bus_id : player_num;
-	   UpdateInputState(pnum);
+	   LockInput();
+	   if (!settings.rend.ThreadedRendering)
+	      UpdateInputState(pnum);
 	   *buttons = mo_buttons[pnum];
 	   *delta_x = mo_x_delta[pnum];
 	   *delta_y = mo_y_delta[pnum];
@@ -195,6 +204,7 @@ struct MapleConfigMap : IMapleConfigMap
 	   mo_x_delta[pnum] = 0;
 	   mo_y_delta[pnum] = 0;
 	   mo_wheel_delta[pnum] = 0;
+	   UnlockInput();
 	}
 };
 

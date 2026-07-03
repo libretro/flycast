@@ -180,6 +180,7 @@ static retro_rumble_interface rumble;
 
 void FlushCache();	// Arm dynarec (arm and x86 only)
 void ResetAudioBuffer(void);
+void CaptureInput(void);	// sample input on the main thread, once per frame
 bool rend_single_frame();
 void rend_cancel_emu_wait();
 bool acquire_mainloop_lock();
@@ -1228,6 +1229,11 @@ void retro_run (void)
       }
 
       poll_cb();
+
+      /* Latch input on this (the libretro) thread, once per frame, so the emu
+       * thread never calls input_cb itself. Keeps input sampling deterministic
+       * and on the thread libretro requires. */
+      CaptureInput();
 
       if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
          glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
@@ -2811,6 +2817,35 @@ static void UpdateInputStateNaomi(u32 port)
 	   if ((kcode[port] & (AWAVE_LEFT_KEY|AWAVE_RIGHT_KEY)) == 0)
 		  kcode[port] |= AWAVE_LEFT_KEY|AWAVE_RIGHT_KEY;
 	}
+}
+
+/*
+ * Input is sampled on the main (libretro) thread, once per frame, right after
+ * poll_cb(). In threaded-rendering mode the emulation runs on a separate thread
+ * that must not call the frontend's input_cb itself: libretro requires input to
+ * be read on the retro_run thread after input_poll, and reading it at maple-DMA
+ * time from the emu thread samples at a nondeterministic point relative to the
+ * frame, which breaks runahead/netplay determinism. CaptureInput() latches all
+ * ports here; the maple read path (GetInput/GetMouse) consumes the latched
+ * state under the same lock instead of re-polling on the emu thread.
+ *
+ * The mutex is a no-op under TARGET_NO_THREADS, and in non-threaded rendering
+ * the maple path still samples live under the lock, so behavior there is
+ * unchanged apart from an uncontended lock.
+ */
+static cMutex input_mtx;
+
+void LockInput(void)   { input_mtx.lock(); }
+void UnlockInput(void) { input_mtx.unlock(); }
+
+void UpdateInputState(u32 port);
+
+void CaptureInput(void)
+{
+   input_mtx.lock();
+   for (u32 port = 0; port < MAPLE_PORTS; port++)
+      UpdateInputState(port);
+   input_mtx.unlock();
 }
 
 void UpdateInputState(u32 port)
