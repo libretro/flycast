@@ -370,6 +370,12 @@ void retro_deinit(void)
 }
 
 static bool is_dupe = false;
+
+/* av_info caching + refresh-rate change detection (see retro_run). */
+static struct retro_system_av_info g_av_info;
+static double last_av_fps = 0.0;
+static double pending_av_fps = 0.0;
+static int    pending_av_fps_count = 0;
 extern int GDROM_TICK;
 static bool rotate_screen = false;
 
@@ -1205,6 +1211,45 @@ static void update_variables(bool first_startup)
    set_variable_visibility();
 }
 
+/* If the game reprograms the video timing to a different refresh rate, re-report
+ * it so the frontend's frame pacing and audio-buffer sizing track the core.
+ * av_info is otherwise sent only once at load -- before the game sets its real
+ * mode, while the SPG is at its ~59.8Hz reset default -- so a 50Hz PAL title
+ * would be paced ~16% fast for the whole session, accumulating as frame-time
+ * drift and forcing the frontend into heavy dynamic-rate-control (heard as
+ * audio latency/warble). Debounced: the new rate must hold for a few frames
+ * before we trigger a frontend reinit, so the brief transient while SPG
+ * registers are being written doesn't spam reinits. */
+static void update_av_info_if_changed(void)
+{
+   double fps = spg_get_refresh_rate();
+
+   if (last_av_fps <= 0.0 || fps <= 0.0)
+      return;
+
+   if (fabs(fps - last_av_fps) <= 0.05)
+   {
+      pending_av_fps_count = 0;   /* still at the reported rate */
+      return;
+   }
+
+   if (fabs(fps - pending_av_fps) > 0.05)
+   {
+      /* a newly-seen rate: start counting how long it holds */
+      pending_av_fps       = fps;
+      pending_av_fps_count = 1;
+      return;
+   }
+
+   if (++pending_av_fps_count < 4)
+      return;
+
+   g_av_info.timing.fps = fps;
+   environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av_info);
+   last_av_fps          = fps;
+   pending_av_fps_count = 0;
+}
+
 void retro_run (void)
 {
    bool updated     = false;
@@ -1261,6 +1306,9 @@ void retro_run (void)
    if (!settings.rend.ThreadedRendering)
 #endif
 	   is_dupe = true;
+
+   /* Keep timing.fps in step with the actual emulated refresh rate. */
+   update_av_info_if_changed();
 }
 
 void retro_reset (void)
@@ -2339,6 +2387,14 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    info->timing.fps = spg_get_refresh_rate();
 
    info->timing.sample_rate = 44100.0;
+
+   /* Cache so retro_run can detect a later refresh-rate change and re-report it.
+    * The frontend calls this once, before the game programs its real video mode
+    * (the SPG is at reset defaults here), so without a dynamic update the
+    * frontend would pace at the wrong rate for the whole session -- ~16% off for
+    * a 50Hz PAL title, which accumulates as frame-time drift. */
+   g_av_info    = *info;
+   last_av_fps  = info->timing.fps;
 }
 
 unsigned retro_get_region (void)
