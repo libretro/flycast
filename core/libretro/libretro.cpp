@@ -180,6 +180,7 @@ static retro_rumble_interface rumble;
 
 void FlushCache();	// Arm dynarec (arm and x86 only)
 void ResetAudioBuffer(void);
+void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
 bool rend_single_frame();
 void rend_cancel_emu_wait();
@@ -1248,6 +1249,10 @@ void retro_run (void)
 #endif
    {
 	   dc_run();
+
+	   /* Emit exactly this frame's audio as one consecutive batch, so the
+	    * frame's video and audio are delivered together per retro_run. */
+	   FlushAudioFrame();
    }
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
