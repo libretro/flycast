@@ -177,6 +177,7 @@ retro_environment_t        frontend_clear_thread_waits_cb = NULL;
 static retro_rumble_interface rumble;
 
 void FlushCache();	// Arm dynarec (arm and x86 only)
+void ResetAudioBuffer(void);
 bool rend_single_frame();
 void rend_cancel_emu_wait();
 bool acquire_mainloop_lock();
@@ -1263,6 +1264,7 @@ void retro_reset (void)
    settings.dreamcast.cable = 3;
    update_variables(false);
    dc_reset(true);
+   ResetAudioBuffer();
 
 #if !defined(TARGET_NO_THREADS)
    if (settings.rend.ThreadedRendering)
@@ -2223,6 +2225,7 @@ bool retro_unserialize(const void * data, size_t size)
     dsp.dyndirty = true;
     sh4_sched_ffts();
     CalculateSync();
+    ResetAudioBuffer();
 
     for ( i = 0 ; i < 4 ; i++)
     {
