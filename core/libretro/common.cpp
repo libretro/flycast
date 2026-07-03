@@ -118,6 +118,8 @@ typedef struct _UNWIND_INFO {
 
 static RUNTIME_FUNCTION Table[1];
 static _UNWIND_INFO unwind_info[1];
+static bool seh_installed = false;
+static PVOID veh_handle = NULL;
 
    EXCEPTION_DISPOSITION
 __gnat_SEH_error_handler(struct _EXCEPTION_RECORD* ExceptionRecord,
@@ -158,6 +160,15 @@ seh_callback(
 
 void setup_seh(void)
 {
+   /* dc_init() calls this on every content load, and CodeCache is re-prepared
+    * each time, so drop any registration from a previous load before adding
+    * the current one. Leaving the old one registered would point the OS
+    * unwinder at a freed code cache. */
+   if (seh_installed)
+   {
+      RtlDeleteFunctionTable(Table);
+      seh_installed = false;
+   }
    /* Get the base of the module.  */
    /* Current version is always 1 and we are registering an
       exception handler.  */
@@ -180,6 +191,7 @@ void setup_seh(void)
    Table[0].UnwindData = (ULONG)((u8 *)unwind_info - CodeCache);
    /* Register the unwind information.  */
    RtlAddFunctionTable(Table, 1, (DWORD64)CodeCache);
+   seh_installed = true;
 }
 #endif
 #endif
@@ -657,7 +669,11 @@ void common_libretro_setup(void)
 #endif
 #ifdef _WIN32
 #ifdef _WIN64
-   AddVectoredExceptionHandler(1, ExceptionHandler);
+   /* Installed per dc_init(); keep the handle so dc_term() can remove it.
+    * Guard against re-adding (which would stack handlers across content
+    * reloads, all but one pointing at freed dynarec/vmem state). */
+   if (veh_handle == NULL)
+      veh_handle = AddVectoredExceptionHandler(1, ExceptionHandler);
 #else
    SetUnhandledExceptionFilter(&ExceptionHandler);
 #endif
@@ -669,6 +685,32 @@ void common_libretro_setup(void)
 #if defined(__MACH__) || defined(__linux__)
    DEBUG_LOG(BOOT, "Linux paging: %08lX %08X %08X\n",sysconf(_SC_PAGESIZE),PAGE_SIZE,PAGE_MASK);
    verify(PAGE_MASK==(sysconf(_SC_PAGESIZE)-1));
+#endif
+}
+
+/*
+ * Symmetric teardown for common_libretro_setup()/setup_seh(), called from
+ * dc_term(). Without this the Win64 vectored exception handler and the dynarec
+ * unwind function table stay registered after content close, still pointing at
+ * the code cache and vmem that dc_term() then frees. The next stack unwind or
+ * access violation walks that freed state inside the OS exception machinery,
+ * crashing on close/reload in a way debuggers can't step through.
+ */
+void common_libretro_cleanup(void)
+{
+#ifdef _WIN32
+#ifdef _WIN64
+   if (veh_handle != NULL)
+   {
+      RemoveVectoredExceptionHandler(veh_handle);
+      veh_handle = NULL;
+   }
+   if (seh_installed)
+   {
+      RtlDeleteFunctionTable(Table);
+      seh_installed = false;
+   }
+#endif
 #endif
 }
 

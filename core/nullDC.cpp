@@ -484,6 +484,12 @@ void dc_run()
 
 void dc_term()
 {
+	/* Remove the exception handler and dynarec unwind table before freeing the
+	 * code cache and vmem they reference, so a stale handler can't fire during
+	 * or after teardown. */
+	extern void common_libretro_cleanup(void);
+	common_libretro_cleanup();
+
 	SaveRomFiles(get_writable_data_path(""));
 	sh4_cpu.Term();
 	naomi_cart_Close();
