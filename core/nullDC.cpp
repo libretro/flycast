@@ -12,6 +12,7 @@
 #include "hw/flashrom/flashrom.h"
 #include "hw/maple/maple_cfg.h"
 #include "hw/sh4/sh4_mem.h"
+#include "hw/sh4/sh4_sched.h"
 #include "hw/arm7/arm7.h"
 
 #include "hw/naomi/naomi_cart.h"
@@ -477,9 +478,41 @@ int dc_init()
 	return rv;
 }
 
+void dc_stop();
+
+/*
+ * Hard backstop guaranteeing dc_run() returns within a bounded emulated-cycle
+ * budget so retro_run() can never be starved of control.
+ *
+ * In non-threaded mode control normally returns at vblank (os_DoEvents). That
+ * relies on the SPG raising vblank, which needs valid video timing; before the
+ * BIOS programs it, or if a title misprograms vstart, vblank may not fire and
+ * dc_run() would otherwise run unbounded. This scheduler event forces a stop
+ * after at most FRAME_DEADLINE_CYCLES and is re-armed at every dc_run() entry,
+ * so under normal operation vblank always fires first (well inside the budget)
+ * and it never triggers. Non-threaded only: in threaded mode dc_run() is meant
+ * to run continuously on the emu thread, so the backstop must not stop it.
+ */
+#define FRAME_DEADLINE_CYCLES (SH4_MAIN_CLOCK / 20)	/* >= ~2.5 frames; catches a stalled vblank */
+
+static int frame_deadline_schid = -1;
+
+static int frame_deadline_sched(int tag, int c, int j)
+{
+	dc_stop();
+	return 0;	/* one-shot; re-armed by dc_run() */
+}
+
 void dc_run()
 {
-   sh4_cpu.Run();
+	if (!settings.rend.ThreadedRendering)
+	{
+		if (frame_deadline_schid == -1)
+			frame_deadline_schid = sh4_sched_register(0, &frame_deadline_sched);
+		sh4_sched_request(frame_deadline_schid, FRAME_DEADLINE_CYCLES);
+	}
+
+	sh4_cpu.Run();
 }
 
 void dc_term()
