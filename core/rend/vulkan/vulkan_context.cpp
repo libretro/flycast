@@ -19,7 +19,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include "vulkan_context.h"
-#include <compat/fopen_utf8.h>
+#include <streams/file_stream.h>
 #include "hw/pvr/Renderer_if.h"
 #include "compiler.h"
 
@@ -253,18 +253,16 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
    		10000, ARRAY_SIZE(pool_sizes), pool_sizes));
 
    std::string cachePath = get_writable_data_path(PipelineCacheFileName);
-   FILE *f = (FILE*)fopen_utf8(cachePath.c_str(), "rb");
+   RFILE *f = filestream_open(cachePath.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
    if (f == nullptr)
    	pipelineCache = device.createPipelineCacheUnique(vk::PipelineCacheCreateInfo());
    else
    {
-   	fseek(f, 0, SEEK_END);
-   	size_t cacheSize = ftell(f);
-   	fseek(f, 0, SEEK_SET);
+   	size_t cacheSize = (size_t)filestream_get_size(f);
    	u8 *cacheData = new u8[cacheSize];
-   	if (fread(cacheData, 1, cacheSize, f) != cacheSize)
+   	if ((size_t)filestream_read(f, cacheData, cacheSize) != cacheSize)
    		cacheSize = 0;
-   	fclose(f);
+   	filestream_close(f);
 		pipelineCache = device.createPipelineCacheUnique(vk::PipelineCacheCreateInfo(vk::PipelineCacheCreateFlags(), cacheSize, cacheData));
 		delete [] cacheData;
 		INFO_LOG(RENDERER, "Vulkan pipeline cache loaded from %s: %zd bytes", cachePath.c_str(), cacheSize);
@@ -347,11 +345,11 @@ void VulkanContext::Term()
 			if (!cacheData.empty())
 			{
 				std::string cachePath = get_writable_data_path(PipelineCacheFileName);
-				FILE *f = (FILE*)fopen_utf8(cachePath.c_str(), "wb");
+				RFILE *f = filestream_open(cachePath.c_str(), RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 				if (f != nullptr)
 				{
-					(void)fwrite(&cacheData[0], 1, cacheData.size(), f);
-					fclose(f);
+					(void)filestream_write(f, &cacheData[0], cacheData.size());
+					filestream_close(f);
 				}
 			}
 		}

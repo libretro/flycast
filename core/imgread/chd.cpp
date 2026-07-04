@@ -1,5 +1,5 @@
 #include "common.h"
-#include <compat/fopen_utf8.h>
+#include <streams/file_stream.h>
 
 #include "deps/libchdr/include/libchdr/chd.h"
 
@@ -9,7 +9,7 @@ const uint32_t CD_TRACK_PADDING = 4;
 struct CHDDisc : Disc
 {
 	chd_file* chd;
-	FILE* chd_fp = nullptr;	/* owned here: chd_open_file does not take ownership */
+	RFILE* chd_fp = nullptr;	/* owned here: chd_open_file does not take ownership */
 	u8* hunk_mem;
 	u32 old_hunk;
 
@@ -31,7 +31,7 @@ struct CHDDisc : Disc
 		if (chd)
 			chd_close(chd);
 		if (chd_fp)
-			fclose(chd_fp);
+			filestream_close(chd_fp);
 	}
 };
 
@@ -86,7 +86,7 @@ struct CHDTrack : TrackFile
 
 bool CHDDisc::TryOpen(const char* file)
 {
-	chd_fp = (FILE*)fopen_utf8(file, "rb");
+	chd_fp = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (chd_fp == nullptr)
 		return false;
 	chd_error err=chd_open_file(chd_fp,CHD_OPEN_READ,0,&chd);

@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2019 The RetroArch team
+/* Copyright  (C) 2010-2020 The RetroArch team
 *
 * ---------------------------------------------------------------------------------------
 * The following license statement only applies to this file (vfs_implementation.h).
@@ -24,6 +24,8 @@
 #define __LIBRETRO_SDK_VFS_H
 
 #include <retro_common_api.h>
+#include <boolean.h>
+#include <stdint.h>
 
 #ifdef RARCH_INTERNAL
 #ifndef VFS_FRONTEND
@@ -40,46 +42,59 @@ typedef void* HANDLE;
 #ifdef HAVE_CDROM
 typedef struct
 {
+   int64_t byte_pos;
    char *cue_buf;
    size_t cue_len;
-   int64_t byte_pos;
-   char drive;
+   unsigned cur_lba;
+   unsigned last_frame_lba;
    unsigned char cur_min;
    unsigned char cur_sec;
    unsigned char cur_frame;
    unsigned char cur_track;
-   unsigned cur_lba;
+   unsigned char last_frame[2352];
+   char drive;
+   bool last_frame_valid;
 } vfs_cdrom_t;
 #endif
 
 enum vfs_scheme
 {
    VFS_SCHEME_NONE = 0,
-   VFS_SCHEME_CDROM
+   VFS_SCHEME_CDROM,
+   VFS_SCHEME_SAF,
+   VFS_SCHEME_SMB
 };
 
-#ifndef __WINRT__
+#if !(defined(__WINRT__) && defined(__cplusplus_winrt))
 #ifdef VFS_FRONTEND
 struct retro_vfs_file_handle
 #else
 struct libretro_vfs_implementation_file
 #endif
 {
-   int fd;
-   unsigned hints;
+#ifdef HAVE_CDROM
+   vfs_cdrom_t cdrom; /* int64_t alignment */
+#endif
    int64_t size;
-   char *buf;
+   uint64_t mappos;
+   uint64_t mapsize;
    FILE *fp;
 #ifdef _WIN32
    HANDLE fh;
 #endif
+   char *buf;
    char* orig_path;
-   uint64_t mappos;
-   uint64_t mapsize;
    uint8_t *mapped;
+   int fd;
+   unsigned hints;
    enum vfs_scheme scheme;
-#ifdef HAVE_CDROM
-   vfs_cdrom_t cdrom;
+#ifdef HAVE_SMBCLIENT
+   intptr_t smb_fh;
+   intptr_t smb_ctx;
+#endif
+#if defined(HAVE_CDROM) && defined(__APPLE__)
+   void *iokit_plugin;   /* IOCFPlugInInterface ** */
+   void *iokit_mmc;      /* MMCDeviceInterface ** */
 #endif
 };
 #endif

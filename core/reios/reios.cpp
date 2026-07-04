@@ -9,7 +9,7 @@
 */
 
 #include "reios.h"
-#include <compat/fopen_utf8.h>
+#include <streams/file_stream.h>
 
 #include "reios_elf.h"
 
@@ -736,7 +736,7 @@ void reios_reset(u8* rom, MemChip* flash)
 	memset(pFont, 0, 536496);
 	std::string font_file(game_dir_no_slash);
 	font_file += "/font.bin";
-	FILE *font = (FILE*)fopen_utf8(font_file.c_str(), "rb");
+	RFILE *font = filestream_open(font_file.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (font == NULL)
 	{
 		INFO_LOG(REIOS, "font.bin not found. Using built-in font");
@@ -744,11 +744,9 @@ void reios_reset(u8* rom, MemChip* flash)
 	}
 	else
 	{
-		fseek(font, 0, SEEK_END);
-		size_t size = ftell(font);
-		fseek(font, 0, SEEK_SET);
-		size_t nread = fread(pFont, 1, size, font);
-		fclose(font);
+		size_t size = (size_t)filestream_get_size(font);
+		size_t nread = (size_t)filestream_read(font, pFont, size);
+		filestream_close(font);
 		if (nread != size)
 			WARN_LOG(REIOS, "font.bin: read truncated");
 		else

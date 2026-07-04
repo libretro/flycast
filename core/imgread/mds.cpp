@@ -1,5 +1,5 @@
 #include "mds_reader.h"
-#include <compat/fopen_utf8.h>
+
 #include "common.h"
 
 SessionInfo mds_ses;
@@ -14,7 +14,7 @@ struct file_TrackInfo
 };
 
 file_TrackInfo mds_Track[101];
-FILE* fp_mdf=0;
+core_file* fp_mdf=0;
 u8 mds_SecTemp[5120];
 u32 mds_TrackCount;
 
@@ -25,8 +25,8 @@ u32 mds_ReadSSect(u8* p_out,u32 sector,u32 secsz)
 		if (mds_Track[i+1].FAD>sector)
 		{
 			u32 fad_off=sector-mds_Track[i].FAD;
-			fseek(fp_mdf,mds_Track[i].Offset+fad_off*mds_Track[i].SectorSize,SEEK_SET);
-			fread(mds_SecTemp,mds_Track[i].SectorSize,1,fp_mdf);
+			core_fseek(fp_mdf,mds_Track[i].Offset+fad_off*mds_Track[i].SectorSize,SEEK_SET);
+			core_fread(fp_mdf,mds_SecTemp,mds_Track[i].SectorSize);
 
 			ConvertSector(mds_SecTemp,p_out,mds_Track[i].SectorSize,secsz,sector);
 			return mds_Track[i].SectorSize;
@@ -183,14 +183,14 @@ bool mds_init(const char* file)
 			size_t len= strlen(fn);
 			strcpy(&fn[len-4],".mdf");
 			
-			fp_mdf = (FILE*)fopen_utf8(fn,"rb");
+			fp_mdf = core_fopen(fn);
 			found  = fp_mdf!=0;
 		}
 		if (!found)
 		{
 			if (GetFile(fn,L"mds images (*.mds) \0*.mdf\0\0")==1)
 			{
-				fp_mdf= (FILE*)fopen_utf8(fn, "rb");
+				fp_mdf= core_fopen(fn);
 				found=true;
 			}
 		}
@@ -203,7 +203,7 @@ bool mds_init(const char* file)
 	if (rv==false && parse_nrg(file,false))
 	{
 		rv=true;
-		fp_mdf= (FILE*)fopen_utf8(file, "rb");
+		fp_mdf= core_fopen(file);
 	}
 	if (rv==false)
 		return false;
@@ -227,7 +227,7 @@ bool mds_init(const char* file)
 void mds_term()
 {
 	if (fp_mdf)
-		fclose(fp_mdf);
+		core_fclose(fp_mdf);
 	fp_mdf=0;
 }
 

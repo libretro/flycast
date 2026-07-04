@@ -1,5 +1,5 @@
 #include "types.h"
-#include <compat/fopen_utf8.h>
+#include <streams/file_stream.h>
 #include "maple_if.h"
 #include "maple_helper.h"
 #include "maple_devs.h"
@@ -542,7 +542,7 @@ u8 vmu_default[] = {
 
 struct maple_sega_vmu: maple_base
 {
-	FILE* file;
+	RFILE* file;
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[VMU_SCREEN_WIDTH*VMU_SCREEN_HEIGHT];
@@ -581,14 +581,14 @@ struct maple_sega_vmu: maple_base
 		verify(rv == Z_OK);
 		verify(dec_sz == sizeof(flash_data));
 
-		file=(FILE*)fopen_utf8(apath.c_str(),"rb+");
+		file=filestream_open(apath.c_str(), RETRO_VFS_FILE_ACCESS_READ_WRITE | RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 		if (!file)
 		{
 			INFO_LOG(MAPLE, "Unable to open VMU save file \"%s\", creating new file",apath.c_str());
-			file=(FILE*)fopen_utf8(apath.c_str(),"wb");
+			file=filestream_open(apath.c_str(), RETRO_VFS_FILE_ACCESS_READ_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 			if (file) {
-				fwrite(flash_data, sizeof(flash_data), 1, file);
-				fseek(file,0,SEEK_SET);
+				filestream_write(file, flash_data, sizeof(flash_data));
+				filestream_seek(file,0,RETRO_VFS_SEEK_POSITION_START);
 			} else {
 				INFO_LOG(MAPLE, "Unable to create VMU!");
 			}
@@ -600,13 +600,13 @@ struct maple_sega_vmu: maple_base
 		}
 		else
 		{
-			fread(flash_data,1,sizeof(flash_data),file);
+			filestream_read(file,flash_data,sizeof(flash_data));
 			NOTICE_LOG(MAPLE, "Loaded VMU from file \"%s\"", apath.c_str());
 		}
 	}
 	virtual ~maple_sega_vmu()
 	{
-		if (file) fclose(file);
+		if (file) filestream_close(file);
 	}
 	virtual u32 dma(u32 cmd)
 	{
@@ -814,9 +814,9 @@ struct maple_sega_vmu: maple_base
 
 						if (file)
 						{
-							fseek(file,write_adr,SEEK_SET);
-							fwrite(&flash_data[write_adr],1,write_len,file);
-							fflush(file);
+							filestream_seek(file,write_adr,RETRO_VFS_SEEK_POSITION_START);
+							filestream_write(file,&flash_data[write_adr],write_len);
+							filestream_flush(file);
 						}
 						else
 						{
@@ -2353,11 +2353,11 @@ struct maple_naomi_jamma : maple_sega_controller
 				//printState(Command,buffer_in,buffer_in_len);
 				memcpy(EEPROM + address, dma_buffer_in + 4, size);
 
-				FILE* f = (FILE*)fopen_utf8(eeprom_file, "wb");
+				RFILE* f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 				if (f)
 				{
-				   fwrite(EEPROM, 1, 0x80, f);
-				   fclose(f);
+				   filestream_write(f, EEPROM, 0x80);
+				   filestream_close(f);
 				}
 				else
 					WARN_LOG(MAPLE, "Cannot save EEPROM to file %s", eeprom_file);
@@ -2374,11 +2374,11 @@ struct maple_naomi_jamma : maple_sega_controller
 
 			case 0x3:	//EEPROM read
 			{
-				FILE* f = (FILE*)fopen_utf8(eeprom_file, "rb");
+				RFILE* f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 				if (f)
 				{
-				   fread(EEPROM, 1, 0x80, f);
-				   fclose(f);
+				   filestream_read(f, EEPROM, 0x80);
+				   filestream_close(f);
 				   DEBUG_LOG(MAPLE, "Loaded EEPROM from %s", eeprom_file);
 				}
 				else if (naomi_default_eeprom != NULL)
@@ -2495,23 +2495,23 @@ struct maple_naomi_jamma : maple_sega_controller
 					else
 						crazy_mode = false;
 #ifdef DUMP_JVS_FW
-					FILE *fw_dump;
+					RFILE *fw_dump;
 					char filename[128];
 					for (int i = 0; ; i++)
 					{
 						sprintf(filename, "z80_fw_%d.bin", i);
-						fw_dump = (FILE*)fopen_utf8(filename, "r");
+						fw_dump = filestream_open(filename, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 						if (fw_dump == NULL)
 						{
-							fw_dump = fopen(filename, "w");
+							fw_dump = filestream_open(filename, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 							INFO_LOG(MAPLE, "Saving JVS firmware to %s", filename);
 							break;
 						}
 					}
 					if (fw_dump)
 					{
-						fwrite(ram, 1, 0x10000, fw_dump);
-						fclose(fw_dump);
+						filestream_write(fw_dump, ram, 0x10000);
+						filestream_close(fw_dump);
 					}
 #endif
 					free(ram);

@@ -20,6 +20,7 @@
 // copyright-holders:MetalliC
 
 #include <memory>
+#include <streams/file_stream.h>
 #include "naomi_cart.h"
 #include "naomi_regs.h"
 #include "naomi.h"
@@ -489,14 +490,14 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	if (!strcasecmp(ext, "lst"))
 	{
-	   FILE* fl = fopen(t, "r");
+	   RFILE* fl = filestream_open(t, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	   if (!fl)
 		   return false;
 
-	   char* line = fgets(t, 512, fl);
+	   char* line = filestream_gets(fl, t, 512);
 	   if (!line)
 	   {
-		   fclose(fl);
+		   filestream_close(fl);
 		   return false;
 	   }
 
@@ -504,7 +505,7 @@ static bool naomi_cart_LoadRom(const char* file)
 	   if (!eon)
 	   {
 		   ERROR_LOG(NAOMI, "+Parsing was unsuccessful, there is something wrong with your lst file");
-		   fclose(fl);
+		   filestream_close(fl);
 		   return false;
 	   }
 	   else
@@ -517,10 +518,10 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	   DEBUG_LOG(NAOMI, "+Loading naomi rom : %s", line);
 
-	   line = fgets(t, 512, fl);
+	   line = filestream_gets(fl, t, 512);
 	   if (!line)
 	   {
-		   fclose(fl);
+		   filestream_close(fl);
 		   return false;
 	   }
 
@@ -541,19 +542,18 @@ static bool naomi_cart_LoadRom(const char* file)
 		   else if (line[0] != 0 && line[0] != '\n' && line[0] != '\r')
 				WARN_LOG(NAOMI, "Warning: invalid line in .lst file: %s", line);
 
-		   line = fgets(t, 512, fl);
+		   line = filestream_gets(fl, t, 512);
 	   }
-	   fclose(fl);
+	   filestream_close(fl);
 	}
 	else
 	{
 	   // BIN loading
-	   FILE* fp = fopen(t, "rb");
+	   RFILE* fp = filestream_open(t, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	   if (fp == NULL)
 		  return false;
-	   fseek(fp, 0, SEEK_END);
-	   u32 file_size = ftell(fp);
-	   fclose(fp);
+	   u32 file_size = (u32)filestream_get_size(fp);
+	   filestream_close(fp);
 	   files.push_back(t);
 	   fstart.push_back(0);
 	   fsize.push_back(file_size);

@@ -29,6 +29,7 @@ char* strdup(const char *str)
 
 #include <sys/stat.h>
 #include <file/file_path.h>
+#include <streams/file_stream.h>
 
 #include <libretro.h>
 
@@ -294,9 +295,28 @@ static void input_set_deadzone_trigger( int percent )
       trigger_deadzone = (int)( percent * 0.01f * 0x8000);
 }
 
+
+/* Replacement for libretro-common's removed fill_short_pathname_representation:
+ * the file's base name without its extension. */
+static void short_pathname_representation(char *out, const char *path, size_t size)
+{
+   fill_pathname_base(out, path, size);
+   path_remove_extension(out);
+}
+
 void retro_set_environment(retro_environment_t cb)
 {
    environ_cb = cb;
+
+   /* Use the frontend's VFS for all file I/O when it provides one; the local
+    * vfs_implementation (UTF-8-safe everywhere) is the fallback. Every file
+    * open in the core goes through libretro-common filestream and therefore
+    * through this interface. */
+   struct retro_vfs_interface_info vfs_iface_info;
+   vfs_iface_info.required_interface_version = 1;
+   vfs_iface_info.iface = NULL;
+   if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
+      filestream_vfs_init(&vfs_iface_info);
 
    libretro_set_core_options(environ_cb, &categoriesSupported);
 
@@ -2038,7 +2058,7 @@ bool retro_load_game(const struct retro_game_info *game)
 
          disk_paths.push_back(game->path);
 
-         fill_short_pathname_representation(disk_label, game->path, sizeof(disk_label));
+         short_pathname_representation(disk_label, game->path, sizeof(disk_label));
          disk_labels.push_back(disk_label);
 
          game_data = strdup(game->path);
@@ -3471,7 +3491,7 @@ static bool retro_replace_image_index(unsigned index, const struct retro_game_in
 
       disk_paths[index] = info->path;
 
-      fill_short_pathname_representation(disk_label, info->path, sizeof(disk_label));
+      short_pathname_representation(disk_label, info->path, sizeof(disk_label));
       disk_labels[index] = disk_label;
    }
 
@@ -3559,7 +3579,7 @@ static bool read_m3u(const char *file)
 {
    char line[PATH_MAX];
    char name[PATH_MAX];
-   FILE *f = (FILE*)fopen_utf8(file, "r");
+   RFILE *f = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 
    if (!f)
    {
@@ -3567,7 +3587,7 @@ static bool read_m3u(const char *file)
       return false;
    }
 
-   while (fgets(line, sizeof(line), f) && disk_index <= disk_paths.size())
+   while (filestream_gets(f, line, sizeof(line)) && disk_index <= disk_paths.size())
    {
       if (line[0] == '#')
          continue;
@@ -3598,13 +3618,13 @@ static bool read_m3u(const char *file)
          	snprintf(name, sizeof(name), "%s%s", g_roms_dir, line);
          disk_paths.push_back(name);
 
-         fill_short_pathname_representation(disk_label, name, sizeof(disk_label));
+         short_pathname_representation(disk_label, name, sizeof(disk_label));
          disk_labels.push_back(disk_label);
 
          disk_index++;
       }
    }
 
-   fclose(f);
+   filestream_close(f);
    return (disk_index != 0);
 }

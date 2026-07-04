@@ -20,23 +20,16 @@ typedef int32_t INT32;
 typedef int16_t INT16;
 typedef int8_t INT8;
 
-#define core_file FILE
-#define core_fopen(file) fopen(file, "rb")
-#if defined(__WIN32__) || defined(_WIN32) || defined(WIN32) || defined(__WIN64__)
-	#define core_fseek _fseeki64
-	#define core_ftell _ftelli64
-#elif defined(_LARGEFILE_SOURCE) && defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS == 64
-	#define core_fseek fseeko64
-	#define core_ftell ftello64
-#elif defined(HAVE_LIBNX)
-	#define core_fseek fseek
-	#define core_ftell ftell
-#else
-	#define core_fseek fseeko
-	#define core_ftell ftello
-#endif
-#define core_fread(fc, buff, len) fread(buff, 1, len, fc)
-#define core_fclose fclose
+/* Route libchdr file I/O through libretro-common filestream (libretro VFS).
+ * RETRO_VFS_SEEK_POSITION_{START,CURRENT,END} share the values of
+ * SEEK_{SET,CUR,END}, so whence passes straight through. */
+#include <streams/file_stream.h>
+#define core_file RFILE
+#define core_fopen(path) filestream_open(path, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE)
+#define core_fseek(fc, offs, whence) filestream_seek(fc, offs, whence)
+#define core_ftell(fc) filestream_tell(fc)
+#define core_fread(fc, buff, len) filestream_read(fc, buff, len)
+#define core_fclose filestream_close
 
 static UINT64 core_fsize(core_file *f)
 {
