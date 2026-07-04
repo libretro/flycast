@@ -1,5 +1,6 @@
 
 #include "coreio.h"
+#include <compat/fopen_utf8.h>
 
 #include <time.h>
 #include <stddef.h>
@@ -34,7 +35,10 @@ core_file* core_fopen(const char* filename)
 	rv->f = 0;
 	rv->path = p;
   {
-		rv->f = fopen(filename, "rb");
+		/* fopen_utf8: RetroArch passes UTF-8 paths; on Windows plain fopen
+		 * expects the ANSI codepage, so non-ASCII content paths failed to
+		 * open (libretro/flycast#108). */
+		rv->f = (FILE*)fopen_utf8(filename, "rb");
 
 		if (!rv->f) {
 			delete rv;

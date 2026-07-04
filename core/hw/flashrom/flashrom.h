@@ -4,6 +4,7 @@
 
 #pragma once
 #include <math.h>
+#include <compat/fopen_utf8.h>
 #include "types.h"
 
 struct MemChip
@@ -53,7 +54,7 @@ struct MemChip
 
 	bool Load(const std::string& file)
 	{
-		FILE* f=fopen(file.c_str(),"rb");
+		FILE* f=(FILE*)fopen_utf8(file.c_str(),"rb");
 		if (f)
 		{
 			bool rv = fread(data + write_protect_size, 1, size - write_protect_size, f) == size - write_protect_size;
@@ -73,7 +74,7 @@ struct MemChip
 
 	void Save(const std::string& file)
 	{
-		FILE* f=fopen(file.c_str(),"wb");
+		FILE* f=(FILE*)fopen_utf8(file.c_str(),"wb");
 		if (f)
 		{
 			fwrite(data + write_protect_size, 1, size - write_protect_size, f);

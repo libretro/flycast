@@ -1,4 +1,5 @@
 #include "types.h"
+#include <compat/fopen_utf8.h>
 #include "maple_if.h"
 #include "maple_helper.h"
 #include "maple_devs.h"
@@ -580,11 +581,11 @@ struct maple_sega_vmu: maple_base
 		verify(rv == Z_OK);
 		verify(dec_sz == sizeof(flash_data));
 
-		file=fopen(apath.c_str(),"rb+");
+		file=(FILE*)fopen_utf8(apath.c_str(),"rb+");
 		if (!file)
 		{
 			INFO_LOG(MAPLE, "Unable to open VMU save file \"%s\", creating new file",apath.c_str());
-			file=fopen(apath.c_str(),"wb");
+			file=(FILE*)fopen_utf8(apath.c_str(),"wb");
 			if (file) {
 				fwrite(flash_data, sizeof(flash_data), 1, file);
 				fseek(file,0,SEEK_SET);
@@ -2352,7 +2353,7 @@ struct maple_naomi_jamma : maple_sega_controller
 				//printState(Command,buffer_in,buffer_in_len);
 				memcpy(EEPROM + address, dma_buffer_in + 4, size);
 
-				FILE* f = fopen(eeprom_file, "wb");
+				FILE* f = (FILE*)fopen_utf8(eeprom_file, "wb");
 				if (f)
 				{
 				   fwrite(EEPROM, 1, 0x80, f);
@@ -2373,7 +2374,7 @@ struct maple_naomi_jamma : maple_sega_controller
 
 			case 0x3:	//EEPROM read
 			{
-				FILE* f = fopen(eeprom_file, "rb");
+				FILE* f = (FILE*)fopen_utf8(eeprom_file, "rb");
 				if (f)
 				{
 				   fread(EEPROM, 1, 0x80, f);
@@ -2499,7 +2500,7 @@ struct maple_naomi_jamma : maple_sega_controller
 					for (int i = 0; ; i++)
 					{
 						sprintf(filename, "z80_fw_%d.bin", i);
-						fw_dump = fopen(filename, "r");
+						fw_dump = (FILE*)fopen_utf8(filename, "r");
 						if (fw_dump == NULL)
 						{
 							fw_dump = fopen(filename, "w");

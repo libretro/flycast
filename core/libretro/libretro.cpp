@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <compat/fopen_utf8.h>
 #include <cstdarg>
 #include <math.h>
 #include "types.h"
@@ -2051,7 +2052,7 @@ bool retro_load_game(const struct retro_game_info *game)
 
       INFO_LOG(COMMON, "Creating dir: %s", data_dir);
       struct stat buf;
-      if (stat(data_dir, &buf) < 0)
+      if (!path_is_directory(data_dir))
       {
          path_mkdir(data_dir);
       }
@@ -2102,7 +2103,7 @@ bool retro_load_game(const struct retro_game_info *game)
          else
             strncpy(save_dir, g_roms_dir, sizeof(save_dir));
          struct stat buf;
-         if (stat(save_dir, &buf) < 0)
+         if (!path_is_directory(save_dir))
          {
             DEBUG_LOG(BOOT, "Creating dir: %s", save_dir);
             path_mkdir(save_dir);
@@ -3558,7 +3559,7 @@ static bool read_m3u(const char *file)
 {
    char line[PATH_MAX];
    char name[PATH_MAX];
-   FILE *f = fopen(file, "r");
+   FILE *f = (FILE*)fopen_utf8(file, "r");
 
    if (!f)
    {

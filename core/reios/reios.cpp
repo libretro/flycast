@@ -9,6 +9,7 @@
 */
 
 #include "reios.h"
+#include <compat/fopen_utf8.h>
 
 #include "reios_elf.h"
 
@@ -735,7 +736,7 @@ void reios_reset(u8* rom, MemChip* flash)
 	memset(pFont, 0, 536496);
 	std::string font_file(game_dir_no_slash);
 	font_file += "/font.bin";
-	FILE *font = fopen(font_file.c_str(), "rb");
+	FILE *font = (FILE*)fopen_utf8(font_file.c_str(), "rb");
 	if (font == NULL)
 	{
 		INFO_LOG(REIOS, "font.bin not found. Using built-in font");

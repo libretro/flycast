@@ -19,6 +19,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include "vulkan_context.h"
+#include <compat/fopen_utf8.h>
 #include "hw/pvr/Renderer_if.h"
 #include "compiler.h"
 
@@ -252,7 +253,7 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
    		10000, ARRAY_SIZE(pool_sizes), pool_sizes));
 
    std::string cachePath = get_writable_data_path(PipelineCacheFileName);
-   FILE *f = fopen(cachePath.c_str(), "rb");
+   FILE *f = (FILE*)fopen_utf8(cachePath.c_str(), "rb");
    if (f == nullptr)
    	pipelineCache = device.createPipelineCacheUnique(vk::PipelineCacheCreateInfo());
    else
@@ -346,7 +347,7 @@ void VulkanContext::Term()
 			if (!cacheData.empty())
 			{
 				std::string cachePath = get_writable_data_path(PipelineCacheFileName);
-				FILE *f = fopen(cachePath.c_str(), "wb");
+				FILE *f = (FILE*)fopen_utf8(cachePath.c_str(), "wb");
 				if (f != nullptr)
 				{
 					(void)fwrite(&cacheData[0], 1, cacheData.size(), f);

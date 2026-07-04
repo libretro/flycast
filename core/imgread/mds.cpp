@@ -1,4 +1,5 @@
 #include "mds_reader.h"
+#include <compat/fopen_utf8.h>
 #include "common.h"
 
 SessionInfo mds_ses;
@@ -182,14 +183,14 @@ bool mds_init(const char* file)
 			size_t len= strlen(fn);
 			strcpy(&fn[len-4],".mdf");
 			
-			fp_mdf = fopen(fn,"rb");
+			fp_mdf = (FILE*)fopen_utf8(fn,"rb");
 			found  = fp_mdf!=0;
 		}
 		if (!found)
 		{
 			if (GetFile(fn,L"mds images (*.mds) \0*.mdf\0\0")==1)
 			{
-				fp_mdf= fopen(fn, "rb");
+				fp_mdf= (FILE*)fopen_utf8(fn, "rb");
 				found=true;
 			}
 		}
@@ -202,7 +203,7 @@ bool mds_init(const char* file)
 	if (rv==false && parse_nrg(file,false))
 	{
 		rv=true;
-		fp_mdf= fopen(file, "rb");
+		fp_mdf= (FILE*)fopen_utf8(file, "rb");
 	}
 	if (rv==false)
 		return false;
