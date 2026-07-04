@@ -1865,12 +1865,14 @@ static bool set_opengl_hw_render(u32 preferred)
 		params.context_type          = (retro_hw_context_type)preferred;
 		if (preferred == RETRO_HW_CONTEXT_OPENGL)
 		{
-			// There are some weirdness with RA's gl context's versioning :
-			// - any value above 3.0 won't provide a valid context, while the GLSM_CTL_STATE_CONTEXT_INIT call returns true...
-			// - the only way to overwrite previously set version with zero values is to set them directly in hw_render, otherwise they are ignored (see glsm_state_ctx_init logic)
-			retro_hw_render_callback hw_render;
-			hw_render.version_major = 3;
-			hw_render.version_minor = 0;
+			/* Compatibility context: request no specific version and take the
+			 * driver's maximum. (This code used to write a version into a local
+			 * retro_hw_render_callback that was immediately discarded -- dead
+			 * code.) Whether the resulting context actually has the GL 4.3
+			 * features per-pixel sorting needs is checked at renderer init,
+			 * which falls back to the per-triangle renderer if not. */
+			params.major = 0;
+			params.minor = 0;
 		}
 		else
 		{
@@ -1893,15 +1895,23 @@ static bool set_opengl_hw_render(u32 preferred)
 	if (glsm_ctl(GLSM_CTL_STATE_CONTEXT_INIT, &params))
 		return true;
 
-#if defined(HAVE_GL3)
+#ifdef HAVE_OIT
+	/* The per-pixel (OIT) context could not be obtained -- e.g. the frontend's
+	 * driver cannot provide GL 4.3 (the 2020 shape of libretro/flycast#874).
+	 * Degrade to the per-triangle renderer and retry with a plain GL 3.0
+	 * request so the content still loads instead of failing outright. */
+	if (settings.pvr.rend == 3)
+	{
+		NOTICE_LOG(RENDERER, "Per-pixel (OIT) GL context unavailable, falling back to the per-triangle renderer");
+		settings.pvr.rend = 0;
+	}
+#endif
+	/* The retry version must be explicit and non-zero: glsm ignores zero
+	 * version fields and keeps the previously requested values, which would
+	 * silently re-send the request that was just rejected. */
 	params.context_type       = (retro_hw_context_type)preferred;
 	params.major              = 3;
 	params.minor              = 0;
-#else
-	params.context_type       = (retro_hw_context_type)preferred;
-	params.major              = 0;
-	params.minor              = 0;
-#endif
 	return glsm_ctl(GLSM_CTL_STATE_CONTEXT_INIT, &params);
 #else
 	return false;
