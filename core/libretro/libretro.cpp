@@ -2939,10 +2939,11 @@ void UpdateInputState(u32 port)
 
    if (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_ATOMISWAVE)
    {
-      UpdateInputStateNaomi(0);
-      UpdateInputStateNaomi(1);
-      UpdateInputStateNaomi(2);
-      UpdateInputStateNaomi(3);
+      /* Update only this port. CaptureInput already iterates all ports; the
+       * previous code updated all four on every call, so a 4-port loop read
+       * each NAOMI/Atomiswave port -- and hit the frontend's input_cb for every
+       * lightgun/analog axis -- 4 times per frame. */
+      UpdateInputStateNaomi(port);
       return;
    }
    if (rumble.set_rumble_state != NULL && vib_stop_time[port] > 0)
