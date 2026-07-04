@@ -300,6 +300,12 @@ static void sigill_handler(int sn, siginfo_t * si, void *segfault_ctx)
 extern "C" char __start__;
 #endif // HAVE_LIBNX
 
+#if !defined(TARGET_NO_EXCEPTIONS)
+static struct sigaction old_sigsegv;
+static struct sigaction old_sigbus;
+static struct sigaction old_sigill;
+#endif
+
 static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
 {
    host_context_t ctx;
@@ -368,6 +374,31 @@ static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
 #endif
    else
    {
+      /* Not one of ours. If another handler was installed before this one --
+       * e.g. a second in-process instance of this core, as created by
+       * RetroArch's run-ahead second instance, whose handler this one
+       * displaced -- forward the signal to it: the fault may be that
+       * instance's own intentional lazy-commit or protection fault, and dying
+       * here is what crashed run-ahead users (libretro/flycast#451). The
+       * Windows path already chains via EXCEPTION_CONTINUE_SEARCH; this is
+       * the POSIX equivalent. Only when nobody else can handle the fault is
+       * it a genuine crash. */
+#if !defined(HAVE_LIBNX)
+      struct sigaction *prev = (sn == SIGBUS) ? &old_sigbus : &old_sigsegv;
+      if (prev->sa_flags & SA_SIGINFO)
+      {
+         if (prev->sa_sigaction != NULL && prev->sa_sigaction != signal_handler)
+         {
+            prev->sa_sigaction(sn, si, segfault_ctx);
+            return;
+         }
+      }
+      else if (prev->sa_handler != SIG_DFL && prev->sa_handler != SIG_IGN)
+      {
+         prev->sa_handler(sn);
+         return;
+      }
+#endif
    	ERROR_LOG(COMMON, "SIGSEGV @ %zx ... %p -> was not in vram (dyna code %d)", ctx.pc, si->si_addr, dyna_cde);
 #ifdef HAVE_LIBNX
     MemoryInfo meminfo;
@@ -384,10 +415,6 @@ static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
 #endif
 
 #ifndef _WIN32
-#if !defined(TARGET_NO_EXCEPTIONS)
-static struct sigaction old_sigsegv;
-static struct sigaction old_sigill;
-#endif
 
 static int exception_handler_install_platform(void)
 {
@@ -404,7 +431,7 @@ static int exception_handler_install_platform(void)
 
 #ifdef __MACH__
    /* this is broken on OSX/iOS/Mach in general */
-   sigaction(SIGBUS, &new_sa, &old_sigsegv);
+   sigaction(SIGBUS, &new_sa, &old_sigbus);
    new_sa.sa_sigaction = sigill_handler;
 #endif
 
