@@ -96,7 +96,7 @@ static bool naomi_LoadBios(const char *filename, Archive *child_archive, Archive
 	struct BIOS_t *bios = &BIOS[biosid];
 
 	std::string basepath(game_dir_no_slash);
-	basepath += path_default_slash();
+	basepath += PATH_DEFAULT_SLASH();
 
 	Archive *bios_archive = OpenArchive((basepath + filename).c_str());
 
@@ -209,7 +209,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 	{
 	   strncpy(g_parent_name, game->parent_name, sizeof(g_parent_name));
 	   std::string parent_path(g_roms_dir);
-	   parent_path += path_default_slash();
+	   parent_path += PATH_DEFAULT_SLASH();
 	   parent_path += game->parent_name;
 	   parent_archive = OpenArchive(parent_path.c_str());
 	   if (parent_archive != NULL)

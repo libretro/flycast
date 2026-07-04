@@ -454,6 +454,11 @@ SOURCES_CXX += $(CORE_DIR)/core/libretro/libretro.cpp \
 					$(CORE_DIR)/core/libretro/common.cpp \
 					$(CORE_DIR)/core/libretro/vmem_utils.cpp
 
+# When statically linked into RetroArch (e.g. libnx), the frontend already
+# compiles these libretro-common sources; building them again would duplicate
+# symbols at link time. The headers stay -- they now match current upstream, so
+# the declarations agree with the objects RetroArch provides.
+ifneq ($(STATIC_LINKING), 1)
 SOURCES_C += $(LIBRETRO_COMM_DIR)/memmap/memalign.c \
 					$(LIBRETRO_COMM_DIR)/file/file_path.c \
 					$(LIBRETRO_COMM_DIR)/file/file_path_io.c \
@@ -467,10 +472,13 @@ SOURCES_C += $(LIBRETRO_COMM_DIR)/memmap/memalign.c \
 					$(LIBRETRO_COMM_DIR)/file/retro_dirent.c \
 					$(LIBRETRO_COMM_DIR)/string/stdstring.c \
 					$(LIBRETRO_COMM_DIR)/time/rtime.c
+endif
 
 ifeq ($(NO_THREADS), 1)
 else
+ifneq ($(STATIC_LINKING), 1)
 	SOURCES_C += $(LIBRETRO_COMM_DIR)/rthreads/rthreads.c
+endif
 endif
 
 ifeq ($(HAVE_TEXUPSCALE), 1)

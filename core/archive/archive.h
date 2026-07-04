@@ -22,7 +22,7 @@
 #define CORE_ARCHIVE_ARCHIVE_H_
 
 #include "types.h"
-#include "retro_stat.h"
+#include <file/file_path.h>
 
 class ArchiveFile
 {
