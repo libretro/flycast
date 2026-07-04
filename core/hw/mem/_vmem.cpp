@@ -395,7 +395,22 @@ void _vmem_bm_reset(void)
 {
 	// If we allocated it via vmem:
 	if (virt_ram_base)
-		vmem_platform_reset_mem(p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
+	{
+		if (settings.dynarec.PrecompileFpcb)
+		{
+			/* Commit and fill the whole block-dispatch table up front instead
+			 * of faulting in one page at a time on first execution of each
+			 * code address. That per-page fault (BM_LockedWrite) is a measured
+			 * source of frame-time spikes whenever a game first reaches new
+			 * code -- boot, level loads, newly hit branches. Trading it away
+			 * costs resident memory: up to RAM_SIZE/2 * sizeof(void*) (64MB at
+			 * 16MB RAM, 128MB at 32MB), which is why it is opt-in. */
+			vmem_platform_ondemand_page(p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
+			bm_vmem_pagefill((void**)p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
+		}
+		else
+			vmem_platform_reset_mem(p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
+	}
 	else
 		// We allocated it via a regular malloc/new/whatever on the heap
 		bm_vmem_pagefill((void**)p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));

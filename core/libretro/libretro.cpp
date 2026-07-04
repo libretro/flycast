@@ -1047,6 +1047,13 @@ static void update_variables(bool first_startup)
       settings.aica.NoBatch    = 1;
    }
 
+   var.key = CORE_OPTION_NAME "_precompile_fpcb";
+   var.value = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      settings.dynarec.PrecompileFpcb = !strcmp("enabled", var.value);
+   else
+      settings.dynarec.PrecompileFpcb = false;
+
    var.key = CORE_OPTION_NAME "_digital_triggers";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

@@ -511,6 +511,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 #endif
    },
    {
+      CORE_OPTION_NAME "_precompile_fpcb",
+      "Reduce Recompiler Stalls (High Memory)",
+      NULL,
+      "Commit the recompiler's block-dispatch table up front instead of on first use. Reduces frame-time stalls the first time a game reaches new code (boot, level loads), at the cost of extra memory (up to 64MB, or 128MB with expanded RAM). Leave disabled unless you see hitching on new areas and have memory to spare.",
+      NULL,
+      NULL,
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
+   {
       CORE_OPTION_NAME "_anisotropic_filtering",
       "Anisotropic Filtering",
       NULL,
