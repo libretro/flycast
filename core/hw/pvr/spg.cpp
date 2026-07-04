@@ -74,6 +74,13 @@ double spg_get_refresh_rate(void)
 {
 	if (Line_Cycles == 0 || pvr_numscanlines == 0)
 		return 60.0;
+	/* Derived straight from the emulated line timing. Line_Cycles and
+	 * pvr_numscanlines are integers programmed from the SPG registers and the
+	 * division is deterministic, so a given mode always yields the same exact
+	 * double: NTSC 240p -> 59.826628413520460, NTSC 480p/480i ->
+	 * 59.945299913828634, PAL 240p -> 49.920127795527157, PAL 480i -> 50. This
+	 * is the true emulated refresh rate at full precision; do not round or snap
+	 * it -- the frontend wants the exact figure the core produces frames at. */
 	return (double)SH4_MAIN_CLOCK / ((double)Line_Cycles * (double)pvr_numscanlines);
 }
 
