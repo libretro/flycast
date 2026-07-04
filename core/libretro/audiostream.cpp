@@ -25,10 +25,6 @@ extern retro_audio_sample_batch_t audio_batch_cb;
 static SoundFrame Buffer[AUDIO_BUFFER_SIZE];
 static u32 writePtr; /* next sample index */
 
-/* Total samples handed to the frontend, for the retro_run frame-timing probe
- * (FLYCAST_FRAMESTATS). Racy across the emu thread in threaded mode, which is
- * fine for statistics. */
-u32 total_audio_samples = 0;
 
 void WriteSample(s16 r, s16 l)
 {
@@ -45,7 +41,6 @@ void WriteSample(s16 r, s16 l)
       {
          if (dc_is_running() && settings.aica.LimitFPS)
             audio_batch_cb((const int16_t*)Buffer, SAMPLE_COUNT);
-            total_audio_samples += SAMPLE_COUNT;
          writePtr = 0;
       }
       return;
@@ -59,7 +54,6 @@ void WriteSample(s16 r, s16 l)
    {
       if (dc_is_running())
          audio_batch_cb((const int16_t*)Buffer, writePtr);
-      total_audio_samples += writePtr;
       writePtr = 0;
    }
 }
@@ -74,7 +68,6 @@ void FlushAudioFrame(void)
    if (writePtr > 0)
    {
       audio_batch_cb((const int16_t*)Buffer, writePtr);
-      total_audio_samples += writePtr;
       writePtr = 0;
    }
 }

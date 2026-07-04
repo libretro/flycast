@@ -49,12 +49,6 @@ u32* emit_ptr_limit = nullptr;
 
 std::unordered_set<u32> smc_hotspots;
 
-/* Diagnostic counters for the FLYCAST_FRAMESTATS probe. full_flushes: whole
- * 16MB cache flushed + recompiled (recSh4_ClearCache, incl. every non-MMU
- * block-check failure); temp_flushes: 1MB SMC temp cache flushed;
- * blockcheck_fails: cached RAM block found stale (SMC / code overwrite);
- * blocks_compiled: SH4 blocks JITed. */
-DynarecStats dynarec_stats = { 0, 0, 0, 0 };
 
 void* emit_GetCCPtr(void)
 {
@@ -72,14 +66,12 @@ void emit_SetBaseAddr(void)
 void clear_temp_cache(bool full)
 {
 	//printf("recSh4:Temp Code Cache clear at %08X\n", curr_pc);
-	dynarec_stats.temp_flushes++;
 	TempLastAddr = 0;
 	bm_ResetTempCache(full);
 }
 
 static void recSh4_ClearCache(void)
 {
-	dynarec_stats.full_flushes++;
 	INFO_LOG(DYNAREC, "recSh4:Dynarec Cache clear at %08X free space %d", next_pc, emit_FreeSpace());
 	LastAddr=LastAddr_min;
 	bm_ResetCache();
@@ -214,7 +206,6 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 
 DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 {
-	dynarec_stats.blocks_compiled++;
 	u32 pc=next_pc;
 	//printf("rdv_CompilePC next_pc %p\n", next_pc);
 
@@ -296,7 +287,6 @@ u32 DYNACALL rdv_DoInterrupts(void* block_cpde)
 // addr must be the physical address of the start of the block
 DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
 {
-	dynarec_stats.blockcheck_fails++;
 	u32 blockcheck_failures = 0;
 	if (mmu_enabled())
 	{
