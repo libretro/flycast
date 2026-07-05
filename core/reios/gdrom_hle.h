@@ -64,6 +64,9 @@ struct gdrom_hle_state_t
 	u32 multi_callback_arg;
 	bool dma_trans_ended;
 	u64 xfer_end_time;
+	u32 dma_read_sector;
+	u32 dma_read_count;
+	u32 dma_read_addr;
 
 	bool Serialize(void **data, unsigned int *total_size)
 	{
@@ -82,6 +85,9 @@ struct gdrom_hle_state_t
 		LIBRETRO_S(multi_callback_arg);
 		LIBRETRO_S(dma_trans_ended);
 		LIBRETRO_S(xfer_end_time);
+		LIBRETRO_S(dma_read_sector);
+		LIBRETRO_S(dma_read_count);
+		LIBRETRO_S(dma_read_addr);
 
 		return true;
 	}
@@ -102,6 +108,9 @@ struct gdrom_hle_state_t
 		LIBRETRO_US(multi_callback_arg);
 		LIBRETRO_US(dma_trans_ended);
 		LIBRETRO_US(xfer_end_time);
+		LIBRETRO_US(dma_read_sector);
+		LIBRETRO_US(dma_read_count);
+		LIBRETRO_US(dma_read_addr);
 
 		return true;
 	}

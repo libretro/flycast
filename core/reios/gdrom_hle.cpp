@@ -110,6 +110,11 @@ static void read_sectors_to(u32 addr, u32 sector, u32 count)
 	}
 }
 
+/* Set up a DMA read but do not perform the I/O yet: the sectors are read in
+ * bounded chunks across the emulated transfer window (GDCC_DMAREAD polling),
+ * so no single retro_run stalls on a large synchronous disc read. The data is
+ * still fully in guest memory by xfer_end_time, so the emulated completion tick
+ * -- and therefore emulation determinism -- is unchanged. */
 static void GDROM_HLE_ReadDMA()
 {
 	u32 s = gd_hle_state.params[0];
@@ -119,9 +124,56 @@ static void GDROM_HLE_ReadDMA()
 
 	debugf("GDROM: DMA READ Sector=%d, Num=%d, Buffer=0x%08X, Unk01=0x%08X", s, n, b, u);
 
-	read_sectors_to<false>(b, s, n);
+	gd_hle_state.cur_sector = s + n - 1;
+	if (n > 5 && GDROM_TICK == 1500000)
+		gd_hle_state.xfer_end_time = sh4_sched_now64() + (u64)n * 2048 * 1000000L / 10240;
+	else
+		gd_hle_state.xfer_end_time = sh4_sched_now64() + 5 * 2048 * 2;
+
+	gd_hle_state.dma_read_sector = s;
+	gd_hle_state.dma_read_count  = n;
+	gd_hle_state.dma_read_addr   = b;
 	gd_hle_state.result[2] = 0;
 	gd_hle_state.result[3] = 0;
+}
+
+/* Read up to 32 sectors (matching the real GDROM hardware path's per-read cap)
+ * of the pending DMA into guest memory. Bounded, so a single call is ~one
+ * hardware-sized read instead of the whole transfer. */
+static void GDROM_HLE_ReadDMA_step()
+{
+	if (gd_hle_state.dma_read_count == 0)
+		return;
+
+	u32 chunk = gd_hle_state.dma_read_count;
+	if (chunk > 32)
+		chunk = 32;
+
+	u8 *pDst = GetMemPtr(gd_hle_state.dma_read_addr, 0);
+	if (pDst != NULL)
+	{
+		libGDR_ReadSector(pDst, gd_hle_state.dma_read_sector, chunk, 2048);
+		gd_hle_state.dma_read_addr   += chunk * 2048;
+		gd_hle_state.dma_read_sector += chunk;
+		gd_hle_state.dma_read_count  -= chunk;
+	}
+	else
+	{
+		/* Unmapped destination (rare): fall back to the original
+		 * sector-by-sector path for the remainder. */
+		u32 temp[2048 / 4];
+		while (gd_hle_state.dma_read_count > 0)
+		{
+			libGDR_ReadSector((u8 *)temp, gd_hle_state.dma_read_sector, 1, sizeof(temp));
+			for (int i = 0; i < (int)ARRAY_SIZE(temp); i++)
+			{
+				WriteMem32_nommu(gd_hle_state.dma_read_addr, temp[i]);
+				gd_hle_state.dma_read_addr += 4;
+			}
+			gd_hle_state.dma_read_sector++;
+			gd_hle_state.dma_read_count--;
+		}
+	}
 }
 
 static void GDROM_HLE_ReadPIO()
@@ -296,12 +348,12 @@ static void GD_HLE_Command(u32 cc)
 		cdda.status = cdda_t::NoInfo;
 		if (gd_hle_state.xfer_end_time == 0)
 			GDROM_HLE_ReadDMA();
-		if (gd_hle_state.xfer_end_time > 0)
-		{
-			if (gd_hle_state.xfer_end_time > sh4_sched_now64())
-				return;
-			gd_hle_state.xfer_end_time = 0;
-		}
+		GDROM_HLE_ReadDMA_step();          /* read <=32 sectors this poll */
+		if (gd_hle_state.xfer_end_time > sh4_sched_now64())
+			return;                        /* still within the emulated transfer window */
+		while (gd_hle_state.dma_read_count > 0)  /* window elapsed: finish any remainder */
+			GDROM_HLE_ReadDMA_step();
+		gd_hle_state.xfer_end_time = 0;
 		gd_hle_state.result[2] = gd_hle_state.params[1] * 2048;
 		gd_hle_state.result[3] = 0;
 		SecNumber.Status = GD_STANDBY;
