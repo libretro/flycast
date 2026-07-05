@@ -2,6 +2,9 @@
 #include <streams/file_stream.h>
 
 #include "deps/libchdr/include/libchdr/chd.h"
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 /* tracks are padded to a multiple of this many frames */
 const uint32_t CD_TRACK_PADDING = 4;
@@ -16,6 +19,107 @@ struct CHDDisc : Disc
 	u32 hunkbytes;
 	u32 sph;
 
+	/* --- async hunk prefetch (determinism-safe: CHD decompression is
+	 * deterministic, so a background-decompressed hunk is byte-identical to a
+	 * synchronously decompressed one; the emulated read gets the same data
+	 * either way, this only moves the decompress CPU off the emu thread). --- */
+	chd_file* chd2 = nullptr;          /* separate handle for the worker */
+	RFILE*    chd_fp2 = nullptr;
+	u8*  worker_buf = nullptr;         /* worker-private decompress target */
+	u8*  next_buf = nullptr;           /* published prefetched hunk */
+	static const u32 NO_HUNK = 0xFFFFFFFFu;
+	u32  next_hunk = NO_HUNK;
+	bool next_ready = false;
+	u32  total_hunks = 0;
+	u32  prefetch_req = NO_HUNK;
+	bool worker_stop = false;
+	bool prefetch_enabled = false;
+	std::thread worker;
+	std::mutex  mtx;
+	std::condition_variable cv;
+
+	void prefetch_worker()
+	{
+		std::unique_lock<std::mutex> lk(mtx);
+		for (;;)
+		{
+			cv.wait(lk, [&]{ return worker_stop
+				|| (prefetch_req != NO_HUNK && !(next_ready && next_hunk == prefetch_req)); });
+			if (worker_stop)
+				break;
+			u32 req = prefetch_req;
+			if (req == NO_HUNK || req >= total_hunks || (next_ready && next_hunk == req))
+				continue;
+			lk.unlock();
+			chd_read(chd2, req, worker_buf);   /* slow decompress, off-thread, no lock */
+			lk.lock();
+			std::swap(worker_buf, next_buf);
+			next_hunk = req;
+			next_ready = true;
+		}
+	}
+
+	/* Return a pointer to the decompressed hunk, preferring the prefetched copy. */
+	u8* hunk_get(u32 hunk)
+	{
+		if (hunk == old_hunk)
+			return hunk_mem;               /* still the current hunk */
+		if (!prefetch_enabled)
+		{
+			chd_read(chd, hunk, hunk_mem);
+			old_hunk = hunk;
+			return hunk_mem;
+		}
+		std::unique_lock<std::mutex> lk(mtx);
+		if (next_ready && next_hunk == hunk)
+		{
+			std::swap(next_buf, hunk_mem); /* take prefetched hunk -- no decompress */
+			next_ready = false;
+			old_hunk = hunk;
+			prefetch_req = hunk + 1;
+			cv.notify_one();
+			return hunk_mem;
+		}
+		/* miss (first read or seek): decompress synchronously, re-aim prefetch */
+		prefetch_req = hunk + 1;
+		cv.notify_one();
+		lk.unlock();
+		chd_read(chd, hunk, hunk_mem);
+		old_hunk = hunk;
+		return hunk_mem;
+	}
+
+	void start_prefetch(const char* file)
+	{
+		chd_fp2 = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+		if (chd_fp2 == nullptr)
+			return;
+		if (chd_open_file(chd_fp2, CHD_OPEN_READ, 0, &chd2) != CHDERR_NONE)
+		{
+			filestream_close(chd_fp2); chd_fp2 = nullptr; chd2 = nullptr;
+			return;
+		}
+		worker_buf = new u8[hunkbytes];
+		next_buf   = new u8[hunkbytes];
+		prefetch_enabled = true;
+		worker = std::thread(&CHDDisc::prefetch_worker, this);
+	}
+
+	void stop_prefetch()
+	{
+		if (worker.joinable())
+		{
+			{ std::unique_lock<std::mutex> lk(mtx); worker_stop = true; cv.notify_one(); }
+			worker.join();
+		}
+		if (chd2) chd_close(chd2);
+		if (chd_fp2) filestream_close(chd_fp2);
+		delete [] worker_buf;
+		delete [] next_buf;
+		chd2 = nullptr; chd_fp2 = nullptr; worker_buf = nullptr; next_buf = nullptr;
+		prefetch_enabled = false;
+	}
+
 	CHDDisc()
 	{
 		chd=0;
@@ -26,6 +130,7 @@ struct CHDDisc : Disc
 
 	~CHDDisc()
 	{
+		stop_prefetch();
 		if (hunk_mem)
 			delete [] hunk_mem;
 		if (chd)
@@ -56,15 +161,11 @@ struct CHDTrack : TrackFile
 	{
 		u32 fad_offs = FAD + Offset;
 		u32 hunk=(fad_offs)/disc->sph;
-		if (disc->old_hunk!=hunk)
-		{
-			chd_read(disc->chd,hunk,disc->hunk_mem); //CHDERR_NONE
-			disc->old_hunk = hunk;
-		}
+		u8* hmem = disc->hunk_get(hunk);
 
 		u32 hunk_ofs=fad_offs%disc->sph;
 
-		memcpy(dst,disc->hunk_mem+hunk_ofs*(2352+96),fmt);
+		memcpy(dst,hmem+hunk_ofs*(2352+96),fmt);
 
 		if (swap_bytes)
 		{
@@ -102,6 +203,7 @@ bool CHDDisc::TryOpen(const char* file)
 	const chd_header* head = chd_get_header(chd);
 
 	hunkbytes = head->hunkbytes;
+	total_hunks = head->totalhunks;
 	hunk_mem = new u8[hunkbytes];
 	old_hunk=0xFFFFFFF;
 
@@ -180,6 +282,8 @@ bool CHDDisc::TryOpen(const char* file)
 		WARN_LOG(GDROM, "WARNING: chd: Total frames is wrong: %u frames in %zu tracks", total_frames, tracks.size());
 
 	FillGDSession();
+
+	start_prefetch(file);
 
 	return true;
 }
