@@ -2109,7 +2109,7 @@ private:
    std::vector<CC_PS> CC_pars;
 
 	X64RegAlloc regalloc;
-	Xbyak::util::Cpu cpu;
+	static Xbyak::util::Cpu cpu;
 	size_t current_opid;
 	Xbyak::Label exit_block;
 	static const u32 read_mem_op_size;
@@ -2140,6 +2140,11 @@ void X64RegAlloc::Writeback_FPU(u32 reg, s8 nreg)
 }
 
 static BlockCompiler* compiler;
+
+/* CPU feature detection is process-invariant; run it once instead of on every
+   block compile. A per-instance Cpu member re-ran the full cpuid battery
+   (~100us) for every BlockCompiler, dominating compile time. */
+Xbyak::util::Cpu BlockCompiler::cpu;
 
 void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool staging, bool optimise)
 {
