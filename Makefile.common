@@ -471,7 +471,11 @@ SOURCES_C += $(LIBRETRO_COMM_DIR)/memmap/memalign.c \
 					$(LIBRETRO_COMM_DIR)/compat/compat_strcasestr.c \
 					$(LIBRETRO_COMM_DIR)/file/retro_dirent.c \
 					$(LIBRETRO_COMM_DIR)/string/stdstring.c \
-					$(LIBRETRO_COMM_DIR)/time/rtime.c
+					$(LIBRETRO_COMM_DIR)/time/rtime.c \
+					$(LIBRETRO_COMM_DIR)/file/nbio/nbio_intf.c \
+					$(LIBRETRO_COMM_DIR)/file/nbio/nbio_stdio.c \
+					$(LIBRETRO_COMM_DIR)/file/nbio/nbio_unixmmap.c \
+					$(LIBRETRO_COMM_DIR)/file/nbio/nbio_windowsmmap.c
 endif
 
 ifeq ($(NO_THREADS), 1)
