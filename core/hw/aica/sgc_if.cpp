@@ -1649,7 +1649,19 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			Chans[i].FEG.prev1 = 0;
 			Chans[i].FEG.prev2 = 0;
 		}
-		Chans[i].SetFegState(Chans[i].FEG.state);
+		/* SetFegState() resets value/prev1/prev2 to the register level when the
+		 * saved state is EG_Attack, which would discard the restored mid-attack
+		 * filter-envelope state and desync audio after a savestate/runahead load.
+		 * Preserve the values we just read across the state setup. */
+		{
+			u32 feg_value       = Chans[i].FEG.value;
+			SampleType feg_prev1 = Chans[i].FEG.prev1;
+			SampleType feg_prev2 = Chans[i].FEG.prev2;
+			Chans[i].SetFegState(Chans[i].FEG.state);
+			Chans[i].FEG.value = feg_value;
+			Chans[i].FEG.prev1 = feg_prev1;
+			Chans[i].FEG.prev2 = feg_prev2;
+		}
 		Chans[i].UpdateFEG();
 		if (ver < V8)
 		{
