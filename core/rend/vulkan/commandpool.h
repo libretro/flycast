@@ -20,6 +20,7 @@
 */
 #pragma once
 #include "vulkan_context.h"
+#include <memory>
 
 class CommandPool
 {
@@ -46,10 +47,13 @@ public:
 			freeBuffers.resize(size);
 		if (inFlightBuffers.size() != size)
 			inFlightBuffers.resize(size);
+		if (deferredDeletes.size() != size)
+			deferredDeletes.resize(size);
 	}
 
 	void Term()
 	{
+		deferredDeletes.clear();
 		freeBuffers.clear();
 		inFlightBuffers.clear();
 		fences.clear();
@@ -67,6 +71,9 @@ public:
 		index = (index + 1) % VulkanContext::Instance()->GetSwapChainSize();
 		VulkanContext::Instance()->GetDevice().waitForFences(1, &fences[index].get(), true, UINT64_MAX);
 		VulkanContext::Instance()->GetDevice().resetFences(1, &fences[index].get());
+		/* The fence above has signaled, so the GPU is done with everything that was
+		   submitted for this slot. Anything retired against it is now safe to destroy. */
+		deferredDeletes[index].clear();
 		std::vector<vk::UniqueCommandBuffer>& inFlight = inFlightBuffers[index];
 		std::vector<vk::UniqueCommandBuffer>& freeBuf = freeBuffers[index];
 		std::move(inFlight.begin(), inFlight.end(), std::back_inserter(freeBuf));
@@ -100,10 +107,22 @@ public:
 		return index;
 	}
 
+	/* Retire a GPU resource so it is destroyed once the current frame's fence has
+	   signaled, rather than stalling the whole device with WaitIdle. Used when an
+	   attachment must be recreated (grown) while previous frames may still reference
+	   the old one. The retired object is freed in BeginFrame when this slot recurs. */
+	template<typename T>
+	void DeferDelete(std::unique_ptr<T> obj)
+	{
+		if (obj)
+			deferredDeletes[index].emplace_back(obj.release(), [](T *p) { delete p; });
+	}
+
 private:
 	int index = 0;
 	std::vector<std::vector<vk::UniqueCommandBuffer>> freeBuffers;
 	std::vector<std::vector<vk::UniqueCommandBuffer>> inFlightBuffers;
 	std::vector<vk::UniqueCommandPool> commandPools;
 	std::vector<vk::UniqueFence> fences;
+	std::vector<std::vector<std::shared_ptr<void>>> deferredDeletes;
 };

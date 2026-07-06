@@ -425,10 +425,9 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 
 	if (!depthAttachment || widthPow2 > depthAttachment->getExtent().width || heightPow2 > depthAttachment->getExtent().height)
 	{
-		if (!depthAttachment)
-			depthAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
-		else
-			GetContext()->WaitIdle();
+		if (depthAttachment)
+			commandPool->DeferDelete(std::move(depthAttachment));
+		depthAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
 		depthAttachment->Init(widthPow2, heightPow2, GetContext()->GetDepthFormat(),
 				vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransientAttachment);
 	}
@@ -491,10 +490,9 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	{
 		if (!colorAttachment || widthPow2 > colorAttachment->getExtent().width || heightPow2 > colorAttachment->getExtent().height)
 		{
-			if (!colorAttachment)
-				colorAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
-			else
-				GetContext()->WaitIdle();
+			if (colorAttachment)
+				commandPool->DeferDelete(std::move(colorAttachment));
+			colorAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
 			colorAttachment->Init(widthPow2, heightPow2, vk::Format::eR8G8B8A8Unorm,
 					vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc);
 			colorImageCurrentLayout = vk::ImageLayout::eUndefined;

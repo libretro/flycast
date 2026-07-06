@@ -406,17 +406,18 @@ void OITDrawer::MakeBuffers(int width, int height)
 	maxWidth = std::max(maxWidth, width);
 	maxHeight = std::max(maxHeight, height);
 
-	GetContext()->WaitIdle();
 	for (auto& attachment : colorAttachments)
 	{
-		attachment.reset();
+		if (attachment)
+			commandPool->DeferDelete(std::move(attachment));
 		attachment = std::unique_ptr<FramebufferAttachment>(
 				new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice()));
 		attachment->Init(maxWidth, maxHeight, GetColorFormat(),
 				vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment);
 	}
 
-	depthAttachment.reset();
+	if (depthAttachment)
+		commandPool->DeferDelete(std::move(depthAttachment));
 	depthAttachment = std::unique_ptr<FramebufferAttachment>(
 			new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice()));
 	depthAttachment->Init(maxWidth, maxHeight, GetContext()->GetDepthFormat(),
@@ -557,10 +558,9 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	{
 		if (!colorAttachment || widthPow2 > colorAttachment->getExtent().width || heightPow2 > colorAttachment->getExtent().height)
 		{
-			if (!colorAttachment)
-				colorAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
-			else
-				GetContext()->WaitIdle();
+			if (colorAttachment)
+				commandPool->DeferDelete(std::move(colorAttachment));
+			colorAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
 			colorAttachment->Init(widthPow2, heightPow2, vk::Format::eR8G8B8A8Unorm,
 					vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc);
 			colorImageCurrentLayout = vk::ImageLayout::eUndefined;
