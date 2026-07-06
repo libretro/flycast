@@ -2335,7 +2335,12 @@ bool retro_unserialize(const void * data, size_t size)
     sh4_cpu.ResetCache();
     dsp.dyndirty = true;
     sh4_sched_ffts();
-    CalculateSync();
+    /* Recompute the derived video timing (Line_Cycles, scanline count) from
+     * the restored PVR registers, but do NOT reset the beam position or
+     * reschedule the vblank event: pvr_cur_scanline and the vblank_schid slot
+     * were just restored from the savestate and must be preserved, otherwise
+     * every load nudges SPG timing by up to one scanline and desyncs. */
+    CalculateSync(false);
     ResetAudioBuffer();
 
     for ( i = 0 ; i < 4 ; i++)

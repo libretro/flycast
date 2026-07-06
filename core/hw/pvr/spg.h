@@ -5,7 +5,7 @@ bool spg_Init();
 void spg_Term();
 void spg_Reset(bool Manual);
 
-void CalculateSync();
+void CalculateSync(bool reschedule = true);
 double spg_get_refresh_rate();
 void read_lightgun_position(int x, int y);
 struct TA_context;

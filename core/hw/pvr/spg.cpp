@@ -8,7 +8,7 @@
 u32 in_vblank;
 u32 clc_pvr_scanline;
 static u32 pvr_numscanlines = 512;
-static u32 pvr_cur_scanline = -1;
+u32 pvr_cur_scanline = -1;
 static u32 vblk_cnt;
 
 #define PIXEL_CLOCK (54*1000*1000/2)
@@ -21,7 +21,7 @@ static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
 static bool maple_int_pending;
 
-void CalculateSync(void)
+void CalculateSync(bool reschedule)
 {
 	const u32 pixel_clock = PIXEL_CLOCK / (FB_R_CTRL.vclk_div ? 1 : 2);
 
@@ -54,9 +54,14 @@ void CalculateSync(void)
 
 	rend_set_fb_scale(scale_x, scale_y);
 
-	pvr_cur_scanline = 0;
-
-	sh4_sched_request(vblank_schid, Line_Cycles);
+	/* On a real timing change (register write / reset) restart the raster at
+	 * scanline 0 and arm the line scheduler. Skipped on savestate load, where
+	 * the beam position and vblank event are restored from the state. */
+	if (reschedule)
+	{
+		pvr_cur_scanline = 0;
+		sh4_sched_request(vblank_schid, Line_Cycles);
+	}
 }
 
 /*

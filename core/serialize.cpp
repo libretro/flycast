@@ -153,6 +153,7 @@ extern u8 pvr_regs[pvr_RegSize];
 //./core/hw/pvr/spg.o
 extern u32 in_vblank;
 extern u32 clc_pvr_scanline;
+extern u32 pvr_cur_scanline;
 extern int render_end_schid;
 extern int vblank_schid;
 
@@ -465,6 +466,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 
 	LIBRETRO_S(in_vblank);
 	LIBRETRO_S(clc_pvr_scanline);
+	LIBRETRO_S(pvr_cur_scanline);
    LIBRETRO_S(fb_w_cur);
 
 	LIBRETRO_S(ta_fsm[2048]);
@@ -850,6 +852,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 
 	LIBRETRO_US(in_vblank);
 	LIBRETRO_US(clc_pvr_scanline);
+	/* pvr_cur_scanline: current raster line. Not saved before V15, where the
+	 * post-load CalculateSync() reset it to 0; keep that behaviour for old
+	 * states so their (approximate) load path is unchanged. */
+	if (version >= V15)
+		LIBRETRO_US(pvr_cur_scanline);
+	else
+		pvr_cur_scanline = 0;
    fb_w_cur = 1;
 	if (version < V9)
 	{
