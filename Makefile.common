@@ -4,7 +4,6 @@ LIBRETRO_COMM_DIR = $(CORE_DIR)/core/libretro-common
 INCFLAGS    += -I$(CORE_DIR)/core/libretro \
 					-I$(CORE_DIR)/core/ \
 					-I$(DEPS_DIR) \
-					-I$(CORE_DIR)/core/deps/libchdr/include \
 					-I$(CORE_DIR)/core/deps/lzma/C \
 					-I$(LIBRETRO_COMM_DIR)/include \
 					-I$(DEPS_DIR)/vixl \
@@ -90,7 +89,6 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/stdclass.cpp \
 					\
 					$(DEPS_DIR)/coreio/coreio.cpp \
-					$(DEPS_DIR)/crypto/sha1.cpp \
 					$(DEPS_DIR)/crypto/sha256.cpp \
 					$(DEPS_DIR)/crypto/md5.cpp \
 					$(DEPS_DIR)/libelf/elf.cpp \
@@ -160,14 +158,21 @@ else
 	GLSLANG_SOURCES_CXX += $(DEPS_DIR)/glslang/glslang/OSDependent/Unix/ossource.cpp
 endif
 
-LIBCHDR_INCFLAGS = -I$(DEPS_DIR)/flac/include
-
-LIBCHDR_SOURCES_C = \
-					$(DEPS_DIR)/libchdr/src/libchdr_bitstream.c \
-					$(DEPS_DIR)/libchdr/src/libchdr_cdrom.c \
-					$(DEPS_DIR)/libchdr/src/libchdr_chd.c \
-					$(DEPS_DIR)/libchdr/src/libchdr_flac.c \
-					$(DEPS_DIR)/libchdr/src/libchdr_huffman.c \
+# CHD images are read by libretro-common's clean-room rchd reader. Its hunk
+# codecs come from the same tree: zlib-format hunks through
+# encoding_deflate.c, LZMA through r7z_lzma.c, FLAC through rflac.c, zstd
+# through encoding_rzstd.c, and the version 5 map through
+# encoding_huffman.c, which every image needs to open at all.
+CHD_SOURCES_C = \
+					$(CORE_DIR)/core/imgread/chd_image.c \
+					$(LIBRETRO_COMM_DIR)/formats/chd/rchd.c \
+					$(LIBRETRO_COMM_DIR)/encodings/encoding_huffman.c \
+					$(LIBRETRO_COMM_DIR)/encodings/encoding_rzstd.c \
+					$(LIBRETRO_COMM_DIR)/encodings/encoding_deflate.c \
+					$(LIBRETRO_COMM_DIR)/encodings/encoding_crc32.c \
+					$(LIBRETRO_COMM_DIR)/formats/7z/r7z_lzma.c \
+					$(LIBRETRO_COMM_DIR)/formats/flac/rflac.c \
+					$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
 LIBZIP_SOURCES_C = \
 					$(DEPS_DIR)/libzip/mkstemp.c \
@@ -490,13 +495,7 @@ ifeq ($(HAVE_TEXUPSCALE), 1)
 endif
 
 ifeq ($(HAVE_CHD), 1)
-	ifeq ($(SYSTEM_LIBCHDR), 1)
-		CFLAGS += $(shell pkg-config --cflags libchdr)
-		LIBS += $(shell pkg-config --libs libchdr)
-	else
-		INCFLAGS += $(LIBCHDR_INCFLAGS)
-		SOURCES_C += $(LIBCHDR_SOURCES_C)
-	endif
+	SOURCES_C += $(CHD_SOURCES_C)
 endif
 
 SOURCES_C += \
