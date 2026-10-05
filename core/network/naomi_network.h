@@ -16,8 +16,8 @@
 #pragma once
 #include "types.h"
 #include <cstdint>
-#include <atomic>
 #include <vector>
+#include <retro_atomic.h>
 #include "net_platform.h"
 #include "miniupnp.h"
 
@@ -44,6 +44,19 @@ public:
 	void shutdown();
 	void closeSockets();
 	void terminate();
+
+	/* The thread that owns the sockets never sleeps for a fixed time and
+	 * never spins. Wherever it has to wait it waits in select() for the
+	 * sockets it is waiting on, together with a socket shutdown() writes
+	 * to, so a wait ends the moment there is something to do or the
+	 * network is told to stop.
+	 *
+	 * armWake() makes that socket; call it before the thread is started. */
+	bool armWake();
+	/* Until one of the ring's sockets has something to read. */
+	void waitForData();
+	/* For @usec, or until shutdown(). */
+	void waitStop(int64_t usec);
 	int slotCount() const { return slot_count; }
 	int slotId() const { return slot_id; }
 	u16 packetNumber() const { return packet_number; }
@@ -70,7 +83,12 @@ private:
 	int slot_id = 0;
 	bool got_token = false;
 	u16 packet_number = 0;
-	std::atomic<bool> network_stopping{ false };
+	bool stopping() { return retro_atomic_load_acquire_int(&network_stopping) != 0; }
+	// >0: one of socks is readable; 0: timed out (usec < 0: no timeout) or told to stop
+	int waitReadable(const sock_t *socks, int count, int64_t usec);
+
+	retro_atomic_int_t network_stopping;
+	sock_t wake_sock = INVALID_SOCKET;
    MiniUPnP miniupnp;
 
 	static const uint16_t SERVER_PORT = 37391;

@@ -16,8 +16,7 @@
 #include "naomi_network.h"
 
 #include "types.h"
-#include <chrono>
-#include <thread>
+#include <features/features_cpu.h>
 #ifndef __LIBRETRO__
 // FIXME implement gui_display_notification with libretro widgets
 #include "rend/gui.h"
@@ -49,6 +48,100 @@ sock_t NaomiNetwork::createAndBind(int protocol)
 		set_non_blocking(sock);
 
 	return sock;
+}
+
+bool NaomiNetwork::armWake()
+{
+#ifdef _WIN32
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 0), &wsaData) != 0)
+		return false;
+#endif
+	if (wake_sock == INVALID_SOCKET)
+	{
+		/* A datagram socket on the loopback interface, connected to
+		 * itself: a byte sent to it makes it readable. */
+		struct sockaddr_in addr;
+		socklen_t len = sizeof(addr);
+		sock_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+		if (sock == INVALID_SOCKET)
+			return false;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		if (::bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0
+				|| getsockname(sock, (struct sockaddr *)&addr, &len) < 0
+				|| ::connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+		{
+			closesocket(sock);
+			return false;
+		}
+		set_non_blocking(sock);
+		wake_sock = sock;
+	}
+	else
+	{
+		// What the last shutdown() left in it
+		char c;
+		while (::recv(wake_sock, &c, 1, 0) > 0)
+			;
+	}
+	retro_atomic_store_release_int(&network_stopping, 0);
+	return true;
+}
+
+int NaomiNetwork::waitReadable(const sock_t *socks, int count, int64_t usec)
+{
+	fd_set readable;
+	struct timeval tv;
+	int max_fd = -1;
+	int found = 0;
+
+	if (stopping())
+		return 0;
+
+	FD_ZERO(&readable);
+	for (int i = 0; i < count; i++)
+	{
+		if (socks[i] == INVALID_SOCKET)
+			continue;
+		FD_SET(socks[i], &readable);
+		max_fd = std::max(max_fd, (int)socks[i]);
+	}
+	if (wake_sock != INVALID_SOCKET)
+	{
+		FD_SET(wake_sock, &readable);
+		max_fd = std::max(max_fd, (int)wake_sock);
+	}
+	else if (usec < 0)
+		// Nothing could ever end the wait
+		return 0;
+
+	if (usec >= 0)
+	{
+		tv.tv_sec = (long)(usec / 1000000);
+		tv.tv_usec = (long)(usec % 1000000);
+	}
+	if (select(max_fd + 1, &readable, nullptr, nullptr, usec >= 0 ? &tv : nullptr) <= 0)
+		return 0;
+	for (int i = 0; i < count; i++)
+		if (socks[i] != INVALID_SOCKET && FD_ISSET(socks[i], &readable))
+			found++;
+	return found;
+}
+
+void NaomiNetwork::waitStop(int64_t usec)
+{
+	waitReadable(nullptr, 0, usec);
+}
+
+void NaomiNetwork::waitForData()
+{
+	if (isMaster())
+		waitReadable(slaves.data(), (int)slaves.size(), -1);
+	else
+		waitReadable(&client_sock, 1, -1);
 }
 
 bool NaomiNetwork::init()
@@ -143,13 +236,7 @@ bool NaomiNetwork::findServer()
         return false;
     }
 
-    // Set a 1 sec timeout on recv call
-    if (!set_recv_timeout(sockfd, 1000))
-    {
-        ERROR_LOG(NETWORK, "setsockopt(SO_RCVTIMEO) failed. errno=%d", get_last_error());
-        closesocket(sockfd);
-        return false;
-    }
+    set_non_blocking(sockfd);
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;          // host byte order
@@ -159,12 +246,20 @@ bool NaomiNetwork::findServer()
 
     struct sockaddr server_addr;
 
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 3 && !stopping(); i++)
     {
         if (sendto(sockfd, "flycast", 6, 0, (struct sockaddr *)&addr, sizeof addr) == -1)
         {
             WARN_LOG(NETWORK, "Send datagram failed. errno=%d", get_last_error());
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Try again in a tenth of a second
+            waitStop(100 * 1000);
+            continue;
+        }
+
+        // The answer, for up to a second
+        if (waitReadable(&sockfd, 1, 1000 * 1000) <= 0)
+        {
+            INFO_LOG(NETWORK, "Recv datagram timeout. i=%d", i);
             continue;
         }
 
@@ -173,10 +268,7 @@ bool NaomiNetwork::findServer()
         socklen_t addrlen = sizeof(server_addr);
         if (recvfrom(sockfd, buf, sizeof(buf), 0, &server_addr, &addrlen) == -1)
         {
-            if (get_last_error() != L_EAGAIN && get_last_error() != L_EWOULDBLOCK)
-                WARN_LOG(NETWORK, "Recv datagram failed. errno=%d", get_last_error());
-            else
-                INFO_LOG(NETWORK, "Recv datagram timeout. i=%d", i);
+            WARN_LOG(NETWORK, "Recv datagram failed. errno=%d", get_last_error());
             continue;
         }
         server_ip = ((struct sockaddr_in *)&server_addr)->sin_addr;
@@ -201,7 +293,6 @@ bool NaomiNetwork::findServer()
 
 bool NaomiNetwork::startNetwork()
 {
-	network_stopping = false;
 	if (!init())
 		return false;
 
@@ -211,17 +302,15 @@ bool NaomiNetwork::startNetwork()
 	slaves.clear();
 	got_token = false;
 
-	using namespace std::chrono;
-	const auto timeout = seconds(10);
-
+	// Ten seconds
+	const retro_time_t timeout = 10 * 1000 * 1000;
 	if (settings.network.ActAsServer)
 	{
 		NOTICE_LOG(NETWORK, "Waiting for slave connections");
-		steady_clock::time_point start_time = steady_clock::now();
-
-		while (steady_clock::now() - start_time < timeout)
+		retro_time_t start_time = cpu_features_get_time_usec();
+		while (cpu_features_get_time_usec() - start_time < timeout)
 		{
-			if (network_stopping)
+			if (stopping())
 			{
 				for (auto clientSock : slaves)
 					if (clientSock != INVALID_SOCKET)
@@ -231,7 +320,7 @@ bool NaomiNetwork::startNetwork()
 			std::string notif = slaves.empty() ? "Waiting for players..."
 					: std::to_string(slaves.size()) + " player(s) connected. Waiting...";
 #ifndef __LIBRETRO__
-			gui_display_notification(notif.c_str(), timeout.count() * 2000);
+			gui_display_notification(notif.c_str(), (int)(timeout / 1000) * 2);
 #endif
 
 			processBeacon();
@@ -252,7 +341,13 @@ bool NaomiNetwork::startNetwork()
 				if (slaves.size() == 3)
 					break;
 			}
-			std::this_thread::sleep_for(milliseconds(100));
+			// Until someone connects or asks who is serving, or time is up
+			{
+				const sock_t waiting[2] = { server_sock, beacon_sock };
+				const retro_time_t left = timeout - (cpu_features_get_time_usec() - start_time);
+				if (left > 0)
+					waitReadable(waiting, 2, left);
+			}
 		}
 		slot_id = 0;
 		slot_count = slaves.size() + 1;
@@ -286,22 +381,24 @@ bool NaomiNetwork::startNetwork()
 			if (getaddrinfo(settings.network.server.c_str(), 0, nullptr, &resultAddr))
 				WARN_LOG(NETWORK, "Server %s is unknown", settings.network.server.c_str());
 			else
+			{
 				for (struct addrinfo *ptr = resultAddr; ptr != nullptr; ptr = ptr->ai_next)
 					if (ptr->ai_family == AF_INET)
 					{
 						server_ip = ((sockaddr_in *)ptr->ai_addr)->sin_addr;
 						break;
 					}
+				freeaddrinfo(resultAddr);
+			}
 		}
 
 		NOTICE_LOG(NETWORK, "Connecting to server");
 #ifndef __LIBRETRO__
 		gui_display_notification("Connecting to server", 10000);
 #endif
-		steady_clock::time_point start_time = steady_clock::now();
-
-		while (client_sock == INVALID_SOCKET && !network_stopping
-				&& steady_clock::now() - start_time < timeout)
+		retro_time_t start_time = cpu_features_get_time_usec();
+		while (client_sock == INVALID_SOCKET && !stopping()
+				&& cpu_features_get_time_usec() - start_time < timeout)
 		{
 			if (server_ip.s_addr == INADDR_NONE && !findServer())
 				continue;
@@ -316,29 +413,24 @@ bool NaomiNetwork::startNetwork()
 				ERROR_LOG(NETWORK, "Socket connect failed");
 				closesocket(client_sock);
 				client_sock = INVALID_SOCKET;
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				// Try again in a tenth of a second
+				waitStop(100 * 1000);
 			}
 			else
 			{
 #ifndef __LIBRETRO__
 				gui_display_notification("Waiting for server to start", 10000);
 #endif
-				/* Wait for the server to start the game, up to twice the
-				 * timeout, a tenth of a second at a time so that
-				 * shutdown() is noticed without anyone having to close
-				 * the socket under this thread. */
+				/* Wait for the server to start the game, for up to twice
+				 * the timeout. */
 				u8 buf[2];
 				int got = 0;
-				steady_clock::time_point wait_start = steady_clock::now();
-				while (got < 2 && !network_stopping
-						&& steady_clock::now() - wait_start < timeout * 2)
+				retro_time_t wait_start = cpu_features_get_time_usec();
+				while (got < 2 && !stopping())
 				{
-					fd_set readable;
-					struct timeval tv = { 0, 100 * 1000 };
-					FD_ZERO(&readable);
-					FD_SET(client_sock, &readable);
-					if (select((int)client_sock + 1, &readable, nullptr, nullptr, &tv) <= 0)
-						continue;
+					const retro_time_t left = timeout * 2 - (cpu_features_get_time_usec() - wait_start);
+					if (left <= 0 || waitReadable(&client_sock, 1, left) <= 0)
+						break;
 					ssize_t l = ::recv(client_sock, (char *)buf + got, 2 - got, 0);
 					if (l <= 0)
 						break;
@@ -415,12 +507,17 @@ bool NaomiNetwork::receive(u8 *data, u32 size)
 	packet_number = pktnum;
 
 	ssize_t received = 0;
-	while (received != size && !network_stopping)
+	while (received != size && !stopping())
 	{
 		l = ::recv(sockfd, (char*)(data + received), size - received, 0);
 		if (l <= 0)
 		{
-			if (get_last_error() != L_EAGAIN && get_last_error() != L_EWOULDBLOCK)
+			if (l < 0 && (get_last_error() == L_EAGAIN || get_last_error() == L_EWOULDBLOCK))
+			{
+				// The rest of the packet is on its way
+				waitReadable(&sockfd, 1, -1);
+				continue;
+			}
 			{
 				WARN_LOG(NETWORK, "receiveNetwork: read failed. errno=%d", get_last_error());
 				if (isMaster())
@@ -486,9 +583,11 @@ void NaomiNetwork::send(u8 *data, u32 size)
 
 void NaomiNetwork::shutdown()
 {
-	network_stopping = true;
+	retro_atomic_store_release_int(&network_stopping, 1);
+	// Ends whatever wait the network thread is in
+	if (wake_sock != INVALID_SOCKET)
+		::send(wake_sock, "", 1, 0);
 }
-
 void NaomiNetwork::closeSockets()
 {
 	for (auto& clientSock : slaves)

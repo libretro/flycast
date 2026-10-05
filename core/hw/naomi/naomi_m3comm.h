@@ -15,9 +15,7 @@
  */
 #pragma once
 #include "types.h"
-#include <atomic>
-#include <memory>
-#include <thread>
+#include <rthreads/rthreads.h>
 #include "lockfree.h"
 #include "network/naomi_network.h"
 
@@ -50,8 +48,11 @@ private:
 
 	int slot_count = 0;
 	int slot_id = 0;
-	std::atomic<bool> network_stopping{ false };
-	std::unique_ptr<std::thread> thread;
+	static void threadEntry(void *self);
+	void networkThread();
+
+	retro_atomic_int_t network_stopping;
+	sthread_t *thread = nullptr;
 	NaomiNetwork network;
 
 	/* What the emulation thread and the network thread tell each other.

@@ -17,7 +17,7 @@
 #include "naomi_regs.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/sh4_mem.h"
-#include <chrono>
+#include <features/features_cpu.h>
 
 static inline u16 swap16(u16 w)
 {
@@ -26,10 +26,13 @@ static inline u16 swap16(u16 w)
 
 void NaomiM3Comm::closeNetwork()
 {
-	network_stopping = true;
+	retro_atomic_store_release_int(&network_stopping, 1);
 	network.shutdown();
-	if (thread && thread->joinable())
-		thread->join();
+	if (thread != nullptr)
+	{
+		sthread_join(thread);
+		thread = nullptr;
+	}
 	// The network thread is gone: its sockets can be closed from here.
 	network.closeSockets();
 }
@@ -48,7 +51,7 @@ void NaomiM3Comm::connectNetwork()
 	}
 	else
 	{
-		network_stopping = true;
+		retro_atomic_store_release_int(&network_stopping, 1);
 		network.shutdown();
 	}
 }
@@ -333,7 +336,7 @@ bool NaomiM3Comm::DmaStart(u32 addr, u32 data)
 
 void NaomiM3Comm::startThread()
 {
-	network_stopping = false;
+	retro_atomic_int_init(&network_stopping, 0);
 	// No network thread at this point: set up what it shares with this one
 	rx.Reset();
 	tx.Reset();
@@ -347,33 +350,49 @@ void NaomiM3Comm::startThread()
 	retro_atomic_int_init(&net_packet_number, 0);
 	retro_atomic_int_init(&net_slot_size, swap16(*(u16*)&m68k_ram[0x204]));
 	publishSlot();
-	thread = std::unique_ptr<std::thread>(new std::thread([this]() {
-		using the_clock = std::chrono::high_resolution_clock;
+	// The socket shutdown() ends the network thread's waits with
+	network.armWake();
+	thread = sthread_create(threadEntry, this);
+}
 
-		connectNetwork();
+void NaomiM3Comm::threadEntry(void *self)
+{
+	((NaomiM3Comm *)self)->networkThread();
+}
 
-		the_clock::time_point token_time = the_clock::now();
+void NaomiM3Comm::networkThread()
+{
+	connectNetwork();
 
-		while (!network_stopping)
+	retro_time_t token_time = cpu_features_get_time_usec();
+
+	while (!retro_atomic_load_acquire_int(&network_stopping))
+	{
+		network.pipeSlaves();
+		receiveNetwork();
+
+		if (net_thread_slot_id == 0 && network.hasToken())
 		{
-			network.pipeSlaves();
-			receiveNetwork();
-
-			if (net_thread_slot_id == 0 && network.hasToken())
-			{
-				const auto target_duration = std::chrono::milliseconds(10);
-				auto duration = the_clock::now() - token_time;
-				if (duration < target_duration)
-				{
-					DEBUG_LOG(NAOMI, "Sleeping for %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(target_duration - duration).count());
-					std::this_thread::sleep_for(target_duration - duration);
-				}
-				token_time = the_clock::now();
-			}
-
-			sendNetwork();
-
+			/* The master lets the token round the ring a hundred times a
+			 * second at most: it holds it until ten milliseconds have
+			 * passed since it last sent it on, or until it is told to
+			 * stop. */
+			const retro_time_t held = cpu_features_get_time_usec() - token_time;
+			if (held < 10000)
+				network.waitStop(10000 - held);
+			token_time = cpu_features_get_time_usec();
 		}
-		DEBUG_LOG(NAOMI, "Network thread exiting");
-	}));
+
+		sendNetwork();
+
+		/* Without the token there is nothing to do until a packet comes
+		 * in: wait for one, instead of going round again to look. With
+		 * it still in hand the send did not go through; give the socket
+		 * a moment. */
+		if (!network.hasToken())
+			network.waitForData();
+		else if (net_thread_slot_id != 0)
+			network.waitStop(1000);
+	}
+	DEBUG_LOG(NAOMI, "Network thread exiting");
 }

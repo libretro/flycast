@@ -50,7 +50,6 @@ bool NaomiNetwork::init() { return true; }
 
 bool NaomiNetwork::startNetwork()
 {
-	network_stopping = false;
 	slot_count = SLOT_COUNT;
 	slot_id = 1;
 	packet_number = 0;
@@ -91,7 +90,10 @@ void NaomiNetwork::send(u8 *data, u32 size)
 	retro_atomic_fetch_add_int(&net_sent, 1);
 }
 
-void NaomiNetwork::shutdown() { network_stopping = true; }
+void NaomiNetwork::shutdown() { retro_atomic_store_release_int(&network_stopping, 1); }
+bool NaomiNetwork::armWake() { retro_atomic_store_release_int(&network_stopping, 0); return true; }
+void NaomiNetwork::waitForData() {}
+void NaomiNetwork::waitStop(int64_t) {}
 void NaomiNetwork::closeSockets() {}
 void NaomiNetwork::terminate() { shutdown(); }
 
