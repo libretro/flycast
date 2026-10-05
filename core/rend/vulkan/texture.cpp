@@ -235,10 +235,8 @@ void Texture::CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usa
 										vk::SharingMode::eExclusive, 0, nullptr, initialLayout);
 	image = device.createImageUnique(imageCreateInfo);
 
-	VmaAllocationCreateInfo allocCreateInfo = { VmaAllocationCreateFlags(), needsStaging ? VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY : VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU };
-	if (!needsStaging)
-		allocCreateInfo.flags = VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT;
-	allocation = VulkanContext::Instance()->GetAllocator().AllocateForImage(*image, allocCreateInfo);
+	allocation = VulkanContext::Instance()->GetHeap().AllocateForImage(*image,
+			tiling == vk::ImageTiling::eLinear, !needsStaging);
 
 	vk::ImageViewCreateInfo imageViewCreateInfo(vk::ImageViewCreateFlags(), image.get(), vk::ImageViewType::e2D, format, vk::ComponentMapping(),
 			vk::ImageSubresourceRange(aspectMask, 0, mipmapLevels, 0, 1));
@@ -411,10 +409,8 @@ void FramebufferAttachment::Init(u32 width, u32 height, vk::Format format, const
 			vk::SharingMode::eExclusive, 0, nullptr, vk::ImageLayout::eUndefined);
 	image = device.createImageUnique(imageCreateInfo);
 
-	VmaAllocationCreateInfo allocCreateInfo = { VmaAllocationCreateFlags(), VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY };
-	if (usage & vk::ImageUsageFlagBits::eTransientAttachment)
-		allocCreateInfo.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
-	allocation = VulkanContext::Instance()->GetAllocator().AllocateForImage(*image, allocCreateInfo);
+	allocation = VulkanContext::Instance()->GetHeap().AllocateForImage(*image, false, false,
+			(bool)(usage & vk::ImageUsageFlagBits::eTransientAttachment));
 
 	vk::ImageViewCreateInfo imageViewCreateInfo(vk::ImageViewCreateFlags(), image.get(), vk::ImageViewType::e2D,
 			format, vk::ComponentMapping(),	vk::ImageSubresourceRange(depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));

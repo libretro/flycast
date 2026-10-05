@@ -20,7 +20,7 @@
 */
 #pragma once
 #include "vulkan.h"
-#include "vmallocator.h"
+#include "heap.h"
 #include "quad.h"
 #include "rend/TexCache.h"
 #include "libretro_vulkan.h"
@@ -90,7 +90,7 @@ public:
 	static VulkanContext *Instance() { return contextInstance; }
 	bool SupportsSamplerAnisotropy() const { return samplerAnisotropy; }
 	bool SupportsDedicatedAllocation() const { return dedicatedAllocationSupported; }
-	const VMAllocator& GetAllocator() const { return allocator; }
+	VulkanHeap& GetHeap() { return heap; }
 	vk::DeviceSize GetMaxMemoryAllocationSize() const { return maxMemoryAllocationSize; }
 	f32 GetMaxSamplerAnisotropy() const { return samplerAnisotropy ? maxSamplerAnisotropy : 1.f; }
 	u32 GetVendorID() const { return vendorID; }
@@ -98,7 +98,7 @@ public:
 private:
 	vk::Format FindDepthFormat();
 
-	VMAllocator allocator;
+	VulkanHeap heap;
 	u32 width = 0;
 	u32 height = 0;
 

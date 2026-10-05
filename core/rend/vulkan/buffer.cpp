@@ -28,9 +28,7 @@ BufferData::BufferData(vk::DeviceSize size, const vk::BufferUsageFlags& usage, c
 {
 	VulkanContext *context = VulkanContext::Instance();
 	buffer = context->GetDevice().createBufferUnique(vk::BufferCreateInfo(vk::BufferCreateFlags(), size, usage));
-	VmaAllocationCreateInfo allocInfo = {
-			VMA_ALLOCATION_CREATE_MAPPED_BIT,
-			(propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY : VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU
-	};
-	allocation = context->GetAllocator().AllocateForBuffer(*buffer, allocInfo);
+	allocation = context->GetHeap().AllocateForBuffer(*buffer,
+			!(propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal),
+			(bool)(usage & vk::BufferUsageFlagBits::eTransferDst));
 }

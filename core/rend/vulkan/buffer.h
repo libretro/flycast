@@ -20,7 +20,7 @@
 */
 #pragma once
 #include "vulkan.h"
-#include "vmallocator.h"
+#include "heap.h"
 
 struct BufferData
 {

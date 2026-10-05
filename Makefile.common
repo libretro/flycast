@@ -363,7 +363,7 @@ ifeq ($(HAVE_VULKAN), 1)
 					$(CORE_DIR)/core/rend/vulkan/vk_heap.c
 	SOURCES_CXX += \
 					$(CORE_DIR)/core/rend/vulkan/vulkan_context.cpp \
-					$(CORE_DIR)/core/rend/vulkan/vmallocator.cpp \
+					$(CORE_DIR)/core/rend/vulkan/heap.cpp \
 					$(CORE_DIR)/core/rend/vulkan/buffer.cpp \
 					$(CORE_DIR)/core/rend/vulkan/compiler.cpp \
 					$(CORE_DIR)/core/rend/vulkan/drawer.cpp \

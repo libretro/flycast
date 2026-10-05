@@ -268,7 +268,7 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 		delete [] cacheData;
 		INFO_LOG(RENDERER, "Vulkan pipeline cache loaded from %s: %zd bytes", cachePath.c_str(), cacheSize);
    }
-   allocator.Init(physicalDevice, device);
+   heap.Init(physicalDevice, device);
    FindDepthFormat();
 
 	retro_image.image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -357,6 +357,6 @@ void VulkanContext::Term()
 	}
 	ShaderCompiler::Term();
 	descriptorPool.reset();
-	allocator.Term();
+	heap.Term();
 	pipelineCache.reset();
 }
