@@ -3,6 +3,7 @@
 #include "maple_helper.h"
 #include "maple_devs.h"
 #include "maple_cfg.h"
+#include "libretro/input_latch.h"
 
 #define HAS_VMU
 /*
@@ -21,8 +22,7 @@ Plugins:
 		ImageUpdate(data);
 */
 void UpdateInputState(u32 port);
-void LockInput(void);
-void UnlockInput(void);
+extern InputLatch input_latch;
 void UpdateVibration(u32 port, u32 value, u32 max_duration);
 
 extern u32 kcode[4];
@@ -159,26 +159,40 @@ struct MapleConfigMap : IMapleConfigMap
 	void GetInput(PlainJoystickState* pjs)
 	{
 	   int pnum = player_num == -1 ? dev->bus_id : player_num;
-	   LockInput();
-	   /* Threaded mode latches input on the libretro thread via CaptureInput();
-	    * sample live only when not threaded. */
-	   if (!settings.rend.ThreadedRendering)
+	   s8 x1, y1;
+
+	   if (settings.rend.ThreadedRendering)
+	   {
+	      /* Sampled on the libretro thread by CaptureInput(). */
+	      const InputLatch::Port& in = input_latch.Read(pnum);
+
+	      pjs->kcode=in.kcode;
+	      x1=in.joyx;
+	      y1=in.joyy;
+	      pjs->joy[PJAI_X2]=GetBtFromSgn(in.joyrx);
+	      pjs->joy[PJAI_Y2]=GetBtFromSgn(in.joyry);
+	      pjs->trigger[PJTI_R]=in.rt;
+	      pjs->trigger[PJTI_L]=in.lt;
+	   }
+	   else
+	   {
 	      UpdateInputState(pnum);
 
-	   pjs->kcode=kcode[pnum];
-	   pjs->joy[PJAI_X1]=GetBtFromSgn(joyx[pnum]);
-	   pjs->joy[PJAI_Y1]=GetBtFromSgn(joyy[pnum]);
+	      pjs->kcode=kcode[pnum];
+	      x1=joyx[pnum];
+	      y1=joyy[pnum];
+	      pjs->joy[PJAI_X2]=GetBtFromSgn(joyrx[pnum]);
+	      pjs->joy[PJAI_Y2]=GetBtFromSgn(joyry[pnum]);
+	      pjs->trigger[PJTI_R]=rt[pnum];
+	      pjs->trigger[PJTI_L]=lt[pnum];
+	   }
+	   pjs->joy[PJAI_X1]=GetBtFromSgn(x1);
+	   pjs->joy[PJAI_Y1]=GetBtFromSgn(y1);
 	   // I think the only Atomiswave game that uses an analog joystick is Block Pong-Pong but only the x axis.
 	   // Driving games use the first two axes for totally separate things.
 	   // So only do this for dreamcast
 	   if (settings.System == DC_PLATFORM_DREAMCAST)
 	   	limit_joystick_magnitude<128>((s8&)pjs->joy[PJAI_X1], (s8&)pjs->joy[PJAI_Y1]);
-
-	   pjs->joy[PJAI_X2]=GetBtFromSgn(joyrx[pnum]);
-	   pjs->joy[PJAI_Y2]=GetBtFromSgn(joyry[pnum]);
-	   pjs->trigger[PJTI_R]=rt[pnum];
-	   pjs->trigger[PJTI_L]=lt[pnum];
-	   UnlockInput();
 	}
 	void SetImage(void* img)
 	{
@@ -193,9 +207,13 @@ struct MapleConfigMap : IMapleConfigMap
 	void GetMouse(u32 *buttons, f32 *delta_x, f32 *delta_y, f32 *delta_wheel)
 	{
 	   int pnum = player_num == -1 ? dev->bus_id : player_num;
-	   LockInput();
-	   if (!settings.rend.ThreadedRendering)
-	      UpdateInputState(pnum);
+
+	   if (settings.rend.ThreadedRendering)
+	   {
+	      input_latch.ReadMouse(pnum, buttons, delta_x, delta_y, delta_wheel);
+	      return;
+	   }
+	   UpdateInputState(pnum);
 	   *buttons = mo_buttons[pnum];
 	   *delta_x = mo_x_delta[pnum];
 	   *delta_y = mo_y_delta[pnum];
@@ -204,7 +222,6 @@ struct MapleConfigMap : IMapleConfigMap
 	   mo_x_delta[pnum] = 0;
 	   mo_y_delta[pnum] = 0;
 	   mo_wheel_delta[pnum] = 0;
-	   UnlockInput();
 	}
 };
 

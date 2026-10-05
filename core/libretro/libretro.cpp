@@ -43,6 +43,7 @@ char* strdup(const char *str)
 #include <retro_timers.h>
 #include "emulator.h"
 #include "emu_baton.h"
+#include "input_latch.h"
 #include "../rend/rend.h"
 #include "../hw/sh4/sh4_mem.h"
 #include "../hw/sh4/sh4_sched.h"
@@ -2848,27 +2849,53 @@ static void UpdateInputStateNaomi(u32 port)
  * that must not call the frontend's input_cb itself: libretro requires input to
  * be read on the retro_run thread after input_poll, and reading it at maple-DMA
  * time from the emu thread samples at a nondeterministic point relative to the
- * frame, which breaks runahead/netplay determinism. CaptureInput() latches all
- * ports here; the maple read path (GetInput/GetMouse) consumes the latched
- * state under the same lock instead of re-polling on the emu thread.
+ * frame, which breaks runahead/netplay determinism. CaptureInput() samples all
+ * ports here and publishes them through input_latch; the maple read path
+ * (GetInput/GetMouse) reads the latch on the emu thread. Neither side takes a
+ * lock (see input_latch.h).
  *
- * The mutex is a no-op under TARGET_NO_THREADS, and in non-threaded rendering
- * the maple path still samples live under the lock, so behavior there is
- * unchanged apart from an uncontended lock.
+ * In non-threaded rendering the maple path samples live on the one thread
+ * there is and reads the globals directly.
  */
-static cMutex input_mtx;
-
-void LockInput(void)   { input_mtx.lock(); }
-void UnlockInput(void) { input_mtx.unlock(); }
+InputLatch input_latch;
 
 void UpdateInputState(u32 port);
 
 void CaptureInput(void)
 {
-   input_mtx.lock();
+   /* Mouse motion handed to the latch so far. */
+   static u32 mo_x_total[MAPLE_PORTS], mo_y_total[MAPLE_PORTS], mo_wheel_total[MAPLE_PORTS];
+   InputLatch::State& next = input_latch.Next();
+
    for (u32 port = 0; port < MAPLE_PORTS; port++)
+   {
+      InputLatch::Port& s = next.port[port];
+
       UpdateInputState(port);
-   input_mtx.unlock();
+
+      if (maple_devices[port] == MDT_Mouse)
+      {
+         /* The globals hold this frame's motion; the wheel adds up until
+          * it is taken. */
+         mo_x_total[port]     += (u32)(s32)mo_x_delta[port];
+         mo_y_total[port]     += (u32)(s32)mo_y_delta[port];
+         mo_wheel_total[port] += (u32)(s32)mo_wheel_delta[port];
+         mo_wheel_delta[port]  = 0;
+      }
+
+      s.kcode      = kcode[port];
+      s.joyx       = joyx[port];
+      s.joyy       = joyy[port];
+      s.joyrx      = joyrx[port];
+      s.joyry      = joyry[port];
+      s.rt         = rt[port];
+      s.lt         = lt[port];
+      s.mo_buttons = mo_buttons[port];
+      s.mo_x       = mo_x_total[port];
+      s.mo_y       = mo_y_total[port];
+      s.mo_wheel   = mo_wheel_total[port];
+   }
+   input_latch.Publish();
 }
 
 void UpdateInputState(u32 port)

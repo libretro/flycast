@@ -18,6 +18,7 @@
 #include "stdclass.h"
 #include "lockfree.h"
 #include "libretro/emu_baton.h"
+#include "libretro/input_latch.h"
 #include "imgread/hunk_prefetch.h"
 
 static int failures;
@@ -429,6 +430,100 @@ static void test_emu_baton(void)
 	CHECK(retro_atomic_load_acquire_int(&baton_passes) > 0);
 }
 
+/* ---- InputLatch ------------------------------------------------------ */
+
+#define LATCH_FRAMES 200000
+
+static InputLatch latch;
+static retro_atomic_int_t latch_done;
+
+/* One frame's sample: every field of every port follows from @frame. */
+static void latch_writer(void *)
+{
+	for (u32 frame = 1; frame <= LATCH_FRAMES; frame++)
+	{
+		InputLatch::State& next = latch.Next();
+		for (u32 p = 0; p < 4; p++)
+		{
+			InputLatch::Port& s = next.port[p];
+			s.kcode      = frame;
+			s.joyx       = (s8)(frame + p);
+			s.joyy       = (s8)(frame * 3);
+			s.joyrx      = (s8)(frame * 5);
+			s.joyry      = (s8)(frame * 7);
+			s.rt         = (u8)(frame * 11);
+			s.lt         = (u8)(frame * 13);
+			s.mo_buttons = ~frame;
+			s.mo_x       = frame * 2;	/* moved 2 right, 3 up a frame */
+			s.mo_y       = (u32)0 - frame * 3;
+			s.mo_wheel   = frame / 16;
+		}
+		latch.Publish();
+	}
+	retro_atomic_store_release_int(&latch_done, 1);
+}
+
+static void test_input_latch(void)
+{
+	sthread_t *t;
+	u32 last = 0, buttons;
+	f32 dx, dy, dw;
+	double x = 0, y = 0, w = 0;
+
+	/* Before anything is sampled: nothing held, nothing moved. */
+	CHECK(latch.Read(2).kcode == 0xFFFFFFFF);
+	latch.ReadMouse(2, &buttons, &dx, &dy, &dw);
+	CHECK(buttons == 0xFFFFFFFF && dx == 0 && dy == 0 && dw == 0);
+
+	retro_atomic_int_init(&latch_done, 0);
+	t = sthread_create(latch_writer, NULL);
+	for (;;)
+	{
+		int done = retro_atomic_load_acquire_int(&latch_done);
+		const InputLatch::Port& a = latch.Read(0);
+		u32 frame = a.kcode;
+
+		/* One whole frame, on every port, never an older one. */
+		CHECK(frame >= last);
+		last = frame;
+		if (frame != 0xFFFFFFFF)
+			for (u32 p = 0; p < 4; p++)
+			{
+				const InputLatch::Port& s = latch.Read(p);
+				if (s.kcode != frame)
+				{
+					/* A newer frame arrived between two ports; each
+					 * port is still whole. */
+					frame = s.kcode;
+					last  = frame;
+				}
+				CHECK(s.joyx == (s8)(frame + p) && s.joyy == (s8)(frame * 3));
+				CHECK(s.joyrx == (s8)(frame * 5) && s.joyry == (s8)(frame * 7));
+				CHECK(s.rt == (u8)(frame * 11) && s.lt == (u8)(frame * 13));
+				CHECK(s.mo_buttons == ~frame);
+			}
+		else
+			last = 0;
+
+		latch.ReadMouse(1, &buttons, &dx, &dy, &dw);
+		x += dx;
+		y += dy;
+		w += dw;
+		if (done)
+			break;
+	}
+	sthread_join(t);
+	latch.ReadMouse(1, &buttons, &dx, &dy, &dw);
+	x += dx;
+	y += dy;
+	w += dw;
+	/* However the polls fell against the frames, all of the motion
+	 * arrived and none of it twice. */
+	CHECK(x == 2.0 * LATCH_FRAMES);
+	CHECK(y == -3.0 * LATCH_FRAMES);
+	CHECK(w == LATCH_FRAMES / 16);
+}
+
 /* ---------------------------------------------------------------------- */
 
 int main(void)
@@ -440,6 +535,7 @@ int main(void)
 		{ "cMpscList",     test_mpsc_list },
 		{ "HunkPrefetch",  test_hunk_prefetch },
 		{ "EmuBaton",      test_emu_baton },
+		{ "InputLatch",    test_input_latch },
 	};
 
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)
