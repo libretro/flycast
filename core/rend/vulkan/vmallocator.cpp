@@ -19,6 +19,28 @@
     You should have received a copy of the GNU General Public License
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
+/* The allocator is created VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED: the
+ * renderer is its only user, on one thread, so VMA never takes the mutexes
+ * it keeps. Give it ones that do nothing rather than std::mutex and the
+ * platform's read-write lock. */
+class VmaNoMutex
+{
+public:
+	void Lock() {}
+	void Unlock() {}
+};
+#define VMA_MUTEX VmaNoMutex
+
+class VmaNoRWMutex
+{
+public:
+	void LockRead() {}
+	void UnlockRead() {}
+	void LockWrite() {}
+	void UnlockWrite() {}
+};
+#define VMA_RW_MUTEX VmaNoRWMutex
+
 #define VMA_IMPLEMENTATION
 #include "vulkan.h"
 #include "vmallocator.h"
