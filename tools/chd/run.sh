@@ -48,7 +48,8 @@ $CC -O1 -g $DEFS -fsanitize=address,undefined \
    $L/file/file_path.c $L/file/file_path_io.c $L/file/retro_dirent.c \
    $L/compat/compat_strl.c $L/compat/fopen_utf8.c \
    $L/compat/compat_strcasestr.c $L/encodings/encoding_utf.c \
-   $L/string/stdstring.c $L/time/rtime.c $L/memmap/memalign.c \
+   $L/string/stdstring.c $L/string/rstrtod.c $L/time/rtime.c \
+   $L/memmap/memalign.c \
    -lm -lpthread
 
 python3 tools/chd/make_fixture.py "$WORK/base"

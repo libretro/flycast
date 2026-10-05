@@ -20,27 +20,66 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef RGLGEN_H__
-#define RGLGEN_H__
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
+#ifndef RGLGEN_PRIVATE_HEADERS_H__
+#define RGLGEN_PRIVATE_HEADERS_H__
+#ifdef __MACH__
+#include <TargetConditionals.h>
 #endif
 
-#include <retro_common_api.h>
+#if TARGET_OS_IPHONE
 
-#include "rglgen_headers.h"
+#if defined(HAVE_OPENGLES3)
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+#else
+#include <OpenGLES/ES2/gl.h>
+#include <OpenGLES/ES2/glext.h>
+#endif
 
-RETRO_BEGIN_DECLS
-
-struct rglgen_sym_map;
-
-typedef void (*rglgen_func_t)(void);
-typedef rglgen_func_t (*rglgen_proc_address_t)(const char*);
-void rglgen_resolve_symbols(rglgen_proc_address_t proc);
-void rglgen_resolve_symbols_custom(rglgen_proc_address_t proc,
-      const struct rglgen_sym_map *map);
-
-RETRO_END_DECLS
+#elif defined(__APPLE__)
+#include <compat/apple_compat.h>
+#if MAC_OS_X_VERSION_10_7
+#include <OpenGL/gl3.h>
+#include <OpenGL/gl3ext.h>
+#else
+#include <OpenGL/gl.h>
+#include <OpenGL/glext.h>
+#endif
+#elif defined(HAVE_PSGL)
+#include <PSGL/psgl.h>
+#include <GLES/glext.h>
+#elif defined(HAVE_OPENGL_MODERN)
+#include <GL3/gl3.h>
+#include <GL3/gl3ext.h>
+#elif defined(HAVE_OPENGLES3)
+#include <GLES3/gl3.h>
+#define __gl2_h_
+#include <GLES2/gl2ext.h>
+#elif defined(HAVE_OPENGLES2)
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#elif defined(HAVE_OPENGLES1)
+#include <GLES/gl.h>
+#include <GLES/glext.h>
+#else
+#if defined(_WIN32) && !defined(_XBOX)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX   /* MSVC defines min/max as macros in C++ too */
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+#ifndef HAVE_LIBNX
+#include <GL/gl.h>
+#include <GL/glext.h>
+#else
+/* We need to avoid including <GL/gl.h> on this platform */
+#include "switch/nx_gl.h"
+#include <GL/glext.h>
+#endif /* SWITCH */
+#endif
 
 #endif

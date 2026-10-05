@@ -1,4 +1,4 @@
-/* Copyright (C) 2010-2018 The RetroArch team
+/* Copyright (C) 2010-2020 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this libretro SDK code part (glsym).
@@ -922,6 +922,8 @@ const struct rglgen_sym_map rglgen_symbol_map[] = {
     SYM(GetQueryIndexediv),
     SYM(ReleaseShaderCompiler),
     SYM(ShaderBinary),
+    SYM(SpecializeShader),
+    SYM(SpecializeShaderARB),
     SYM(GetShaderPrecisionFormat),
     SYM(DepthRangef),
     SYM(ClearDepthf),
@@ -1950,6 +1952,8 @@ RGLSYMGLENDQUERYINDEXEDPROC __rglgen_glEndQueryIndexed;
 RGLSYMGLGETQUERYINDEXEDIVPROC __rglgen_glGetQueryIndexediv;
 RGLSYMGLRELEASESHADERCOMPILERPROC __rglgen_glReleaseShaderCompiler;
 RGLSYMGLSHADERBINARYPROC __rglgen_glShaderBinary;
+RGLSYMGLSPECIALIZESHADERPROC __rglgen_glSpecializeShader;
+RGLSYMGLSPECIALIZESHADERPROC __rglgen_glSpecializeShaderARB;
 RGLSYMGLGETSHADERPRECISIONFORMATPROC __rglgen_glGetShaderPrecisionFormat;
 RGLSYMGLDEPTHRANGEFPROC __rglgen_glDepthRangef;
 RGLSYMGLCLEARDEPTHFPROC __rglgen_glClearDepthf;

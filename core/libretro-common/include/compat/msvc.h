@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2018 The RetroArch team
+/* Copyright  (C) 2010-2020 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (msvc.h).
@@ -29,24 +29,48 @@
 extern "C"  {
 #endif
 
-/* Pre-MSVC 2015 compilers don't implement snprintf in a cross-platform manner. */
+/* Pre-MSVC 2015 compilers don't implement snprintf, vsnprintf in a cross-platform manner. */
 #if _MSC_VER < 1900
+   #include <stdio.h>
+   #include <stdarg.h>
    #include <stdlib.h>
+
    #ifndef snprintf
       #define snprintf c99_snprintf_retro__
    #endif
+   int c99_snprintf_retro__(char *s, size_t len, const char *format, ...);
 
-   int c99_snprintf_retro__(char *outBuf, size_t size, const char *format, ...);
-#endif
-
-/* Pre-MSVC 2008 compilers don't implement vsnprintf in a cross-platform manner? Not sure about this one. */
-#if _MSC_VER < 1500
-   #include <stdarg.h>
-   #include <stdlib.h>
    #ifndef vsnprintf
       #define vsnprintf c99_vsnprintf_retro__
    #endif
-   int c99_vsnprintf_retro__(char *outBuf, size_t size, const char *format, va_list ap);
+   int c99_vsnprintf_retro__(char *s, size_t len, const char *format, va_list ap);
+#endif
+
+/* strtoll/strtoull are C99.  The CRT grew _strtoi64/_strtoui64 in Visual
+ * Studio 2005, and those take the same three arguments with the same
+ * meaning, so for 2005 and later the mapping is exact.  Visual C++ 6.0,
+ * 2002 and 2003 have neither; _atoi64 is not a stand-in for them because
+ * it accepts no base and reports no end pointer, so compat_strtoll.c
+ * supplies a real implementation instead. */
+#if _MSC_VER >= 1900
+   /* The UCRT has the real thing; do not shadow it with a macro,
+    * which would also catch std::strtoll in C++ translation units. */
+#elif _MSC_VER >= 1400
+   #ifndef strtoll
+      #define strtoll _strtoi64
+   #endif
+   #ifndef strtoull
+      #define strtoull _strtoui64
+   #endif
+#else
+   __int64 strtoll_retro__(const char *nptr, char **endptr, int base);
+   unsigned __int64 strtoull_retro__(const char *nptr, char **endptr, int base);
+   #ifndef strtoll
+      #define strtoll strtoll_retro__
+   #endif
+   #ifndef strtoull
+      #define strtoull strtoull_retro__
+   #endif
 #endif
 
 #ifdef __cplusplus
@@ -72,7 +96,6 @@ typedef int ssize_t;
 #endif
 
 #define mkdir(dirname, unused) _mkdir(dirname)
-#define strtoull _strtoui64
 #undef strcasecmp
 #define strcasecmp _stricmp
 #undef strncasecmp
@@ -109,10 +132,6 @@ typedef int ssize_t;
       #define floorf(x) ((float)floor((double)x))
       #define sqrtf(x) ((float)sqrt((double)x))
       #define fabsf(x)    ((float)fabs((double)(x)))
-   #endif
-
-   #ifndef _strtoui64
-      #define _strtoui64(x, y, z) (_atoi64(x))
    #endif
 
 #endif

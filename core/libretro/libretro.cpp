@@ -1851,7 +1851,9 @@ static bool set_vulkan_hw_render()
 
 	static const struct retro_hw_render_context_negotiation_interface_vulkan negotiation_interface = {
 			RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN,
-         RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION,
+         /* Version 1: get_application_info and create_device are all
+          * this core provides. libretro_vulkan.h describes version 2. */
+         1,
 			VkGetApplicationInfo,
          VkCreateDevice,
          nullptr,

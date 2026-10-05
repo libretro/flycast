@@ -1,4 +1,4 @@
-/* Copyright  (C) 2010-2018 The RetroArch team
+/* Copyright  (C) 2010-2020 The RetroArch team
  *
  * ---------------------------------------------------------------------------------------
  * The following license statement only applies to this file (memalign.c).
@@ -25,19 +25,26 @@
 
 #include <memalign.h>
 
-void *memalign_alloc(size_t boundary, size_t size)
+void *memalign_alloc(size_t boundary, size_t len)
 {
    void **place   = NULL;
    uintptr_t addr = 0;
-   void *ptr      = (void*)malloc(boundary + size + sizeof(uintptr_t));
-   if (!ptr)
+   void *ptr;
+   /* The pointer to free is kept in the word before the address
+    * returned, so that address has to be aligned for a pointer
+    * whatever the caller asked for: a boundary of 4 on a 64-bit host
+    * put the header on a 4-byte boundary, which is a misaligned store
+    * of a pointer - undefined, and a fault on a target that does not
+    * allow it. A boundary is a minimum, so raising it is always
+    * allowed. */
+   if (boundary < sizeof(uintptr_t))
+      boundary = sizeof(uintptr_t);
+   if (!(ptr = (void*)malloc(boundary + len + sizeof(uintptr_t))))
       return NULL;
-
    addr           = ((uintptr_t)ptr + sizeof(uintptr_t) + boundary)
       & ~(boundary - 1);
    place          = (void**)addr;
    place[-1]      = ptr;
-
    return (void*)addr;
 }
 
@@ -51,13 +58,13 @@ void memalign_free(void *ptr)
    free(p[-1]);
 }
 
-void *memalign_alloc_aligned(size_t size)
+void *memalign_alloc_aligned(size_t len)
 {
 #if defined(__x86_64__) || defined(__LP64) || defined(__IA64__) || defined(_M_X64) || defined(_M_X64) || defined(_WIN64)
-   return memalign_alloc(64, size);
+   return memalign_alloc(64, len);
 #elif defined(__i386__) || defined(__i486__) || defined(__i686__) || defined(GEKKO) || defined(_M_IX86)
-   return memalign_alloc(32, size);
+   return memalign_alloc(32, len);
 #else
-   return memalign_alloc(32, size);
+   return memalign_alloc(32, len);
 #endif
 }
