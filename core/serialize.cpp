@@ -332,8 +332,15 @@ bool register_serialize(Array<RegisterStruct>& regs,void **data, unsigned int *t
 
 	for ( i = 0 ; i < regs.Size ; i++ )
 	{
+		/* A register that is read through a function keeps the function's
+		 * address where the others keep their value. That is not state:
+		 * register_unserialize() reads it into a dummy. Writing its low
+		 * half out all the same put a host address, different in every
+		 * process, into the state for each such register; write zero. */
+		u32 value = (regs.data[i].flags & REG_RF) ? 0 : regs.data[i].data32 ;
+
 		LIBRETRO_S(regs.data[i].flags) ;
-		LIBRETRO_S(regs.data[i].data32) ;
+		LIBRETRO_S(value) ;
 	}
 
 	return true ;
