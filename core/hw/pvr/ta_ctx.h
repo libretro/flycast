@@ -162,9 +162,6 @@ struct TA_context
 {
 	u32 Address;
 
-	cMutex thd_inuse;
-	cMutex rend_inuse;
-
 	tad_context tad;
 	rend_context rend;
 
@@ -224,10 +221,8 @@ struct TA_context
 	void Reset()
 	{
       tad.Clear();
-      rend_inuse.lock();
 		rend.Clear();
 		rend.proc_end = rend.proc_start = tad.thd_root;
-      rend_inuse.unlock();
 	}
 
 	void Free()

@@ -1,4 +1,5 @@
 #include "ta_ctx.h"
+#include "lockfree.h"
 #include "spg.h"
 #include "oslib/oslib.h"
 
@@ -74,8 +75,10 @@ void SetCurrentTARC(u32 addr)
 	}
 }
 
-cMutex mtx_rqueue;
-TA_context* rqueue;
+/* The one frame waiting for, or being drawn by, the render thread. The
+ * emulation thread fills the slot, the render thread empties it once the
+ * frame is drawn; a context in the slot belongs to the render thread. */
+static retro_atomic_ptr_t rqueue;
 cResetEvent frame_finished;
 
 bool QueueRender(TA_context* ctx)
@@ -96,33 +99,26 @@ bool QueueRender(TA_context* ctx)
        * is paced by the frontend (audio/video sync); a libretro core must not
        * throttle itself against the host wall clock, which would be both
        * non-deterministic and at odds with the frontend's pacing. */
-      if (rqueue && ctx->rend.isRTT)
+      if (retro_atomic_load_acquire_ptr(&rqueue) && ctx->rend.isRTT)
          frame_finished.Wait();
    }
 
 
-	if (rqueue)
+	if (retro_atomic_load_acquire_ptr(&rqueue))
    {
 		tactx_Recycle(ctx);
 		return false;
 	}
 
    frame_finished.Reset();
-   mtx_rqueue.lock();
-	TA_context* old = rqueue;
-	rqueue=ctx;
-   mtx_rqueue.unlock();
-
-   verify(!old);
+   retro_atomic_store_release_ptr(&rqueue, ctx);
 
 	return true;
 }
 
 TA_context* DequeueRender(void)
 {
-   mtx_rqueue.lock();
-	TA_context* rv = rqueue;
-   mtx_rqueue.unlock();
+	TA_context* rv = (TA_context *)retro_atomic_load_acquire_ptr(&rqueue);
 
 	if (rv)
 		FrameCount++;
@@ -132,45 +128,30 @@ TA_context* DequeueRender(void)
 
 bool rend_framePending(void)
 {
-   mtx_rqueue.lock();
-	TA_context* rv = rqueue;
-   mtx_rqueue.unlock();
-
-	return rv != 0;
+	return retro_atomic_load_acquire_ptr(&rqueue) != NULL;
 }
 
 void FinishRender(TA_context* ctx)
 {
 	if (ctx != NULL)
 	{
-		verify(rqueue == ctx);
-		mtx_rqueue.lock();
-		rqueue = NULL;
-		mtx_rqueue.unlock();
+		verify(retro_atomic_load_relaxed_ptr(&rqueue) == ctx);
+		retro_atomic_store_release_ptr(&rqueue, NULL);
 
 		tactx_Recycle(ctx);
 	}
 	frame_finished.Set();
 }
 
-static cMutex mtx_pool;
-
-/* texture cache entry pool. */
-static std::vector<TA_context*> ctx_pool;
+/* Spare contexts. Both threads give them back; a slot hands each one to
+ * a single taker. */
+static cSlotCache<TA_context, 3> ctx_pool;
 static std::vector<TA_context*> ctx_list;
 
 TA_context* tactx_Alloc(void)
 {
-	TA_context* rv = 0;
+	TA_context* rv = ctx_pool.Take();
 
-   mtx_pool.lock();
-	if (!ctx_pool.empty())
-	{
-		rv = ctx_pool[ctx_pool.size()-1];
-		ctx_pool.pop_back();
-	}
-   mtx_pool.unlock();
-	
 	if (!rv)
    {
       rv = new TA_context();
@@ -182,18 +163,12 @@ TA_context* tactx_Alloc(void)
 
 void tactx_Recycle(TA_context* poped_ctx)
 {
-   mtx_pool.lock();
-   if (ctx_pool.size()>2)
+   poped_ctx->Reset();
+   if (!ctx_pool.Put(poped_ctx))
    {
       poped_ctx->Free();
       delete poped_ctx;
    }
-   else
-   {
-      poped_ctx->Reset();
-      ctx_pool.push_back(poped_ctx);
-   }
-   mtx_pool.unlock();
 }
 
 TA_context* tactx_Find(u32 addr, bool allocnew)

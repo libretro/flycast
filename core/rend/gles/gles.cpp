@@ -1067,8 +1067,6 @@ void rend_set_fb_scale(float x, float y)
 
 bool ProcessFrame(TA_context* ctx)
 {
-   ctx->rend_inuse.lock();
-
    if (KillTex)
    {
       TexCache.Clear();
@@ -1076,10 +1074,7 @@ bool ProcessFrame(TA_context* ctx)
    }
 
    if (ctx->rend.isRenderFramebuffer)
-	{
 		RenderFramebuffer();
-		ctx->rend_inuse.unlock();
-	}
 	else
 	{
 		if (!ta_parse_vdrc(ctx))

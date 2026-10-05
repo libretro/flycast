@@ -888,8 +888,6 @@ struct softrend : Renderer
 		if (ctx->rend.isRTT)
 			return false;
 
-		ctx->rend_inuse.Lock();
-
 		if (!ta_parse_vdrc(ctx))
 			return false;
 

@@ -84,8 +84,6 @@ public:
 		if (ctx->rend.isRenderFramebuffer)
 			return RenderFramebuffer();
 
-		ctx->rend_inuse.lock();
-
 		if (KillTex)
 			textureCache.Clear();
 
