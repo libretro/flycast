@@ -1,9 +1,7 @@
 #include "common.h"
 
 #include "chd_image.h"
-#include <thread>
-#include <mutex>
-#include <condition_variable>
+#include "hunk_prefetch.h"
 
 /* tracks are padded to a multiple of this many frames */
 const uint32_t CD_TRACK_PADDING = 4;
@@ -17,48 +15,15 @@ struct CHDDisc : Disc
 	u32 hunkbytes;
 	u32 sph;
 
-	/* --- async hunk prefetch (determinism-safe: CHD decompression is
-	 * deterministic, so a background-decompressed hunk is byte-identical to a
-	 * synchronously decompressed one; the emulated read gets the same data
-	 * either way, this only moves the decompress CPU off the emu thread). --- */
-	chd_image_t* chd2 = nullptr;       /* separate handle for the worker */
-	u8*  worker_buf = nullptr;         /* worker-private decompress target */
-	u8*  next_buf = nullptr;           /* published prefetched hunk */
-	static const u32 NO_HUNK = 0xFFFFFFFFu;
-	u32  next_hunk = NO_HUNK;
-	bool next_ready = false;
+	/* Read-ahead on a worker thread, with a handle of its own. */
+	chd_image_t* chd2 = nullptr;
+	HunkPrefetch prefetch;
+	static const u32 NO_HUNK = HunkPrefetch::NO_HUNK;
 	u32  total_hunks = 0;
-	u32  prefetch_req = NO_HUNK;
-	bool worker_stop = false;
-	bool prefetch_enabled = false;
-	std::thread worker;
-	std::mutex  mtx;
-	std::condition_variable cv;
 
-	void prefetch_worker()
+	static bool prefetch_read(void *opaque, u32 hunk, u8 *dst)
 	{
-		std::unique_lock<std::mutex> lk(mtx);
-		for (;;)
-		{
-			cv.wait(lk, [&]{ return worker_stop
-				|| (prefetch_req != NO_HUNK && !(next_ready && next_hunk == prefetch_req)); });
-			if (worker_stop)
-				break;
-			u32 req = prefetch_req;
-			if (req == NO_HUNK || req >= total_hunks || (next_ready && next_hunk == req))
-				continue;
-			lk.unlock();
-			bool ok = chd_image_read_hunk(chd2, req, worker_buf);   /* slow decompress, off-thread, no lock */
-			lk.lock();
-			if (!ok)
-			{
-				prefetch_req = NO_HUNK;
-				continue;
-			}
-			std::swap(worker_buf, next_buf);
-			next_hunk = req;
-			next_ready = true;
-		}
+		return chd_image_read_hunk(((CHDDisc *)opaque)->chd2, hunk, dst);
 	}
 
 	/* Decompress @hunk into hunk_mem on this thread. A hunk that fails to
@@ -80,25 +45,17 @@ struct CHDDisc : Disc
 	{
 		if (hunk == old_hunk)
 			return hunk_mem;               /* still the current hunk */
-		if (!prefetch_enabled)
+		if (prefetch.Running())
 		{
-			hunk_read_sync(hunk);
-			return hunk_mem;
+			/* Takes the prefetched hunk if there is one and aims the worker
+			 * at the next; on a miss (first read or seek) the worker gets
+			 * going on the next hunk while this thread decodes this one. */
+			bool hit = prefetch.Fetch(hunk);
+			hunk_mem = prefetch.Buffer();
+			old_hunk = hit ? hunk : NO_HUNK;
+			if (hit)
+				return hunk_mem;
 		}
-		std::unique_lock<std::mutex> lk(mtx);
-		if (next_ready && next_hunk == hunk)
-		{
-			std::swap(next_buf, hunk_mem); /* take prefetched hunk -- no decompress */
-			next_ready = false;
-			old_hunk = hunk;
-			prefetch_req = hunk + 1;
-			cv.notify_one();
-			return hunk_mem;
-		}
-		/* miss (first read or seek): decompress synchronously, re-aim prefetch */
-		prefetch_req = hunk + 1;
-		cv.notify_one();
-		lk.unlock();
 		hunk_read_sync(hunk);
 		return hunk_mem;
 	}
@@ -108,24 +65,28 @@ struct CHDDisc : Disc
 		chd2 = chd_image_open(file, NULL, 0);
 		if (chd2 == nullptr)
 			return;
-		worker_buf = new u8[hunkbytes];
-		next_buf   = new u8[hunkbytes];
-		prefetch_enabled = true;
-		worker = std::thread(&CHDDisc::prefetch_worker, this);
+		if (!prefetch.Start(prefetch_read, this, hunkbytes, total_hunks))
+		{
+			chd_image_close(chd2);
+			chd2 = nullptr;
+			return;
+		}
+		/* The prefetcher's buffers take over from the one TryOpen made. */
+		delete [] hunk_mem;
+		hunk_mem = prefetch.Buffer();
+		old_hunk = NO_HUNK;
 	}
 
 	void stop_prefetch()
 	{
-		if (worker.joinable())
+		if (prefetch.Running())
 		{
-			{ std::unique_lock<std::mutex> lk(mtx); worker_stop = true; cv.notify_one(); }
-			worker.join();
+			prefetch.Stop();
+			hunk_mem = nullptr;
+			old_hunk = NO_HUNK;
 		}
 		chd_image_close(chd2);
-		delete [] worker_buf;
-		delete [] next_buf;
-		chd2 = nullptr; worker_buf = nullptr; next_buf = nullptr;
-		prefetch_enabled = false;
+		chd2 = nullptr;
 	}
 
 	CHDDisc()

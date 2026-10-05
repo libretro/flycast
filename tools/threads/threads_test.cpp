@@ -12,10 +12,13 @@
 #include <unistd.h>
 #endif
 
+#include <retro_timers.h>
+
 #include "types.h"
 #include "stdclass.h"
 #include "lockfree.h"
 #include "libretro/emu_baton.h"
+#include "imgread/hunk_prefetch.h"
 
 static int failures;
 
@@ -24,6 +27,12 @@ static int failures;
 		fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
 		failures++; \
 	} } while (0)
+
+static unsigned rng_next(unsigned *s)
+{
+	*s = *s * 1664525u + 1013904223u;
+	return *s >> 8;
+}
 
 /* ---- cResetEvent ----------------------------------------------------- */
 
@@ -135,6 +144,127 @@ static void test_slot_cache(void)
 	CHECK(retro_atomic_load_acquire_int(&cache_live) == left);
 }
 
+/* ---- cTripleBuffer --------------------------------------------------- */
+
+#define TRIPLE_ROUNDS 200000
+#define TRIPLE_WORDS  64
+
+static cTripleBuffer triple;
+static unsigned triple_buf[3][TRIPLE_WORDS];
+static retro_atomic_int_t triple_done;
+
+static void triple_writer(void *)
+{
+	for (unsigned v = 1; v <= TRIPLE_ROUNDS; v++)
+	{
+		unsigned *b = triple_buf[triple.Back()];
+		for (int i = 0; i < TRIPLE_WORDS; i++)
+			b[i] = v;
+		triple.Publish();
+	}
+	retro_atomic_store_release_int(&triple_done, 1);
+}
+
+static void test_triple_buffer(void)
+{
+	sthread_t *t;
+	unsigned last = 0;
+	long takes = 0;
+
+	memset(triple_buf, 0, sizeof(triple_buf));
+	retro_atomic_int_init(&triple_done, 0);
+	CHECK(!triple.Take());
+	t = sthread_create(triple_writer, NULL);
+	for (;;)
+	{
+		int done = retro_atomic_load_acquire_int(&triple_done);
+		if (triple.Take())
+		{
+			const unsigned *b = triple_buf[triple.Front()];
+			/* A whole buffer from one Publish, never older than the last. */
+			for (int i = 1; i < TRIPLE_WORDS; i++)
+				CHECK(b[i] == b[0]);
+			CHECK(b[0] > last);
+			last = b[0];
+			takes++;
+		}
+		else if (done)
+			break;
+	}
+	sthread_join(t);
+	CHECK(last == TRIPLE_ROUNDS);
+	CHECK(takes > 0);
+}
+
+/* ---- HunkPrefetch ---------------------------------------------------- */
+
+#define HUNK_BYTES 4096
+#define HUNK_COUNT 512
+#define HUNK_READS 60000
+
+static bool hunk_is_bad(u32 hunk) { return hunk % 97 == 96; }
+
+static bool hunk_decode(void *, u32 hunk, u8 *dst)
+{
+	if (hunk_is_bad(hunk))
+		return false;
+	for (u32 i = 0; i < HUNK_BYTES; i++)
+		dst[i] = (u8)(hunk * 31 + i);
+	return true;
+}
+
+static bool hunk_matches(u32 hunk, const u8 *p)
+{
+	for (u32 i = 0; i < HUNK_BYTES; i++)
+		if (p[i] != (u8)(hunk * 31 + i))
+			return false;
+	return true;
+}
+
+static void test_hunk_prefetch(void)
+{
+	HunkPrefetch pf;
+	unsigned seed = 12345;
+	u32 hunk = 0;
+	long hits = 0;
+
+	CHECK(pf.Start(hunk_decode, NULL, HUNK_BYTES, HUNK_COUNT));
+	CHECK(!pf.Start(hunk_decode, NULL, HUNK_BYTES, HUNK_COUNT));
+	for (int i = 0; i < HUNK_READS; i++)
+	{
+		unsigned r = rng_next(&seed);
+
+		/* Mostly sequential, as a disc is read, with a seek now and then. */
+		if (r % 50 == 0)
+			hunk = rng_next(&seed) % HUNK_COUNT;
+		else
+			hunk = (hunk + 1) % HUNK_COUNT;
+
+		if (pf.Fetch(hunk))
+		{
+			/* The worker never hands over a hunk it could not decode. */
+			CHECK(!hunk_is_bad(hunk));
+			CHECK(hunk_matches(hunk, pf.Buffer()));
+			hits++;
+		}
+		else if (hunk_decode(NULL, hunk, pf.Buffer()))
+			CHECK(hunk_matches(hunk, pf.Buffer()));
+
+		/* Give the worker a moment now and then, as emulation between
+		 * two disc reads does. */
+		if (i % 64 == 0)
+			retro_sleep(1);
+	}
+	pf.Stop();
+	CHECK(!pf.Running());
+	CHECK(hits > 0);
+
+	/* Starts again after a stop. */
+	CHECK(pf.Start(hunk_decode, NULL, HUNK_BYTES, HUNK_COUNT));
+	pf.Stop();
+	printf("  hunk prefetch: %ld of %d reads found decoded\n", hits, HUNK_READS);
+}
+
 /* ---- EmuBaton -------------------------------------------------------- */
 
 #define BATON_HOLDS 20000
@@ -221,6 +351,8 @@ int main(void)
 	static const struct { const char *name; void (*fn)(void); } tests[] = {
 		{ "cResetEvent",   test_reset_event },
 		{ "cSlotCache",    test_slot_cache },
+		{ "cTripleBuffer", test_triple_buffer },
+		{ "HunkPrefetch",  test_hunk_prefetch },
 		{ "EmuBaton",      test_emu_baton },
 	};
 

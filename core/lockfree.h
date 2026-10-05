@@ -46,3 +46,45 @@ public:
 		return false;
 	}
 };
+
+/* Which of three buffers each side of a one-writer, one-reader pair owns.
+ * The writer fills Back() and calls Publish(); the reader calls Take() and
+ * reads Front(). Each side always holds one buffer to itself and the third
+ * waits in between, so neither ever waits for the other, and a Publish the
+ * reader has not taken yet is simply replaced by the next one. */
+class cTripleBuffer
+{
+	enum { FRESH = 4 };
+	retro_atomic_int_t mid;	/* the buffer neither side holds, | FRESH */
+	int back;
+	int front;
+
+public:
+	cTripleBuffer() { Reset(); }
+
+	/* Only while neither side is running. */
+	void Reset()
+	{
+		back  = 0;
+		front = 1;
+		retro_atomic_int_init(&mid, 2);
+	}
+
+	/* Writer only. */
+	int Back() const { return back; }
+	void Publish()
+	{
+		back = retro_atomic_exchange_int(&mid, back | FRESH) & 3;
+	}
+
+	/* Reader only. Take() is true when Front() now names a buffer
+	 * published since the last Take(). */
+	int Front() const { return front; }
+	bool Take()
+	{
+		if (!(retro_atomic_load_acquire_int(&mid) & FRESH))
+			return false;
+		front = retro_atomic_exchange_int(&mid, front) & 3;
+		return true;
+	}
+};
