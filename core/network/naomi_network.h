@@ -17,7 +17,6 @@
 #include "types.h"
 #include <cstdint>
 #include <atomic>
-#include <mutex>
 #include <vector>
 #include "net_platform.h"
 #include "miniupnp.h"
@@ -38,8 +37,13 @@ public:
 	void pipeSlaves();
 	bool receive(u8 *data, u32 size);
 	void send(u8 *data, u32 size);
-	void shutdown();	// thread-safe
-	void terminate();	// thread-safe
+	/* The sockets belong to the thread that runs startNetwork(), receive()
+	 * and send(). Another thread stops it with shutdown(), which only
+	 * raises a flag that thread looks at wherever it waits, and closes the
+	 * sockets with closeSockets() or terminate() once that thread is gone. */
+	void shutdown();
+	void closeSockets();
+	void terminate();
 	int slotCount() const { return slot_count; }
 	int slotId() const { return slot_id; }
 	u16 packetNumber() const { return packet_number; }
@@ -67,7 +71,6 @@ private:
 	bool got_token = false;
 	u16 packet_number = 0;
 	std::atomic<bool> network_stopping{ false };
-	std::mutex mutex;
    MiniUPnP miniupnp;
 
 	static const uint16_t SERVER_PORT = 37391;

@@ -248,7 +248,6 @@ bool NaomiNetwork::startNetwork()
 			else
 			{
 				NOTICE_LOG(NETWORK, "Slave connection accepted");
-				std::lock_guard<std::mutex> lock(mutex);
 				slaves.push_back(clientSock);
 				if (slaves.size() == 3)
 					break;
@@ -324,9 +323,28 @@ bool NaomiNetwork::startNetwork()
 #ifndef __LIBRETRO__
 				gui_display_notification("Waiting for server to start", 10000);
 #endif
-				set_recv_timeout(client_sock, (int)std::chrono::milliseconds(timeout * 2).count());
+				/* Wait for the server to start the game, up to twice the
+				 * timeout, a tenth of a second at a time so that
+				 * shutdown() is noticed without anyone having to close
+				 * the socket under this thread. */
 				u8 buf[2];
-				if (::recv(client_sock, (char *)buf, 2, 0) < 2)
+				int got = 0;
+				steady_clock::time_point wait_start = steady_clock::now();
+				while (got < 2 && !network_stopping
+						&& steady_clock::now() - wait_start < timeout * 2)
+				{
+					fd_set readable;
+					struct timeval tv = { 0, 100 * 1000 };
+					FD_ZERO(&readable);
+					FD_SET(client_sock, &readable);
+					if (select((int)client_sock + 1, &readable, nullptr, nullptr, &tv) <= 0)
+						continue;
+					ssize_t l = ::recv(client_sock, (char *)buf + got, 2 - got, 0);
+					if (l <= 0)
+						break;
+					got += (int)l;
+				}
+				if (got < 2)
 				{
 					ERROR_LOG(NETWORK, "Connection failed: errno=%d", get_last_error());
 					closesocket(client_sock);
@@ -469,21 +487,27 @@ void NaomiNetwork::send(u8 *data, u32 size)
 void NaomiNetwork::shutdown()
 {
 	network_stopping = true;
+}
+
+void NaomiNetwork::closeSockets()
+{
+	for (auto& clientSock : slaves)
 	{
-		std::lock_guard<std::mutex> lock(mutex);
-		for (auto& clientSock : slaves)
-		{
+		if (clientSock != INVALID_SOCKET)
 			closesocket(clientSock);
-			clientSock = -1;
-		}
+		clientSock = INVALID_SOCKET;
 	}
 	if (client_sock != INVALID_SOCKET)
+	{
 		closesocket(client_sock);
+		client_sock = INVALID_SOCKET;
+	}
 }
 
 void NaomiNetwork::terminate()
 {
 	shutdown();
+	closeSockets();
 #ifdef ENABLE_MODEM
    if (settings.network.ActAsServer)
 		miniupnp.Term();
