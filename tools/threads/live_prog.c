@@ -8,7 +8,8 @@
  * that texture four times in its first second, ending on yellow, which is
  * what live.sh looks for in a screenshot. It also times its frames
  * against the CPU's timer and, if they are not all the same length, paints
- * the texture red instead. Every frame it
+ * the texture red instead; and magenta if a read-only system bus register
+ * that nothing has written yet reads as anything but zero. Every frame it
  * polls the controller in port A, which is how the emulation thread comes
  * to read input.
  *
@@ -91,6 +92,11 @@ void cmain(void)
 {
    u32 frame = 0, i;
    u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0;
+   /* Read-only system bus registers nothing has written yet: the Maple
+    * status and its address counters, and the AICA DMA counters. They
+    * read as zero, not as whatever the emulator had lying there. */
+   u32 stale = SB(0xC84) | SB(0xCF4) | SB(0xCF8) | SB(0xCFC)
+             | (*(volatile u32 *)0xA05F78C0) | (*(volatile u32 *)0xA05F78C4);
 
    TMU_TSTR &= ~1;
    TMU_TCOR0 = 0xFFFFFFFF;
@@ -183,7 +189,9 @@ void cmain(void)
          }
          tick = now;
          if (frame == 250 && longest - shortest > 200)
-            paint_texture(0x7C00);
+            paint_texture(0x7C00);                     /* red: uneven frames */
+         else if (frame == 250 && stale)
+            paint_texture(0x7C1F);                     /* magenta: a register with junk in it */
       }
 
       /* ...and shown at the next vblank, the way a game flips buffers */

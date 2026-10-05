@@ -116,6 +116,12 @@ void sb_rio_register(u32 reg_addr, RegIO flags, RegReadAddrFP* rf, RegWriteAddrF
 	}
 	else if (flags == RIO_CONST)
 	{
+		/* RIO_RO is the same value as RIO_CONST, so every read-only
+		 * register comes through here as well. Its value shares storage
+		 * with the read function that registering it as RIO_NO_ACCESS
+		 * put there first: clear it, or the register reads as the low
+		 * half of that function's address until something writes it. */
+		sb_regs[idx].data32=0;
 		sb_regs[idx].writeFunctionAddr=&sbio_write_const;
 	}
 	else
