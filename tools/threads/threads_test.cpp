@@ -196,6 +196,91 @@ static void test_triple_buffer(void)
 	CHECK(takes > 0);
 }
 
+/* ---- cMpscList, used the way the custom texture loader uses it -------- */
+
+#define MPSC_PRODUCERS 3
+#define MPSC_NODES     4
+#define MPSC_REQUESTS  100000
+
+struct mpsc_node
+{
+	std::atomic_int pending;	/* requests not answered yet */
+	mpsc_node *next;
+	long handled;			/* plain: consumer only */
+};
+
+static cMpscList<mpsc_node, &mpsc_node::next> mpsc_list;
+static cResetEvent mpsc_wake;
+static mpsc_node mpsc_nodes[MPSC_PRODUCERS][MPSC_NODES];
+static retro_atomic_int_t mpsc_stop;
+
+static void mpsc_producer(void *p)
+{
+	mpsc_node *nodes = (mpsc_node *)p;
+	unsigned seed = (unsigned)(size_t)p;
+
+	for (int i = 0; i < MPSC_REQUESTS; i++)
+	{
+		mpsc_node *n = &nodes[rng_next(&seed) % MPSC_NODES];
+		/* Queue the node only when it is not queued already. */
+		if (n->pending++ == 0)
+		{
+			mpsc_list.Push(n);
+			mpsc_wake.Set();
+		}
+	}
+}
+
+static void mpsc_consumer(void *)
+{
+	for (;;)
+	{
+		int stop = retro_atomic_load_acquire_int(&mpsc_stop);
+		mpsc_node *n = mpsc_list.TakeAll();
+
+		if (n == NULL && stop)
+			break;
+		while (n != NULL)
+		{
+			mpsc_node *next = n->next;
+			for (;;)
+			{
+				int requests = n->pending;
+				n->handled += requests;
+				if (n->pending.fetch_sub(requests) == requests)
+					break;
+			}
+			n = next;
+		}
+		mpsc_wake.Wait(1);
+	}
+}
+
+static void test_mpsc_list(void)
+{
+	sthread_t *prod[MPSC_PRODUCERS], *cons;
+	long handled = 0;
+
+	retro_atomic_int_init(&mpsc_stop, 0);
+	cons = sthread_create(mpsc_consumer, NULL);
+	for (int i = 0; i < MPSC_PRODUCERS; i++)
+		prod[i] = sthread_create(mpsc_producer, mpsc_nodes[i]);
+	for (int i = 0; i < MPSC_PRODUCERS; i++)
+		sthread_join(prod[i]);
+	retro_atomic_store_release_int(&mpsc_stop, 1);
+	mpsc_wake.Set();
+	sthread_join(cons);
+
+	for (int i = 0; i < MPSC_PRODUCERS; i++)
+		for (int j = 0; j < MPSC_NODES; j++)
+		{
+			CHECK(mpsc_nodes[i][j].pending == 0);
+			handled += mpsc_nodes[i][j].handled;
+		}
+	/* Every request answered exactly once. */
+	CHECK(handled == (long)MPSC_PRODUCERS * MPSC_REQUESTS);
+}
+
 /* ---- HunkPrefetch ---------------------------------------------------- */
 
 #define HUNK_BYTES 4096
@@ -352,6 +437,7 @@ int main(void)
 		{ "cResetEvent",   test_reset_event },
 		{ "cSlotCache",    test_slot_cache },
 		{ "cTripleBuffer", test_triple_buffer },
+		{ "cMpscList",     test_mpsc_list },
 		{ "HunkPrefetch",  test_hunk_prefetch },
 		{ "EmuBaton",      test_emu_baton },
 	};

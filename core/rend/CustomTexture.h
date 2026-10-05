@@ -20,6 +20,7 @@
 
 #include "TexCache.h"
 #include "stdclass.h"
+#include "lockfree.h"
 
 #include <string>
 #include <vector>
@@ -27,7 +28,7 @@
 
 class CustomTexture {
 public:
-	CustomTexture() : loader_thread(loader_thread_func, this) {}
+	CustomTexture() : loader_thread(loader_thread_func, this) { retro_atomic_int_init(&initialized, 0); }
 	~CustomTexture() { Terminate(); }
 	u8* LoadCustomTexture(u32 hash, int& width, int& height);
 	void LoadCustomTextureAsync(BaseTextureCacheData *texture_data);
@@ -43,13 +44,18 @@ private:
 	
 	static void *loader_thread_func(void *param) { ((CustomTexture *)param)->LoaderThread(); return NULL; }
 	
-	bool initialized = false;
+	void Load(BaseTextureCacheData *texture);
+
+	retro_atomic_int_t initialized;
 	bool custom_textures_available = false;
 	std::string textures_path;
 	cThread loader_thread;
 	cResetEvent wakeup_thread;
-	std::vector<BaseTextureCacheData *> work_queue;
-	cMutex work_queue_mutex;
+	/* Textures waiting for the loader thread. A texture is on the list at
+	 * most once: it is pushed when its custom_load_in_progress count leaves
+	 * zero, and the loader only lets the count return to zero once it is
+	 * done with the texture. */
+	cMpscList<BaseTextureCacheData, &BaseTextureCacheData::custom_load_next> work_queue;
 	std::map<u32, std::string> texture_map;
 };
 

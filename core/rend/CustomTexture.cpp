@@ -38,52 +38,61 @@ extern const char *retro_get_system_directory();
 
 CustomTexture custom_texture;
 
+/* Loader thread: load the custom image for one queued texture. Requests
+ * that arrive for it meanwhile are not queued again (the count is not
+ * zero), so go round until the count this pass answered is all there is. */
+void CustomTexture::Load(BaseTextureCacheData *texture)
+{
+	for (;;)
+	{
+		int requests = texture->custom_load_in_progress;
+
+		texture->ComputeHash();
+		if (texture->custom_image_data != NULL)
+		{
+			free(texture->custom_image_data);
+			texture->custom_image_data = NULL;
+		}
+		if (!texture->dirty)
+		{
+			int width, height;
+			u8 *image_data = LoadCustomTexture(texture->texture_hash, width, height);
+			if (image_data == NULL)
+			{
+				image_data = LoadCustomTexture(texture->old_texture_hash, width, height);
+			}
+			if (image_data != NULL)
+			{
+				texture->custom_width = width;
+				texture->custom_height = height;
+				texture->custom_image_data = image_data;
+			}
+		}
+		if (texture->custom_load_in_progress.fetch_sub(requests) == requests)
+			break;
+	}
+}
+
 void CustomTexture::LoaderThread()
 {
 	LoadMap();
-	while (initialized)
+	while (retro_atomic_load_acquire_int(&initialized))
 	{
-		BaseTextureCacheData *texture;
-		
-		do {
-			texture = NULL;
+		BaseTextureCacheData *texture = work_queue.TakeAll();
 
-			work_queue_mutex.lock();
-			if (!work_queue.empty())
-			{
-				texture = work_queue.back();
-				work_queue.pop_back();
-			}
-			work_queue_mutex.unlock();
-			
-			if (texture != NULL)
-			{
-				texture->ComputeHash();
-				if (texture->custom_image_data != NULL)
-				{
-					free(texture->custom_image_data);
-					texture->custom_image_data = NULL;
-				}
-				if (!texture->dirty)
-				{
-					int width, height;
-					u8 *image_data = LoadCustomTexture(texture->texture_hash, width, height);
-					if (image_data == NULL)
-					{
-						image_data = LoadCustomTexture(texture->old_texture_hash, width, height);
-					}
-					if (image_data != NULL)
-					{
-						texture->custom_width = width;
-						texture->custom_height = height;
-						texture->custom_image_data = image_data;
-					}
-				}
-				texture->custom_load_in_progress--;
-			}
+		while (texture != NULL)
+		{
+			/* Read the link first: once the count is back to zero the
+			 * texture may be queued again, or deleted. */
+			BaseTextureCacheData *next = texture->custom_load_next;
 
-		} while (texture != NULL);
-		
+			if (retro_atomic_load_acquire_int(&initialized))
+				Load(texture);
+			else
+				texture->custom_load_in_progress = 0;
+			texture = next;
+		}
+
 		wakeup_thread.Wait();
 	}
 }
@@ -106,9 +115,9 @@ std::string CustomTexture::GetGameId()
 
 bool CustomTexture::Init()
 {
-	if (!initialized)
+	if (!retro_atomic_load_relaxed_int(&initialized))
 	{
-		initialized = true;
+		retro_atomic_store_release_int(&initialized, 1);
 		std::string game_id = GetGameId();
 		if (game_id.length() > 0)
 		{
@@ -128,14 +137,19 @@ bool CustomTexture::Init()
 
 void CustomTexture::Terminate()
 {
-	if (initialized)
+	if (retro_atomic_load_relaxed_int(&initialized))
 	{
-		initialized = false;
-		work_queue_mutex.lock();
-		work_queue.clear();
-		work_queue_mutex.unlock();
+		retro_atomic_store_release_int(&initialized, 0);
 		wakeup_thread.Set();
 		loader_thread.WaitToEnd();
+		/* The loader is gone: drop what it did not get to. */
+		BaseTextureCacheData *texture = work_queue.TakeAll();
+		while (texture != NULL)
+		{
+			BaseTextureCacheData *next = texture->custom_load_next;
+			texture->custom_load_in_progress = 0;
+			texture = next;
+		}
 		texture_map.clear();
 	}
 }
@@ -156,11 +170,11 @@ void CustomTexture::LoadCustomTextureAsync(BaseTextureCacheData *texture_data)
 	if (!Init())
 		return;
 
-	texture_data->custom_load_in_progress++;
-	work_queue_mutex.lock();
-	work_queue.insert(work_queue.begin(), texture_data);
-	work_queue_mutex.unlock();
-	wakeup_thread.Set();
+	if (texture_data->custom_load_in_progress++ == 0)
+	{
+		work_queue.Push(texture_data);
+		wakeup_thread.Set();
+	}
 }
 
 void CustomTexture::DumpTexture(u32 hash, int w, int h, TextureType textype, void *src_buffer)

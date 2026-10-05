@@ -693,6 +693,7 @@ public:
 	u32 custom_width;
 	u32 custom_height;
 	std::atomic_int custom_load_in_progress;
+	BaseTextureCacheData *custom_load_next;	// link in the custom texture loader's work list
 
 	void PrintTextureName();
 	virtual std::string GetId() = 0;

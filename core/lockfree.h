@@ -88,3 +88,45 @@ public:
 		return true;
 	}
 };
+
+/* A list any thread may Push onto and one thread empties. The link lives
+ * in the object (the Next member), so a Push allocates nothing; an object
+ * must not be pushed again before the consumer has taken it. */
+template<typename T, T *T::*Next>
+class cMpscList
+{
+	retro_atomic_ptr_t head;
+
+public:
+	cMpscList()
+	{
+		retro_atomic_ptr_init(&head, NULL);
+	}
+
+	void Push(T *p)
+	{
+		for (;;)
+		{
+			void *old = retro_atomic_load_relaxed_ptr(&head);
+			p->*Next = (T *)old;
+			if (retro_atomic_cas_ptr(&head, old, p))
+				return;
+		}
+	}
+
+	/* Consumer only. Everything pushed so far, oldest first, chained
+	 * through Next; NULL when the list is empty. */
+	T* TakeAll()
+	{
+		T *list = (T *)retro_atomic_exchange_ptr(&head, NULL);
+		T *out = NULL;
+		while (list != NULL)
+		{
+			T *next = list->*Next;
+			list->*Next = out;
+			out = list;
+			list = next;
+		}
+		return out;
+	}
+};
