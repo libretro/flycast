@@ -9,6 +9,9 @@
 #
 #   1. content runs and closes with a save state made on the way out, the
 #      save immediately followed by the unload;
+#      a screenshot taken on that way out has to show the colour the
+#      disc painted its background texture last, so a write to a texture
+#      in video memory is seen to reach the screen;
 #   2. that state is loaded again as the content starts;
 #   3. save state, load state and reset, sent one right after the other
 #      for as long as the content runs, with states saved from the
@@ -72,12 +75,13 @@ reicast_threaded_rendering = "enabled"
 reicast_hle_bios = "enabled"
 CFG
 
-# run <log> <frames> [disc]
+# run <log> <frames> [disc] [screenshot]
 run() {
    LIBGL_ALWAYS_SOFTWARE=1 timeout 300 xvfb-run -a -s "-screen 0 800x600x24" \
       "$RETROARCH" --config "$WORK/ra.cfg" --appendconfig "$WORK/driver.cfg" \
       -L "$CORE" "${3:-$WORK/test.gdi}" \
-      --max-frames="$2" --verbose > "$WORK/$1" 2>&1 || {
+      --max-frames="$2" ${4:+--max-frames-ss --max-frames-ss-path="$4"} \
+      --verbose > "$WORK/$1" 2>&1 || {
          echo "FAIL: RetroArch did not exit cleanly ($1)" >&2
          tail -n 20 "$WORK/$1" >&2
          exit 1
@@ -106,9 +110,13 @@ for DRV in $DRIVERS; do
    expect $DRV-bare.log "$CONTEXT"
 
    echo "== $DRV: run, save a state on the way out"
-   run $DRV-first.log 300
+   run $DRV-first.log 300 "$WORK/test.gdi" "$WORK/$DRV.png"
    expect $DRV-first.log "Auto save state to .* succeeded"
    expect $DRV-first.log "$CONTEXT"
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV.png" || {
+      echo "FAIL: the screen does not show the last texture written" >&2
+      exit 1
+   }
 
    echo "== $DRV: load it at startup, then save, load and reset while running"
    # Give slot 0 a state to begin with: the first command to get through
