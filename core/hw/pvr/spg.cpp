@@ -93,7 +93,19 @@ double spg_get_refresh_rate(void)
 //called from sh4 context , should update pvr/ta state and everything else
 int spg_line_sched(int tag, int cycl, int jit)
 {
-	clc_pvr_scanline       += cycl;
+	/* This asks the scheduler for a whole number of scanlines each time,
+	 * and the scheduler takes how late it called (jit) off the next
+	 * request. So the time since the last call, cycl + jit, is that number
+	 * of lines give or take the lateness of two calls, which is far less
+	 * than half a line: round to it.
+	 *
+	 * Adding up cycl alone, as this used to, counted every request short by
+	 * the lateness of the call before, some 220 cycles on average. The
+	 * shortfall built up until a call came out one line short of where it
+	 * was aimed, and that line was never made up: about every sixteenth
+	 * frame was a scanline longer than the game had set, and the machine
+	 * ran that much slower than the refresh rate reported for it. */
+	clc_pvr_scanline = ((u32)(cycl + jit) + Line_Cycles / 2) / Line_Cycles * Line_Cycles;
 
 	while (clc_pvr_scanline >=  Line_Cycles)//60 ~hertz = 200 mhz / 60=3333333.333 cycles per screen refresh
 	{

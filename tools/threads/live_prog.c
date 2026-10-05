@@ -6,7 +6,9 @@
  * framebuffer directly and lets the core render that, for the first 64
  * frames. The renders draw a textured background, and the program repaints
  * that texture four times in its first second, ending on yellow, which is
- * what live.sh looks for in a screenshot. Every frame it
+ * what live.sh looks for in a screenshot. It also times its frames
+ * against the CPU's timer and, if they are not all the same length, paints
+ * the texture red instead. Every frame it
  * polls the controller in port A, which is how the emulation thread comes
  * to read input.
  *
@@ -79,9 +81,22 @@ static void wait_vblank(void)
    }
 }
 
+/* TMU channel 0, counting down at a 16th of a microsecond (12.5 MHz). */
+#define TMU_TSTR  (*(volatile unsigned char *)0xFFD80004)
+#define TMU_TCOR0 (*(volatile u32 *)0xFFD80008)
+#define TMU_TCNT0 (*(volatile u32 *)0xFFD8000C)
+#define TMU_TCR0  (*(volatile u16 *)0xFFD80010)
+
 void cmain(void)
 {
    u32 frame = 0, i;
+   u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0;
+
+   TMU_TSTR &= ~1;
+   TMU_TCOR0 = 0xFFFFFFFF;
+   TMU_TCNT0 = 0xFFFFFFFF;
+   TMU_TCR0 = 0;
+   TMU_TSTR |= 1;
 
    PVR(0x44) = (PVR(0x44) & 0x00800000) | 0x5;         /* FB_R_CTRL: enable, RGB565 */
    PVR(0x5C) = (1u << 20) | (479u << 10) | 319u;       /* FB_R_SIZE: 640x480 */
@@ -148,6 +163,29 @@ void cmain(void)
       }
       poll_controller();
       wait_vblank();
+#ifdef HALF_RATE
+      /* A 30 fps game: a render every other vblank, nothing in between. */
+      wait_vblank();
+#endif
+      /* Time every frame against the CPU's own timer. They all have to be
+       * the same length; if one came out a quarter of a scanline off, say
+       * so in red. */
+      {
+         u32 now = TMU_TCNT0;
+
+         if (frame >= 100 && frame < 250)
+         {
+            u32 took = tick - now;
+            if (took < shortest)
+               shortest = took;
+            if (took > longest)
+               longest = took;
+         }
+         tick = now;
+         if (frame == 250 && longest - shortest > 200)
+            paint_texture(0x7C00);
+      }
+
       /* ...and shown at the next vblank, the way a game flips buffers */
       if (frame >= 64)
          PVR(0x50) = (frame & 1) ? 0x400000 : 0x200000;      /* FB_R_SOF1 */
