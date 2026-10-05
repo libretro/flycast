@@ -228,7 +228,6 @@ extern unsigned ARAM_MASK;
 //*********************** PowerVR **********************
 //******************************************************
  
-void libCore_vramlock_Unlock_block  (vram_block* block);
 vram_block* libCore_vramlock_Lock(u32 start_offset,u32 end_offset,void* userdata);
 
 

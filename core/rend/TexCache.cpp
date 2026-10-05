@@ -1,4 +1,5 @@
 #include "TexCache.h"
+#include "lockfree.h"
 #include "CustomTexture.h"
 #ifdef HAVE_TEXUPSCALE
 #include "deps/xbrz/xbrz.h"
@@ -9,7 +10,6 @@
 #include "hw/sh4/modules/mmu.h"
 
 #include <algorithm>
-#include <mutex>
 #include <deps/xxhash/xxhash.h>
 
 #if defined(HAVE_TEXUPSCALE) && !defined(TARGET_NO_OPENMP)
@@ -173,57 +173,28 @@ void vramlock_list_add(vram_block* block)
 	}
 }
  
-cMutex vramlist_lock;
+/* Writes to protected video memory, by page.
+ *
+ * The lock lists above belong to the render thread; nothing else reads or
+ * changes them. The emulation thread finds out that a protected page was
+ * written when the write faults, possibly inside a signal handler, and all
+ * it does there is open the page up again and mark it here. The render
+ * thread collects the marks before it looks at any texture and drops every
+ * lock on those pages, which is what marks their textures as changed.
+ *
+ * The emulation thread unprotects first and marks second. A page it has
+ * opened up is therefore always marked afterwards, so the render thread
+ * can go on treating "a page with locks on it is protected" as true: when
+ * it is not, a mark is on its way that takes those locks off again. */
+static cMarkSet<VRAM_SIZE_MAX / PAGE_SIZE> vram_writes;
 
-void libCore_vramlock_Lock(u32 start_offset64, u32 end_offset64, BaseTextureCacheData *texture)
+static void libCore_vramlock_Unlock_block_wb(vram_block* block);
+
+/* Render thread: apply the writes the emulation thread has marked. */
+static void vramlock_collect()
 {
-	vram_block* block=(vram_block* )malloc(sizeof(vram_block));
- 
-	if (end_offset64>(VRAM_SIZE-1))
-	{
-		WARN_LOG(PVR, "vramlock_Lock_64: end_offset64>(VRAM_SIZE-1) \n Tried to lock area out of vram , possibly bug on the pvr plugin");
-		end_offset64=(VRAM_SIZE-1);
-	}
-
-	if (start_offset64>end_offset64)
-	{
-		WARN_LOG(PVR, "vramlock_Lock_64: start_offset64>end_offset64 \n Tried to lock negative block , possibly bug on the pvr plugin");
-		start_offset64=0;
-	}
-
-	
-
-	block->end=end_offset64;
-	block->start=start_offset64;
-	block->len=end_offset64-start_offset64+1;
-	block->userdata = texture;
-	block->type=64;
-
-	{
-		std::lock_guard<cMutex> lock(vramlist_lock);
-
-      if (texture->lock_block == nullptr)
-      {
-         // This also protects vram if needed
-         vramlock_list_add(block);
-         texture->lock_block = block;
-      }
-      else
-         free(block);
-
-	}
-}
-
-bool VramLockedWriteOffset(size_t offset)
-{
-	if (offset >= VRAM_SIZE)
-		return false;
-
-	size_t addr_hash = offset / PAGE_SIZE;
-	std::vector<vram_block *>& list = VramLocks[addr_hash];
-
-	{
-		std::lock_guard<cMutex> lockguard(vramlist_lock);
+	vram_writes.Collect([](unsigned page) {
+		std::vector<vram_block *>& list = VramLocks[page];
 
 		for (auto& lock : list)
 		{
@@ -239,9 +210,53 @@ bool VramLockedWriteOffset(size_t offset)
 			}
 		}
 		list.clear();
+	});
+}
 
-		_vmem_unprotect_vram((u32)(offset & ~PAGE_MASK), PAGE_SIZE);
+void libCore_vramlock_Lock(u32 start_offset64, u32 end_offset64, BaseTextureCacheData *texture)
+{
+	if (end_offset64>(VRAM_SIZE-1))
+	{
+		WARN_LOG(PVR, "vramlock_Lock_64: end_offset64>(VRAM_SIZE-1) \n Tried to lock area out of vram , possibly bug on the pvr plugin");
+		end_offset64=(VRAM_SIZE-1);
 	}
+
+	if (start_offset64>end_offset64)
+	{
+		WARN_LOG(PVR, "vramlock_Lock_64: start_offset64>end_offset64 \n Tried to lock negative block , possibly bug on the pvr plugin");
+		start_offset64=0;
+	}
+
+	/* Writes that came before this lock are not its business. */
+	vramlock_collect();
+
+	if (texture->lock_block == nullptr)
+	{
+		vram_block* block=(vram_block* )malloc(sizeof(vram_block));
+
+		block->end=end_offset64;
+		block->start=start_offset64;
+		block->len=end_offset64-start_offset64+1;
+		block->userdata = texture;
+		block->type=64;
+
+		// This also protects vram if needed
+		vramlock_list_add(block);
+		texture->lock_block = block;
+	}
+}
+
+/* A write to video memory hit a protected page. Called on the emulation
+ * thread from the fault handler, so it stays within what a signal handler
+ * may do: system calls and atomics, no locks and no allocation. The render
+ * thread calls it too, before it writes to video memory itself. */
+bool VramLockedWriteOffset(size_t offset)
+{
+	if (offset >= VRAM_SIZE)
+		return false;
+
+	_vmem_unprotect_vram((u32)(offset & ~PAGE_MASK), PAGE_SIZE);
+	vram_writes.Mark((unsigned)(offset / PAGE_SIZE));
 
 	return true;
 }
@@ -258,16 +273,8 @@ bool VramLockedWrite(u8* address)
 //also frees the handle
 static void libCore_vramlock_Unlock_block_wb(vram_block* block)
 {
-	if (mmu_enabled())
-		vmem32_unprotect_vram(block->start, block->len);
 	vramlock_list_remove(block);
 	free(block);
-}
-
-void libCore_vramlock_Unlock_block(vram_block* block)
-{
-	std::lock_guard<cMutex> lock(vramlist_lock);
-	libCore_vramlock_Unlock_block_wb(block);
 }
 
 #ifdef HAVE_TEXUPSCALE
@@ -417,6 +424,10 @@ u32 BaseTextureCacheData::ComputeVramHash()
 
 //true if : dirty or paletted texture and hashes don't match
 bool BaseTextureCacheData::NeedsUpdate() {
+	/* Take in what the emulation thread has written since the last look. */
+	if (vram_writes.Pending())
+		vramlock_collect();
+
 	bool rc = dirty != 0;
 	if (tex_type != TextureType::_8)
 	{
@@ -439,12 +450,9 @@ bool BaseTextureCacheData::Delete()
 	if (custom_load_in_progress > 0)
 		return false;
 
-	{
-		std::lock_guard<cMutex> lock(vramlist_lock);
-		if (lock_block)
-			libCore_vramlock_Unlock_block_wb(lock_block);
-		lock_block = nullptr;
-	}
+	if (lock_block)
+		libCore_vramlock_Unlock_block_wb(lock_block);
+	lock_block = nullptr;
 
 	free(custom_image_data);
 

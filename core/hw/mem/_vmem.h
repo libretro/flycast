@@ -114,4 +114,6 @@ void _vmem_enable_mmu(bool enable);
 
 void _vmem_protect_vram(u32 addr, u32 size);
 void _vmem_unprotect_vram(u32 addr, u32 size);
+// True if _vmem_protect_vram() has covered this page of vram and nothing has unprotected it since
+bool _vmem_vram_page_protected(u32 page);
 u32 _vmem_get_vram_offset(void *addr);

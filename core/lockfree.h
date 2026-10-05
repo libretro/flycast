@@ -130,3 +130,56 @@ public:
 		return out;
 	}
 };
+
+/* A set of numbers below N that one thread marks and another collects.
+ * Mark() is two atomic operations and nothing else, so it may be called
+ * from a signal handler. A mark made before Collect() starts is always
+ * handed to that Collect() or the next one; marking a number twice before
+ * it is collected hands it over once. */
+template<int N>
+class cMarkSet
+{
+	retro_atomic_int_t bits[(N + 31) / 32];
+	retro_atomic_int_t pending;
+
+public:
+	cMarkSet()
+	{
+		for (int i = 0; i < (N + 31) / 32; i++)
+			retro_atomic_int_init(&bits[i], 0);
+		retro_atomic_int_init(&pending, 0);
+	}
+
+	void Mark(unsigned n)
+	{
+		retro_atomic_fetch_or_int(&bits[n >> 5], (int)(1u << (n & 31)));
+		retro_atomic_store_release_int(&pending, 1);
+	}
+
+	/* Collector: cheap test for "is there anything to collect". */
+	bool Pending()
+	{
+		return retro_atomic_load_relaxed_int(&pending) != 0;
+	}
+
+	/* Collector: calls f(n) for every number marked since the last time. */
+	template<typename F>
+	void Collect(F f)
+	{
+		/* Clear the flag before looking: a mark that lands behind the
+		 * scan sets it again. */
+		if (!retro_atomic_exchange_int(&pending, 0))
+			return;
+		for (int w = 0; w < (N + 31) / 32; w++)
+		{
+			unsigned word;
+
+			if (!retro_atomic_load_relaxed_int(&bits[w]))
+				continue;
+			word = (unsigned)retro_atomic_exchange_int(&bits[w], 0);
+			for (unsigned b = 0; word != 0; b++, word >>= 1)
+				if (word & 1)
+					f((unsigned)w * 32 + b);
+		}
+	}
+};

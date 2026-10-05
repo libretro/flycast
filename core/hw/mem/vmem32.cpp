@@ -46,7 +46,6 @@
 #include "hw/sh4/modules/mmu.h"
 
 extern bool VramLockedWriteOffset(size_t offset);
-extern cMutex vramlist_lock;
 
 #ifdef _WIN32
 extern HANDLE mem_handle;
@@ -64,14 +63,7 @@ static const u64 VMEM32_SIZE = 0x100000000L;
 static const u64 USER_SPACE = 0x80000000L;
 static const u64 AREA7_ADDRESS = 0x7C000000L;
 
-#define VRAM_PROT_SEGMENT (1024 * 1024)	// vram protection regions are grouped by 1MB segment
-
 static std::unordered_set<u32> vram_mapped_pages;
-struct vram_lock {
-	u32 start;
-	u32 end;
-};
-static std::vector<vram_lock> vram_blocks[VRAM_SIZE_MAX / VRAM_PROT_SEGMENT];
 static u8 sram_mapped_pages[USER_SPACE / PAGE_SIZE / 8];	// bit set to 1 if page is mapped
 
 bool vmem32_inited;
@@ -151,32 +143,6 @@ static void vmem32_unprotect_buffer(u32 start, u32 size)
 #else
 	mprotect(&virt_ram_base[start], size, PROT_READ | PROT_WRITE);
 #endif
-}
-
-void vmem32_protect_vram(u32 addr, u32 size)
-{
-	if (!vmem32_inited)
-		return;
-	for (int page = (addr & VRAM_MASK) / VRAM_PROT_SEGMENT; page <= ((addr & VRAM_MASK) + size - 1) / VRAM_PROT_SEGMENT; page++)
-	{
-		vram_blocks[page].push_back({ addr, addr + size - 1 });
-	}
-}
-void vmem32_unprotect_vram(u32 addr, u32 size)
-{
-	if (!vmem32_inited)
-		return;
-	for (int page = (addr & VRAM_MASK) / VRAM_PROT_SEGMENT; page <= ((addr & VRAM_MASK) + size - 1) / VRAM_PROT_SEGMENT; page++)
-	{
-		std::vector<vram_lock>& block_list = vram_blocks[page];
-		for (auto it = block_list.begin(); it != block_list.end(); )
-			{
-			if (it->start >= addr && it->end < addr + size)
-				it = block_list.erase(it);
-			else
-				it++;
-			}
-	}
 }
 
 static const u32 page_sizes[] = { 1024, 4 * 1024, 64 * 1024, 1024 * 1024 };
@@ -269,23 +235,11 @@ static u32 vmem32_map_mmu(u32 address, bool write)
 				return MMU_ERROR_NONE;
 			}
 			verify(vmem32_map_buffer(vpn, page_size, offset, page_size, allow_write) != NULL);
-			u32 end = start + page_size;
-			const std::vector<vram_lock>& blocks = vram_blocks[start / VRAM_PROT_SEGMENT];
-
-			{
-				std::lock_guard<cMutex> lock(vramlist_lock);
-				for (int i = blocks.size() - 1; i >= 0; i--)
-				{
-					if (blocks[i].start < end && blocks[i].end >= start)
-					{
-						u32 prot_start = std::max(start, blocks[i].start);
-						u32 prot_size = std::min(end, blocks[i].end + 1) - prot_start;
-						prot_size += prot_start % PAGE_SIZE;
-						prot_start &= ~PAGE_MASK;
-						vmem32_protect_buffer(vpn + (prot_start & (page_size - 1)), prot_size);
-					}
-				}
-			}
+			// Protect what is protected in the main vram mappings
+			u32 end = std::min(start + page_size, VRAM_SIZE);
+			for (u32 vram_addr = start; vram_addr < end; vram_addr += PAGE_SIZE)
+				if (_vmem_vram_page_protected(vram_addr / PAGE_SIZE))
+					vmem32_protect_buffer(vpn + (vram_addr - start), PAGE_SIZE);
 		}
 		else if (offset >= MAP_RAM_START_OFFSET && offset < MAP_RAM_START_OFFSET + RAM_SIZE)
 		{

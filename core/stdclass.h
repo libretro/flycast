@@ -310,48 +310,6 @@ public :
 	}
 };
 
-class cMutex
-{
-private:
-#ifndef TARGET_NO_THREADS
-	slock_t *mutx;
-#endif
-
-public :
-	cMutex()
-	{
-#ifndef TARGET_NO_THREADS
-		mutx = slock_new();
-#endif
-	}
-	~cMutex()
-	{
-#ifndef TARGET_NO_THREADS
-		slock_free(mutx);
-#endif
-	}
-	void lock()
-	{
-#ifndef TARGET_NO_THREADS
-		slock_lock(mutx);
-#endif
-	}
-	bool trylock()
-	{
-#ifndef TARGET_NO_THREADS
-		return slock_try_lock(mutx);
-#else
-		return false;
-#endif
-	}
-	void unlock()
-	{
-#ifndef TARGET_NO_THREADS
-		slock_unlock(mutx);
-#endif
-	}
-};
-
 //Set the path !
 void set_user_config_dir(const std::string& dir);
 void set_user_data_dir(const std::string& dir);

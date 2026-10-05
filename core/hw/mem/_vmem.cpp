@@ -617,9 +617,33 @@ void _vmem_enable_mmu(bool enable)
 	}
 }
 
+/* Which pages of vram are write-protected, one bit a page. The render
+ * thread protects pages and the emulation thread unprotects them, each
+ * with one atomic operation on the word; the emulation thread reads the
+ * bits when it maps vram into the 32-bit address space (vmem32). */
+static retro_atomic_int_t vram_page_protected[VRAM_SIZE_MAX / PAGE_SIZE / 32];
+
+bool _vmem_vram_page_protected(u32 page)
+{
+	return (retro_atomic_load_acquire_int(&vram_page_protected[page >> 5]) >> (page & 31)) & 1;
+}
+
+static void vram_pages_set_protected(u32 addr, u32 size, bool on)
+{
+	for (u32 page = addr / PAGE_SIZE; page <= (addr + size - 1) / PAGE_SIZE; page++)
+	{
+		const int bit = (int)(1u << (page & 31));
+		if (on)
+			retro_atomic_fetch_or_int(&vram_page_protected[page >> 5], bit);
+		else
+			retro_atomic_fetch_and_int(&vram_page_protected[page >> 5], ~bit);
+	}
+}
+
 void _vmem_protect_vram(u32 addr, u32 size)
 {
 	addr &= VRAM_MASK;
+	vram_pages_set_protected(addr, size, true);
 	if (_nvmem_enabled())
 	{
 		if (!mmu_enabled() || !_nvmem_4gb_space())
@@ -649,7 +673,6 @@ void _vmem_protect_vram(u32 addr, u32 size)
 				mem_region_lock(virt_ram_base + 0xA4000000 + addr + VRAM_SIZE, size);
 				//mem_region_lock(virt_ram_base + 0xC4000000 + addr + VRAM_SIZE, size);
 			}
-			vmem32_protect_vram(addr, size);
 		}
 	}
 	else
@@ -661,6 +684,7 @@ void _vmem_protect_vram(u32 addr, u32 size)
 void _vmem_unprotect_vram(u32 addr, u32 size)
 {
 	addr &= VRAM_MASK;
+	vram_pages_set_protected(addr, size, false);
 	if (_nvmem_enabled())
 	{
 		if (!mmu_enabled() || !_nvmem_4gb_space())

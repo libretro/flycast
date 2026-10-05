@@ -524,6 +524,61 @@ static void test_input_latch(void)
 	CHECK(w == LATCH_FRAMES / 16);
 }
 
+/* ---- cMarkSet -------------------------------------------------------- */
+
+#define MARK_NUMBERS 4096
+#define MARK_ROUNDS  400000
+
+static cMarkSet<MARK_NUMBERS> marks;
+static retro_atomic_int_t mark_stamp[MARK_NUMBERS];	/* last round to mark it */
+static int mark_seen[MARK_NUMBERS];			/* collector only */
+static retro_atomic_int_t mark_done;
+
+/* Stamps a number with the round, then marks it: the order the core's
+ * fault handler works in, state first and the mark after. */
+static void mark_thread(void *)
+{
+	unsigned seed = 99;
+
+	for (int round = 1; round <= MARK_ROUNDS; round++)
+	{
+		unsigned n = rng_next(&seed) % MARK_NUMBERS;
+		retro_atomic_store_release_int(&mark_stamp[n], round);
+		marks.Mark(n);
+	}
+	retro_atomic_store_release_int(&mark_done, 1);
+}
+
+static void mark_collect(void)
+{
+	marks.Collect([](unsigned n) {
+		mark_seen[n] = retro_atomic_load_acquire_int(&mark_stamp[n]);
+	});
+}
+
+static void test_mark_set(void)
+{
+	sthread_t *t;
+	int lost = 0;
+
+	CHECK(!marks.Pending());
+	retro_atomic_int_init(&mark_done, 0);
+	t = sthread_create(mark_thread, NULL);
+	while (!retro_atomic_load_acquire_int(&mark_done))
+		if (marks.Pending())
+			mark_collect();
+	sthread_join(t);
+	mark_collect();
+	CHECK(!marks.Pending());
+
+	/* Every mark was collected after it was made: what the collector
+	 * saw last for a number is the last round that marked it. */
+	for (int n = 0; n < MARK_NUMBERS; n++)
+		if (mark_seen[n] != retro_atomic_load_acquire_int(&mark_stamp[n]))
+			lost++;
+	CHECK(lost == 0);
+}
+
 /* ---------------------------------------------------------------------- */
 
 int main(void)
@@ -536,6 +591,7 @@ int main(void)
 		{ "HunkPrefetch",  test_hunk_prefetch },
 		{ "EmuBaton",      test_emu_baton },
 		{ "InputLatch",    test_input_latch },
+		{ "cMarkSet",      test_mark_set },
 	};
 
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)
