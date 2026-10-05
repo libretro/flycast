@@ -65,6 +65,7 @@ int pico_stack_init(void);
 
 /* ----- Loop Function. ----- */
 void pico_stack_tick(void);
+int pico_stack_idle_ms(void);
 void pico_stack_loop(void);
 
 /* ---- Notifications for stack errors */

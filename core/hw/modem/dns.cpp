@@ -85,6 +85,11 @@ void get_host_by_name(const char *host, struct pico_ip4 dnsaddr)
 		perror("DNS sendto failed");
 }
 
+sock_t get_dns_socket(void)
+{
+	return sock_fd;
+}
+
 int get_dns_answer(struct pico_ip4 *address, struct pico_ip4 dnsaddr)
 {
 	struct sockaddr_in peer;

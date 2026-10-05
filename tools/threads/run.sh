@@ -58,8 +58,32 @@ for san in thread address,undefined; do
       -o "$WORK/naomi_net_test" tools/threads/naomi_net_test.cpp \
       core/network/naomi_network.cpp "$WORK/rthreads.o" "$WORK/features_cpu.o" \
       "$WORK/rtime.o" -lpthread
+   # The modem's network thread: the core's own picoppp.cpp with picoTCP,
+   # and the test playing the Dreamcast's end of the line. picoTCP itself
+   # is built without UBSan, which it was not written to pass.
+   mkdir -p "$WORK/pico"
+   for src in core/deps/picotcp/stack/*.c \
+         core/deps/picotcp/modules/pico_udp.c core/deps/picotcp/modules/pico_tcp.c \
+         core/deps/picotcp/modules/pico_socket_udp.c core/deps/picotcp/modules/pico_socket_tcp.c \
+         core/deps/picotcp/modules/pico_fragments.c core/deps/picotcp/modules/pico_arp.c \
+         core/deps/picotcp/modules/pico_ipv4.c core/deps/picotcp/modules/pico_ethernet.c \
+         core/deps/picotcp/modules/pico_dns_client.c core/deps/picotcp/modules/pico_dns_common.c \
+         core/deps/picotcp/modules/pico_dhcp_server.c core/deps/picotcp/modules/pico_dhcp_common.c \
+         core/deps/picotcp/modules/pico_dev_ppp.c \
+         $L/rthreads/retro_eventcount.c $L/queues/retro_spsc.c; do
+      $CC -O1 -g -w -fsanitize=$(echo $san | sed 's/,undefined//') $DEFS $INC \
+         -Icore/deps/picotcp/include -Icore/deps/picotcp/modules \
+         -c $src -o "$WORK/pico/$(basename $src .c).o"
+   done
+   $CXX -std=c++11 -fpermissive -O1 -g -w $DEFS \
+      -fsanitize=$san -fno-sanitize-recover=undefined $INC -Icore/deps/miniupnpc \
+      -Icore/deps/picotcp/include -Icore/deps/picotcp/modules \
+      -o "$WORK/pico_test" tools/threads/pico_test.cpp core/network/picoppp.cpp \
+      core/hw/modem/dns.cpp "$WORK"/pico/*.o "$WORK/rthreads.o" "$WORK/features_cpu.o" \
+      "$WORK/rtime.o" -lpthread
    echo "== -fsanitize=$san"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/threads_test"
+   TSAN_OPTIONS=halt_on_error=1 "$WORK/pico_test"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/m3comm_test"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/naomi_net_test"
 done

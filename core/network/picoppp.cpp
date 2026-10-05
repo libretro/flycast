@@ -19,6 +19,11 @@
     along with reicast.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#if defined(_WIN32) && !defined(FD_SETSIZE)
+/* The pico thread waits on all of its sockets at once; Winsock's own
+ * limit for a select() is 64. */
+#define FD_SETSIZE 256
+#endif
 #if !defined(_MSC_VER) && !defined(TARGET_NO_THREADS)
 
 #include "stdclass.h"
@@ -68,6 +73,29 @@ static retro_spsc_t out_ring;	/* modem -> stack */
 static bool rings_ready;	/* emulation thread only */
 /* Where the stack sleeps while in_ring is full. */
 static cEventCount in_ring_ec;
+
+/* The pico thread does not tick on a timer. It waits, in select(), for the
+ * things that give it work: its native sockets, the stack's next timer,
+ * and this socket, which the emulation thread writes a byte to when it has
+ * handed the stack something (modem bytes, an Ethernet frame) or wants the
+ * thread to stop. It is a datagram socket on the loopback interface
+ * connected to itself.
+ *
+ * So that the emulation thread does not make a system call for every byte
+ * the modem sends, it only writes when the pico thread says it is waiting.
+ * pico_kicks counts what has been handed over: the pico thread notes it
+ * before it looks for work and, having said it is about to wait, does not
+ * wait if the count has moved since. */
+static sock_t wake_sock = INVALID_SOCKET;	/* made by the emulation thread before the pico thread starts */
+static retro_atomic_int_t pico_waiting;
+static retro_atomic_int_t pico_kicks;
+
+static void wake_pico()
+{
+	retro_atomic_fetch_add_int(&pico_kicks, 1);
+	if (retro_atomic_load_acquire_int(&pico_waiting))
+		send(wake_sock, "", 1, 0);
+}
 
 static pico_ip4 dcaddr;
 static pico_ip4 dnsaddr;
@@ -245,6 +273,7 @@ extern "C"
 static void read_native_sockets();
 void get_host_by_name(const char *name, pico_ip4 dnsaddr);
 int get_dns_answer(pico_ip4 *address, pico_ip4 dnsaddr);
+sock_t get_dns_socket(void);
 
 static int modem_read(pico_device *dev, void *data, int len)
 {
@@ -285,9 +314,11 @@ static int modem_write(pico_device *dev, const void *data, int len)
 void write_pico(u8 b)
 {
 	if (rings_ready)
+	{
 		retro_spsc_write(&out_ring, &b, 1);
+		wake_pico();
+	}
 }
-
 int read_pico()
 {
 	u8 b;
@@ -781,12 +812,76 @@ void pico_receive_eth_frame(const u8 *frame, u32 size)
 {
 	dumpFrame(frame, size);
 	pico_stack_recv(pico_dev, (u8 *)frame, size);
+	wake_pico();
 }
-
 static int send_eth_frame(pico_device *dev, void *data, int len)
 {
 	dumpFrame((const u8 *)data, len);
 	return pico_send_eth_frame((const u8 *)data, len);
+}
+
+/* Waits until the thread has something to do: a native socket to read,
+ * accept on or finish connecting, a timer of the stack's come due,
+ * something handed over by the emulation thread, or the order to stop.
+ * @kicks is pico_kicks as it was before the thread last looked for work. */
+static void wait_for_work(int kicks)
+{
+	fd_set readable, writable;
+	timeval tv;
+	char drain[64];
+	int max_fd = (int)wake_sock;
+	int idle = pico_stack_idle_ms();
+
+	// The last tick moved a frame: there may be more
+	if (idle == 0)
+		return;
+	// Never longer than a second, whatever the stack's timers say
+	if (idle < 0 || idle > 1000)
+		idle = 1000;
+
+	FD_ZERO(&readable);
+	FD_ZERO(&writable);
+	FD_SET(wake_sock, &readable);
+	for (auto& it : udp_sockets)
+		if (VALID(it.second))
+		{
+			FD_SET(it.second, &readable);
+			max_fd = std::max(max_fd, (int)it.second);
+		}
+	for (auto& it : tcp_listening_sockets)
+	{
+		FD_SET(it.second, &readable);
+		max_fd = std::max(max_fd, (int)it.second);
+	}
+	for (auto& it : tcp_sockets)
+		// One with bytes the stack has not taken yet is not read until it has
+		if (VALID(it.second.native_sock) && it.second.in_buffer.empty())
+		{
+			FD_SET(it.second.native_sock, &readable);
+			max_fd = std::max(max_fd, (int)it.second.native_sock);
+		}
+	for (auto& it : tcp_connecting_sockets)
+	{
+		FD_SET(it.second, &writable);
+		max_fd = std::max(max_fd, (int)it.second);
+	}
+	if (afo_ip.addr == 0 && VALID(get_dns_socket()))
+	{
+		FD_SET(get_dns_socket(), &readable);
+		max_fd = std::max(max_fd, (int)get_dns_socket());
+	}
+
+	tv.tv_sec = idle / 1000;
+	tv.tv_usec = (idle % 1000) * 1000;
+
+	retro_atomic_fetch_add_int(&pico_waiting, 1);
+	if (retro_atomic_load_acquire_int(&pico_thread_running)
+			&& retro_atomic_load_acquire_int(&pico_kicks) == kicks)
+		select(max_fd + 1, &readable, &writable, NULL, &tv);
+	retro_atomic_store_release_int(&pico_waiting, 0);
+
+	while (recv(wake_sock, drain, sizeof(drain), 0) > 0)
+		;
 }
 
 static void *pico_thread_func(void *)
@@ -977,16 +1072,13 @@ static void *pico_thread_func(void *)
 
 	while (retro_atomic_load_acquire_int(&pico_thread_running))
     {
+		const int kicks = retro_atomic_load_acquire_int(&pico_kicks);
+
     	read_native_sockets();
     	pico_stack_tick();
     	check_dns_entries();
-#ifdef __LIBRETRO__
-      retro_sleep(5);
-#else
-    	usleep(5000);
-#endif
+		wait_for_work(kicks);
     }
-
     for (auto it = tcp_listening_sockets.begin(); it != tcp_listening_sockets.end(); it++)
     	closesocket(it->second);
 	close_native_sockets();
@@ -1016,6 +1108,36 @@ static void *pico_thread_func(void *)
 
 static cThread pico_thread(pico_thread_func, NULL);
 
+static bool make_wake_socket()
+{
+	sockaddr_in addr;
+	socklen_t len = sizeof(addr);
+
+	if (VALID(wake_sock))
+		return true;
+#ifdef _WIN32
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 0), &wsaData) != 0)
+		return false;
+#endif
+	sock_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (!VALID(sock))
+		return false;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (::bind(sock, (sockaddr *)&addr, sizeof(addr)) < 0
+			|| getsockname(sock, (sockaddr *)&addr, &len) < 0
+			|| ::connect(sock, (sockaddr *)&addr, sizeof(addr)) < 0)
+	{
+		closesocket(sock);
+		return false;
+	}
+	set_non_blocking(sock);
+	wake_sock = sock;
+	return true;
+}
+
 bool start_pico()
 {
 	if (retro_atomic_load_relaxed_int(&pico_thread_running))
@@ -1038,9 +1160,11 @@ bool start_pico()
 		retro_spsc_clear(&in_ring);
 		retro_spsc_clear(&out_ring);
 	}
+	if (!make_wake_socket())
+		return false;
+	retro_atomic_store_release_int(&pico_waiting, 0);
 	retro_atomic_store_release_int(&pico_thread_running, 1);
 	pico_thread.Start();
-
     return true;
 }
 
@@ -1048,6 +1172,8 @@ void stop_pico()
 {
 	retro_atomic_store_release_int(&pico_thread_running, 0);
 	in_ring_ec.Notify();
+	if (VALID(wake_sock))
+		send(wake_sock, "", 1, 0);
 	pico_thread.WaitToEnd();
 }
 

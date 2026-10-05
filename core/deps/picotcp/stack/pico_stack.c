@@ -570,6 +570,7 @@ typedef struct pico_timer_ref pico_timer_ref;
 DECLARE_HEAP(pico_timer_ref, expire);
 
 static heap_pico_timer_ref *Timers;
+static int pico_tick_worked;
 
 int32_t pico_seq_compare(uint32_t a, uint32_t b)
 {
@@ -762,7 +763,7 @@ void pico_stack_tick(void)
     static int ret[PROTO_DEF_NR] = {
         0
     };
-
+    int i;
     pico_check_timers();
 
     /* dbg("LOOP_SCORES> %3d - %3d - %3d - %3d - %3d - %3d - %3d - %3d - %3d - %3d - %3d\n",score[0],score[1],score[2],score[3],score[4],score[5],score[6],score[7],score[8],score[9],score[10]); */
@@ -809,10 +810,43 @@ void pico_stack_tick(void)
     ret[10] = pico_devices_loop(score[10], PICO_LOOP_DIR_OUT);
     pico_rand_feed((uint32_t)ret[10]);
 
+    /* A loop that returns less than it was given moved a frame. If any
+     * did, there may be more for the next tick: see pico_stack_idle_ms(). */
+    pico_tick_worked = 0;
+    for (i = 0; i < PROTO_DEF_NR; i++) {
+        if (ret[i] < score[i]) {
+            pico_tick_worked = 1;
+            break;
+        }
+    }
+
     /* calculate new loop scores for next iteration */
     calc_score(score, index, (int (*)[])avg, ret);
 }
 
+/* How long the caller may wait before the next pico_stack_tick(), if
+ * nothing arrives from outside in the meantime: 0 if the last tick moved a
+ * frame (tick again now), otherwise the milliseconds until the first timer
+ * is due, or -1 if there is no timer at all. This is what lets a caller
+ * wait for work instead of ticking every few milliseconds. */
+int pico_stack_idle_ms(void)
+{
+    struct pico_timer_ref *tref;
+    pico_time now;
+
+    if (pico_tick_worked)
+        return 0;
+    tref = heap_first(Timers);
+    if (!tref)
+        return -1;
+    now = PICO_TIME_MS();
+    /* pico_check_timers() fires a timer once its time is past */
+    if (tref->expire < now)
+        return 0;
+    if (tref->expire - now >= 0x7FFFFFFE)
+        return 0x7FFFFFFF;
+    return (int)(tref->expire - now) + 1;
+}
 void pico_stack_loop(void)
 {
     while(1) {
