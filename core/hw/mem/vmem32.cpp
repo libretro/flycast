@@ -19,7 +19,6 @@
     along with reicast.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include <unordered_set>
-#include <mutex>
 #include "build.h"
 #include "vmem32.h"
 #include "_vmem.h"
