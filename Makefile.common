@@ -484,7 +484,8 @@ ifeq ($(NO_THREADS), 1)
 else
 ifneq ($(STATIC_LINKING), 1)
 	SOURCES_C += $(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
-					$(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c
+					$(LIBRETRO_COMM_DIR)/rthreads/retro_eventcount.c \
+					$(LIBRETRO_COMM_DIR)/queues/retro_spsc.c
 endif
 endif
 

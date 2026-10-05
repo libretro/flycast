@@ -49,8 +49,7 @@ extern "C" {
 #include "reios/reios.h"
 
 #include <map>
-#include <mutex>
-#include <queue>
+#include <retro_spsc.h>
 
 #define RESOLVER1_OPENDNS_COM "208.67.222.222"
 #define AFO_ORIG_IP 0x83f2fb3f		// 63.251.242.131 in network order
@@ -58,11 +57,17 @@ extern "C" {
 
 static pico_device *pico_dev;
 
-static std::queue<u8> in_buffer;
-static std::queue<u8> out_buffer;
-
-static std::mutex in_buffer_lock;
-static std::mutex out_buffer_lock;
+/* Bytes between the emulated modem (emulation thread) and the PPP stack
+ * (pico thread). Each ring has one writer and one reader and takes no
+ * lock. in_ring is kept small on purpose: when it fills, the stack waits
+ * for the modem to read, which is the flow control the link needs. */
+#define IN_RING_BYTES  1024
+#define OUT_RING_BYTES 16384
+static retro_spsc_t in_ring;	/* stack -> modem */
+static retro_spsc_t out_ring;	/* modem -> stack */
+static bool rings_ready;	/* emulation thread only */
+/* Where the stack sleeps while in_ring is full. */
+static cEventCount in_ring_ec;
 
 static pico_ip4 dcaddr;
 static pico_ip4 dnsaddr;
@@ -231,7 +236,7 @@ static GamePortList GamesPorts[] = {
 static std::map<uint16_t, sock_t> tcp_listening_sockets;
 
 static bool pico_stack_inited;
-static bool pico_thread_running = false;
+static retro_atomic_int_t pico_thread_running;
 extern "C"
 {
    int dont_reject_opt_vj_hack;
@@ -243,69 +248,54 @@ int get_dns_answer(pico_ip4 *address, pico_ip4 dnsaddr);
 
 static int modem_read(pico_device *dev, void *data, int len)
 {
-	u8 *p = (u8 *)data;
-
-	int count = 0;
-	out_buffer_lock.lock();
-	while (!out_buffer.empty() && count < len)
-	{
-		*p++ = out_buffer.front();
-		out_buffer.pop();
-		count++;
-	}
-	out_buffer_lock.unlock();
-
-    return count;
+	return (int)retro_spsc_read(&out_ring, data, len);
 }
 
 static int modem_write(pico_device *dev, const void *data, int len)
 {
-	u8 *p = (u8 *)data;
+	const u8 *p = (const u8 *)data;
+	int left = len;
 
-	in_buffer_lock.lock();
-	for (int i = 0; i < len; i++)
+	while (left > 0)
 	{
-		while (in_buffer.size() > 1024)
+		int key;
+		size_t n = retro_spsc_write(&in_ring, p, left);
+
+		p += n;
+		left -= (int)n;
+		if (left == 0)
+			break;
+
+		/* Full: sleep until the modem has read some of it. */
+		key = in_ring_ec.Prepare();
+		if (!retro_atomic_load_acquire_int(&pico_thread_running))
 		{
-			in_buffer_lock.unlock();
-			if (!pico_thread_running)
-				return 0;
-#ifdef __LIBRETRO__
-         retro_sleep(5);
-#else
-			usleep(5000);
-#endif
-			in_buffer_lock.lock();
+			in_ring_ec.Cancel();
+			return 0;
 		}
-		in_buffer.push(*p++);
+		if (retro_spsc_write_avail(&in_ring) > 0)
+			in_ring_ec.Cancel();
+		else
+			in_ring_ec.Commit(key, 5000);
 	}
-	in_buffer_lock.unlock();
 
     return len;
 }
 
 void write_pico(u8 b)
 {
-	out_buffer_lock.lock();
-	out_buffer.push(b);
-	out_buffer_lock.unlock();
+	if (rings_ready)
+		retro_spsc_write(&out_ring, &b, 1);
 }
 
 int read_pico()
 {
-	in_buffer_lock.lock();
-	if (in_buffer.empty())
-	{
-		in_buffer_lock.unlock();
+	u8 b;
+
+	if (!rings_ready || retro_spsc_read(&in_ring, &b, 1) != 1)
 		return -1;
-	}
-	else
-	{
-		u32 b = in_buffer.front();
-		in_buffer.pop();
-		in_buffer_lock.unlock();
-		return b;
-	}
+	in_ring_ec.Notify();
+	return b;
 }
 
 static void read_from_dc_socket(pico_socket *pico_sock, sock_t nat_sock)
@@ -851,19 +841,6 @@ static void *pico_thread_func(void *)
 		}
 	}
 
-	// Empty queues
-    {
-		std::queue<u8> empty;
-		in_buffer_lock.lock();
-		std::swap(in_buffer, empty);
-		in_buffer_lock.unlock();
-
-		std::queue<u8> empty2;
-		out_buffer_lock.lock();
-		std::swap(out_buffer, empty2);
-		out_buffer_lock.unlock();
-    }
-
 	u32 addr;
 	pico_string_to_ipv4(settings.network.dns.c_str(), &addr);
 	memcpy(&dnsaddr.addr, &addr, sizeof(addr));
@@ -998,7 +975,7 @@ static void *pico_thread_func(void *)
 		}
 	}
 
-	while (pico_thread_running)
+	while (retro_atomic_load_acquire_int(&pico_thread_running))
     {
     	read_native_sockets();
     	pico_stack_tick();
@@ -1041,9 +1018,27 @@ static cThread pico_thread(pico_thread_func, NULL);
 
 bool start_pico()
 {
-	if (pico_thread_running)
+	if (retro_atomic_load_relaxed_int(&pico_thread_running))
 		return false;
-	pico_thread_running = true;
+	/* The pico thread is not running, so both rings are this thread's
+	 * alone: make them, or empty them of the last connection's bytes. */
+	if (!rings_ready)
+	{
+		if (!retro_spsc_init(&in_ring, IN_RING_BYTES))
+			return false;
+		if (!retro_spsc_init(&out_ring, OUT_RING_BYTES))
+		{
+			retro_spsc_free(&in_ring);
+			return false;
+		}
+		rings_ready = true;
+	}
+	else
+	{
+		retro_spsc_clear(&in_ring);
+		retro_spsc_clear(&out_ring);
+	}
+	retro_atomic_store_release_int(&pico_thread_running, 1);
 	pico_thread.Start();
 
     return true;
@@ -1051,7 +1046,8 @@ bool start_pico()
 
 void stop_pico()
 {
-	pico_thread_running = false;
+	retro_atomic_store_release_int(&pico_thread_running, 0);
+	in_ring_ec.Notify();
 	pico_thread.WaitToEnd();
 }
 
