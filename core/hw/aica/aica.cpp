@@ -86,6 +86,25 @@ AicaTimer timers[3];
 int aica_schid = -1;
 const int AICA_TICK = 145125;	// 44.1 KHz / 32
 
+u32 sh4_sched_remaining(int id);
+
+/* How many of the 32 samples of the tick in progress the hardware has put
+ * out by now: the tick is emulated in one go when it ends, but the AICA
+ * makes a sample every 1/44100 s. */
+u32 libAICA_SamplesIntoTick()
+{
+	if (aica_schid == -1)
+		return 0;
+
+	u32 remaining = sh4_sched_remaining(aica_schid);
+	if (remaining >= (u32)AICA_TICK)
+		// not scheduled, or due this instant
+		return 0;
+
+	u32 samples = (u32)(((u64)(AICA_TICK - remaining) * 32) / AICA_TICK);
+	return samples > 31 ? 31 : samples;
+}
+
 static int AicaUpdate(int tag, int c, int j)
 {
    aicaarm::run(32);
