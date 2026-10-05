@@ -15,6 +15,7 @@
 #include "types.h"
 #include "stdclass.h"
 #include "lockfree.h"
+#include "libretro/emu_baton.h"
 
 static int failures;
 
@@ -134,6 +135,85 @@ static void test_slot_cache(void)
 	CHECK(retro_atomic_load_acquire_int(&cache_live) == left);
 }
 
+/* ---- EmuBaton -------------------------------------------------------- */
+
+#define BATON_HOLDS 20000
+
+static EmuBaton baton;
+static long machine;			/* plain: whoever has the machine */
+static retro_atomic_int_t cpu_running;	/* stands in for Sh4cntx.CpuRunning */
+static retro_atomic_int_t baton_passes;
+
+/* Stands in for dc_run(): sets its own run flag on entry, which is what
+ * loses a stop that arrives just before it. */
+static void fake_run(void)
+{
+	retro_atomic_store_relaxed_int(&cpu_running, 1);
+	while (retro_atomic_load_relaxed_int(&cpu_running))
+		machine++;
+}
+
+static void fake_stop(void)  { retro_atomic_store_relaxed_int(&cpu_running, 0); }
+static void fake_start(void) { retro_atomic_store_relaxed_int(&cpu_running, 1); }
+
+static void baton_emu_thread(void *)
+{
+	while (baton.WaitToRun())
+	{
+		retro_atomic_fetch_add_int(&baton_passes, 1);
+		fake_run();
+	}
+	machine++;	/* shutting down: still the thread's machine */
+}
+
+static void baton_holder(void *)
+{
+	for (int i = 0; i < BATON_HOLDS; i++)
+	{
+		if (baton.Hold(5000, fake_stop, fake_start))
+		{
+			machine++;
+			baton.Release();
+		}
+		else
+			CHECK(!"Hold timed out");
+	}
+}
+
+static void test_emu_baton(void)
+{
+	sthread_t *emu, *saver;
+
+	retro_atomic_int_init(&baton_passes, 0);
+
+	/* No emulation thread: taking the machine never waits. */
+	CHECK(baton.Hold(1, fake_stop, fake_start));
+	machine++;
+	baton.Release();
+
+	/* Start the emulation thread the way retro_run does. */
+	CHECK(baton.Hold(0, fake_stop, fake_start));
+	baton.HandToThread();
+	emu = sthread_create(baton_emu_thread, NULL);
+
+	/* Two threads take the machine over and over: the libretro thread and
+	 * a background save state. */
+	saver = sthread_create(baton_holder, NULL);
+	baton_holder(NULL);
+	sthread_join(saver);
+
+	/* Unload. */
+	CHECK(baton.Hold(0, fake_stop, fake_start));
+	baton.TellThreadToExit();
+	sthread_join(emu);
+	baton.ThreadGone();
+
+	/* And the machine can be taken again afterwards. */
+	CHECK(baton.Hold(1, fake_stop, fake_start));
+	baton.Release();
+	CHECK(retro_atomic_load_acquire_int(&baton_passes) > 0);
+}
+
 /* ---------------------------------------------------------------------- */
 
 int main(void)
@@ -141,6 +221,7 @@ int main(void)
 	static const struct { const char *name; void (*fn)(void); } tests[] = {
 		{ "cResetEvent",   test_reset_event },
 		{ "cSlotCache",    test_slot_cache },
+		{ "EmuBaton",      test_emu_baton },
 	};
 
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)

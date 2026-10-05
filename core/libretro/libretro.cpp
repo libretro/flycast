@@ -42,6 +42,7 @@ char* strdup(const char *str)
 #include <atomic>
 #include <retro_timers.h>
 #include "emulator.h"
+#include "emu_baton.h"
 #include "../rend/rend.h"
 #include "../hw/sh4/sh4_mem.h"
 #include "../hw/sh4/sh4_sched.h"
@@ -186,7 +187,6 @@ void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
 bool rend_single_frame();
 void rend_cancel_emu_wait();
-bool acquire_mainloop_lock();
 
 static void refresh_devices(bool first_startup);
 static void init_disk_control_interface(void);
@@ -199,18 +199,16 @@ char game_dir_no_slash[1024];
 char vmu_dir_no_slash[PATH_MAX];
 char content_name[PATH_MAX];
 char g_roms_dir[PATH_MAX];
-/* These three are written on one thread and read on the other (emu thread vs.
- * the libretro/main thread that drives serialize/reset/unload). They were plain
- * bools, i.e. a data race / UB. Make them atomic; relaxed ordering is enough
- * since each is a standalone flag with no piggybacked data, and the mutex
- * handshakes below provide the ordering that actually matters. */
-static std::atomic<bool> emu_in_thread{false};
-static std::atomic<bool> performed_serialization{false};
 #if !defined(TARGET_NO_THREADS)
+/* How long a save state, load state or reset gives the emulation thread
+ * to park: laps of 1 ms. */
+#define EMU_HOLD_LAPS 5000
+
 static void *emu_thread_func(void *);
 static cThread emu_thread(&emu_thread_func, 0);
-static cMutex mtx_serialization ;
-static cMutex mtx_mainloop ;
+static bool emu_thread_started = false;   /* libretro thread only */
+static EmuBaton emu_baton;
+#endif
 static bool gl_ctx_resetting = false;
 std::atomic<bool> reset_requested{false};
 
@@ -226,35 +224,42 @@ static bool disc_tray_open = false;
 
 u64 pixel_buffer_size = 512 * 1024 * 1024;	// Initial size 512 MB
 
+#if !defined(TARGET_NO_THREADS)
 static void *emu_thread_func(void *)
 {
-    emu_in_thread = true ;
-    while ( true )
-    {
-    	performed_serialization = false ;
-    	mtx_mainloop.lock();
-    	rend_cancel_emu_wait();
-        dc_run();
-        mtx_mainloop.unlock();
+   while (emu_baton.WaitToRun())
+   {
+      if (reset_requested)
+      {
+         dc_reset(false);
+         reset_requested = false;
+      }
+      rend_cancel_emu_wait();
+      dc_run();
+   }
 
-    	mtx_serialization.lock();
-    	mtx_serialization.unlock();
+   rend_cancel_emu_wait();
+   dc_term();
 
-    	if (!performed_serialization && !reset_requested)
-    		break ;
-    	if (reset_requested)
-    	{
-    		dc_reset(false);
-    		reset_requested = false;
-    	}
-    }
+   return NULL;
+}
 
-	rend_cancel_emu_wait();
-    dc_term();
+/* Gets the emulation thread out of dc_run(), which ends at the next
+ * timeslice, and out of a wait on the renderer. */
+static void emu_kick(void)
+{
+   dc_stop();
+   rend_cancel_emu_wait();
+}
 
-    emu_in_thread = false ;
+static bool emu_hold(unsigned max_laps)
+{
+   return emu_baton.Hold(max_laps, emu_kick, dc_start);
+}
 
-    return NULL;
+static void emu_release(void)
+{
+   emu_baton.Release();
 }
 #endif
 
@@ -383,8 +388,10 @@ void retro_deinit(void)
 
    //When auto-save states are enabled this is needed to prevent the core from shutting down before
    //any save state actions are still running - which results in partial saves
-   mtx_serialization.lock();
-   mtx_serialization.unlock();
+#if !defined(TARGET_NO_THREADS)
+   emu_hold(0);
+   emu_release();
+#endif
 
    libretro_supports_bitmasks = false;
    LogManager::Shutdown();
@@ -1298,7 +1305,10 @@ void retro_run (void)
       // On the first call, we start the emulator thread
       if (first_run)
       {
+         emu_hold(0);
+         emu_baton.HandToThread();
          emu_thread.Start();
+         emu_thread_started = true;
          first_run = false;
       }
 
@@ -1342,17 +1352,8 @@ void retro_run (void)
 void retro_reset (void)
 {
 #if !defined(TARGET_NO_THREADS)
-   mtx_serialization.lock();
-   if (settings.rend.ThreadedRendering)
-   {
-	  dc_stop();
-	  if (!acquire_mainloop_lock())
-	  {
-		 dc_start();
-		 mtx_serialization.unlock();
-		 return;
-	  }
-   }
+   if (!emu_hold(EMU_HOLD_LAPS))
+      return;
 #endif
 
    settings.dreamcast.cable = 3;
@@ -1361,12 +1362,7 @@ void retro_reset (void)
    ResetAudioBuffer();
 
 #if !defined(TARGET_NO_THREADS)
-   if (settings.rend.ThreadedRendering)
-   {
-	  performed_serialization = true;
-	  mtx_mainloop.unlock();
-   }
-   mtx_serialization.unlock();
+   emu_release();
 #endif
 }
 
@@ -2175,24 +2171,28 @@ void retro_unload_game(void)
       free(game_data);
    game_data = NULL;
 
-   dc_stop();
 #if !defined(TARGET_NO_THREADS)
-   if (settings.rend.ThreadedRendering)
+   if (emu_thread_started)
    {
-	   rend_cancel_emu_wait();
-	   DEBUG_LOG(COMMON, "Waiting for emu thread......");
-	   if ( emu_in_thread )
-	   {
-		   frontend_clear_thread_waits_cb(1,NULL) ;
-		   DEBUG_LOG(COMMON, "Waiting for emu thread to end...");
-		   emu_thread.WaitToEnd();
-		   frontend_clear_thread_waits_cb(0,NULL) ;
-	   }
+	   /* Park the emulation thread first, so the request to exit cannot be
+	    * lost to a save state finishing on another thread, then let it shut
+	    * the machine down on its own thread. */
+	   DEBUG_LOG(COMMON, "Waiting for emu thread to end...");
+	   frontend_clear_thread_waits_cb(1,NULL) ;
+	   emu_hold(0);
+	   emu_baton.TellThreadToExit();
+	   emu_thread.WaitToEnd();
+	   frontend_clear_thread_waits_cb(0,NULL) ;
+	   emu_thread_started = false;
+	   emu_baton.ThreadGone();
 	   DEBUG_LOG(COMMON, "...Done");
    }
    else
 #endif
+   {
+	   dc_stop();
 	   dc_term();
+   }
 }
 
 
@@ -2221,42 +2221,6 @@ size_t retro_serialize_size (void)
    return total_size;
 }
 
-bool wait_until_dc_running()
-{
-	retro_time_t start_time = perf_cb.get_time_usec();
-	const retro_time_t FIVE_SECONDS = 5*1000000 ;
-	while(!dc_is_running())
-	{
-		if ( start_time+FIVE_SECONDS < perf_cb.get_time_usec() )
-		{
-			//timeout elapsed - dc not getting a chance to run - just bail
-			return false ;
-		}
-		/* Nothing useful to do until the emu thread reaches dc_run; sleep a
-		 * millisecond instead of burning a core hot-spinning on the flag. */
-		retro_sleep(1);
-	}
-	return true ;
-}
-
-bool acquire_mainloop_lock()
-{
-	bool result = false ;
-	retro_time_t start_time = perf_cb.get_time_usec();
-	const retro_time_t FIVE_SECONDS = 5*1000000 ;
-
-    while ( ( start_time+FIVE_SECONDS > perf_cb.get_time_usec() ) && !(result = mtx_mainloop.trylock())  )
-   	{
-    	rend_cancel_emu_wait();
-    	/* Kick the emu thread out of any render wait, then back off a
-    	 * millisecond so this loop doesn't peg a core while the emu thread
-    	 * unwinds dc_run and releases mtx_mainloop. */
-    	retro_sleep(1);
-   	}
-
-    return result ;
-}
-
 bool retro_serialize(void *data, size_t size)
 {
    unsigned int total_size = 0 ;
@@ -2264,34 +2228,14 @@ bool retro_serialize(void *data, size_t size)
    bool result = false ;
 
 #if !defined(TARGET_NO_THREADS)
-	mtx_serialization.lock();
-    if (settings.rend.ThreadedRendering)
-    {
-    	if ( !wait_until_dc_running())
-      {
-        	mtx_serialization.unlock();
-        	return false ;
-    	}
-
-  		dc_stop();
-  		if ( !acquire_mainloop_lock())
-  		{
-  			dc_start();
-        	mtx_serialization.unlock();
-  			return false ;
-  		}
-    }
+   if (!emu_hold(EMU_HOLD_LAPS))
+      return false ;
 #endif
 
    result = dc_serialize(&data_ptr, &total_size) ;
-   performed_serialization = true ;
 
 #if !defined(TARGET_NO_THREADS)
-    if (settings.rend.ThreadedRendering)
-    {
-    	mtx_mainloop.unlock();
-    }
-	mtx_serialization.unlock();
+   emu_release();
 #endif
 
     return result ;
@@ -2305,21 +2249,8 @@ bool retro_unserialize(const void * data, size_t size)
    int i ;
 
 #if !defined(TARGET_NO_THREADS)
-    if (settings.rend.ThreadedRendering)
-    {
-    	mtx_serialization.lock();
-    	if ( !wait_until_dc_running()) {
-        	mtx_serialization.unlock();
-        	return false ;
-    	}
-  		dc_stop();
-  		if ( !acquire_mainloop_lock())
-  		{
-  			dc_start();
-        	mtx_serialization.unlock();
-  			return false ;
-  		}
-    }
+   if (!emu_hold(EMU_HOLD_LAPS))
+      return false ;
 #endif
 
 #if FEAT_AREC == DYNAREC_JIT
@@ -2351,14 +2282,8 @@ bool retro_unserialize(const void * data, size_t size)
        lightgun_params[i].dirty = true ;
     }
 
-    performed_serialization = true ;
-
 #if !defined(TARGET_NO_THREADS)
-    if (settings.rend.ThreadedRendering)
-    {
-    	mtx_mainloop.unlock();
-    	mtx_serialization.unlock();
-    }
+    emu_release();
 #endif
 
     return result ;
