@@ -359,7 +359,8 @@ ifeq ($(HAVE_VULKAN), 1)
 		SOURCES_CXX += $(GLSLANG_SOURCES_CXX)
 	endif
 
-	SOURCES_C += $(LIBRETRO_COMM_DIR)/vulkan/vulkan_symbol_wrapper.c
+	SOURCES_C += $(LIBRETRO_COMM_DIR)/vulkan/vulkan_symbol_wrapper.c \
+					$(CORE_DIR)/core/rend/vulkan/vk_heap.c
 	SOURCES_CXX += \
 					$(CORE_DIR)/core/rend/vulkan/vulkan_context.cpp \
 					$(CORE_DIR)/core/rend/vulkan/vmallocator.cpp \
