@@ -39,7 +39,16 @@ for san in thread address,undefined; do
       -fsanitize=$san -fno-sanitize-recover=undefined $INC \
       -o "$WORK/threads_test" tools/threads/threads_test.cpp \
       "$WORK/rthreads.o" "$WORK/retro_eventcount.o" -lpthread
+   # The NAOMI link board: the core's own naomi_m3comm.cpp against a
+   # stand-in for the network.
+   $CC -O1 -g -fsanitize=$san -fno-sanitize-recover=undefined $INC \
+      -c $L/time/rtime.c -o "$WORK/rtime.o"
+   $CXX -std=c++11 -fpermissive -O1 -g $DEFS \
+      -fsanitize=$san -fno-sanitize-recover=undefined $INC -Icore/deps/miniupnpc \
+      -o "$WORK/m3comm_test" tools/threads/m3comm_test.cpp \
+      core/hw/naomi/naomi_m3comm.cpp "$WORK/rtime.o" -lpthread
    echo "== -fsanitize=$san"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/threads_test"
+   TSAN_OPTIONS=halt_on_error=1 "$WORK/m3comm_test"
 done
 echo "threads test passed"

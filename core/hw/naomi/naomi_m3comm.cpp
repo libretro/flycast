@@ -30,48 +30,103 @@ void NaomiM3Comm::closeNetwork()
 	network.shutdown();
 	if (thread && thread->joinable())
 		thread->join();
+	// The network thread is gone: its sockets can be closed from here.
+	network.closeSockets();
 }
 
+/* Network thread. */
 void NaomiM3Comm::connectNetwork()
 {
 	if (network.startNetwork())
 	{
-		slot_count = network.slotCount();
-		slot_id = network.slotId();
-		connectedState(true);
+		net_thread_slot_count = network.slotCount();
+		net_thread_slot_id = network.slotId();
+		retro_atomic_store_release_int(&net_slot_count, network.slotCount());
+		retro_atomic_store_release_int(&net_slot_id, network.slotId());
+		// The game side sets the board up when it next looks: syncNetwork()
+		retro_atomic_store_release_int(&net_state, NET_UP);
 	}
 	else
 	{
-		connectedState(false);
 		network_stopping = true;
 		network.shutdown();
 	}
 }
 
+/* Network thread: take a packet off the ring and pass it to the game. */
 void NaomiM3Comm::receiveNetwork()
 {
-	const u32 slot_size = swap16(*(u16*)&m68k_ram[0x204]);
-	const u32 packet_size = slot_size * slot_count;
+	const u32 slot_size = (u32)retro_atomic_load_acquire_int(&net_slot_size);
+	const u32 packet_size = slot_size * net_thread_slot_count;
 
-	u8 buf[packet_size];
+	if (packet_size == 0 || slot_size + packet_size > PACKET_MAX)
+		return;
 
-	if (network.receive(buf, packet_size))
+	if (network.receive(&net_ring[slot_size], packet_size))
 	{
-		*(u16*)&comm_ram[6] = swap16(network.packetNumber());
-		std::unique_lock<std::mutex> lock(mem_mutex);
-		memcpy(&comm_ram[0x100 + slot_size], buf, packet_size);
+		memcpy(rx_buf[rx.Back()], &net_ring[slot_size], packet_size);
+		retro_atomic_store_release_int(&net_packet_number, network.packetNumber());
+		rx.Publish();
 	}
 }
 
+/* Network thread: with the token, send this board's slot as the game last
+ * wrote it, followed by what came in from the others. */
 void NaomiM3Comm::sendNetwork()
 {
 	if (network.hasToken())
 	{
-		const u32 packet_size = swap16(*(u16*)&m68k_ram[0x204]) * slot_count;
-		std::unique_lock<std::mutex> lock(mem_mutex);
-		network.send(&comm_ram[0x100], packet_size);
-		*(u16*)&comm_ram[6] = swap16(network.packetNumber());
+		const u32 slot_size = (u32)retro_atomic_load_acquire_int(&net_slot_size);
+		const u32 packet_size = slot_size * net_thread_slot_count;
+
+		if (packet_size == 0 || slot_size + packet_size > PACKET_MAX)
+			return;
+
+		if (tx.Take())
+			memcpy(net_ring, tx_buf[tx.Front()], std::min<u32>(slot_size, SLOT_MAX));
+		network.send(net_ring, packet_size);
+		retro_atomic_store_release_int(&net_packet_number, network.packetNumber());
 	}
+}
+
+/* Emulation thread: bring comm_ram up to date with the network before the
+ * game reads or writes it. */
+void NaomiM3Comm::syncNetwork()
+{
+	int state = retro_atomic_load_acquire_int(&net_state);
+
+	if (state == NET_DOWN)
+		return;
+	if (state == NET_UP)
+	{
+		slot_count = retro_atomic_load_acquire_int(&net_slot_count);
+		slot_id = retro_atomic_load_acquire_int(&net_slot_id);
+		connectedState(true);
+		retro_atomic_store_release_int(&net_state, NET_SEEN);
+	}
+
+	const u32 slot_size = swap16(*(u16*)&m68k_ram[0x204]);
+	const u32 packet_size = slot_size * slot_count;
+
+	if (packet_size != 0 && slot_size + packet_size <= PACKET_MAX && rx.Take())
+		memcpy(&comm_ram[0x100 + slot_size], rx_buf[rx.Front()], packet_size);
+
+	const u16 packet_number = (u16)retro_atomic_load_acquire_int(&net_packet_number);
+	if (packet_number != seen_packet_number)
+	{
+		seen_packet_number = packet_number;
+		*(u16*)&comm_ram[6] = swap16(packet_number);
+	}
+}
+
+/* Emulation thread: the game has written its slot; pass it to the network
+ * thread. */
+void NaomiM3Comm::publishSlot()
+{
+	const u32 slot_size = std::min<u32>(swap16(*(u16*)&m68k_ram[0x204]), SLOT_MAX);
+
+	memcpy(tx_buf[tx.Back()], &comm_ram[0x100], slot_size);
+	tx.Publish();
 }
 
 NaomiM3Comm::~NaomiM3Comm()
@@ -98,8 +153,11 @@ u32 NaomiM3Comm::ReadMem(u32 address, u32 size)
 		if (comm_ctrl & 1)
 			value = *(u16*)&m68k_ram[comm_offset];
 		else
+		{
+			syncNetwork();
 			// TODO u16 *commram = (u16*)membank("comm_ram")->base();
 			value = *(u16*)&comm_ram[comm_offset];
+		}
 		value = swap16(value);
 		DEBUG_LOG(NAOMI, "NAOMI_COMM2_DATA %s read @ %04x: %x", (comm_ctrl & 1) ? "m68k ram" : "comm ram", comm_offset, value);
 		comm_offset += 2;
@@ -107,10 +165,12 @@ u32 NaomiM3Comm::ReadMem(u32 address, u32 size)
 	}
 
 	case NAOMI_COMM2_STATUS0_addr & 255:
+		syncNetwork();
 		DEBUG_LOG(NAOMI, "NAOMI_COMM2_STATUS0 read %x", comm_status0);
 		return comm_status0;
 
 	case NAOMI_COMM2_STATUS1_addr & 255:
+		syncNetwork();
 		DEBUG_LOG(NAOMI, "NAOMI_COMM2_STATUS1 read %x", comm_status1);
 		return comm_status1;
 
@@ -205,9 +265,19 @@ void NaomiM3Comm::WriteMem(u32 address, u32 data, u32 size)
 		DEBUG_LOG(NAOMI, "NAOMI_COMM2_DATA written @ %04x %04x", comm_offset, (u16)data);
 		data = swap16(data);
 		if (comm_ctrl & 1)
+		{
 			*(u16*)&m68k_ram[comm_offset] = (u16)data;
+			// The slot size, which the network thread goes by as well
+			if ((comm_offset & ~1) == 0x204)
+				retro_atomic_store_release_int(&net_slot_size, swap16(*(u16*)&m68k_ram[0x204]));
+		}
 		else
+		{
+			syncNetwork();
 			*(u16*)&comm_ram[comm_offset] = (u16)data;
+			if (comm_offset >= 0x100 && comm_offset < 0x100 + SLOT_MAX)
+				publishSlot();
+		}
 		comm_offset += 2;
 		return;
 
@@ -233,12 +303,13 @@ bool NaomiM3Comm::DmaStart(u32 addr, u32 data)
 		return false;
 
 	DEBUG_LOG(NAOMI, "NaomiM3Comm: DMA addr %08X <-> %04x len %d %s", SB_GDSTAR, comm_offset, SB_GDLEN, SB_GDDIR == 0 ? "OUT" : "IN");
-	std::unique_lock<std::mutex> lock(mem_mutex);
+	syncNetwork();
 	if (SB_GDDIR == 0)
 	{
 		// Network write
 		for (u32 i = 0; i < SB_GDLEN; i++)
 			comm_ram[comm_offset++] = ReadMem8_nommu(SB_GDSTAR + i);
+		publishSlot();
 	}
 	else
 	{
@@ -263,6 +334,19 @@ bool NaomiM3Comm::DmaStart(u32 addr, u32 data)
 void NaomiM3Comm::startThread()
 {
 	network_stopping = false;
+	// No network thread at this point: set up what it shares with this one
+	rx.Reset();
+	tx.Reset();
+	memset(net_ring, 0, sizeof(net_ring));
+	net_thread_slot_count = 0;
+	net_thread_slot_id = 0;
+	seen_packet_number = 0;
+	retro_atomic_int_init(&net_state, NET_DOWN);
+	retro_atomic_int_init(&net_slot_count, 0);
+	retro_atomic_int_init(&net_slot_id, 0);
+	retro_atomic_int_init(&net_packet_number, 0);
+	retro_atomic_int_init(&net_slot_size, swap16(*(u16*)&m68k_ram[0x204]));
+	publishSlot();
 	thread = std::unique_ptr<std::thread>(new std::thread([this]() {
 		using the_clock = std::chrono::high_resolution_clock;
 
@@ -275,7 +359,7 @@ void NaomiM3Comm::startThread()
 			network.pipeSlaves();
 			receiveNetwork();
 
-			if (slot_id == 0 && network.hasToken())
+			if (net_thread_slot_id == 0 && network.hasToken())
 			{
 				const auto target_duration = std::chrono::milliseconds(10);
 				auto duration = the_clock::now() - token_time;

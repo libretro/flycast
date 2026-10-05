@@ -17,8 +17,8 @@
 #include "types.h"
 #include <atomic>
 #include <memory>
-#include <mutex>
 #include <thread>
+#include "lockfree.h"
 #include "network/naomi_network.h"
 
 class NaomiM3Comm
@@ -38,6 +38,8 @@ private:
 	void sendNetwork();
 	void connectedState(bool success);
 	void startThread();
+	void syncNetwork();
+	void publishSlot();
 
 	u16 comm_ctrl = 0xC000;
 	u16 comm_offset = 0;
@@ -50,6 +52,37 @@ private:
 	int slot_id = 0;
 	std::atomic<bool> network_stopping{ false };
 	std::unique_ptr<std::thread> thread;
-	std::mutex mem_mutex;
 	NaomiNetwork network;
+
+	/* What the emulation thread and the network thread tell each other.
+	 *
+	 * comm_ram and m68k_ram belong to the emulation thread; the network
+	 * thread never touches them. It keeps its own picture of the ring
+	 * (net_ring: this board's slot, then the packet last received) and the
+	 * two exchange whole pieces of it through triple buffers, so neither
+	 * waits for the other and nothing is ever seen half written:
+	 *
+	 *   rx  the packet the network thread received last, copied into
+	 *       comm_ram by the emulation thread when the game next looks;
+	 *   tx  this board's slot as the game last wrote it, picked up by the
+	 *       network thread when it next has the token.
+	 *
+	 * The rest is single words. */
+	enum { PACKET_MAX = sizeof(comm_ram) - 0x100, SLOT_MAX = 0x10000 };
+	enum { NET_DOWN = 0, NET_UP, NET_SEEN };
+
+	cTripleBuffer rx;
+	u8 rx_buf[3][PACKET_MAX];
+	cTripleBuffer tx;
+	u8 tx_buf[3][SLOT_MAX];
+	u8 net_ring[sizeof(comm_ram)];		// network thread only
+	int net_thread_slot_count = 0;		// network thread only
+	int net_thread_slot_id = 0;		// network thread only
+	u16 seen_packet_number = 0;		// emulation thread only
+
+	retro_atomic_int_t net_slot_size;	// set by the game (m68k ram 0x204)
+	retro_atomic_int_t net_state;		// NET_UP once connected, NET_SEEN once the game side knows
+	retro_atomic_int_t net_slot_count;
+	retro_atomic_int_t net_slot_id;
+	retro_atomic_int_t net_packet_number;
 };
