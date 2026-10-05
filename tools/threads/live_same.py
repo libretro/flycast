@@ -9,9 +9,12 @@ The threaded state has to be the non-threaded one.
 
 A save state of this core carries a few host addresses (pointers into the
 sound RAM and the like), and those change from one process to the next.
-The two non-threaded runs show where they are: any 8-byte word that
-differs between them is taken to hold one, and is left out of the
-comparison. Everywhere else the threaded state must match byte for byte.
+The two non-threaded runs show where they are. The addresses are eight
+bytes long and sit at any offset, and two runs need not differ in every
+byte of one, so every byte within seven of a byte that differs between
+the two non-threaded runs is taken to belong to an address and left out
+of the comparison. Everywhere else the threaded state must match byte for
+byte.
 """
 import sys
 
@@ -26,26 +29,38 @@ def main():
               % (len(threaded), len(plain), len(again)))
         return 1
 
-    def words(a, b):
-        """Indices of the 8-byte words in which a and b differ."""
-        out = set()
+    def differing(a, b):
+        """Offsets of the bytes in which a and b differ."""
+        out = []
         if a == b:
             return out
         step = 1 << 16
         for base in range(0, len(a), step):
-            if a[base:base + step] != b[base:base + step]:
-                for i in range(base, min(base + step, len(a)), 8):
-                    if a[i:i + 8] != b[i:i + 8]:
-                        out.add(i >> 3)
+            ca, cb = a[base:base + step], b[base:base + step]
+            if ca != cb:
+                out.extend(base + i for i in range(len(ca)) if ca[i] != cb[i])
         return out
 
-    host = words(plain, again)
-    bad = sorted(words(threaded, plain) - host)
+    # Runs of bytes that belong to host addresses, as [first, last] pairs.
+    host = []
+    for i in differing(plain, again):
+        if host and i - 7 <= host[-1][1]:
+            host[-1][1] = i + 7
+        else:
+            host.append([i - 7, i + 7])
+
+    bad = []
+    run = 0
+    for i in differing(threaded, plain):
+        while run < len(host) and host[run][1] < i:
+            run += 1
+        if run == len(host) or i < host[run][0]:
+            bad.append(i)
     if bad:
-        print('%d words differ outside the %d that hold host addresses; '
-              'first at offset 0x%x' % (len(bad), len(host), bad[0] << 3))
+        print('%d bytes differ outside the %d places that hold host addresses; '
+              'first at offset 0x%x' % (len(bad), len(host), bad[0]))
         return 1
-    print('same state (%d words of host addresses left out)' % len(host))
+    print('same state (%d places holding host addresses left out)' % len(host))
     return 0
 
 
