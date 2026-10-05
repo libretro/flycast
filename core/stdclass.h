@@ -5,6 +5,10 @@
 #include <string.h>
 
 #include <rthreads/rthreads.h>
+#ifndef TARGET_NO_THREADS
+#include <retro_atomic.h>
+#include <rthreads/retro_eventcount.h>
+#endif
 
 #ifdef _ANDROID
 #include <sys/mman.h>
@@ -177,21 +181,133 @@ public :
 #endif
 
 //Wait Events
+#ifndef TARGET_NO_THREADS
+/* Where a thread sleeps until another one changes something it is waiting
+ * for. The waiter checks its own condition between Prepare() and Commit();
+ * whoever changes the condition calls Notify() afterwards. Notify() with
+ * nobody asleep is two atomic operations: no lock, no system call. */
+class cEventCount
+{
+	retro_eventcount_t ec;
+
+public :
+	cEventCount()
+	{
+		if (!retro_eventcount_init(&ec))
+			abort();
+	}
+	~cEventCount() { retro_eventcount_free(&ec); }
+
+	void Notify() { retro_eventcount_notify(&ec); }
+	int Prepare() { return retro_eventcount_prepare_wait(&ec); }
+	void Cancel() { retro_eventcount_cancel_wait(&ec); }
+	void Commit(int key) { retro_eventcount_commit_wait(&ec, key); }
+	//Returns false if the bound expired
+	bool Commit(int key, int64_t timeout_us)
+	{
+		return retro_eventcount_commit_wait_timeout(&ec, key, timeout_us);
+	}
+};
+#endif
+
+/* Auto-reset event. Set() is one store, plus a wake when a thread is
+ * asleep in Wait(); nothing here takes a lock. */
 class cResetEvent
 {
 #ifndef TARGET_NO_THREADS
-   slock_t *mutx;
-   scond_t *cond;
+	cEventCount ec;
+	retro_atomic_int_t state;
+
+	bool Consume()
+	{
+		return retro_atomic_load_acquire_int(&state)
+			&& retro_atomic_exchange_int(&state, 0);
+	}
+#else
+	bool state;
 #endif
 
 public :
-   bool state;
-	cResetEvent();
-	~cResetEvent();
-	void Set();		//Set state to signaled
-	void Reset();	//Set state to non signaled
-	bool Wait(u32 msec);//Wait for signal , then reset[if auto]. Returns false if timeout expired, true otherwise
-	void Wait();	//Wait for signal , then reset[if auto]
+	cResetEvent()
+	{
+#ifndef TARGET_NO_THREADS
+		retro_atomic_int_init(&state, 0);
+#else
+		state = false;
+#endif
+	}
+
+	//Set state to signaled
+	void Set()
+	{
+#ifndef TARGET_NO_THREADS
+		retro_atomic_store_release_int(&state, 1);
+		ec.Notify();
+#else
+		state = true;
+#endif
+	}
+
+	//Set state to non signaled
+	void Reset()
+	{
+#ifndef TARGET_NO_THREADS
+		retro_atomic_store_release_int(&state, 0);
+#else
+		state = false;
+#endif
+	}
+
+	//Wait for signal, then reset. Returns false if timeout expired, true otherwise
+	bool Wait(u32 msec)
+	{
+#ifndef TARGET_NO_THREADS
+		/* A wake that finds the event unset is a stray one; wait again,
+		 * a few times at most so the call stays bounded. */
+		for (int lap = 0; ; lap++)
+		{
+			int key;
+
+			if (Consume())
+				return true;
+			key = ec.Prepare();
+			if (Consume())
+			{
+				ec.Cancel();
+				return true;
+			}
+			if (!ec.Commit(key, (int64_t)msec * 1000) || lap == 3)
+				return Consume();
+		}
+#else
+		bool ret = state;
+		state = false;
+		return ret;
+#endif
+	}
+
+	//Wait for signal, then reset
+	void Wait()
+	{
+#ifndef TARGET_NO_THREADS
+		for (;;)
+		{
+			int key;
+
+			if (Consume())
+				return;
+			key = ec.Prepare();
+			if (Consume())
+			{
+				ec.Cancel();
+				return;
+			}
+			ec.Commit(key);
+		}
+#else
+		state = false;
+#endif
+	}
 };
 
 class cMutex
