@@ -187,7 +187,6 @@ void ResetAudioBuffer(void);
 void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
 bool rend_single_frame();
-void rend_cancel_emu_wait();
 
 static void refresh_devices(bool first_startup);
 static void init_disk_control_interface(void);
@@ -201,14 +200,12 @@ char vmu_dir_no_slash[PATH_MAX];
 char content_name[PATH_MAX];
 char g_roms_dir[PATH_MAX];
 #if !defined(TARGET_NO_THREADS)
-/* How long a save state, load state or reset gives the emulation thread
- * to park: laps of 1 ms. */
-#define EMU_HOLD_LAPS 5000
-
 static void *emu_thread_func(void *);
 static cThread emu_thread(&emu_thread_func, 0);
 static bool emu_thread_started = false;   /* libretro thread only */
-static EmuBaton emu_baton;
+/* Who has the machine, and the frame-by-frame handshake between retro_run
+ * and the emulation thread: see emu_baton.h. */
+EmuBaton emu_baton;
 #endif
 static bool gl_ctx_resetting = false;
 std::atomic<bool> reset_requested{false};
@@ -226,36 +223,30 @@ static bool disc_tray_open = false;
 u64 pixel_buffer_size = 512 * 1024 * 1024;	// Initial size 512 MB
 
 #if !defined(TARGET_NO_THREADS)
+/* Threaded rendering: the machine runs here, one frame for each retro_run.
+ * dc_run() comes back at vblank (os_DoEvents) exactly as it does in
+ * retro_run when rendering is not threaded. */
 static void *emu_thread_func(void *)
 {
-   while (emu_baton.WaitToRun())
+   while (emu_baton.WaitForFrame())
    {
       if (reset_requested)
       {
          dc_reset(false);
          reset_requested = false;
       }
-      rend_cancel_emu_wait();
       dc_run();
+      emu_baton.EndFrame();
    }
 
-   rend_cancel_emu_wait();
    dc_term();
 
    return NULL;
 }
 
-/* Gets the emulation thread out of dc_run(), which ends at the next
- * timeslice, and out of a wait on the renderer. */
-static void emu_kick(void)
+static void emu_hold(void)
 {
-   dc_stop();
-   rend_cancel_emu_wait();
-}
-
-static bool emu_hold(unsigned max_laps)
-{
-   return emu_baton.Hold(max_laps, emu_kick, dc_start);
+   emu_baton.Hold();
 }
 
 static void emu_release(void)
@@ -390,7 +381,7 @@ void retro_deinit(void)
    //When auto-save states are enabled this is needed to prevent the core from shutting down before
    //any save state actions are still running - which results in partial saves
 #if !defined(TARGET_NO_THREADS)
-   emu_hold(0);
+   emu_hold();
    emu_release();
 #endif
 
@@ -458,7 +449,10 @@ static void set_variable_visibility(void)
    option_display.key = CORE_OPTION_NAME "_framerate";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
-   option_display.visible = settings.rend.ThreadedRendering;
+   /* Threaded rendering makes the frame non-threaded rendering makes, one
+    * for each retro_run: it never runs ahead of the renderer and presents
+    * at vblank, so there is nothing left for these two to choose. */
+   option_display.visible = false;
 
    option_display.key = CORE_OPTION_NAME "_synchronous_rendering";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
@@ -1299,20 +1293,9 @@ void retro_run (void)
 #if !defined(TARGET_NO_THREADS)
    if (settings.rend.ThreadedRendering)
    {
-      bool fastforward = false;
-      if (environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &fastforward))
-         settings.aica.LimitFPS = !fastforward;
-
-      // On the first call, we start the emulator thread
-      if (first_run)
-      {
-         emu_hold(0);
-         emu_baton.HandToThread();
-         emu_thread.Start();
-         emu_thread_started = true;
-         first_run = false;
-      }
-
+      /* One frame, the one non-threaded rendering would make: the machine
+       * runs on the emulation thread up to vblank while this thread draws
+       * the renders it starts on the way. */
       poll_cb();
 
       /* Latch input on this (the libretro) thread, once per frame, so the emu
@@ -1320,14 +1303,33 @@ void retro_run (void)
        * and on the thread libretro requires. */
       CaptureInput();
 
+      emu_hold();
+      // On the first call, we start the emulator thread
+      if (first_run)
+      {
+         emu_thread.Start();
+         emu_thread_started = true;
+         first_run = false;
+      }
+
       if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
          glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
 
-      // Render
-      is_dupe = !rend_single_frame();
+      emu_baton.StartFrame();
+      while (emu_baton.WaitWork() != NULL)
+      {
+         rend_single_frame();
+         emu_baton.WorkDone();
+      }
+      /* The frame is made and the emulation thread is asleep again; is_dupe
+       * was set at vblank (os_DoEvents). */
 
       if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
          glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+
+      /* This frame's audio, sent from this thread like its video. */
+      FlushAudioFrame();
+      emu_release();
    }
    else
 #endif
@@ -1341,10 +1343,7 @@ void retro_run (void)
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
 #endif
-#if !defined(TARGET_NO_THREADS)
-   if (!settings.rend.ThreadedRendering)
-#endif
-	   is_dupe = true;
+   is_dupe = true;
 
    /* Keep timing.fps in step with the actual emulated refresh rate. */
    update_av_info_if_changed();
@@ -1353,8 +1352,7 @@ void retro_run (void)
 void retro_reset (void)
 {
 #if !defined(TARGET_NO_THREADS)
-   if (!emu_hold(EMU_HOLD_LAPS))
-      return;
+   emu_hold();
 #endif
 
    settings.dreamcast.cable = 3;
@@ -2175,15 +2173,13 @@ void retro_unload_game(void)
 #if !defined(TARGET_NO_THREADS)
    if (emu_thread_started)
    {
-	   /* Park the emulation thread first, so the request to exit cannot be
-	    * lost to a save state finishing on another thread, then let it shut
-	    * the machine down on its own thread. */
+	   /* The emulation thread is asleep between frames. Take the machine,
+	    * so no save state on another thread is in the middle of it, then
+	    * let the thread shut it down. */
 	   DEBUG_LOG(COMMON, "Waiting for emu thread to end...");
-	   frontend_clear_thread_waits_cb(1,NULL) ;
-	   emu_hold(0);
+	   emu_hold();
 	   emu_baton.TellThreadToExit();
 	   emu_thread.WaitToEnd();
-	   frontend_clear_thread_waits_cb(0,NULL) ;
 	   emu_thread_started = false;
 	   emu_baton.ThreadGone();
 	   DEBUG_LOG(COMMON, "...Done");
@@ -2229,8 +2225,7 @@ bool retro_serialize(void *data, size_t size)
    bool result = false ;
 
 #if !defined(TARGET_NO_THREADS)
-   if (!emu_hold(EMU_HOLD_LAPS))
-      return false ;
+   emu_hold();
 #endif
 
    result = dc_serialize(&data_ptr, &total_size) ;
@@ -2250,8 +2245,7 @@ bool retro_unserialize(const void * data, size_t size)
    int i ;
 
 #if !defined(TARGET_NO_THREADS)
-   if (!emu_hold(EMU_HOLD_LAPS))
-      return false ;
+   emu_hold();
 #endif
 
 #if FEAT_AREC == DYNAREC_JIT
@@ -2441,30 +2435,29 @@ unsigned retro_api_version(void)
 }
 
 //Reicast stuff
+/* Vblank: the frame boundary, on whichever thread runs the machine. */
 void os_DoEvents(void)
 {
+	/* Mark this frame a duplicate unless the guest actually produced new
+	 * content this vblank. Without this every vblank is reported VALID, so
+	 * 480i off-fields, sub-refresh-rate titles and static screens are all
+	 * delivered as unique frames and the frontend's pacing/frame-time
+	 * tracking breaks. */
+	is_dupe = !rend_frame_produced();
 #if !defined(TARGET_NO_THREADS)
+	/* In threaded rendering this is the emulation thread; retro_run polls. */
 	if (!settings.rend.ThreadedRendering)
 #endif
-	{
-		/* Mark this frame a duplicate unless the guest actually produced new
-		 * content this vblank. Without this every vblank is reported VALID, so
-		 * 480i off-fields, sub-refresh-rate titles and static screens are all
-		 * delivered as unique frames and the frontend's pacing/frame-time
-		 * tracking breaks. Threaded mode derives is_dupe from rend_single_frame;
-		 * this is the non-threaded equivalent. */
-		is_dupe = !rend_frame_produced();
 		poll_cb();
 
-		/* Always return control to retro_run here, at the vblank frame
-		 * boundary. Previously this was gated on the Framerate option: in
-		 * 'Normal' mode control returned only when a frame was presented, so a
-		 * static screen with no rendering (e.g. disc loading) never yielded and
-		 * dc_run() blocked, freezing retro_run and wrecking the frontend's A/V
-		 * sync. The frame boundary must not depend on whether the game rendered. */
-		rend_end_render();
-		dc_stop();
-	}
+	/* Always return control to retro_run here, at the vblank frame
+	 * boundary. Previously this was gated on the Framerate option: in
+	 * 'Normal' mode control returned only when a frame was presented, so a
+	 * static screen with no rendering (e.g. disc loading) never yielded and
+	 * dc_run() blocked, freezing retro_run and wrecking the frontend's A/V
+	 * sync. The frame boundary must not depend on whether the game rendered. */
+	rend_end_render();
+	dc_stop();
 }
 
 static uint32_t get_time_ms()

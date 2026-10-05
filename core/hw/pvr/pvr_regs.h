@@ -5,9 +5,26 @@
 #define pvr_RegSize (0x8000)
 #define pvr_RegMask (pvr_RegSize-1)
 
-#define PvrReg(x,t) (*(t*)&pvr_regs[(x) & pvr_RegMask])
-
 extern u8 pvr_regs[pvr_RegSize];
+
+/* The registers as the renderer is to see them. Normally that is pvr_regs
+ * itself. While a frame is drawn in threaded rendering it is the copy made
+ * when the game started that render, because the emulation has moved on by
+ * then and may have changed them.
+ *
+ * The files of the renderers define PVR_REGS_FOR_RENDERER before they
+ * include anything, which points every register they read at this. */
+extern u8 *rend_pvr_regs;
+
+/* The part of the register block that is copied for a render: the
+ * registers proper, the fog table and the palette. */
+#define pvr_RendRegSize (0x2000)
+
+#ifdef PVR_REGS_FOR_RENDERER
+#define PvrReg(x,t) (*(t*)&rend_pvr_regs[(x) & pvr_RegMask])
+#else
+#define PvrReg(x,t) (*(t*)&pvr_regs[(x) & pvr_RegMask])
+#endif
 
 void Regs_Reset(bool hard);
 

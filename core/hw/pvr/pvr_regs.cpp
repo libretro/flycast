@@ -8,6 +8,7 @@ extern bool pal_needs_update;
 bool fog_needs_update=true;
 
 u8 pvr_regs[pvr_RegSize];
+u8 *rend_pvr_regs = pvr_regs;
 
 u32 pvr_ReadReg(u32 addr)
 {
@@ -92,10 +93,6 @@ void pvr_WriteReg(u32 paddr,u32 data)
 
 	case FB_R_SOF1_addr:
 		data &= 0x00fffffc;
-		if (data == FB_W_SOF1)
-		{
-			rend_swap_frame();
-		}
 		break;
 
    case FB_R_SOF2_addr:

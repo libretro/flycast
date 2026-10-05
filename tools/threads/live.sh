@@ -25,7 +25,13 @@
 # through frames like that instead of walking video memory for ever.
 #
 # After them the disc is run once with Threaded Rendering off, where one
-# thread does everything, and the screenshot is checked again.
+# thread does everything, and the screenshot is checked again. That run and
+# the first one have then made the same 300 frames from the same start, so
+# the screenshots they take have to be the same byte for byte, and so do
+# the save states they leave, bar the host addresses a state carries
+# (live_same.py; a second non-threaded run shows where those are).
+# Threaded rendering makes the frame non-threaded rendering makes; it only
+# makes it on two threads.
 #
 # All of it is done once per video driver in $DRIVERS (default: "gl
 # vulkan"), which is what picks the core's OpenGL or Vulkan renderer.
@@ -70,6 +76,7 @@ core_options_path = "$WORK/core-options.cfg"
 global_core_options = "true"
 savestate_auto_save = "true"
 savestate_auto_load = "true"
+savestate_file_compression = "false"
 network_cmd_enable = "true"
 network_cmd_port = "55355"
 CFG
@@ -124,6 +131,7 @@ for DRV in $DRIVERS; do
       echo "FAIL: the screen does not show the last texture written" >&2
       exit 1
    }
+   cp "$WORK"/states/*/test.state.auto "$WORK/$DRV-on.state"
 
    echo "== $DRV: load it at startup, then save, load and reset while running"
    # Give slot 0 a state to begin with: the first command to get through
@@ -167,6 +175,22 @@ PY
    expect $DRV-off.log "core options file to .*core-options-off.cfg"
    python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-off.png" || {
       echo "FAIL: the screen does not show the last texture written" >&2
+      exit 1
+   }
+   expect $DRV-off.log "Auto save state to .* succeeded"
+   cp "$WORK"/states/*/test.state.auto "$WORK/$DRV-off.state"
+   cmp "$WORK/$DRV.png" "$WORK/$DRV-off.png" || {
+      echo "FAIL: threaded and non-threaded rendering drew different frames" >&2
+      exit 1
+   }
+
+   echo "== $DRV: threaded rendering off, once more, to compare save states"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   run $DRV-off2.log 300
+   python3 "$ROOT/tools/threads/live_same.py" "$WORK/$DRV-on.state" \
+      "$WORK/$DRV-off.state" "$WORK"/states/*/test.state.auto || {
+      echo "FAIL: threaded and non-threaded rendering left different save states" >&2
       exit 1
    }
 done

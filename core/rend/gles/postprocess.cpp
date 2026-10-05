@@ -1,3 +1,4 @@
+#define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 /*
 	PowerVR2 buffer shader
     Authors: leilei

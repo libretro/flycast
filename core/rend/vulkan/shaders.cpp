@@ -1,3 +1,4 @@
+#define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 /*
  *  Created on: Oct 3, 2019
 

@@ -353,81 +353,110 @@ static void test_hunk_prefetch(void)
 
 /* ---- EmuBaton -------------------------------------------------------- */
 
-#define BATON_HOLDS 20000
+#define BATON_FRAMES 30000
 
 static EmuBaton baton;
-static long machine;			/* plain: whoever has the machine */
-static retro_atomic_int_t cpu_running;	/* stands in for Sh4cntx.CpuRunning */
-static retro_atomic_int_t baton_passes;
+static long machine;		/* plain: whoever has the machine */
+static long video_memory;	/* plain: the guest's, read by the renderer before it acks */
+static long frames_made, renders_made, renders_seen;
 
-/* Stands in for dc_run(): sets its own run flag on entry, which is what
- * loses a stop that arrives just before it. */
-static void fake_run(void)
-{
-	retro_atomic_store_relaxed_int(&cpu_running, 1);
-	while (retro_atomic_load_relaxed_int(&cpu_running))
-		machine++;
-}
+struct fake_render { long snapshot; };
 
-static void fake_stop(void)  { retro_atomic_store_relaxed_int(&cpu_running, 0); }
-static void fake_start(void) { retro_atomic_store_relaxed_int(&cpu_running, 1); }
-
+/* Stands in for the emulation thread: each frame is some emulation, up to
+ * three renders handed over, then more emulation. */
 static void baton_emu_thread(void *)
 {
-	while (baton.WaitToRun())
+	static fake_render render;
+	unsigned seed = 7;
+
+	while (baton.WaitForFrame())
 	{
-		retro_atomic_fetch_add_int(&baton_passes, 1);
-		fake_run();
+		int renders = rng_next(&seed) % 4;
+
+		machine++;
+		for (int i = 0; i < renders; i++)
+		{
+			video_memory++;
+			baton.WaitWorkDone();
+			render.snapshot = video_memory;
+			renders_made++;
+			baton.HandOver(&render);
+			/* The renderer has read video memory; writing it again is
+			 * safe while it draws. */
+			video_memory++;
+			machine++;
+		}
+		frames_made++;
+		baton.EndFrame();
 	}
 	machine++;	/* shutting down: still the thread's machine */
 }
 
-static void baton_holder(void *)
+/* Stands in for a background save state. */
+static retro_atomic_int_t baton_saver_stop;
+static long baton_saves;
+
+static void baton_saver(void *)
 {
-	for (int i = 0; i < BATON_HOLDS; i++)
+	while (!retro_atomic_load_acquire_int(&baton_saver_stop))
 	{
-		if (baton.Hold(5000, fake_stop, fake_start))
-		{
-			machine++;
-			baton.Release();
-		}
-		else
-			CHECK(!"Hold timed out");
+		baton.Hold();
+		machine++;
+		baton_saves++;
+		baton.Release();
 	}
 }
 
 static void test_emu_baton(void)
 {
 	sthread_t *emu, *saver;
+	void *w;
 
-	retro_atomic_int_init(&baton_passes, 0);
-
-	/* No emulation thread: taking the machine never waits. */
-	CHECK(baton.Hold(1, fake_stop, fake_start));
+	/* No frame being made: taking the machine never waits. */
+	baton.Hold();
 	machine++;
 	baton.Release();
 
-	/* Start the emulation thread the way retro_run does. */
-	CHECK(baton.Hold(0, fake_stop, fake_start));
-	baton.HandToThread();
 	emu = sthread_create(baton_emu_thread, NULL);
+	retro_atomic_int_init(&baton_saver_stop, 0);
+	saver = sthread_create(baton_saver, NULL);
 
-	/* Two threads take the machine over and over: the libretro thread and
-	 * a background save state. */
-	saver = sthread_create(baton_holder, NULL);
-	baton_holder(NULL);
+	/* retro_run, over and over. */
+	for (int frame = 0; frame < BATON_FRAMES; frame++)
+	{
+		baton.Hold();
+		machine++;
+		baton.StartFrame();
+		while ((w = baton.WaitWork()) != NULL)
+		{
+			fake_render *r = (fake_render *)w;
+			/* What the emulation thread wrote before handing over is
+			 * what is there until the ack. */
+			CHECK(r->snapshot == video_memory);
+			baton.AckWork();
+			renders_seen++;
+			baton.WorkDone();
+		}
+		/* The frame is over: the machine is this thread's again. */
+		machine++;
+		CHECK(frames_made == frame + 1);
+		baton.Release();
+	}
+
+	retro_atomic_store_release_int(&baton_saver_stop, 1);
 	sthread_join(saver);
 
 	/* Unload. */
-	CHECK(baton.Hold(0, fake_stop, fake_start));
+	baton.Hold();
 	baton.TellThreadToExit();
 	sthread_join(emu);
 	baton.ThreadGone();
 
-	/* And the machine can be taken again afterwards. */
-	CHECK(baton.Hold(1, fake_stop, fake_start));
+	baton.Hold();
 	baton.Release();
-	CHECK(retro_atomic_load_acquire_int(&baton_passes) > 0);
+	/* Every render handed over was drawn, none twice. */
+	CHECK(renders_seen == renders_made);
+	CHECK(baton_saves > 0);
 }
 
 /* ---- InputLatch ------------------------------------------------------ */

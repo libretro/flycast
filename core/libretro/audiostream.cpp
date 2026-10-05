@@ -3,13 +3,8 @@
 
 #include <libretro.h>
 
-/* Fixed chunk size used only for the threaded path, where the emu thread
- * produces audio decoupled from retro_run and there is no frame boundary to
- * flush against. */
-#define SAMPLE_COUNT 512
-
-/* The non-threaded path accumulates a whole frame and flushes it in one batch
- * from retro_run, so the buffer must comfortably exceed one frame's worth of
+/* A whole frame is accumulated and flushed in one batch from retro_run,
+ * whichever thread emulated it, so the buffer must comfortably exceed one frame's worth of
  * samples: 735 at NTSC 60Hz, 882 at PAL 50Hz. This also absorbs the occasional
  * frame that spans slightly more cycles. If it is ever exceeded the buffer is
  * flushed early as a safety valve. */
@@ -32,23 +27,8 @@ void WriteSample(s16 r, s16 l)
    Buffer[writePtr].l = l;
    ++writePtr;
 
-#if !defined(TARGET_NO_THREADS)
-   if (settings.rend.ThreadedRendering)
-   {
-      /* Threaded: audio is generated on the emu thread, decoupled from
-       * retro_run. Emit in fixed chunks as it fills, gated by LimitFPS. */
-      if (writePtr == SAMPLE_COUNT)
-      {
-         if (dc_is_running() && settings.aica.LimitFPS)
-            audio_batch_cb((const int16_t*)Buffer, SAMPLE_COUNT);
-         writePtr = 0;
-      }
-      return;
-   }
-#endif
-
-   /* Non-threaded: accumulate the whole frame; FlushAudioFrame() emits it once
-    * per retro_run. The safety valve only trips if a single frame somehow
+   /* Accumulate the whole frame; FlushAudioFrame() emits it once per
+    * retro_run. The safety valve only trips if a single frame somehow
     * overruns the buffer. */
    if (writePtr == AUDIO_BUFFER_SIZE)
    {
@@ -58,7 +38,7 @@ void WriteSample(s16 r, s16 l)
    }
 }
 
-/* Non-threaded: flush the frame's accumulated samples at the end of retro_run,
+/* Flush the frame's accumulated samples at the end of retro_run,
  * so every retro_run emits exactly one video frame's worth of audio in a single
  * consecutive batch. The samples were produced by the frame that just ran, so
  * this is not gated on dc_is_running() (the dc is momentarily stopped at the

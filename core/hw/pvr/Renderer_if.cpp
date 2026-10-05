@@ -74,12 +74,9 @@ static Renderer* fallback_renderer;
 bool renderer_changed = false;	// Signals the renderer interface to switch renderer
 
 #if !defined(TARGET_NO_THREADS)
-cResetEvent rs;
-cResetEvent re;
+#include "libretro/emu_baton.h"
+extern EmuBaton emu_baton;
 #endif
-extern cResetEvent frame_finished;
-static bool swap_pending;
-static bool do_swap;
 u32 fb_w_cur = 1;
 
 int max_idx,max_mvo,max_op,max_pt,max_tr,max_vtx,max_modt, ovrn;
@@ -167,68 +164,59 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
 	  rend_create_renderer();
 	  rend_init_renderer();
    }
+#if !defined(TARGET_NO_THREADS)
+   /* The renderer reads the registers as they were when the game started
+    * this render. */
+   if (settings.rend.ThreadedRendering)
+      rend_pvr_regs = ctx->regs;
+#endif
    bool proc = renderer->Process(ctx);
 #if !defined(TARGET_NO_THREADS)
-   if (settings.rend.ThreadedRendering && (!proc || (!ctx->rend.isRenderFramebuffer && !ctx->rend.isRTT)))
-	   // If rendering to texture, continue locking until the frame is rendered
-      re.Set();
+   /* Process() has read everything the frame takes from the game's memory:
+    * the display lists, the textures, the framebuffer. The emulation thread
+    * has been asleep since it handed the render over, so what was read is
+    * what non-threaded rendering would have read; from here it can run
+    * while the frame is drawn. A render to a texture ends up back in the
+    * game's memory, so that one keeps the emulation asleep until it is
+    * finished. */
+   const bool hold = proc && ctx->rend.isRTT;
+   if (settings.rend.ThreadedRendering && !hold)
+      emu_baton.AckWork();
 #endif
-   
+
    bool do_swp = proc && renderer->Render();
+
+#if !defined(TARGET_NO_THREADS)
+   if (settings.rend.ThreadedRendering && hold)
+      emu_baton.AckWork();
+#endif
 
    return do_swp;
 }
 
+/* Draw the render that is queued. Non-threaded rendering calls this where
+ * the game starts the render; threaded rendering calls it on the libretro
+ * thread for the render the emulation thread has handed over. Either way
+ * it is the same code doing the same thing to the same data. */
 bool rend_single_frame(void)
 {
 	while (true)
 	{
-		//wait render start only if no frame pending
 		if (_pvrrc == NULL)
 		{
-			do
-			{
-#if !defined(TARGET_NO_THREADS)
-				if (settings.rend.ThreadedRendering)
-				{
-					if (!rs.Wait(100))
-						return false;
-					if (do_swap)
-					{
-						do_swap = false;
-						rs.Set();	// set the semaphore in case a render is pending
-						return true;
-					}
-				}
-#endif
-				_pvrrc = DequeueRender();
-
-				if (!settings.rend.ThreadedRendering && _pvrrc == NULL)
-					return false;
-			}
-			while (!_pvrrc);
-		}
-		if ((_pvrrc->rend.isRTT || _pvrrc->rend.isRenderFramebuffer) && swap_pending)
-		{
-			// If there is a frame swap pending, we want to do it now.
-			// The current frame "swapping" detection mechanism (using FB_R_SOF1) doesn't work
-			// if a RTT frame is rendered in between.
-			swap_pending = false;
-			return true;
+			_pvrrc = DequeueRender();
+			if (_pvrrc == NULL)
+				return false;
 		}
 
 		bool do_swp = rend_frame(_pvrrc, true);
-		swap_pending = do_swp && !_pvrrc->rend.isRenderFramebuffer && FB_R_SOF1 != FB_W_SOF1
-				 && settings.rend.ThreadedRendering && settings.rend.DelayFrameSwapping;
-
-		if (settings.rend.ThreadedRendering && _pvrrc->rend.isRTT)
-			re.Set();
 
 		//clear up & free data ..
 		FinishRender(_pvrrc);
 		_pvrrc=0;
+		rend_pvr_regs = pvr_regs;
 
-		if (do_swp && !swap_pending)
+		if (do_swp)
 			return true;
 	}
 }
@@ -240,6 +228,12 @@ void rend_resize(int width, int height)
 
 void rend_start_render(void)
 {
+#if !defined(TARGET_NO_THREADS)
+   /* One render at a time: the libretro thread may still be drawing the
+    * last one. Nothing is ever dropped to make room. */
+   if (settings.rend.ThreadedRendering)
+      emu_baton.WaitWorkDone();
+#endif
    render_called = true;
    pend_rend = false;
    TA_context* ctx = tactx_Pop(CORE_CURRENT_CTX);
@@ -280,7 +274,13 @@ void rend_start_render(void)
             palette_update();
 #if !defined(TARGET_NO_THREADS)
             if (settings.rend.ThreadedRendering)
-            	rs.Set();
+            {
+               /* Hand the render to the libretro thread, with the registers
+                * as they are now, and sleep until it has read what it needs
+                * of the game's memory. */
+               memcpy(ctx->regs, pvr_regs, pvr_RendRegSize);
+               emu_baton.HandOver(ctx);
+            }
             else
 #endif
             	rend_single_frame();
@@ -298,28 +298,10 @@ void rend_start_render(void)
 
 void rend_end_render(void)
 {
-   if (pend_rend)
-   {
-#if !defined(TARGET_NO_THREADS)
-	   if (settings.rend.ThreadedRendering)
-		   re.Wait();
-	   else
-#endif
-		  if(renderer != NULL)
-			 renderer->Present();
-   }
-}
-
-void rend_cancel_emu_wait()
-{
-#if !defined(TARGET_NO_THREADS)
-	if (settings.rend.ThreadedRendering)
-	{
-		rs.Set();
-		re.Set();
-	}
-#endif
-	frame_finished.Set();
+   /* Non-threaded only: in threaded rendering this is the emulation thread,
+    * which leaves the renderer alone. */
+   if (pend_rend && !settings.rend.ThreadedRendering && renderer != NULL)
+      renderer->Present();
 }
 
 bool rend_init(void)
@@ -404,14 +386,4 @@ void check_framebuffer_write()
    u32 fb_size = (FB_R_SIZE.fb_y_size + 1) * (FB_R_SIZE.fb_x_size + FB_R_SIZE.fb_modulus) * 4;
 	fb_watch_addr_start = (SPG_CONTROL.interlace ? FB_R_SOF2 : FB_R_SOF1) & VRAM_MASK;
 	fb_watch_addr_end = fb_watch_addr_start + fb_size;
-}
-
-void rend_swap_frame()
-{
-	if (swap_pending)
-	{
-		swap_pending = false;
-		do_swap = true;
-		rs.Set();
-	}
 }

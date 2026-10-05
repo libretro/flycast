@@ -1,3 +1,4 @@
+#define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include <libretro.h>
 
 #include "gl4.h"

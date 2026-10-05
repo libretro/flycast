@@ -162,6 +162,11 @@ struct TA_context
 {
 	u32 Address;
 
+	/* The registers as they were when the game started this render, for
+	 * the renderer to read while the emulation moves on (threaded
+	 * rendering). */
+	u8 *regs;
+
 	tad_context tad;
 	rend_context rend;
 
@@ -196,6 +201,7 @@ struct TA_context
       unsigned modtrig_size = 16384;
       unsigned    vert_size = 4*1024*1024; //up to 4 mb of vtx data/frame = ~ 96k vtx/frame
       tad.Reset((u8*)OS_aligned_malloc(32, TA_DATA_SIZE));
+      regs = (u8*)calloc(1, pvr_RegSize);
 
 		rend.verts.InitBytes(vert_size,&rend.Overrun, "verts"); 
 		rend.idx.Init(120*1024,&rend.Overrun, "idx"); // up to 120K indices (idx have stripification overhead)
@@ -228,6 +234,7 @@ struct TA_context
 	void Free()
 	{
       OS_aligned_free(tad.thd_root);
+      free(regs);
 		rend.verts.Free();
 		rend.idx.Free();
 		rend.global_param_op.Free();

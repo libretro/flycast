@@ -75,11 +75,11 @@ void SetCurrentTARC(u32 addr)
 	}
 }
 
-/* The one frame waiting for, or being drawn by, the render thread. The
- * emulation thread fills the slot, the render thread empties it once the
- * frame is drawn; a context in the slot belongs to the render thread. */
+/* The one frame waiting to be drawn or being drawn. In threaded rendering
+ * the emulation thread fills the slot and the libretro thread empties it
+ * once the frame is drawn; a context in the slot belongs to whoever draws
+ * it. */
 static retro_atomic_ptr_t rqueue;
-cResetEvent frame_finished;
 
 bool QueueRender(TA_context* ctx)
 {
@@ -92,25 +92,15 @@ bool QueueRender(TA_context* ctx)
 		return false;
  	}
 
-   if (settings.pvr.SynchronousRendering)
-   {
-      /* A render-to-texture frame must be rendered before the SH4 reads the
-       * result back, so if one is already queued, wait for it. Emulation speed
-       * is paced by the frontend (audio/video sync); a libretro core must not
-       * throttle itself against the host wall clock, which would be both
-       * non-deterministic and at odds with the frontend's pacing. */
-      if (retro_atomic_load_acquire_ptr(&rqueue) && ctx->rend.isRTT)
-         frame_finished.Wait();
-   }
-
-
+	/* Never taken in practice: a render is drawn where it is started
+	 * (non-threaded), or the emulation thread has waited for the one before
+	 * it to be finished (threaded). */
 	if (retro_atomic_load_acquire_ptr(&rqueue))
    {
 		tactx_Recycle(ctx);
 		return false;
 	}
 
-   frame_finished.Reset();
    retro_atomic_store_release_ptr(&rqueue, ctx);
 
 	return true;
@@ -140,7 +130,6 @@ void FinishRender(TA_context* ctx)
 
 		tactx_Recycle(ctx);
 	}
-	frame_finished.Set();
 }
 
 /* Spare contexts. Both threads give them back; a slot hands each one to
