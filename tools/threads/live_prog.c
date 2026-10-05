@@ -63,11 +63,20 @@ static void paint_texture(u16 colour)
       texel[i] = pair;
 }
 
+/* Wait for the beam to start a new frame: the scanline counter in
+ * SPG_STATUS going back down. That holds whatever video mode the BIOS
+ * left behind, which the vsync bit does not. */
 static void wait_vblank(void)
 {
-   u32 guard;
-   for (guard = 0; guard < 2000000 && (PVR(0x10C) & 0x2000); guard++) ;
-   for (guard = 0; guard < 2000000 && !(PVR(0x10C) & 0x2000); guard++) ;
+   u32 guard, now, last = PVR(0x10C) & 0x3FF;
+
+   for (guard = 0; guard < 2000000; guard++)
+   {
+      now = PVR(0x10C) & 0x3FF;
+      if (now < last)
+         break;
+      last = now;
+   }
 }
 
 void cmain(void)

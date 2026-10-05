@@ -24,6 +24,9 @@
 # region array is run for a few seconds: the render thread has to get
 # through frames like that instead of walking video memory for ever.
 #
+# After them the disc is run once with Threaded Rendering off, where one
+# thread does everything, and the screenshot is checked again.
+#
 # All of it is done once per video driver in $DRIVERS (default: "gl
 # vulkan"), which is what picks the core's OpenGL or Vulkan renderer.
 #
@@ -72,6 +75,10 @@ network_cmd_port = "55355"
 CFG
 cat > "$WORK/core-options.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
+reicast_hle_bios = "enabled"
+CFG
+cat > "$WORK/core-options-off.cfg" <<CFG
+reicast_threaded_rendering = "disabled"
 reicast_hle_bios = "enabled"
 CFG
 
@@ -150,5 +157,17 @@ PY
       echo "FAIL: the commands did not reach RetroArch" >&2
       exit 1
    fi
+
+   echo "== $DRV: threaded rendering off"
+   echo "core_options_path = \"$WORK/core-options-off.cfg\"" >> "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   run $DRV-off.log 300 "$WORK/test.gdi" "$WORK/$DRV-off.png"
+   expect $DRV-off.log "$CONTEXT"
+   expect $DRV-off.log "core options file to .*core-options-off.cfg"
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-off.png" || {
+      echo "FAIL: the screen does not show the last texture written" >&2
+      exit 1
+   }
 done
 echo "live threads test passed"
