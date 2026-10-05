@@ -36,6 +36,14 @@
 # All of it is done once per video driver in $DRIVERS (default: "gl
 # vulkan"), which is what picks the core's OpenGL or Vulkan renderer.
 #
+# Last, for each driver in $RING_DRIVERS (default: "gl glcore vulkan"), the
+# disc is run with RetroArch's own threaded video on. That gives a
+# hardware-rendered core a different framebuffer to draw into every frame,
+# a ring of three, so the screenshot is checked after 300, 301 and 302
+# frames: one for each of them. A core that keeps drawing into the
+# framebuffer it was given first shows the right picture one frame in
+# three.
+#
 # Needs python3, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
 # a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
 # than skips when one is missing. Uses UDP port 55355.
@@ -44,6 +52,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CORE=${1:-$ROOT/flycast_libretro.so}
 RETROARCH=${RETROARCH:-retroarch}
 DRIVERS=${DRIVERS:-gl vulkan}
+RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 1; }
@@ -193,5 +202,19 @@ PY
       echo "FAIL: threaded and non-threaded rendering left different save states" >&2
       exit 1
    }
+done
+for DRV in $RING_DRIVERS; do
+   echo "== $DRV: the frontend's threaded video"
+   printf 'video_driver = "%s"\nvideo_threaded = "true"\n' "$DRV" > "$WORK/driver.cfg"
+   for FRAMES in 300 301 302; do
+      rm -rf "$WORK/states" "$WORK/saves"
+      mkdir -p "$WORK/states" "$WORK/saves"
+      run $DRV-ring-$FRAMES.log $FRAMES "$WORK/test.gdi" "$WORK/$DRV-ring-$FRAMES.png"
+      python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-ring-$FRAMES.png" || {
+         echo "FAIL: wrong picture after $FRAMES frames with threaded video" >&2
+         exit 1
+      }
+   done
+   expect $DRV-ring-302.log "Starting threaded video driver"
 done
 echo "live threads test passed"

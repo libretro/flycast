@@ -2778,6 +2778,11 @@ static void glsm_state_bind(void)
       }
    }
 
+   /* The frontend may hand out a different framebuffer for every frame
+    * (RetroArch's threaded video gives a hardware-rendered core a ring of
+    * three), so ask which one this frame goes to rather than use the one
+    * that was current when the context was set up. */
+   default_framebuffer = glsm_get_current_framebuffer();
    glBindFramebuffer(RARCH_GL_FRAMEBUFFER, default_framebuffer);
 
    if (gl_state.blendfunc.used)
