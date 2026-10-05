@@ -118,7 +118,14 @@ protected:
 	bool RenderFramebuffer()
 	{
 		if (FB_R_SIZE.fb_x_size == 0 || FB_R_SIZE.fb_y_size == 0)
+		{
+			/* Process() began a frame on the texture command pool and
+			 * reset its fence; only a submit signals it again. Leave
+			 * without one and BeginFrame() waits on that fence for ever
+			 * when the pool comes round to this slot. */
+			texCommandPool.EndFrame();
 			return false;
+		}
 
 		PixelBuffer<u32> pb;
 		int width;

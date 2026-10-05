@@ -17,12 +17,17 @@
 # A handshake that loses a request shows up as RetroArch not exiting,
 # which the timeout turns into a failure.
 #
-# Needs python3, xvfb-run and RetroArch ($RETROARCH, default: retroarch).
-# Fails rather than skips when one is missing. Uses UDP port 55355.
+# All of it is done once per video driver in $DRIVERS (default: "gl
+# vulkan"), which is what picks the core's OpenGL or Vulkan renderer.
+#
+# Needs python3, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
+# a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
+# than skips when one is missing. Uses UDP port 55355.
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CORE=${1:-$ROOT/flycast_libretro.so}
 RETROARCH=${RETROARCH:-retroarch}
+DRIVERS=${DRIVERS:-gl vulkan}
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 1; }
@@ -36,7 +41,6 @@ trap 'rm -rf "$WORK"' EXIT
 python3 "$ROOT/tools/threads/live_disc.py" "$WORK/test.gdi"
 
 cat > "$WORK/ra.cfg" <<CFG
-video_driver = "gl"
 audio_driver = "null"
 audio_enable = "false"
 input_driver = "null"
@@ -65,7 +69,8 @@ CFG
 # run <log> <frames>
 run() {
    LIBGL_ALWAYS_SOFTWARE=1 timeout 300 xvfb-run -a -s "-screen 0 800x600x24" \
-      "$RETROARCH" --config "$WORK/ra.cfg" -L "$CORE" "$WORK/test.gdi" \
+      "$RETROARCH" --config "$WORK/ra.cfg" --appendconfig "$WORK/driver.cfg" \
+      -L "$CORE" "$WORK/test.gdi" \
       --max-frames="$2" --verbose > "$WORK/$1" 2>&1 || {
          echo "FAIL: RetroArch did not exit cleanly ($1)" >&2
          tail -n 20 "$WORK/$1" >&2
@@ -81,12 +86,27 @@ expect() {
    }
 }
 
-echo "== run, save a state on the way out"
-run first.log 300
-expect first.log "Auto save state to .* succeeded"
+for DRV in $DRIVERS; do
+   case $DRV in
+      vulkan) CONTEXT="Requesting Vulkan context" ;;
+      *)      CONTEXT="Requesting OpenGL context" ;;
+   esac
+   echo "video_driver = \"$DRV\"" > "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
 
-echo "== load it at startup, then save, load and reset while running"
-python3 - <<'PY' &
+   echo "== $DRV: run, save a state on the way out"
+   run $DRV-first.log 300
+   expect $DRV-first.log "Auto save state to .* succeeded"
+   expect $DRV-first.log "$CONTEXT"
+
+   echo "== $DRV: load it at startup, then save, load and reset while running"
+   # Give slot 0 a state to begin with: the first command to get through
+   # may be a load.
+   for f in "$WORK"/states/*/test.state.auto; do
+      cp "$f" "${f%.auto}"
+   done
+   python3 - <<'PY' &
 import socket, time
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 while True:
@@ -94,22 +114,23 @@ while True:
         s.sendto(cmd, ("127.0.0.1", 55355))
         time.sleep(0.05)
 PY
-POKE=$!
-trap 'kill $POKE 2>/dev/null; rm -rf "$WORK"' EXIT
-run second.log 1500
-kill $POKE 2>/dev/null || true
-expect second.log "Auto-loading save state from .* succeeded"
-expect second.log "Auto save state to .* succeeded"
-if grep -qiE "failed to (save|load) state" "$WORK/second.log"; then
-   echo "FAIL: a save or load failed" >&2
-   grep -iE "failed to (save|load) state" "$WORK/second.log" | head -n 5 >&2
-   exit 1
-fi
-LOADS=$(grep -c 'Loading state' "$WORK/second.log" || true)
-RESETS=$(grep -c '\[Core\] Reset' "$WORK/second.log" || true)
-echo "loads: $LOADS, resets: $RESETS"
-if [ "$LOADS" -lt 5 ] || [ "$RESETS" -lt 5 ]; then
-   echo "FAIL: the commands did not reach RetroArch" >&2
-   exit 1
-fi
+   POKE=$!
+   trap 'kill $POKE 2>/dev/null || true; rm -rf "$WORK"' EXIT
+   run $DRV-second.log 600
+   kill $POKE 2>/dev/null || true
+   expect $DRV-second.log "Auto-loading save state from .* succeeded"
+   expect $DRV-second.log "Auto save state to .* succeeded"
+   if grep -qiE "failed to (save|load) state|could not serialize" "$WORK/$DRV-second.log"; then
+      echo "FAIL: a save or load failed" >&2
+      grep -iE "failed to (save|load) state|could not serialize" "$WORK/$DRV-second.log" | head -n 5 >&2
+      exit 1
+   fi
+   LOADS=$(grep -c 'Loading state' "$WORK/$DRV-second.log" || true)
+   RESETS=$(grep -c '\[Core\] Reset' "$WORK/$DRV-second.log" || true)
+   echo "loads: $LOADS, resets: $RESETS"
+   if [ "$LOADS" -lt 5 ] || [ "$RESETS" -lt 5 ]; then
+      echo "FAIL: the commands did not reach RetroArch" >&2
+      exit 1
+   fi
+done
 echo "live threads test passed"
