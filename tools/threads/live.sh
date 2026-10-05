@@ -17,6 +17,10 @@
 # A handshake that loses a request shows up as RetroArch not exiting,
 # which the timeout turns into a failure.
 #
+# Before those, a build of the disc that renders without ever writing a
+# region array is run for a few seconds: the render thread has to get
+# through frames like that instead of walking video memory for ever.
+#
 # All of it is done once per video driver in $DRIVERS (default: "gl
 # vulkan"), which is what picks the core's OpenGL or Vulkan renderer.
 #
@@ -38,7 +42,9 @@ WORK=${TMPDIR:-/tmp}/threads_live.$$
 mkdir -p "$WORK/system/dc" "$WORK/saves" "$WORK/states"
 trap 'rm -rf "$WORK"' EXIT
 
+mkdir -p "$WORK/bare"
 python3 "$ROOT/tools/threads/live_disc.py" "$WORK/test.gdi"
+python3 "$ROOT/tools/threads/live_disc.py" "$WORK/bare/bare.gdi" --no-region-array
 
 cat > "$WORK/ra.cfg" <<CFG
 audio_driver = "null"
@@ -66,11 +72,11 @@ reicast_threaded_rendering = "enabled"
 reicast_hle_bios = "enabled"
 CFG
 
-# run <log> <frames>
+# run <log> <frames> [disc]
 run() {
    LIBGL_ALWAYS_SOFTWARE=1 timeout 300 xvfb-run -a -s "-screen 0 800x600x24" \
       "$RETROARCH" --config "$WORK/ra.cfg" --appendconfig "$WORK/driver.cfg" \
-      -L "$CORE" "$WORK/test.gdi" \
+      -L "$CORE" "${3:-$WORK/test.gdi}" \
       --max-frames="$2" --verbose > "$WORK/$1" 2>&1 || {
          echo "FAIL: RetroArch did not exit cleanly ($1)" >&2
          tail -n 20 "$WORK/$1" >&2
@@ -94,6 +100,10 @@ for DRV in $DRIVERS; do
    echo "video_driver = \"$DRV\"" > "$WORK/driver.cfg"
    rm -rf "$WORK/states" "$WORK/saves"
    mkdir -p "$WORK/states" "$WORK/saves"
+
+   echo "== $DRV: render without a region array"
+   run $DRV-bare.log 200 "$WORK/bare/bare.gdi"
+   expect $DRV-bare.log "$CONTEXT"
 
    echo "== $DRV: run, save a state on the way out"
    run $DRV-first.log 300

@@ -1840,7 +1840,12 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
    if (empty_first_region)
       addr += tile_size;
 
+   /* The array ends at the entry marked last. A game that starts a render
+    * without having written one leaves no such entry, and vri() wraps
+    * around video memory, so stop once all of it has been walked: the
+    * render thread must not spin on what the guest left in VRAM. */
    RegionArrayTile tile;
+   u32 walked = 0;
    do {
       tile.full = vri(addr);
       xmin = std::min(xmin, tile.X);
@@ -1851,7 +1856,8 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
          // Windows CE weirdness
          tile_size = 6 * 4;
       addr += tile_size;
-   } while (!tile.LastRegion);
+      walked += tile_size;
+   } while (!tile.LastRegion && walked < VRAM_SIZE);
 
    xmin *= 32;
    xmax *= 32;

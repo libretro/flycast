@@ -2,27 +2,49 @@
 """Write a bootable GD-ROM image (GDI + three track files) around the
 bare-metal test program in live_prog.c, for tools/threads/live.sh.
 
-Usage: live_disc.py out.gdi
+Usage: live_disc.py out.gdi [--no-region-array]
 
 The program is carried here already compiled, so the test needs no SH-4
-compiler; live_prog.c says how PROGRAM was produced. The image is the
-least the core's HLE BIOS needs to boot it: an IP.BIN whose bootstrap
-jumps to the boot file, and an ISO 9660 volume holding 1ST_READ.BIN.
+compiler; live_prog.c says how PROGRAM was produced. --no-region-array
+takes the build of it that renders without ever writing a region array.
+The image is the least the core's HLE BIOS needs to boot it: an IP.BIN
+whose bootstrap jumps to the boot file, and an ISO 9660 volume holding
+1ST_READ.BIN.
 """
 import os
 import struct
 import sys
 
 PROGRAM = bytes.fromhex("""
-01df02d02b40090000f0008c1000018c862f962fa62f2dd112602dd2292005cb
-022118712bd22221f47100e22221107129d2222129d12ad212222ad212222ad1
-2ad21222047212220472122204721222047212220472122225d126d2222100e3
-00e525da20d925d825d62d971aa0ffe43fc9036108410c31184122d22c3122d2
-31211042fc8f027113a009001fd1136262607820028f10411042f98b01751491
-1c333d63536003c90388e18d5360922a422816d2236162607820e78d10421041
-f98b12d1e4af13620020410844805fa0000080003f7d17000000200000001000
-20805fa028815fa000000080000018a52c805fa00000180044815fa014805fa0
-0c815fa0000000a500a0000080841e00
+01df02d02b40090000f0008c1000018c862f962fa62fb62fc62fd62fe62f40d1
+126040d2292005cb022118713ed2222100e13ed2122210723dd332226c723dd3
+32223dd23dd322233dd322233dd212223dd13ed222213ed13ed2122204721222
+0472122204721222047212220472122239d13ad2222100e639dd35dc39db4b9e
+39da3ad93ad83bd43bd746931ca000e5e92253603fc9036108410c31184137d0
+0c3137d021211040fc8f027114a0090034d1136272603820028f10411042f98b
+01752b911c366d66536003c90388df8d6362c22dffe1122b922a42282ad12bd2
+222104712ad2222101e12ad212222ad200e0022204721222f07228d002221472
+122220d2236172603820d18d10421041f98b1cd1ceaf1362ff7f002041080900
+44805fa0000080003f7d170050805fa000002000040115000000100020805fa0
+28815fa08c805fa0000010a50000000200000080000018a52c805fa000001800
+44815fa014805fa000e000ac0100008004e000ac00e1000c0c815fa0000000a5
+00a0000080841e0008e000ac0920000100000001e86c5fa0106c5fa000e0000c
+""")
+
+# The same program built with -DNO_REGION_ARRAY.
+PROGRAM_NO_REGION_ARRAY = bytes.fromhex("""
+01df02d02b40090000f0008c1000018c862f962fa62fb62fc62fd62fe62f39d1
+126039d2292005cb0221187137d2222100e137d21222107236d332226c7236d3
+322236d236d3222336d3222336d2122236d137d2222137d137d2222100e637dd
+37dc38db4b9e38da38d939d839d43ad746931ca000e5e92253603fc903610841
+0c31184135d00c3135d021211040fc8f027114a0090033d1136272603820028f
+10411042f98b01752b911c366d66536003c90388df8d6362c22dffe1122b922a
+422829d129d22221047129d2222101e128d2122228d200e0022204721222f072
+26d00222147212221ed2236172603820d18d10421041f98b1ad1ceaf1362ff7f
+0020410844805fa0000080003f7d170050805fa0000020000401150000001000
+20805fa028815fa08c805fa0000010a5000000022c805fa00000300044815fa0
+0000008014805fa000e000ac0100008004e000ac00e1000c0c815fa0000000a5
+00a0000080841e0008e000ac0920000100000001e86c5fa0106c5fa000e0000c
 """)
 
 SYNC = b'\x00' + b'\xff' * 10 + b'\x00'
@@ -55,10 +77,11 @@ def dirent(name, lba, size, flags):
 
 
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3) or sys.argv[2:] not in ([], ['--no-region-array']):
         sys.stderr.write(__doc__)
         return 2
     out = sys.argv[1]
+    program = PROGRAM_NO_REGION_ARRAY if len(sys.argv) == 3 else PROGRAM
     d = os.path.dirname(out) or '.'
 
     ip = bytearray(16 * 2048)
@@ -78,15 +101,15 @@ def main():
     pvd[6] = 1
     pvd[156:156 + 34] = dirent(b'\0', ROOT, 2048, 2)
     root = (dirent(b'\0', ROOT, 2048, 2) + dirent(b'\x01', ROOT, 2048, 2)
-            + dirent(b'1ST_READ.BIN;1', FILE, len(PROGRAM), 0))
+            + dirent(b'1ST_READ.BIN;1', FILE, len(program), 0))
 
     sectors = {}
     for i in range(16):
         sectors[BASE + i] = bytes(ip[i * 2048:(i + 1) * 2048])
     sectors[BASE + 16] = bytes(pvd)
     sectors[ROOT] = root
-    for i in range((len(PROGRAM) + 2047) // 2048):
-        sectors[FILE + i] = PROGRAM[i * 2048:(i + 1) * 2048]
+    for i in range((len(program) + 2047) // 2048):
+        sectors[FILE + i] = program[i * 2048:(i + 1) * 2048]
 
     with open(os.path.join(d, 'track01.bin'), 'wb') as f:
         for lba in range(300):
