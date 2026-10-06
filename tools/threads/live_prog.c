@@ -325,10 +325,100 @@ static void ta_scene_pass2(void)
 #define TMU_TCNT0 (*(volatile u32 *)0xFFD8000C)
 #define TMU_TCR0  (*(volatile u16 *)0xFFD80010)
 
+/* The GD-ROM drive as a game uses it: an ATA packet command that asks for
+ * sectors, then a DMA transfer that brings them into memory. */
+#define GD8(reg)  (*(volatile unsigned char *)(0xA05F7000 + (reg)))
+#define GD16(reg) (*(volatile u16 *)(0xA05F7000 + (reg)))
+#define G1(reg)   (*(volatile u32 *)(0xA05F7000 + (reg)))
+
+/* Send a CD read for @sectors sectors of 2048 bytes from @fad, to be
+ * fetched by DMA. 0 if the drive never asked for the packet. */
+static int gd_read(u32 fad, u32 sectors)
+{
+   u16 packet[6];
+   u32 i;
+
+   packet[0] = 0x30 | (0x20 << 8);                     /* CD read, user data */
+   packet[1] = ((fad >> 16) & 0xFF) | (((fad >> 8) & 0xFF) << 8);
+   packet[2] = fad & 0xFF;
+   packet[3] = 0;
+   packet[4] = ((sectors >> 16) & 0xFF) | (((sectors >> 8) & 0xFF) << 8);
+   packet[5] = sectors & 0xFF;
+   GD8(0x84) = 1;                                      /* features: by DMA */
+   GD8(0x9C) = 0xA0;                                   /* the packet command */
+   for (i = 0; i < 100000 && !(GD8(0x18) & 0x08); i++)
+      ;
+   if (!(GD8(0x18) & 0x08))
+      return 0;
+   for (i = 0; i < 6; i++)
+      GD16(0x80) = packet[i];
+   return 1;
+}
+
+/* Transfer @len bytes of what the drive has to @dest. 0 if it never ends. */
+static int gd_dma(u32 dest, u32 len)
+{
+   u32 i;
+
+   G1(0x404) = dest;                                   /* SB_GDSTAR */
+   G1(0x408) = len;                                    /* SB_GDLEN */
+   G1(0x40C) = 1;                                      /* SB_GDDIR: to memory */
+   G1(0x414) = 1;                                      /* SB_GDEN */
+   G1(0x418) = 1;                                      /* SB_GDST */
+   for (i = 0; i < 4000000 && (G1(0x418) & 1); i++)
+      ;
+   return !(G1(0x418) & 1);
+}
+
+/* Read the start of the disc's boot sector three ways and see that it is
+ * the same every time and is what a boot sector starts with:
+ *   A, five sectors in one transfer;
+ *   B, the same five in ten transfers of half a sector, so that no
+ *      transfer has a whole sector to move and every sector is split
+ *      across two;
+ *   C, eight sectors, more than the drive's DMA moves in one step.
+ * An emulator may well move whole sectors and parts of sectors by
+ * different routes, and A and B then check one against the other.
+ * Non-zero, saying which, if anything is off. */
+static int gd_test(void)
+{
+   static const char id[16] = "SEGA SEGAKATANA ";
+   volatile unsigned char *a = (volatile unsigned char *)0xAC200000;
+   volatile unsigned char *b = (volatile unsigned char *)0xAC210000;
+   volatile unsigned char *c = (volatile unsigned char *)0xAC220000;
+   u32 i;
+
+   for (i = 0; i < 9 * 2048; i++)
+      a[i] = b[i] = c[i] = 0xEE;
+   if (!gd_read(45150, 5) || !gd_dma(0x0C200000, 5 * 2048))
+      return 1;
+   if (!gd_read(45150, 5))
+      return 2;
+   for (i = 0; i < 10; i++)
+      if (!gd_dma(0x0C210000 + i * 1024, 1024))
+         return 2;
+   if (!gd_read(45150, 8) || !gd_dma(0x0C220000, 8 * 2048))
+      return 3;
+   for (i = 0; i < 16; i++)
+      if (a[i] != (unsigned char)id[i])
+         return 4;
+   for (i = 0; i < 5 * 2048; i++)
+      if (b[i] != a[i])
+         return 5;
+   for (i = 0; i < 5 * 2048; i++)
+      if (c[i] != a[i])
+         return 6;
+   /* ...and nothing was written past the end of what was asked for */
+   if (a[5 * 2048] != 0xEE || b[5 * 2048] != 0xEE || c[8 * 2048] != 0xEE)
+      return 7;
+   return 0;
+}
+
 void cmain(void)
 {
    u32 frame = 0, i;
    u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0; u32 total = 0;
+   int gd_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
     * status and its address counters, and the AICA DMA counters. They
     * read as zero, not as whatever the emulator had lying there. */
@@ -413,6 +503,9 @@ void cmain(void)
    PVR(0x2C) = 0x180000;                               /* REGION_BASE */
 #endif
 
+   /* The disc, read the way a game reads it, before anything is drawn */
+   gd_bad = gd_test();
+
    for (;;)
    {
       /* Repaint the texture four times, once each and never again: every
@@ -489,6 +582,8 @@ void cmain(void)
             set_palette(4, 0x03FF);                    /* cyan: frames of the wrong length */
          else if (frame == 250 && stale)
             set_palette(4, 0x7C1F);                    /* magenta: a register with junk in it */
+         else if (frame == 250 && gd_bad)
+            set_palette(4, 0x001F | (gd_bad << 7));     /* blue: the disc read back wrong */
       }
 
       /* ...and shown at the next vblank, the way a game flips buffers */
