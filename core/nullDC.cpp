@@ -165,11 +165,6 @@ static void LoadSpecialSettings(void)
             settings.pvr.Emulation.AlphaSortMode = lut_games[i].alpha_sort_mode;
          }
 
-         if (lut_games[i].updatemode_type != -1)
-         {
-         	NOTICE_LOG(BOOT, "[Hack]: Applying update mode type hack.");
-            settings.UpdateModeForced = 1;
-         }
 
          if (lut_games[i].translucentPolygonDepthMask != -1)
          {
@@ -272,11 +267,6 @@ static void LoadSpecialSettingsNaomi(const char *name)
             settings.pvr.Emulation.AlphaSortMode = lut_games_naomi[i].alpha_sort_mode;
          }
 
-         if (lut_games_naomi[i].updatemode_type != -1)
-         {
-         	NOTICE_LOG(BOOT, "[Hack]: Applying update mode type hack.");
-            settings.UpdateModeForced = 1;
-         }
 
          if (lut_games_naomi[i].translucentPolygonDepthMask != -1)
          {
@@ -559,7 +549,6 @@ void LoadSettings(void)
 	//settings.dynarec.DisableDivMatching       = 0;
 	//disable_nvmem can't be loaded, because nvmem init is before cfg load
 	settings.dynarec.disable_vmem32 = false;
-	settings.UpdateModeForced     = 0;
 	settings.dreamcast.FullMMU		= false;
 	settings.aica.LimitFPS			= 0;
 	settings.aica.NoSound			= 0;

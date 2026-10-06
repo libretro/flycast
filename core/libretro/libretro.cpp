@@ -443,12 +443,6 @@ static void set_variable_visibility(void)
    option_display.key = CORE_OPTION_NAME "_show_vmu_screen_settings";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
-   /* Show/hide settings-dependent options */
-   option_display.visible = !settings.rend.ThreadedRendering;
-
-   option_display.key = CORE_OPTION_NAME "_framerate";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-
    /* Threaded rendering makes the frame non-threaded rendering makes, one
     * for each retro_run: it never runs ahead of the renderer and presents
     * at vblank, so there is nothing left for these two to choose. */
@@ -802,18 +796,6 @@ static void update_variables(bool first_startup)
    }
    else
          settings.dreamcast.broadcast = 4;
-
-   var.key = CORE_OPTION_NAME "_framerate";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp("normal", var.value))
-         settings.UpdateMode = 0;
-      else if (!strcmp("fullspeed", var.value))
-         settings.UpdateMode = 1;
-   }
-   else
-      settings.UpdateMode = 0;
 
    var.key = CORE_OPTION_NAME "_region";
 

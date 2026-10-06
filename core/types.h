@@ -636,8 +636,6 @@ struct settings_t
 		u32 SynchronousRendering;
 	} pvr;
 
-	unsigned UpdateMode;
-	unsigned UpdateModeForced;
 
 	struct {
 		bool SerialConsole;

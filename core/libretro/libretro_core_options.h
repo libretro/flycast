@@ -364,20 +364,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "Default",
    },
    {
-      CORE_OPTION_NAME "_framerate",
-      "Framerate",
-      NULL,
-      "Affects how emulator interacts with frontend. 'Full Speed' - emulator returns control to RetroArch each time a frame has been rendered. 'Normal' - emulator returns control to RetroArch each time a V-blank interrupt is generated. 'Full Speed' should be used in most cases. 'Normal' may improve frame pacing on some systems, but can cause unresponsive input when the screen is static (e.g. loading/pause screens). Note: This setting only applies when 'Threaded Rendering' is disabled.",
-      NULL,
-      "video",
-      {
-         { "fullspeed", "Full Speed" },
-         { "normal",    "Normal" },
-         { NULL, NULL },
-      },
-      "fullspeed",
-   },
-   {
       CORE_OPTION_NAME "_region",
       "Region",
       NULL,

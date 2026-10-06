@@ -9,7 +9,7 @@
 struct game_type
 {
    char product_number[11];
-   int updatemode_type;     /* -1, make no decision, 0 = update mode normal, 1 = update mode fullspeed */
+   int updatemode_type;     /* no longer used: the core always returns to the frontend at vblank */
    int alpha_sort_mode;     /* -1, make no decision */
    int translucentPolygonDepthMask; /* -1, make no decision */
    int rendertotexturebuffer;       /* -1, make no decision */
@@ -22,7 +22,7 @@ struct game_type
 struct game_type_naomi
 {
    char product_number[128];
-   int updatemode_type;     /* -1, make no decision, 0 = update mode normal, 1 = update mode fullspeed */
+   int updatemode_type;     /* no longer used: the core always returns to the frontend at vblank */
    int alpha_sort_mode;     /* -1, make no decision */
    int translucentPolygonDepthMask; /* -1, make no decision */
    int rendertotexturebuffer;       /* -1, make no decision */
