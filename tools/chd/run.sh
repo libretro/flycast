@@ -37,12 +37,17 @@ mkdir -p "$WORK/gd"
 trap 'rm -rf "$WORK"' EXIT
 
 $CC -O1 -g $DEFS -fsanitize=address,undefined \
-   -fno-sanitize-recover=undefined -I$L/include \
+   -fno-sanitize-recover=undefined -I$L/include -Icore \
    -o "$WORK/chd_image_test" \
    tools/chd/chd_image_test.c core/imgread/chd_image.c \
+   core/deps/coreio/coreio.c core/archive/archive.c \
    $L/formats/chd/rchd.c $L/encodings/encoding_huffman.c \
    $L/encodings/encoding_rzstd.c $L/encodings/encoding_deflate.c \
    $L/encodings/encoding_crc32.c $L/formats/7z/r7z_lzma.c \
+   $L/formats/7z/r7z_archive.c $L/formats/7z/r7z_lzma2.c \
+   $L/formats/7z/r7z_lzma_stream.c $L/formats/7z/r7z_bcj2.c \
+   $L/formats/7z/r7z_filters.c $L/formats/data_transfer.c \
+   $L/memmap/memmap.c \
    $L/formats/flac/rflac.c $L/features/features_cpu.c \
    $L/streams/file_stream.c $L/vfs/vfs_implementation.c \
    $L/file/file_path.c $L/file/file_path_io.c $L/file/retro_dirent.c \

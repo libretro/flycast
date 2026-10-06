@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Package the GD-ROM fixture of tools/chd/make_fixture.py as archives.
+
+  make_fixture.py <workdir>
+
+Writes <workdir>/src/{disc.gdi,track01.bin,track02.raw,track03.bin} and:
+
+  stored.zip     every member stored (method 0): a mapped archive hands
+                 these out in place, nothing is copied or decoded
+  deflate.zip    every member deflated
+  subdir.zip     deflated, members under GAME/, plus a decoy .cue so the
+                 disc pick has to prefer the .gdi
+  solid.7z       one LZMA2 folder holding all members
+  single.7z      track03.bin alone, so the member is its folder's whole
+                 output and is handed over without a copy
+  suffix         stored.zip again under a name with no extension, to be
+                 opened as "suffix" + ".zip"
+"""
+import os
+import shutil
+import subprocess
+import sys
+import zipfile
+
+import py7zr
+
+MEMBERS = ['disc.gdi', 'track01.bin', 'track02.raw', 'track03.bin']
+
+
+def main():
+    work = sys.argv[1]
+    src = os.path.join(work, 'src')
+    os.makedirs(src, exist_ok=True)
+    here = os.path.dirname(os.path.abspath(__file__))
+    subprocess.check_call([sys.executable,
+                           os.path.join(here, '..', 'chd', 'make_fixture.py'),
+                           os.path.join(src, 'disc'), '--gdi'])
+
+    def zip_of(name, method, prefix='', decoy=False):
+        with zipfile.ZipFile(os.path.join(work, name), 'w', method) as z:
+            if decoy:
+                z.writestr(prefix + 'other.cue', 'FILE "x.bin" BINARY\n')
+            for m in MEMBERS:
+                z.write(os.path.join(src, m), prefix + m)
+
+    zip_of('stored.zip', zipfile.ZIP_STORED)
+    zip_of('deflate.zip', zipfile.ZIP_DEFLATED)
+    zip_of('subdir.zip', zipfile.ZIP_DEFLATED, 'GAME/', True)
+    shutil.copyfile(os.path.join(work, 'stored.zip'),
+                    os.path.join(work, 'suffix.zip'))
+
+    with py7zr.SevenZipFile(os.path.join(work, 'solid.7z'), 'w') as z:
+        for m in MEMBERS:
+            z.write(os.path.join(src, m), m)
+    with py7zr.SevenZipFile(os.path.join(work, 'single.7z'), 'w') as z:
+        z.write(os.path.join(src, 'track03.bin'), 'track03.bin')
+
+
+if __name__ == '__main__':
+    main()

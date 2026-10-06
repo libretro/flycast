@@ -4,8 +4,10 @@
 
 #include <streams/file_stream.h>
 #include <vfs/vfs_implementation.h>
+#include <file/file_path.h>
 
 #include "coreio.h"
+#include "archive/archive.h"
 
 /* A mapped file keeps its local VFS handle open for the map's lifetime.
  * A streamed file goes through filestream, which is the frontend's VFS
@@ -19,7 +21,92 @@ typedef struct core_file_impl
    size_t                            size;
    size_t                            pos;
    size_t                            stream_pos;
+   size_t                            base;       /* member start in f */
+   int                               in_archive; /* holds a ref on it */
 } core_file_impl;
+
+/* The one archive members are being read from: content loads open a
+ * few members of the same archive, so it stays open between them and
+ * until the last member file is closed. */
+static archive_t *cur_archive;
+static unsigned   cur_archive_refs;
+static int        cur_archive_release;
+
+static void core_archive_drop(void)
+{
+   if (cur_archive && !cur_archive_refs)
+   {
+      archive_close(cur_archive);
+      cur_archive = NULL;
+   }
+}
+
+void core_archive_release(void)
+{
+   cur_archive_release = 1;
+   core_archive_drop();
+}
+
+/* Opens "archive#member": the member's bytes in place when the archive
+ * can hand them out, else positioned reads of a stored member through
+ * a handle of its own. */
+static int core_file_open_member(core_file_impl *cf, const char *path,
+      const char *delim)
+{
+   const archive_entry_t *e;
+   size_t                 arc_len = (size_t)(delim - path);
+   int                    idx;
+
+   if (!cur_archive || strncmp(archive_path(cur_archive), path, arc_len)
+         || archive_path(cur_archive)[arc_len])
+   {
+      char *arc_path;
+
+      if (cur_archive_refs)
+         return 0;   /* members of another archive are still open */
+      core_archive_drop();
+      if (!(arc_path = (char*)malloc(arc_len + 1)))
+         return 0;
+      memcpy(arc_path, path, arc_len);
+      arc_path[arc_len]   = '\0';
+      cur_archive         = archive_open(arc_path);
+      cur_archive_release = 0;
+      free(arc_path);
+      if (!cur_archive)
+         return 0;
+   }
+
+   if ((idx = archive_find(cur_archive, delim + 1)) < 0)
+      return 0;
+   e = archive_entry(cur_archive, (unsigned)idx);
+   if (!e->usable || e->size > (size_t)-1)
+      return 0;
+
+   if (!(cf->mem = archive_entry_map(cur_archive, (unsigned)idx, &cf->size)))
+   {
+      if (!e->stored)
+      {
+         if (!(cf->mem = archive_entry_data(cur_archive, (unsigned)idx, &cf->size)))
+            return 0;
+         cf->in_archive = 1;
+         cur_archive_refs++;
+         return 1;
+      }
+      /* An unmapped archive: read the stored member where it lies. */
+      cf->f = filestream_open(archive_path(cur_archive),
+            RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+      if (!cf->f)
+         return 0;
+      cf->base = (size_t)e->data_off;
+      cf->size = (size_t)e->size;
+      if (filestream_seek(cf->f, (int64_t)cf->base,
+               RETRO_VFS_SEEK_POSITION_START) < 0)
+         return 0;
+   }
+   cf->in_archive = 1;
+   cur_archive_refs++;
+   return 1;
+}
 
 static core_file_impl *core_file_alloc(void)
 {
@@ -32,6 +119,8 @@ static core_file_impl *core_file_alloc(void)
    cf->size       = 0;
    cf->pos        = 0;
    cf->stream_pos = 0;
+   cf->base       = 0;
+   cf->in_archive = 0;
    return cf;
 }
 
@@ -65,12 +154,19 @@ static int core_file_open_path(core_file_impl *cf, const char *path)
 
 core_file* core_fopen(const char* filename)
 {
-   core_file_impl *cf = core_file_alloc();
+   core_file_impl *cf    = core_file_alloc();
+   const char     *delim = path_get_archive_delim(filename);
+   int             ok;
+
    if (!cf)
       return NULL;
-   if (!core_file_open_path(cf, filename))
+   if (delim)
+      ok = core_file_open_member(cf, filename, delim);
+   else
+      ok = core_file_open_path(cf, filename);
+   if (!ok)
    {
-      free(cf);
+      core_fclose((core_file*)cf);
       return NULL;
    }
    return (core_file*)cf;
@@ -133,7 +229,7 @@ size_t core_fread_at(core_file* fc, uint64_t offset, void* buff, size_t len)
 
    if (cf->stream_pos != (size_t)offset)
    {
-      if (filestream_seek(cf->f, (int64_t)offset,
+      if (filestream_seek(cf->f, (int64_t)(cf->base + (size_t)offset),
                RETRO_VFS_SEEK_POSITION_START) < 0)
          return 0;
       cf->stream_pos = (size_t)offset;
@@ -163,6 +259,12 @@ int core_fclose(core_file* fc)
       filestream_close(cf->f);
    if (cf->lf)
       retro_vfs_file_close_impl(cf->lf);
+   if (cf->in_archive)
+   {
+      cur_archive_refs--;
+      if (cur_archive_release)
+         core_archive_drop();
+   }
    free(cf);
    return 0;
 }

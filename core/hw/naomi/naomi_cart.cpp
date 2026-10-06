@@ -75,7 +75,39 @@ InputDescriptors *naomi_game_inputs;
 u8 *naomi_default_eeprom;
 static RotationType game_rotation = ROT0;
 
-static bool naomi_LoadBios(const char *filename, Archive *child_archive, Archive *parent_archive, int region)
+/* The blob with CRC @crc in the first of @archives that has one, else
+ * the one named @filename in the first that has it. The bytes belong to
+ * that archive. */
+static const u8 *naomi_find_blob(archive_t *const *archives, int count,
+      u32 crc, const char *filename, size_t *len)
+{
+   int i;
+   int idx;
+
+   for (i = 0; i < count; i++)
+   {
+      if (archives[i] && (idx = archive_find_crc(archives[i], crc)) >= 0)
+         return archive_entry_data(archives[i], (unsigned)idx, len);
+   }
+   for (i = 0; i < count; i++)
+   {
+      if (archives[i] && (idx = archive_find(archives[i], filename)) >= 0)
+         return archive_entry_data(archives[i], (unsigned)idx, len);
+   }
+   return NULL;
+}
+
+/* Copies @len bytes of @blob to @dst, 16-bit words swapped pairwise. */
+static void naomi_copy_interleaved(u16 *to, const u8 *blob, u32 len)
+{
+   const u16 *from = (const u16 *)blob;
+   int i;
+
+   for (i = len / 2; --i >= 0; to++)
+      *to++ = *from++;
+}
+
+static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archive_t *parent_archive, int region)
 {
 	int biosid = 0;
 	for (; BIOS[biosid].name != NULL; biosid++)
@@ -98,7 +130,12 @@ static bool naomi_LoadBios(const char *filename, Archive *child_archive, Archive
 	std::string basepath(game_dir_no_slash);
 	basepath += PATH_DEFAULT_SLASH();
 
-	Archive *bios_archive = OpenArchive((basepath + filename).c_str());
+	archive_t *bios_archive = archive_open((basepath + filename).c_str());
+	archive_t *archives[3];
+
+	archives[0] = child_archive;
+	archives[1] = parent_archive;
+	archives[2] = bios_archive;
 
 	bool found_region = false;
 
@@ -121,53 +158,27 @@ static bool naomi_LoadBios(const char *filename, Archive *child_archive, Archive
 		}
 		else
 		{
-			ArchiveFile *file = NULL;
-			if (child_archive != NULL)
-			   file = child_archive->OpenFileByCrc(bios->blobs[romid].crc);
-			if (file == NULL && parent_archive != NULL)
-				file = parent_archive->OpenFileByCrc(bios->blobs[romid].crc);
-			if (file == NULL && bios_archive != NULL)
-				file = bios_archive->OpenFileByCrc(bios->blobs[romid].crc);
-			if (file == NULL && child_archive != NULL)
-			   file = child_archive->OpenFile(bios->blobs[romid].filename);
-			if (file == NULL && parent_archive != NULL)
-				file = parent_archive->OpenFile(bios->blobs[romid].filename);
-			if (file == NULL && bios_archive != NULL)
-				file = bios_archive->OpenFile(bios->blobs[romid].filename);
-			if (!file) {
+			size_t blob_len = 0;
+			const u8 *blob = naomi_find_blob(archives, 3, bios->blobs[romid].crc,
+					bios->blobs[romid].filename, &blob_len);
+			if (!blob) {
 				WARN_LOG(NAOMI, "%s: Cannot open %s", filename, bios->blobs[romid].filename);
 				goto error;
 			}
+			u32 read = bios->blobs[romid].length;
+			if (read > blob_len)
+				read = (u32)blob_len;
+			verify(bios->blobs[romid].offset + bios->blobs[romid].length <= rom_chip->size);
 			if (bios->blobs[romid].blob_type == Normal)
-			{
-				verify(bios->blobs[romid].offset + bios->blobs[romid].length <= rom_chip->size);
-				u32 read = file->Read(rom_chip->data + bios->blobs[romid].offset, bios->blobs[romid].length);
-			}
+				memcpy(rom_chip->data + bios->blobs[romid].offset, blob, read);
 			else if (bios->blobs[romid].blob_type == InterleavedWord)
-			{
-				u8 *buf = (u8 *)malloc(bios->blobs[romid].length);
-				if (buf == NULL)
-				{
-					WARN_LOG(NAOMI, "malloc failed");
-					delete file;
-					goto error;
-				}
-				verify(bios->blobs[romid].offset + bios->blobs[romid].length <= rom_chip->size);
-				u32 read = file->Read(buf, bios->blobs[romid].length);
-				u16 *to = (u16 *)(rom_chip->data + bios->blobs[romid].offset);
-				u16 *from = (u16 *)buf;
-				for (int i = bios->blobs[romid].length / 2; --i >= 0; to++)
-					*to++ = *from++;
-				free(buf);
-			}
+				naomi_copy_interleaved((u16 *)(rom_chip->data + bios->blobs[romid].offset), blob, read);
 			else
 				die("Unknown blob type");
-			delete file;
 		}
 	}
 
-	if (bios_archive != NULL)
-		delete bios_archive;
+	archive_close(bios_archive);
 
 	if (settings.System == DC_PLATFORM_ATOMISWAVE)
 	   // Reload the writeable portion of the FlashROM
@@ -176,8 +187,7 @@ static bool naomi_LoadBios(const char *filename, Archive *child_archive, Archive
 	return found_region;
 
 error:
-	if (bios_archive != NULL)
-		delete bios_archive;
+	archive_close(bios_archive);
 	return false;
 }
 
@@ -200,18 +210,18 @@ static bool naomi_cart_LoadZip(const char *filename)
 
 	struct Game *game = &Games[gameid];
 
-	Archive *archive = OpenArchive(filename);
+	archive_t *archive = archive_open(filename);
 	if (archive != NULL)
 		INFO_LOG(NAOMI, "Opened %s", filename);
 
-	Archive *parent_archive = NULL;
+	archive_t *parent_archive = NULL;
 	if (game->parent_name != NULL)
 	{
 	   strncpy(g_parent_name, game->parent_name, sizeof(g_parent_name));
 	   std::string parent_path(g_roms_dir);
 	   parent_path += PATH_DEFAULT_SLASH();
 	   parent_path += game->parent_name;
-	   parent_archive = OpenArchive(parent_path.c_str());
+	   parent_archive = archive_open(parent_path.c_str());
 	   if (parent_archive != NULL)
 		  INFO_LOG(NAOMI, "Opened %s", game->parent_name);
 	}
@@ -242,7 +252,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 		  if (game->bios != NULL || !bios_loaded)
 		  {
 			 ERROR_LOG(NAOMI, "Error: cannot load BIOS. Exiting");
-			 return false;
+			 goto error;
 		  }
 		  // otherwise use the default BIOS
 	   }
@@ -290,16 +300,13 @@ static bool naomi_cart_LoadZip(const char *filename)
 		}
 		else
 		{
-			ArchiveFile* file = NULL;
-			if (archive != NULL)
-				file = archive->OpenFileByCrc(game->blobs[romid].crc);
-			if (file == NULL && parent_archive != NULL)
-				file = parent_archive->OpenFileByCrc(game->blobs[romid].crc);
-			if (file == NULL && archive != NULL)
-				file = archive->OpenFile(game->blobs[romid].filename);
-			if (file == NULL && parent_archive != NULL)
-				file = parent_archive->OpenFile(game->blobs[romid].filename);
-			if (!file) {
+			archive_t *archives[2];
+			size_t blob_len = 0;
+			archives[0] = archive;
+			archives[1] = parent_archive;
+			const u8 *blob = naomi_find_blob(archives, 2, game->blobs[romid].crc,
+					game->blobs[romid].filename, &blob_len);
+			if (!blob) {
 				WARN_LOG(NAOMI, "%s: Cannot open %s", filename, game->blobs[romid].filename);
 				if (game->blobs[romid].blob_type != Eeprom)
 				   // Default eeprom file is optional
@@ -307,66 +314,53 @@ static bool naomi_cart_LoadZip(const char *filename)
 				else
 				   continue;
 			}
+			u32 read = len;
+			if (read > blob_len)
+				read = (u32)blob_len;
 			if (game->blobs[romid].blob_type == Normal)
 			{
 				u8 *dst = (u8 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
-				u32 read = file->Read(dst, game->blobs[romid].length);
+				memcpy(dst, blob, read);
 				DEBUG_LOG(NAOMI, "Mapped %s: %x bytes at %07x", game->blobs[romid].filename, read, game->blobs[romid].offset);
 			}
 			else if (game->blobs[romid].blob_type == InterleavedWord)
 			{
-				u8 *buf = (u8 *)malloc(game->blobs[romid].length);
-				if (buf == NULL)
-				{
-					ERROR_LOG(NAOMI, "malloc failed");
-					delete file;
-					goto error;
-				}
-				u32 read = file->Read(buf, game->blobs[romid].length);
 				u16 *to = (u16 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
-				u16 *from = (u16 *)buf;
-				for (int i = game->blobs[romid].length / 2; --i >= 0; to++)
-					*to++ = *from++;
-				free(buf);
+				naomi_copy_interleaved(to, blob, read);
 				DEBUG_LOG(NAOMI, "Mapped %s: %x bytes (interleaved word) at %07x", game->blobs[romid].filename, read, game->blobs[romid].offset);
 			}
 			else if (game->blobs[romid].blob_type == Key)
 			{
-				u8 *buf = (u8 *)malloc(game->blobs[romid].length);
+				u8 *buf = (u8 *)malloc(len);
 				if (buf == NULL)
 				{
 					ERROR_LOG(NAOMI, "malloc failed");
-					delete file;
 					goto error;
 				}
-				u32 read = file->Read(buf, game->blobs[romid].length);
+				memcpy(buf, blob, read);
 				CurrentCartridge->SetKeyData(buf);
 				DEBUG_LOG(NAOMI, "Loaded %s: %x bytes cart key", game->blobs[romid].filename, read);
 			}
 			else if (game->blobs[romid].blob_type == Eeprom)
 			{
-			    naomi_default_eeprom = (u8 *)malloc(game->blobs[romid].length);
+			    naomi_default_eeprom = (u8 *)malloc(len);
 			    if (naomi_default_eeprom == NULL)
 			    {
 					ERROR_LOG(NAOMI, "malloc failed");
-					delete file;
 			       goto error;
 			    }
-				u32 read = file->Read(naomi_default_eeprom, game->blobs[romid].length);
+				memcpy(naomi_default_eeprom, blob, read);
 				DEBUG_LOG(NAOMI, "Loaded %s: %x bytes default eeprom", game->blobs[romid].filename, read);
 			}
 			else
 				die("Unknown blob type");
-			delete file;
 		}
 	}
 	if (naomi_default_eeprom == NULL && game->eeprom_dump != NULL)
 		naomi_default_eeprom = game->eeprom_dump;
 	game_rotation = game->rotation_flag;
-	if (archive != NULL)
-		delete archive;
-	if (parent_archive != NULL)
-		delete parent_archive;
+	archive_close(archive);
+	archive_close(parent_archive);
 
 	CurrentCartridge->Init();
 
@@ -378,10 +372,8 @@ static bool naomi_cart_LoadZip(const char *filename)
 	return true;
 
 error:
-	if (archive != NULL)
-		delete archive;
-	if (parent_archive != NULL)
-		delete parent_archive;
+	archive_close(archive);
+	archive_close(parent_archive);
 	delete CurrentCartridge;
 	CurrentCartridge = NULL;
 	return false;
