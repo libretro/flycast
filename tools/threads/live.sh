@@ -92,10 +92,12 @@ CFG
 cat > "$WORK/core-options.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
 reicast_hle_bios = "enabled"
+reicast_vmu1_screen_display = "enabled"
 CFG
 cat > "$WORK/core-options-off.cfg" <<CFG
 reicast_threaded_rendering = "disabled"
 reicast_hle_bios = "enabled"
+reicast_vmu1_screen_display = "enabled"
 CFG
 
 # run <log> <frames> [disc] [screenshot]

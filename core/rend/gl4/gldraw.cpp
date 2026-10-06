@@ -744,7 +744,9 @@ void gl4DrawVmuTexture(u8 vmu_screen_number)
 	float w=VMU_SCREEN_WIDTH*vmu_screen_params[vmu_screen_number].vmu_screen_size_mult ;
 	float h=VMU_SCREEN_HEIGHT*vmu_screen_params[vmu_screen_number].vmu_screen_size_mult ;
 
-	if (vmu_screen_params[vmu_screen_number].vmu_screen_needs_update || vmuTextureId[vmu_screen_number] == 0)
+	// A new picture from the game, new colours from the options, or no texture yet
+	const bool vmu_lcd_changed = vmu_lcd_refresh(vmu_screen_number);
+	if (vmu_lcd_changed || vmu_screen_params[vmu_screen_number].vmu_screen_needs_update || vmuTextureId[vmu_screen_number] == 0)
 		UpdateVmuTexture(vmu_screen_number) ;
 
 	switch ( vmu_screen_params[vmu_screen_number].vmu_screen_position )

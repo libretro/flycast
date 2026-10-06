@@ -36,19 +36,22 @@ const std::vector<vk::CommandBuffer>* VulkanOSD::PrepareOSD(CommandPool *command
 		std::unique_ptr<Texture>& texture = vmuTextures[i];
 		auto& vmu_screen_param = vmu_screen_params[i];
 
-		if (!vmu_screen_param.vmu_screen_display || vmu_screen_param.vmu_lcd_screen == nullptr)
+		// A new picture from the game, if there is one
+		const bool lcd_changed = vmu_lcd_refresh(i);
+
+		if (!vmu_screen_param.vmu_screen_display || vmu_lcd_pixels(i) == nullptr)
 		{
 			texture.reset();
 			continue;
 		}
 		if (!texture)
 			texture = std::unique_ptr<Texture>(new Texture());
-		else if (!vmu_screen_param.vmu_screen_needs_update)
+		else if (!lcd_changed && !vmu_screen_param.vmu_screen_needs_update)
 			continue;
 
 		u8 temp_tex_buffer[VMU_SCREEN_HEIGHT * VMU_SCREEN_WIDTH * 4];
 		u8 *dst = temp_tex_buffer;
-		u8 *src = vmu_screen_param.vmu_lcd_screen;
+		const u8 *src = vmu_lcd_pixels(i);
 
 		for (int y = 0; y < VMU_SCREEN_HEIGHT; y++)
 		{

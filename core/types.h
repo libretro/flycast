@@ -876,6 +876,18 @@ extern const rgb_t VMU_SCREEN_COLOR_MAP[VMU_NUM_COLORS] ;
 extern const char* VMU_SCREEN_COLOR_NAMES[VMU_NUM_COLORS] ;
 extern vmu_screen_params_t vmu_screen_params[4] ;
 
+/* The picture on a VMU's LCD, as the renderer sees it.
+ *
+ * The emulation thread owns the VMU and its pixels and the renderer may be
+ * drawing on another thread, so the renderer does not read the device's
+ * buffer. The emulation thread publishes a whole picture each time the
+ * game changes it; the renderer takes the latest, and only ever sees a
+ * whole one. Nothing is locked: the two exchange buffers (cTripleBuffer). */
+void vmu_lcd_publish(int screen, const u8 *pixels);	// emulation thread
+bool vmu_lcd_refresh(int screen);			// renderer: take the latest; true if it is a new one
+const u8 *vmu_lcd_pixels(int screen);			// renderer: the picture last taken, NULL before the first
+void vmu_lcd_reset(void);				// with neither running: no VMU has a picture
+
 #define LIGHTGUN_CROSSHAIR_SIZE 16
 
 enum LIGHTGUN_COLORS {

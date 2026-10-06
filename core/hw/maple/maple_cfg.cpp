@@ -5,6 +5,50 @@
 #include "maple_cfg.h"
 #include "libretro/input_latch.h"
 
+#include "lockfree.h"
+
+static cTripleBuffer vmu_lcd_exchange[4];
+static u8 vmu_lcd_buffers[4][3][VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT];
+/* 1 once a picture has been published, 2 once the renderer has one */
+static retro_atomic_int_t vmu_lcd_state[4];
+
+void vmu_lcd_publish(int screen, const u8 *pixels)
+{
+	if (screen < 0 || screen >= 4 || pixels == NULL)
+		return;
+	memcpy(vmu_lcd_buffers[screen][vmu_lcd_exchange[screen].Back()], pixels,
+			VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT);
+	vmu_lcd_exchange[screen].Publish();
+	if (retro_atomic_load_acquire_int(&vmu_lcd_state[screen]) == 0)
+		retro_atomic_store_release_int(&vmu_lcd_state[screen], 1);
+}
+
+bool vmu_lcd_refresh(int screen)
+{
+	if (screen < 0 || screen >= 4 || retro_atomic_load_acquire_int(&vmu_lcd_state[screen]) == 0)
+		return false;
+	if (!vmu_lcd_exchange[screen].Take())
+		return false;
+	retro_atomic_store_release_int(&vmu_lcd_state[screen], 2);
+	return true;
+}
+
+const u8 *vmu_lcd_pixels(int screen)
+{
+	if (screen < 0 || screen >= 4 || retro_atomic_load_acquire_int(&vmu_lcd_state[screen]) != 2)
+		return NULL;
+	return vmu_lcd_buffers[screen][vmu_lcd_exchange[screen].Front()];
+}
+
+void vmu_lcd_reset(void)
+{
+	for (int screen = 0; screen < 4; screen++)
+	{
+		retro_atomic_store_release_int(&vmu_lcd_state[screen], 0);
+		vmu_lcd_exchange[screen].Reset();
+	}
+}
+
 #define HAS_VMU
 /*
 bus_x=0{p0=1{config};p1=2{config};config;}
@@ -196,7 +240,7 @@ struct MapleConfigMap : IMapleConfigMap
 	}
 	void SetImage(void* img)
 	{
-		vmu_screen_params[player_num == -1 ? dev->bus_id : player_num].vmu_screen_needs_update = true ;
+		vmu_lcd_publish(player_num == -1 ? dev->bus_id : player_num, (const u8 *)img);
 	}
 	void GetAbsolutePosition(f32 *px, f32 *py)
 	{
@@ -240,6 +284,7 @@ void mcfg_CreateDevices()
 
    for ( bus = 0 ; bus < MAPLE_PORTS; bus++)
       vmu_screen_params[bus].vmu_lcd_screen = NULL ;
+   vmu_lcd_reset();
 
 
    if (settings.System == DC_PLATFORM_DREAMCAST)

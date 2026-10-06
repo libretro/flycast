@@ -8,6 +8,10 @@ of four colours it paints it. The screenshot has to be yellow at the
 centre and towards each corner: any other colour means a repaint of the
 texture never made it from video memory to the screen.
 
+The top left corner has to be something else: the first VMU's screen,
+which live.sh turns on and the renderer draws there from the picture the
+emulation thread last published.
+
 Reads the PNG itself (8-bit RGB or RGBA, not interlaced), so nothing
 beyond the standard library is needed.
 """
@@ -71,6 +75,12 @@ def main():
             bad.append('(%d,%d) is %d,%d,%d' % (x, y, r, g, b))
     if bad:
         print('not yellow: ' + '; '.join(bad))
+        return 1
+    # live.sh turns the first VMU's screen on, which is drawn over the top
+    # left corner: the corner is the LCD's colour, not the background's.
+    r, g, b = rows[8][8 * bpp:8 * bpp + 3]
+    if r > 200 and g > 200 and b < 60:
+        print("the VMU's screen is not drawn in the top left corner")
         return 1
     return 0
 

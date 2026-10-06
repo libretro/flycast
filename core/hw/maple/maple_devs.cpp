@@ -564,6 +564,7 @@ struct maple_sega_vmu: maple_base
 		LIBRETRO_USA(flash_data,128*1024);
 		LIBRETRO_USA(lcd_data,192);
 		LIBRETRO_USA(lcd_data_decoded,48*32);
+		vmu_lcd_publish(bus_id, lcd_data_decoded);
 		return true ;
 	}
 	virtual void OnSetup()
@@ -573,6 +574,8 @@ struct maple_sega_vmu: maple_base
       std::string apath = get_writable_vmu_path(logical_port);
 
 		vmu_screen_params[bus_id].vmu_lcd_screen = lcd_data_decoded ;
+		// What the renderer shows until the game draws: the screen as it is now
+		vmu_lcd_publish(bus_id, lcd_data_decoded);
 
 		uLongf dec_sz = sizeof(flash_data);
 		INFO_LOG(MAPLE, "Initializing VMU data...");
