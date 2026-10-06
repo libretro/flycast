@@ -117,6 +117,11 @@ static int run_side(void)
 	/* shutdown() ended the wait itself; no timeout did. */
 	CHECK(woke - stop_time < 100 * 1000);
 
+	/* The sockets stay open a while longer. The other side is doing this
+	 * same check, about now, and closing a socket under it would end its
+	 * wait as surely as shutdown() does: its socket would have something
+	 * to read, the end of the connection. */
+	retro_sleep(1500);
 	net.closeSockets();
 	net.terminate();
 
