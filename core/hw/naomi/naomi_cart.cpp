@@ -627,7 +627,7 @@ static bool naomi_cart_LoadRom(const char* file)
 	{
 	   for (size_t i = 0; i < files.size(); i++)
 		  if (RomCacheMap[i] != INVALID_FD)
-			 close(RomCacheMap[i]);
+			 CloseFile(RomCacheMap[i]);
 	   return false;
 	}
 	//We have all file mapping objects, we start to map the ram
