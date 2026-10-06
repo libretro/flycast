@@ -635,8 +635,17 @@ static void reios_boot()
 		if (settings.System == DC_PLATFORM_DREAMCAST) {
 			char bootfile[sizeof(ip_meta.boot_filename) + 1] = {0};
 			memcpy(bootfile, ip_meta.boot_filename, sizeof(ip_meta.boot_filename));
-			if (bootfile[0] == '\0' || !reios_locate_bootfile(bootfile))
+			bool no_disc = libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk;
+			if (no_disc || bootfile[0] == '\0' || !reios_locate_bootfile(bootfile))
+			{
+				/* Nothing to run - no disc in, or no boot file on it: the
+				 * CPU idles at the boot address until a reset with a disc
+				 * in, the way the BIOS waits at its menu. */
+				u16* idle = (u16*)GetMemPtr(0x8c008300, 4);
 				msgboxf("Failed to locate bootfile %s", MBX_ICONERROR, bootfile);
+				idle[0] = 0xAFFE;   /* bra to itself */
+				idle[1] = 0x0009;   /* nop in the delay slot */
+			}
 			reios_setup_state(0xac008300);
 		}
 		else {

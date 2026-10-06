@@ -194,6 +194,12 @@ while True:
     for cmd in (b"SAVE_STATE", b"LOAD_STATE", b"SAVE_STATE", b"RESET", b"LOAD_STATE"):
         s.sendto(cmd, ("127.0.0.1", 55355))
         time.sleep(0.05)
+    # The lid opened, a reset with it open, and the lid closed again,
+    # well apart: two toggles in one frame fold into one, and the lid is
+    # to stay open for a few sectors of the audio track that is playing.
+    for cmd in (b"DISK_EJECT_TOGGLE", b"RESET", b"DISK_EJECT_TOGGLE"):
+        s.sendto(cmd, ("127.0.0.1", 55355))
+        time.sleep(0.3)
 PY
    POKE=$!
    trap 'kill $POKE 2>/dev/null || true; rm -rf "$WORK"' EXIT
@@ -208,8 +214,9 @@ PY
    fi
    LOADS=$(grep -c 'Loading state' "$WORK/$DRV-second.log" || true)
    RESETS=$(grep -c '\[Core\] Reset' "$WORK/$DRV-second.log" || true)
-   echo "loads: $LOADS, resets: $RESETS"
-   if [ "$LOADS" -lt 5 ] || [ "$RESETS" -lt 5 ]; then
+   EJECTS=$(grep -c 'Ejected virtual disc tray' "$WORK/$DRV-second.log" || true)
+   echo "loads: $LOADS, resets: $RESETS, ejects: $EJECTS"
+   if [ "$LOADS" -lt 5 ] || [ "$RESETS" -lt 5 ] || [ "$EJECTS" -lt 5 ]; then
       echo "FAIL: the commands did not reach RetroArch" >&2
       exit 1
    fi
