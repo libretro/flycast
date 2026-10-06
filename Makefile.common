@@ -228,10 +228,6 @@ else
 	SOURCES_C += $(XXHASH_SOURCES_C)
 endif
 
-ifeq ($(NO_REND), 1)
-	SOURCES_CXX += $(CORE_DIR)/core/rend/norend/norend.cpp
-endif
-
 ifeq ($(ENABLE_MODEM), 1)
 	INCFLAGS    += -I$(CORE_DIR)/core/deps/miniupnpc
 	SOURCES_CXX += $(CORE_DIR)/core/hw/modem/dns.cpp \

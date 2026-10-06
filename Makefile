@@ -1,7 +1,6 @@
 DEBUG         := 0
 DEBUG_ASAN    := 0
 DEBUG_UBSAN   := 0
-NO_REND       := 0
 HAVE_GL       := 1
 HAVE_GL2      := 0
 HAVE_VULKAN   := 0
@@ -1049,9 +1048,6 @@ ifeq ($(NO_REC),1)
 	CORE_DEFINES += -DTARGET_NO_REC
 endif
 
-ifeq ($(NO_REND),1)
-	CORE_DEFINES += -DNO_REND=1
-endif
 
 ifeq ($(NO_EXCEPTIONS),1)
 	CORE_DEFINES += -DTARGET_NO_EXCEPTIONS=1

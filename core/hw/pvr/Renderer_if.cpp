@@ -92,9 +92,6 @@ TA_context* _pvrrc;
 
 void rend_create_renderer()
 {
-#ifdef NO_REND
-	renderer	 = rend_norend();
-#else
 	switch (settings.pvr.rend)
 	{
 	default:
@@ -120,7 +117,6 @@ void rend_create_renderer()
 		break;
 #endif
 	}
-#endif
 }
 
 void rend_init_renderer()

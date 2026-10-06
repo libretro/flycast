@@ -65,7 +65,6 @@ extern bool renderer_changed;
 Renderer* rend_D3D11();
 Renderer* rend_GLES2();
 Renderer* rend_GL4();
-Renderer* rend_norend();
 Renderer* rend_Vulkan();
 Renderer* rend_OITVulkan();
 
