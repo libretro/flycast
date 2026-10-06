@@ -54,6 +54,14 @@
 # OpenGL 4.3 from the frontend's driver; take "glcore" out where there is
 # none.
 #
+# Then the program without its disc: live_disc.py writes it as an ELF file,
+# and the core is given that as its content. The HLE BIOS has to load it
+# and start it with the drive empty; the program finds no disc to read and
+# says so with a blue background, which live_shot.py --no-disc expects.
+# Three damaged copies of the file follow, each of which has to be refused
+# without taking the core down. $ELF_DRIVER is the video driver for this
+# (default: "gl"); empty leaves it out.
+#
 # Last, the sound. The disc plays its audio track, looping, through the
 # sound chip at full level. RetroArch is given audio_tap.c to load in place
 # of the core: it loads the core, passes everything through, and writes
@@ -73,6 +81,7 @@ DRIVERS=${DRIVERS:-gl vulkan}
 RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}
 PIXEL_DRIVERS=${PIXEL_DRIVERS:-glcore vulkan}
 SOUND_DRIVER=${SOUND_DRIVER-gl}
+ELF_DRIVER=${ELF_DRIVER-gl}
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 1; }
@@ -296,6 +305,35 @@ for DRV in $PIXEL_DRIVERS; do
       exit 1
    }
 done
+
+if [ -n "$ELF_DRIVER" ]; then
+   echo "== $ELF_DRIVER: the program as an ELF file, no disc"
+   python3 "$ROOT/tools/threads/live_disc.py" "$WORK/prog.elf"
+   echo "video_driver = \"$ELF_DRIVER\"" > "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   run elf.log 300 "$WORK/prog.elf" "$WORK/elf.png"
+   python3 "$ROOT/tools/threads/live_shot.py" --no-disc "$WORK/elf.png" || {
+      echo "FAIL: wrong picture from the program started as an ELF" >&2
+      exit 1
+   }
+   # ...and files that are not what they say they are: one cut off inside
+   # its header, one whose segment lies outside it, one whose segment runs
+   # off the end of memory. Each has to be refused and leave the core up.
+   python3 - "$WORK" <<'PY'
+import struct, sys
+d = open(sys.argv[1] + "/prog.elf", "rb").read()
+open(sys.argv[1] + "/short.elf", "wb").write(d[:20])
+for name, at, value in (("outside", 52 + 4, 0x7FFFFFF0), ("offend", 52 + 8, 0x8CFFFF00)):
+    b = bytearray(d)
+    struct.pack_into("<I", b, at, value)
+    open(sys.argv[1] + "/" + name + ".elf", "wb").write(b)
+PY
+   for BAD in short outside offend; do
+      run elf-$BAD.log 60 "$WORK/$BAD.elf"
+      expect elf-$BAD.log "Failed to open .*$BAD.elf"
+   done
+fi
 
 if [ -n "$SOUND_DRIVER" ]; then
    echo "== $SOUND_DRIVER: the sound"

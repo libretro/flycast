@@ -3,6 +3,7 @@
 bare-metal test program in live_prog.c, for tools/threads/live.sh.
 
 Usage: live_disc.py out.gdi [--no-region-array]
+       live_disc.py out.elf
 
 The program is carried here already compiled, so the test needs no SH-4
 compiler; live_prog.c says how PROGRAM was produced. --no-region-array
@@ -348,7 +349,26 @@ def dirent(name, lba, size, flags):
     return rec.ljust(ln, b'\0')
 
 
+def write_elf(out):
+    """The program on its own, as the ELF file a Dreamcast program is built
+    as: one loadable segment at 0x8C010000, where it also starts, with a
+    page of zeroes asked for after it."""
+    base, offset = 0x8C010000, 0x100
+    header = struct.pack('<4s5B7xHHIIIIIHHHHHH',
+                         b'\x7fELF', 1, 1, 1, 0, 0,   # 32-bit, little-endian
+                         2, 42, 1,                    # executable, SuperH
+                         base, 52, 0, 0,              # entry, program headers
+                         52, 32, 1, 40, 0, 0)
+    segment = struct.pack('<8I', 1, offset, base, base,
+                          len(PROGRAM), len(PROGRAM) + 4096, 5, 4)
+    with open(out, 'wb') as f:
+        f.write((header + segment).ljust(offset, b'\0') + PROGRAM)
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1].endswith('.elf'):
+        write_elf(sys.argv[1])
+        return 0
     if len(sys.argv) not in (2, 3) or sys.argv[2:] not in ([], ['--no-region-array']):
         sys.stderr.write(__doc__)
         return 2

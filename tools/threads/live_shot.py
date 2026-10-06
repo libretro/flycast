@@ -2,6 +2,7 @@
 """Check the screenshot tools/threads/live.sh has RetroArch take on exit.
 
 Usage: live_shot.py shot.png
+       live_shot.py --no-disc shot.png
 
 The test disc ends up drawing its background texture in yellow, the last
 of four colours it paints it. The screenshot has to be yellow at the
@@ -100,16 +101,27 @@ def png_rows(path):
 
 
 def main():
-    if len(sys.argv) != 2:
+    # --no-disc: the program was started as an ELF with the drive empty. It
+    # finds it cannot read its boot sector and says so with a blue
+    # background, which is then the right one; everything it draws that
+    # does not let the background through is as ever.
+    no_disc = sys.argv[1:2] == ['--no-disc']
+    if len(sys.argv) != 2 + no_disc:
         sys.stderr.write(__doc__)
         return 2
-    width, height, bpp, rows = png_rows(sys.argv[1])
+    width, height, bpp, rows = png_rows(sys.argv[-1])
     bad = []
     for fx, fy in ((2, 2), (1, 1), (3, 1), (1, 3), (3, 3)):
         x, y = width * fx // 4, height * fy // 4
         r, g, b = rows[y][x * bpp:x * bpp + 3]
-        if not (r > 200 and g > 200 and b < 60):
+        if no_disc:
+            if not (r < 60 and b > 200):
+                bad.append('(%d,%d) is %d,%d,%d' % (x, y, r, g, b))
+        elif not (r > 200 and g > 200 and b < 60):
             bad.append('(%d,%d) is %d,%d,%d' % (x, y, r, g, b))
+    if bad and no_disc:
+        print('not the blue of a program that found no disc: ' + '; '.join(bad))
+        return 1
     if bad:
         print('not yellow: ' + '; '.join(bad))
         # the disc turns its background other colours to say what it found
@@ -160,6 +172,10 @@ def main():
     )
     for entry in scene:
         name, sx, sy, want = entry[:4]
+        # what shows the background, or is blended over it
+        if no_disc and ('background' in name or name.startswith(('blue over', 'unsorted'))
+                        or name == 'the transparent cut-out'):
+            continue
         # how far off a channel may be: 3 unless the entry says otherwise
         allowed = entry[4] if len(entry) > 4 else 3
         x, y = width * sx // 320, height * sy // 240
