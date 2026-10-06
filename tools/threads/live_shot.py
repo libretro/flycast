@@ -12,6 +12,12 @@ The top left corner has to be something else: the first VMU's screen,
 which live.sh turns on and the renderer draws there from the picture the
 emulation thread last published.
 
+Above the middle the disc draws three polygons that take shadows and a
+modifier volume across them (live_prog.c says what and why). Where the
+volume is, the untextured ones have to be half as bright, the one with a
+decal texture has to be as it is outside, and the background between
+them has to be untouched; every renderer has to agree on that.
+
 Reads the PNG itself (8-bit RGB or RGBA, not interlaced), so nothing
 beyond the standard library is needed.
 """
@@ -75,6 +81,26 @@ def main():
             bad.append('(%d,%d) is %d,%d,%d' % (x, y, r, g, b))
     if bad:
         print('not yellow: ' + '; '.join(bad))
+        return 1
+    # The shadow scene: what is where, on a 320 by 240 screen, and the
+    # colour it has to be, give or take the rounding.
+    scene = (
+        ('A, lit',                  50,  90, (255, 255, 255)),
+        ('A, above the volume',    104,  75, (255, 255, 255)),
+        ('A, in the volume',       104,  90, (127, 127, 127)),
+        ('the background, in the volume', 136, 90, (254, 254, 0)),
+        ('C, lit',                 160,  75, (128, 128, 128)),
+        ('C, in the volume',       160,  90, (64, 64, 64)),
+        ('B, in the volume',       216,  90, (0, 0, 255)),
+        ('B, lit',                 270,  90, (0, 0, 255)),
+    )
+    for name, sx, sy, want in scene:
+        x, y = width * sx // 320, height * sy // 240
+        got = tuple(rows[y][x * bpp:x * bpp + 3])
+        if any(abs(got[i] - want[i]) > 2 for i in range(3)):
+            bad.append('%s is %d,%d,%d, not %d,%d,%d' % ((name,) + got + want))
+    if bad:
+        print('shadows: ' + '; '.join(bad))
         return 1
     # live.sh turns the first VMU's screen on, which is drawn over the top
     # left corner: the corner is the LCD's colour, not the background's.

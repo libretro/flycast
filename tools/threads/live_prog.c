@@ -89,6 +89,93 @@ static void wait_vblank(void)
    }
 }
 
+/* A float's bits, worked out by the compiler: the program has no FPU code. */
+#define F(x) (((union { float f; u32 u; }){ x }).u)
+
+/* 32 bytes for the Tile Accelerator, sent the way games send them: through
+ * a store queue aimed at the TA's FIFO. */
+static void ta_send(u32 w0, u32 w1, u32 w2, u32 w3, u32 w4, u32 w5, u32 w6, u32 w7)
+{
+   volatile u32 *sq = (volatile u32 *)0xE0000000;
+
+   sq[0] = w0; sq[1] = w1; sq[2] = w2; sq[3] = w3;
+   sq[4] = w4; sq[5] = w5; sq[6] = w6; sq[7] = w7;
+   __asm__ volatile ("pref @%0" : : "r" (sq));
+}
+
+#define TA_POLYGON   0x80000000u     /* global parameter: polygon or modifier volume */
+#define TA_VERTEX    0xE0000000u
+#define TA_LAST      0x10000000u     /* vertex: end of strip */
+#define TA_SHADOW    0x00000080u     /* polygon: modifier volumes affect it */
+#define TA_TEXTURED  0x00000008u
+#define TA_MODIFIER  0x01000000u     /* list: opaque modifier volumes */
+#define ISP_GEQUAL   (6u << 29)
+#define TSP_PLAIN    ((1u << 29) | (2u << 22))   /* source x 1, destination x 0; no fog; decal */
+#define TSP_BY_ALPHA ((4u << 29) | (2u << 22) | (1u << 20))   /* source x its alpha, destination x 0 */
+
+/* A screen-aligned rectangle at depth 1/w = 0.5, as a strip of four. */
+static void ta_quad(u32 pcw, u32 tsp, u32 tcw, u32 white, u32 x0, u32 y0, u32 x1, u32 y1)
+{
+   const u32 z = F(0.5f);
+
+   ta_send(TA_POLYGON | pcw, ISP_GEQUAL, tsp, tcw, 0, 0, 0, 0);
+   /* x, y, z, u, v, base colour, offset colour. Without a texture the
+    * colour is in the same place and the words before it are ignored. */
+   ta_send(TA_VERTEX | pcw, x0, y0, z, 0, 0, white, 0);
+   ta_send(TA_VERTEX | pcw, x0, y1, z, 0, F(1.0f), white, 0);
+   ta_send(TA_VERTEX | pcw, x1, y0, z, F(1.0f), 0, white, 0);
+   ta_send(TA_VERTEX | pcw | TA_LAST, x1, y1, z, F(1.0f), F(1.0f), white, 0);
+}
+
+/* One triangle of a modifier volume: 64 bytes. */
+static void ta_volume_triangle(u32 x0, u32 y0, u32 x1, u32 y1, u32 x2, u32 y2, u32 z)
+{
+   ta_send(TA_VERTEX, x0, y0, z, x1, y1, z, x2);
+   ta_send(y2, z, 0, 0, 0, 0, 0, 0);
+}
+
+/* What every render draws on top of the background: three polygons that
+ * take shadows and a modifier volume that crosses them all.
+ *
+ *   A, on the left, has no texture and is white.
+ *   C, in the middle, is white too, blended as "source times its alpha",
+ *   with an alpha of a half: grey.
+ *   B, on the right, has a decal texture, all blue.
+ *   The volume is a slab in front of and behind a band across the three,
+ *   from the middle of A to the middle of B, and the background between.
+ *
+ * In the volume the PowerVR2 halves what a polygon is shaded with, its base
+ * and offset colours (FPU_SHAD_SCALE says by how much). So A is grey there,
+ * and C darker grey. B is not changed: a decal texture replaces the base
+ * colour, and the texture is not scaled. Nor is the background: it does not
+ * take shadows.
+ *
+ * (C is there for the per-triangle renderers, which draw A and B a second
+ * time for their shadows and cannot do that with a polygon that is
+ * blended.) */
+static void ta_scene(void)
+{
+   /* The screen is 320 by 240 in the video mode the program is started in. */
+   const u32 x0 = F(80.0f), x1 = F(240.0f), y0 = F(80.0f), y1 = F(100.0f);
+
+   ta_quad(TA_SHADOW, TSP_PLAIN, 0, 0xFFFFFFFF, F(32.0f), F(70.0f), F(128.0f), F(110.0f));
+   ta_quad(TA_SHADOW, TSP_BY_ALPHA, 0, 0x80FFFFFF, F(144.0f), F(70.0f), F(176.0f), F(110.0f));
+   ta_quad(TA_SHADOW | TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x1000 >> 3), 0xFFFFFFFF,
+         F(192.0f), F(70.0f), F(288.0f), F(110.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
+
+   /* The volume: its near face and its far face, two triangles each. The
+    * last triangle of a volume comes under a parameter of its own that
+    * says so ("inside last polygon"). */
+   ta_send(TA_POLYGON | TA_MODIFIER, 0, 0, 0, 0, 0, 0, 0);
+   ta_volume_triangle(x0, y0, x0, y1, x1, y0, F(0.75f));
+   ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.75f));
+   ta_volume_triangle(x0, y0, x0, y1, x1, y0, F(0.25f));
+   ta_send(TA_POLYGON | TA_MODIFIER, (1u << 29) | (1u << 26), 0, 0, 0, 0, 0, 0);
+   ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.25f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */
+}
+
 /* TMU channel 0, counting down at a 16th of a microsecond (12.5 MHz). */
 #define TMU_TSTR  (*(volatile unsigned char *)0xFFD80004)
 #define TMU_TCOR0 (*(volatile u32 *)0xFFD80008)
@@ -136,6 +223,12 @@ void cmain(void)
    set_palette(2, 0x03E0);                             /* green */
    set_palette(3, 0x001F);                             /* blue */
    set_palette(4, 0x7FFF);                             /* white, until frame 70 */
+   /* The texture of the shadow test's polygon B: 8x8, all palette entry 3. */
+   for (i = 0; i < 16; i++)
+      (*(volatile u32 *)(0xA4001000 + i * 4)) = 0x03030303;
+   PVR(0x74) = 0x100 | 128;                            /* FPU_SHAD_SCALE: shadows halve, by intensity */
+   (*(volatile u32 *)0xFF000038) = 0x10;               /* QACR0: store queues go to the TA */
+   (*(volatile u32 *)0xFF00003C) = 0x10;               /* QACR1 */
 #ifdef NO_REGION_ARRAY
    /* No region array: REGION_BASE points at empty video memory, as it does
     * for a program that starts a render before it has written one. Nothing
@@ -181,11 +274,14 @@ void cmain(void)
       }
       else
       {
-         /* a (empty) Tile Accelerator frame and a render start; once the
-          * framebuffer frames are over, into one of two buffers in turn */
+         /* a Tile Accelerator frame and a render start; once the framebuffer
+          * frames are over, with the shadow test's scene in it and into one
+          * of two buffers in turn */
          if (frame >= 64)
             PVR(0x60) = (frame & 1) ? 0x400000 : 0x200000;   /* FB_W_SOF1 */
          PVR(0x144) = 0x80000000;                      /* TA_LIST_INIT */
+         if (frame >= 64)
+            ta_scene();
          PVR(0x14) = 0xFFFFFFFF;                       /* STARTRENDER */
       }
       poll_controller();
