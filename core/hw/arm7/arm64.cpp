@@ -36,7 +36,7 @@ extern "C" void arm_exit();
 extern u8* icPtr;
 extern u8* ICache;
 extern const u32 ICacheSize;
-extern reg_pair arm_Reg[RN_ARM_REG_COUNT];
+extern reg_pair arm_Reg[RN_ARM_REG_SLOTS];
 
 MacroAssembler *assembler;
 

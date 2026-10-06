@@ -13,6 +13,8 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/hw/arm7/arm_mem.cpp \
 					$(CORE_DIR)/core/hw/arm7/arm64.cpp \
 					$(CORE_DIR)/core/hw/arm7/arm7.cpp \
+					$(CORE_DIR)/core/hw/arm7/arm7_rec.cpp \
+					$(CORE_DIR)/core/hw/arm7/arm7_rec_x64.cpp \
 					$(CORE_DIR)/core/hw/arm7/virt_arm.cpp \
 					$(CORE_DIR)/core/hw/arm7/vbaARM.cpp \
 					\

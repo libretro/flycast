@@ -11,6 +11,8 @@ namespace aicaarm {
 
 enum Arm7Reg
 {
+	RN_LR        = 14,
+	RN_PC        = 15,
 	RN_CPSR      = 16,
 	RN_SPSR      = 17,
 
@@ -42,7 +44,16 @@ enum Arm7Reg
 	CYCL_CNT     = 48,
 
 	RN_ARM_REG_COUNT,
+
+	/* One more place after the registers, for the recompiler to put a
+	 * value down in. It is not a register and is not counted with them:
+	 * a save state holds RN_ARM_REG_COUNT of these and must not grow. */
+	RN_SCRATCH   = RN_ARM_REG_COUNT,
+	RN_ARM_REG_SLOTS,
 };
+
+// What the ARM7 gets to run for each sample the sound chip makes
+#define ARM_CYCLES_PER_SAMPLE 256
 
 typedef union
 {
@@ -90,3 +101,10 @@ typedef union
 
 	u32 I;
 } reg_pair;
+
+extern DECL_ALIGN(8) reg_pair arm_Reg[RN_ARM_REG_SLOTS];
+extern bool Arm7Enabled;
+extern u8 cpuBitsSet[256];
+extern "C" void CPUFiq();
+void CPUUpdateCPSR();
+void libAICA_TimeStep();

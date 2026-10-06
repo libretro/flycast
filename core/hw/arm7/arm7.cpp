@@ -1,4 +1,8 @@
 #include "arm7.h"
+#if FEAT_AREC != DYNAREC_NONE && HOST_CPU == CPU_X64
+// before the interpreter's macros, which take some of its names
+#include "arm7_rec.h"
+#endif
 #include "arm_mem.h"
 
 #define arm_printf(...) DEBUG_LOG(AICA_ARM, __VA_ARGS__)
@@ -24,9 +28,7 @@
 #define CPUUpdateTicksAccess32(a) 1
 #define CPUUpdateTicksAccess16(a) 1
 
-#define ARM_CYCLES_PER_SAMPLE 256
-
-DECL_ALIGN(8) reg_pair arm_Reg[RN_ARM_REG_COUNT];
+DECL_ALIGN(8) reg_pair arm_Reg[RN_ARM_REG_SLOTS];
 
 void CPUSwap(u32 *a, u32 *b)
 {
@@ -352,7 +354,88 @@ void update_armintc()
 	reg[INTR_PEND].I=e68k_out && armFiqEnable;
 }
 
-#if FEAT_AREC != DYNAREC_NONE
+#if FEAT_AREC != DYNAREC_NONE && HOST_CPU == CPU_X64
+//
+// For the recompiler in arm7_rec.cpp and arm7_rec_x64.cpp
+//
+
+namespace aicaarm {
+namespace recompiler {
+
+//Emulate a single arm op, passed in opcode
+
+void DYNACALL interpret(u32 opcode)
+{
+	u32 clockTicks = 0;
+
+#define NO_OPCODE_READ
+#include "arm-new.h"
+#undef NO_OPCODE_READ
+
+	reg[CYCL_CNT].I -= clockTicks;
+}
+
+template<u32 Pd>
+void DYNACALL MSR_do(u32 v, u32 mask)
+{
+	if (Pd)
+	{
+		if(armMode > 0x10 && armMode < 0x1f) /* !=0x10 ?*/
+		{
+			u32 newValue = reg[RN_SPSR].I;
+			if (mask & 1)
+				newValue = (newValue & 0xFFFFFF00) | (v & 0x000000FF);
+			if (mask & 2)
+				newValue = (newValue & 0xFFFF00FF) | (v & 0x0000FF00);
+			if (mask & 4)
+				newValue = (newValue & 0xFF00FFFF) | (v & 0x00FF0000);
+			if (mask & 8)
+				newValue = (newValue & 0x00FFFFFF) | (v & 0xFF000000);
+			reg[RN_SPSR].I = newValue;
+		}
+	}
+	else
+	{
+		CPUUpdateCPSR();
+	
+		u32 newValue = reg[RN_CPSR].I;
+		if(armMode > 0x10)
+		{
+			if (mask & 1)
+				newValue = (newValue & 0xFFFFFF00) | (v & 0x000000FF);
+			if (mask & 2)
+				newValue = (newValue & 0xFFFF00FF) | (v & 0x0000FF00);
+			if (mask & 4)
+				newValue = (newValue & 0xFF00FFFF) | (v & 0x00FF0000);
+		}
+		if (mask & 8)
+			newValue = (newValue & 0x00FFFFFF) | (v & 0xFF000000);
+		newValue |= 0x10;
+		if(armMode > 0x10)
+		{
+			CPUSwitchMode(newValue & 0x1f, false);
+		}
+		reg[RN_CPSR].I = newValue;
+		CPUUpdateFlags();
+	}
+}
+template void DYNACALL MSR_do<0>(u32 v, u32 mask);
+template void DYNACALL MSR_do<1>(u32 v, u32 mask);
+
+} // namespace recompiler
+} // namespace aicaarm
+
+void FlushCache()
+{
+	aicaarm::recompiler::flush();
+}
+
+void armt_init()
+{
+	aicaarm::recompiler::init();
+}
+
+#elif FEAT_AREC != DYNAREC_NONE
 
 extern "C" void CompileCode();
 
