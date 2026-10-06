@@ -1176,18 +1176,28 @@ else
 	$(LD) $(MFLAGS) $(fpic) $(SHARED) $(LDFLAGS) $(OBJECTS) $(LDFLAGS_END) $(GL_LIB) $(LIBS) -o $@
 endif
 
+# Header dependencies. Every compile also writes a .d file naming the
+# headers it read, and those are read back in here, so that changing a
+# header rebuilds what includes it. Without this a build that is not from
+# scratch can link objects made against two versions of the same header.
+# For compilers that take GCC's options, which leaves out MSVC and QNX's qcc.
+ifeq (,$(findstring msvc,$(platform))$(findstring qnx,$(platform)))
+DEPFLAGS = -MMD -MP
+-include $(OBJECTS:.o=.d)
+endif
+
 %.o: %.cpp
-	$(CXX) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $(CXXFLAGS) $< -o $@
+	$(CXX) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@
 	
 %.o: %.c
-	$(CC) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $< -o $@
+	$(CC) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $(DEPFLAGS) $< -o $@
 
 %.o: %.S
 	$(CC_AS) $(ASFLAGS) $(INCFLAGS) $< -o $@
 
 %.o: %.cc
-	$(CXX) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $(CXXFLAGS) $< -o $@
+	$(CXX) $(INCFLAGS) $(CFLAGS) $(MFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(OBJECTS:.o=.d) $(TARGET)
 

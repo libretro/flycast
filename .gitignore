@@ -56,3 +56,4 @@ reicast-ios.xccheckout
 *.a
 .vscode/c_cpp_properties.json
 
+*.d
