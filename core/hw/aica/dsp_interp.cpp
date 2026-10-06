@@ -16,6 +16,13 @@
 #define verify(...)
 #endif
 
+/* How many of the program's 128 steps there are to run: up to the last one
+ * that is not all zeroes. A step that is all zeroes writes nothing, and what
+ * it works out can only be picked up by the step after it; the registers
+ * steps read start from zero at the top of every sample. So nothing can see
+ * what the empty steps at the end work out. Set by AICADSP_Start(). */
+static int dsp_steps = 128;
+
 void AICADSP_Init(struct dsp_t *DSP)
 {
 	memset(DSP, 0, sizeof(*DSP));
@@ -49,7 +56,7 @@ void AICADSP_Step(struct dsp_t *DSP)
 		f = fopen("dsp.txt", "wt");
 #endif
 
-	for (int step = 0; step < 128; ++step)
+	for (int step = 0; step < dsp_steps; ++step)
 	{
 		u32 *IPtr = DSPData->MPRO + step * 4;
 
@@ -255,6 +262,7 @@ void AICADSP_Step(struct dsp_t *DSP)
 void AICADSP_Start(struct dsp_t *DSP)
 {
 	dsp.Stopped = 1;
+	dsp_steps = 0;
 	for (int i = 127; i >= 0; --i)
 	{
 		u32 *IPtr = DSPData->MPRO + i * 4;
@@ -262,6 +270,7 @@ void AICADSP_Start(struct dsp_t *DSP)
 		if (IPtr[0] != 0 || IPtr[1] != 0 || IPtr[2 ]!= 0 || IPtr[3] != 0)
 		{
 			DSP->Stopped = 0;
+			dsp_steps = i + 1;
 			//printf("DSP: starting %d steps\n", i + 1);
 
 			break;
@@ -282,6 +291,13 @@ void dsp_term()
 
 void dsp_step()
 {
+	/* Set when the program may have changed without a write to it going
+	 * by: a save state was loaded. The count of steps is not in the state. */
+	if (dsp.dyndirty)
+	{
+		dsp.dyndirty = false;
+		AICADSP_Start(&dsp);
+	}
 	AICADSP_Step(&dsp);
 }
 

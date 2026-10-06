@@ -64,7 +64,20 @@ public:
 		Mov(ADRS_REG, 0);
 		Ldr(MDEC_CT, dsp_operand(&DSP->regs.MDEC_CT));
 
-		for (int step = 0; step < 128; ++step)
+		/* The program is 128 steps, and a game's seldom fills them. A
+		 * step that is all zeroes writes nothing: it only works out an
+		 * accumulator for the step after it to pick up, and at the top of
+		 * every sample that accumulator, with the other registers a step
+		 * can read, starts from zero again. So nothing can see what the
+		 * empty steps after the last one in use work out, and they are
+		 * left out. Empty steps between used ones are kept: the one after
+		 * may take what they leave. */
+		int steps = 128;
+		while (steps > 0 && DSPData->MPRO[steps * 4 - 4] == 0 && DSPData->MPRO[steps * 4 - 3] == 0
+				&& DSPData->MPRO[steps * 4 - 2] == 0 && DSPData->MPRO[steps * 4 - 1] == 0)
+			steps--;
+
+		for (int step = 0; step < steps; ++step)
 		{
 			u32 *mpro = &DSPData->MPRO[step * 4];
 			_INST op;
