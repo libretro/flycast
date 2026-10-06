@@ -266,6 +266,17 @@ int main(int argc, char **argv)
    join3(path, sizeof(path), work, "/subdir.zip", "");
    CHECK(archive_resolve_disc(path, out, sizeof(out)), "resolve subdir.zip");
    CHECK(!strcmp(out + strlen(path), "#GAME/disc.gdi"), "resolve prefers gdi");
+   /* a member already named: a disc image is kept, a track resolves
+    * to the image beside it */
+   join3(path, sizeof(path), work, "/subdir.zip#GAME/other.cue", "");
+   CHECK(archive_resolve_disc(path, out, sizeof(out)) && !strcmp(out, path),
+         "a named .cue member is kept");
+   join3(path, sizeof(path), work, "/stored.zip#track01.bin", "");
+   CHECK(archive_resolve_disc(path, out, sizeof(out)), "resolve from a track member");
+   join3(path, sizeof(path), work, "/stored.zip#disc.gdi", "");
+   CHECK(!strcmp(out, path), "track member resolves to the gdi");
+   join3(path, sizeof(path), work, "/single.7z#track03.bin", "");
+   CHECK(!archive_resolve_disc(path, out, sizeof(out)), "no disc beside the member");
    join3(path, sizeof(path), work, "/single.7z", "");
    CHECK(!archive_resolve_disc(path, out, sizeof(out)), "no disc in single.7z");
    join3(path, sizeof(path), work, "/src/disc.gdi", "");

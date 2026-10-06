@@ -1900,8 +1900,36 @@ bool retro_load_game(const struct retro_game_info *game)
    char slash = '/';
 #endif
 
-   extract_basename(g_base_name, game->path, sizeof(g_base_name));
-   extract_directory(game_dir, game->path, sizeof(game_dir));
+   /* The frontend may name a member inside an archive. The archive is
+    * the content: a romset when its name is a known one, else the disc
+    * image inside it, which the named member stands in for unless it is
+    * a disc image itself. */
+   const char *content_path = game->path;
+   const char *delim = path_get_archive_delim(game->path);
+   char archived[1024];
+   if (delim)
+   {
+      size_t arc_len = delim - game->path;
+      if (arc_len >= sizeof(archived))
+         return false;
+      memcpy(archived, game->path, arc_len);
+      archived[arc_len] = '\0';
+      /* Named after the archive, whichever member was picked */
+      extract_basename(g_base_name, archived, sizeof(g_base_name));
+      extract_directory(game_dir, archived, sizeof(game_dir));
+      if (naomi_cart_GetSystemType(archived) < 0
+            && !archive_resolve_disc(game->path, archived, sizeof(archived)))
+      {
+         log_cb(RETRO_LOG_ERROR, "%s is neither a known Naomi/AtomisWave romset nor an archive holding a disc image (gdi, cue, chd, cdi)\n", game->path);
+         return false;
+      }
+      content_path = archived;
+   }
+   else
+   {
+      extract_basename(g_base_name, game->path, sizeof(g_base_name));
+      extract_directory(game_dir, game->path, sizeof(game_dir));
+   }
 
    // Storing rom dir for later use
    snprintf(g_roms_dir, sizeof(g_roms_dir), "%s%c", game_dir, slash);
@@ -1946,16 +1974,19 @@ bool retro_load_game(const struct retro_game_info *game)
         	   || !strcmp(".zip", ext) || !strcmp(".ZIP", ext)
         	   || !strcmp(".7z", ext) || !strcmp(".7Z", ext))
          {
-            int system = naomi_cart_GetSystemType(game->path);
+            /* A content path naming a member was resolved above: it is
+             * a disc image, or the romset archive itself */
+            int system = path_get_archive_delim(content_path)
+               ? DC_PLATFORM_DREAMCAST : naomi_cart_GetSystemType(content_path);
             if (system < 0)
             {
                /* Not a romset: a zip or 7z holding a Dreamcast disc image */
-               char archived[1024];
-               if (!archive_resolve_disc(game->path, archived, sizeof(archived)))
+               if (!archive_resolve_disc(content_path, archived, sizeof(archived)))
                {
-                  log_cb(RETRO_LOG_ERROR, "%s is neither a known Naomi/AtomisWave romset nor an archive holding a disc image (gdi, cue, chd, cdi)\n", game->path);
+                  log_cb(RETRO_LOG_ERROR, "%s is neither a known Naomi/AtomisWave romset nor an archive holding a disc image (gdi, cue, chd, cdi)\n", content_path);
                   return false;
                }
+               content_path = archived;
                system = DC_PLATFORM_DREAMCAST;
             }
             settings.System = system;
@@ -1977,7 +2008,7 @@ bool retro_load_game(const struct retro_game_info *game)
          // If m3u playlist found load the paths into array
          else if (!strcmp(".m3u", ext) || !strcmp(".M3U", ext))
          {
-            if (!read_m3u(game->path))
+            if (!read_m3u(content_path))
             {
                if (log_cb)
                   log_cb(RETRO_LOG_ERROR, "%s\n", "[libretro]: failed to read m3u file ...\n");
@@ -1987,7 +2018,7 @@ bool retro_load_game(const struct retro_game_info *game)
       }
    }
 
-   if (game->path[0] == '\0')
+   if (content_path[0] == '\0')
    {
 	  if (settings.System == DC_PLATFORM_DREAMCAST)
 		 boot_to_bios = true;
@@ -2018,12 +2049,12 @@ bool retro_load_game(const struct retro_game_info *game)
          char disk_label[PATH_MAX];
          disk_label[0] = '\0';
 
-         disk_paths.push_back(game->path);
+         disk_paths.push_back(content_path);
 
-         short_pathname_representation(disk_label, game->path, sizeof(disk_label));
+         short_pathname_representation(disk_label, content_path, sizeof(disk_label));
          disk_labels.push_back(disk_label);
 
-         game_data = strdup(game->path);
+         game_data = strdup(content_path);
       } 
    }
 

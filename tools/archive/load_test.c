@@ -6,8 +6,10 @@
  * loaded as a libretro frontend would, with the HLE BIOS and a render
  * context that is accepted but never used, and retro_load_game() is
  * called on the GD-ROM fixture as a plain .gdi, inside a stored zip, a
- * deflated zip, a zip with the image in a subdirectory, and a solid 7z,
- * then on a 7z holding no disc image, which must be refused. Every
+ * deflated zip, a zip with the image in a subdirectory, a solid 7z, and
+ * as a member path the frontend hands over after browsing into an
+ * archive (a track, then the image itself), then on a 7z holding no
+ * disc image, which must be refused. Every
  * accepted load is unloaded again before the next, so the archive held
  * open for the members is released each time.
  */
@@ -94,7 +96,9 @@ int main(int argc, char **argv)
 {
    static const char *const loads[] =
    {
-      "src/disc.gdi", "stored.zip", "deflate.zip", "subdir.zip", "solid.7z"
+      "src/disc.gdi", "stored.zip", "deflate.zip", "subdir.zip", "solid.7z",
+      /* the frontend naming a member: a track, and the image itself */
+      "solid.7z#track03.bin", "stored.zip#disc.gdi"
    };
    void               *lib;
    fn_set_environment  set_environment_fn;

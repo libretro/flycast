@@ -63,8 +63,10 @@ const uint8_t *archive_entry_data(archive_t *a, unsigned index, size_t *len);
 const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len);
 
 /* For a zip or 7z at @path holding a disc image, writes "path#member"
- * into @out, preferring a .gdi, then .cue, .chd, .cdi. Returns 0 when
- * @path is not an archive, holds no disc image, or @out is too small. */
+ * into @out, preferring a .gdi, then .cue, .chd, .cdi. A @path that
+ * already names a member is written out unchanged when that member is
+ * a disc image, else resolved within its archive. Returns 0 when @path
+ * is not an archive, holds no disc image, or @out is too small. */
 int archive_resolve_disc(const char *path, char *out, size_t out_len);
 
 RETRO_END_DECLS

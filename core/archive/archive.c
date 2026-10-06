@@ -47,8 +47,11 @@ struct archive
    const uint8_t   *map;      /* the whole file, when addressable      */
    r7z_archive_t   *sz;
    uint8_t         *sz_buf;   /* 7z read into memory when not mapped   */
+   uint32_t         sz_folders;
    archive_entry_t *entries;
    uint8_t        **cache;    /* decoded members, one slot per entry   */
+   const uint8_t  **view;     /* members borrowed from a mapping or a
+                                 decoded folder, one slot per entry    */
    char            *names;
    char            *path;
    size_t           map_len;
@@ -92,6 +95,8 @@ static int archive_alloc_tables(archive_t *a, unsigned n, size_t name_bytes)
    if (!(a->entries = (archive_entry_t*)calloc(n ? n : 1, sizeof(*a->entries))))
       return 0;
    if (!(a->cache = (uint8_t**)calloc(n ? n : 1, sizeof(*a->cache))))
+      return 0;
+   if (!(a->view = (const uint8_t**)calloc(n ? n : 1, sizeof(*a->view))))
       return 0;
    if (!(a->names = (char*)malloc(name_bytes ? name_bytes : 1)))
       return 0;
@@ -501,6 +506,9 @@ static int sz_open(archive_t *a)
       size_t             wl = 0;
       size_t             out_chars;
 
+      if (!se->is_dir && se->size && se->folder + 1 > a->sz_folders)
+         a->sz_folders = se->folder + 1;
+
       while (se->name[wl])
          wl++;
       out_chars = wl * 3 + 1;
@@ -519,10 +527,25 @@ static int sz_open(archive_t *a)
    return 1;
 }
 
+/* A solid archive is one folder: its members are borrowed out of the
+ * decoded folder, which stays cached for the archive's lifetime. In any
+ * other archive a member is its own folder, or shares one that a later
+ * decode would replace, so it is handed over or copied out instead. */
 static const uint8_t *sz_entry_data(archive_t *a, unsigned index, size_t *len)
 {
    uint8_t *out;
    size_t   out_len;
+
+   if (a->sz_folders == 1)
+   {
+      const uint8_t *view;
+
+      if (r7z_archive_entry_borrow(a->sz, index, &view, &out_len) != R7Z_OK)
+         return NULL;
+      a->view[index] = view;
+      *len           = out_len;
+      return view;
+   }
 
    if (r7z_archive_extract_detach(a->sz, index, &out, &out_len) != R7Z_OK)
       return NULL;
@@ -599,6 +622,7 @@ void archive_close(archive_t *a)
    for (i = 0; i < a->num_entries && a->cache; i++)
       free(a->cache[i]);
    free(a->cache);
+   free(a->view);
    free(a->entries);
    free(a->names);
    free(a->path);
@@ -654,10 +678,10 @@ const uint8_t *archive_entry_data(archive_t *a, unsigned index, size_t *len)
    e = &a->entries[index];
    if (!e->usable || e->size > (uint64_t)((size_t)-1))
       return NULL;
-   if (a->cache[index])
+   if (a->cache[index] || a->view[index])
    {
       *len = (size_t)e->size;
-      return a->cache[index];
+      return a->cache[index] ? a->cache[index] : a->view[index];
    }
    if (a->sz)
       return sz_entry_data(a, index, len);
@@ -673,10 +697,10 @@ const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len)
    e = &a->entries[index];
    if (!e->usable || e->size > (uint64_t)((size_t)-1))
       return NULL;
-   if (a->cache[index])
+   if (a->cache[index] || a->view[index])
    {
       *len = (size_t)e->size;
-      return a->cache[index];
+      return a->cache[index] ? a->cache[index] : a->view[index];
    }
    if (e->stored && a->map)
       return zip_entry_data(a, index, len);
@@ -692,10 +716,37 @@ int archive_resolve_disc(const char *path, char *out, size_t out_len)
    unsigned   i, r;
    size_t     path_len, name_len;
 
-   if (path_get_archive_delim(path))
-      return 0;
+   const char *delim = path_get_archive_delim(path);
+   char       *arc   = NULL;
+
+   /* A member already named: kept when it is a disc image itself, else
+    * the image is looked for in the same archive. */
+   if (delim)
+   {
+      const char *ext = path_get_extension(delim + 1);
+      size_t      len = strlen(path);
+
+      for (r = 0; ext && r < sizeof(exts) / sizeof(exts[0]); r++)
+      {
+         if (string_is_equal_case_insensitive(ext, exts[r]))
+         {
+            if (len >= out_len)
+               return 0;
+            memcpy(out, path, len + 1);
+            return 1;
+         }
+      }
+      if (!(arc = (char*)malloc((size_t)(delim - path) + 1)))
+         return 0;
+      memcpy(arc, path, (size_t)(delim - path));
+      arc[delim - path] = '\0';
+      path = arc;
+   }
    if (!(a = archive_open_one(path)))
+   {
+      free(arc);
       return 0;
+   }
 
    for (i = 0; i < a->num_entries; i++)
    {
@@ -715,21 +766,18 @@ int archive_resolve_disc(const char *path, char *out, size_t out_len)
       }
    }
 
-   if (best < 0)
-   {
-      archive_close(a);
-      return 0;
-   }
    path_len = strlen(path);
-   name_len = strlen(a->entries[best].name);
-   if (path_len + 1 + name_len >= out_len)
+   name_len = best < 0 ? 0 : strlen(a->entries[best].name);
+   if (best < 0 || path_len + 1 + name_len >= out_len)
    {
       archive_close(a);
+      free(arc);
       return 0;
    }
    memcpy(out, path, path_len);
    out[path_len] = '#';
    memcpy(out + path_len + 1, a->entries[best].name, name_len + 1);
    archive_close(a);
+   free(arc);
    return 1;
 }
