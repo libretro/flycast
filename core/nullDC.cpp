@@ -69,31 +69,44 @@ int GetFile(char *szFileName, char *szParse=0,u32 flags=0)
 }
 
 
+/* On failure nothing stays initialised: each plugin brought up before the
+ * failing one is terminated again, so the caller sees the same state it
+ * started from. */
 s32 plugins_Init()
 {
-   if (s32 rv = libPvr_Init())
+   s32 rv;
+
+   if ((rv = libPvr_Init()))
       return rv;
 
-   if (s32 rv = libGDR_Init())
-      return rv;
+   if ((rv = libGDR_Init()))
+      goto fail_pvr;
+
    if (settings.System != DC_PLATFORM_DREAMCAST)
    {
       if (!naomi_cart_SelectFile())
-         return -1;
+      {
+         rv = -1;
+         goto fail_gdr;
+      }
    }
 
-   if (s32 rv = libAICA_Init())
-      return rv;
+   if ((rv = libAICA_Init()))
+      goto fail_gdr;
 
-   if (s32 rv = libARM_Init())
-      return rv;
-
-   //if (s32 rv = libExtDevice_Init())
-   //	return rv;
-
-
+   if ((rv = libARM_Init()))
+      goto fail_aica;
 
    return 0;
+
+fail_aica:
+   libAICA_Term();
+fail_gdr:
+   naomi_cart_Close();
+   libGDR_Term();
+fail_pvr:
+   libPvr_Term();
+   return rv;
 }
 
 void plugins_Term(void)
@@ -379,28 +392,58 @@ void dc_reset(bool hard)
 	sh4_cpu.Reset(hard);
 }
 
+/* Stages of dc_init() that must be undone when a later one fails. */
+enum
+{
+   DC_INIT_SETUP,    /* exception handlers installed */
+   DC_INIT_VMEM,     /* + address space reserved */
+   DC_INIT_CPU,      /* + sh4, memory map, unwind table */
+   DC_INIT_PLUGINS   /* + plugins, cartridge */
+};
+
+static void dc_init_unwind(int stage)
+{
+   extern void common_libretro_cleanup(void);
+
+   switch (stage)
+   {
+      case DC_INIT_PLUGINS:
+         naomi_cart_Close();
+         plugins_Term();
+         /* fall through */
+      case DC_INIT_CPU:
+         sh4_cpu.Term();
+         mem_Term();
+         /* fall through */
+      case DC_INIT_VMEM:
+         _vmem_release();
+         /* fall through */
+      case DC_INIT_SETUP:
+         common_libretro_cleanup();
+         break;
+   }
+}
+
 int dc_init()
 {
-	setbuf(stdin,0);
-	setbuf(stdout,0);
-	setbuf(stderr,0);
    extern void common_libretro_setup(void);
+   extern char game_dir_no_slash[1024];
+   char new_system_dir[1024];
+
+   setbuf(stdin,0);
+   setbuf(stdout,0);
+   setbuf(stderr,0);
    common_libretro_setup();
 
-	if (!_vmem_reserve())
-	{
-		ERROR_LOG(VMEM, "Failed to alloc mem");
-		return -1;
-	}
-	reios_init();
+   if (!_vmem_reserve())
+   {
+      ERROR_LOG(VMEM, "Failed to alloc mem");
+      dc_init_unwind(DC_INIT_SETUP);
+      return -1;
+   }
+   reios_init();
 
-	LoadSettings();
-
-	int rv= 0;
-
-   extern char game_dir_no_slash[1024];
-
-   char new_system_dir[1024];
+   LoadSettings();
 
 #ifdef _WIN32
    sprintf(new_system_dir, "%s\\", game_dir_no_slash);
@@ -412,59 +455,68 @@ int dc_init()
    {
       if (settings.bios.UseReios || !LoadRomFiles(new_system_dir))
       {
-      	if (boot_to_bios)
-      		// Booting the BIOS requires a BIOS file
-      		return -3;
-         if (!LoadHle(new_system_dir))
+         /* Booting the BIOS requires a BIOS file */
+         if (boot_to_bios || !LoadHle(new_system_dir))
+         {
+            dc_init_unwind(DC_INIT_VMEM);
             return -3;
+         }
          WARN_LOG(COMMON, "Did not load bios, using reios");
       }
    }
    else
    {
-   	LoadRomFiles(new_system_dir);
+      LoadRomFiles(new_system_dir);
    }
    LoadSpecialSettingsCPU();
 
-	sh4_cpu.Init();
-	mem_Init();
+   sh4_cpu.Init();
+   mem_Init();
 
 #ifdef _WIN64
-	extern void setup_seh();
-	setup_seh();
+   {
+      extern void setup_seh();
+      setup_seh();
+   }
 #endif
 
-	if (plugins_Init())
-	   return -4;
-	
-	mem_map_default();
+   if (plugins_Init())
+   {
+      dc_init_unwind(DC_INIT_CPU);
+      return -4;
+   }
 
-	dc_reset(true);
+   mem_map_default();
 
-	switch (settings.System)
-	{
-		case DC_PLATFORM_DREAMCAST:
-			if (libGDR_GetDiscType() == NoDisk)
-			{
-				// Content loading failed so force HLE off and boot the BIOS
-				settings.bios.UseReios = false;
-				if (!LoadRomFiles(new_system_dir))
-					return -3;
-				settings.imgread.DefaultImage[0] = '\0';
-			}
-			reios_disk_id();
-			LoadSpecialSettings();
-			break;
-		case DC_PLATFORM_ATOMISWAVE:
-		case DC_PLATFORM_NAOMI:
-			LoadSpecialSettingsNaomi(naomi_game_id);
-			break;
-	}
-	FixUpFlash();
+   dc_reset(true);
 
-	mcfg_CreateDevices();
+   switch (settings.System)
+   {
+      case DC_PLATFORM_DREAMCAST:
+         if (libGDR_GetDiscType() == NoDisk)
+         {
+            /* Content loading failed so force HLE off and boot the BIOS */
+            settings.bios.UseReios = false;
+            if (!LoadRomFiles(new_system_dir))
+            {
+               dc_init_unwind(DC_INIT_PLUGINS);
+               return -3;
+            }
+            settings.imgread.DefaultImage[0] = '\0';
+         }
+         reios_disk_id();
+         LoadSpecialSettings();
+         break;
+      case DC_PLATFORM_ATOMISWAVE:
+      case DC_PLATFORM_NAOMI:
+         LoadSpecialSettingsNaomi(naomi_game_id);
+         break;
+   }
+   FixUpFlash();
 
-	return rv;
+   mcfg_CreateDevices();
+
+   return 0;
 }
 
 void dc_stop();
