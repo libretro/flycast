@@ -41,11 +41,11 @@ layout (std140, set = 0, binding = 0) uniform VertexShaderUniforms
 layout (location = 0) in vec4         in_pos;
 layout (location = 1) in uvec4        in_base;
 layout (location = 2) in uvec4        in_offs;
-layout (location = 3) in mediump vec2 in_uv;
+layout (location = 3) in vec2 in_uv;
 
 layout (location = 0) INTERPOLATION out lowp vec4 vtx_base;
 layout (location = 1) INTERPOLATION out lowp vec4 vtx_offs;
-layout (location = 2)               out mediump vec2 vtx_uv;
+layout (location = 2)               out vec2 vtx_uv;
 
 void main()
 {
@@ -115,7 +115,7 @@ layout (set = 0, binding = 3) uniform sampler2D palette;
 // Vertex input
 layout (location = 0) INTERPOLATION in lowp vec4 vtx_base;
 layout (location = 1) INTERPOLATION in lowp vec4 vtx_offs;
-layout (location = 2)               in mediump vec2 vtx_uv;
+layout (location = 2)               in vec2 vtx_uv;
 
 #if pp_FogCtrl != 2
 layout (set = 0, binding = 2) uniform sampler2D fog_table;

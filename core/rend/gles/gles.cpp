@@ -66,11 +66,11 @@ uniform highp float sp_FOG_DENSITY;
 in highp vec4    in_pos;
 in lowp  vec4     in_base;
 in lowp vec4     in_offs;
-in mediump vec2  in_uv;
+in highp vec2    in_uv;
 /* output */
 INTERPOLATION out lowp vec4 vtx_base;
 INTERPOLATION out lowp vec4 vtx_offs;
-              out mediump vec2 vtx_uv;
+              out highp vec2 vtx_uv;
 #if TARGET_GL == GLES2
               out highp float fog_depth;
 #endif 
@@ -154,7 +154,7 @@ out highp vec4 FragColor;
 /* Shader program params*/
 /* gles has no alpha test stage, so its emulated on the shader */
 uniform lowp float cp_AlphaTestValue;
-uniform lowp vec4 pp_ClipTest;
+uniform highp vec4 pp_ClipTest;
 uniform lowp vec3 sp_FOG_COL_RAM,sp_FOG_COL_VERT;
 uniform highp float sp_FOG_DENSITY;
 uniform sampler2D tex,fog_table;
@@ -167,10 +167,18 @@ uniform mediump int palette_index;
 uniform lowp float shade_scale_factor;
 #endif
 
+/* Precision. The colours that come in are eight bits each and lowp holds
+ * them, but lowp need not hold more than that: what is worked out from
+ * them here (texture times colour, plus offset, into fog) is kept in
+ * mediump so that each step does not round to an eighth bit again. Texture
+ * coordinates are highp: in mediump, which may be a 16-bit float, a
+ * coordinate that repeats a large texture a few times no longer says which
+ * texel. The clip rectangle is in pixels and was lowp, which need not reach
+ * past 2. */
 /* Vertex input*/
 INTERPOLATION in lowp vec4 vtx_base;
 INTERPOLATION in lowp vec4 vtx_offs;
-in mediump vec2 vtx_uv;
+in highp vec2 vtx_uv;
 #if TARGET_GL == GLES2
 in highp float fog_depth;
 #endif
@@ -240,7 +248,7 @@ void main()
 			discard;
 	#endif
 	
-	lowp vec4 color=vtx_base;
+	mediump vec4 color=vtx_base;
 	#if pp_UseAlpha==0
 		color.a=1.0;
 	#endif
@@ -249,16 +257,16 @@ void main()
 		// its base and offset colours, is scaled before the texture is
 		// combined with them. The texture itself is not.
 		color.rgb *= shade_scale_factor;
-		lowp vec4 offset = vec4(vtx_offs.rgb * shade_scale_factor, vtx_offs.a);
+		mediump vec4 offset = vec4(vtx_offs.rgb * shade_scale_factor, vtx_offs.a);
 	#else
 		#define offset vtx_offs
 	#endif
 	#if pp_Texture==1
 	{
 		#if pp_Palette == 0
-			lowp vec4 texcol = texture(tex, vtx_uv);
+			mediump vec4 texcol = texture(tex, vtx_uv);
 		#else
-			lowp vec4 texcol = palettePixel(vtx_uv);
+			mediump vec4 texcol = palettePixel(vtx_uv);
 		#endif
 		
 		#if pp_BumpMap == 1

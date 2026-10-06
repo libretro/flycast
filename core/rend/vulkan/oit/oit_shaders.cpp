@@ -40,17 +40,17 @@ layout (std140, set = 0, binding = 0) uniform VertexShaderUniforms
 layout (location = 0) in vec4         in_pos;
 layout (location = 1) in uvec4        in_base;
 layout (location = 2) in uvec4        in_offs;
-layout (location = 3) in mediump vec2 in_uv;
+layout (location = 3) in vec2 in_uv;
 layout (location = 4) in uvec4        in_base1;						// New for OIT, only for OP/PT with 2-volume
 layout (location = 5) in uvec4        in_offs1;
-layout (location = 6) in mediump vec2 in_uv1;
+layout (location = 6) in vec2 in_uv1;
 
 layout (location = 0) INTERPOLATION out lowp vec4 vtx_base;
 layout (location = 1) INTERPOLATION out lowp vec4 vtx_offs;
-layout (location = 2)               out mediump vec2 vtx_uv;
+layout (location = 2)               out vec2 vtx_uv;
 layout (location = 3) INTERPOLATION out lowp vec4 vtx_base1;		// New for OIT, only for OP/PT with 2-volume
 layout (location = 4) INTERPOLATION out lowp vec4 vtx_offs1;
-layout (location = 5)               out mediump vec2 vtx_uv1;
+layout (location = 5)               out vec2 vtx_uv1;
 
 void main()
 {
@@ -300,10 +300,10 @@ layout (input_attachment_index = 0, set = 0, binding = 5) uniform subpassInput D
 // Vertex input
 layout (location = 0) INTERPOLATION in lowp vec4 vtx_base;
 layout (location = 1) INTERPOLATION in lowp vec4 vtx_offs;
-layout (location = 2)               in mediump vec2 vtx_uv;
+layout (location = 2)               in vec2 vtx_uv;
 layout (location = 3) INTERPOLATION in lowp vec4 vtx_base1;			// new for OIT. Only if 2 vol
 layout (location = 4) INTERPOLATION in lowp vec4 vtx_offs1;
-layout (location = 5)               in mediump vec2 vtx_uv1;
+layout (location = 5)               in vec2 vtx_uv1;
 
 #if pp_FogCtrl != 2 || pp_TwoVolumes == 1
 layout (set = 0, binding = 2) uniform sampler2D fog_table;
@@ -381,7 +381,7 @@ void main()
 	
 	highp vec4 color = vtx_base;
 	lowp vec4 offset = vtx_offs;
-	mediump vec2 uv = vtx_uv;
+	vec2 uv = vtx_uv;
 	bool area1 = false;
 	ivec2 cur_blend_mode = pushConstants.blend_mode0.xy;
 	
