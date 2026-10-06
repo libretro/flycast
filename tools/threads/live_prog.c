@@ -4,11 +4,12 @@
  * thread hand frames to each other: three frames out of four start a
  * render through the Tile Accelerator, the fourth writes to the
  * framebuffer directly and lets the core render that, for the first 64
- * frames. The renders draw a textured background, and the program repaints
- * that texture four times in its first second, ending on yellow, which is
+ * frames. The renders draw a background with a paletted texture. The
+ * program repaints that texture four times in its first second and then
+ * changes the palette entry the last repaint uses to yellow, which is
  * what live.sh looks for in a screenshot. It also times its frames
  * against the CPU's timer and, if they are not all the same length, paints
- * the texture red instead; and magenta if a read-only system bus register
+ * the screen red instead; and magenta if a read-only system bus register
  * that nothing has written yet reads as anything but zero. Every frame it
  * polls the controller in port A, which is how the emulation thread comes
  * to read input.
@@ -53,17 +54,23 @@ static void poll_controller(void)
    SB(0xC18) = 1;                         /* SB_MDST: go */
 }
 
-/* Fill the background plane's texture (8x8, 1555, at the start of video
- * memory) with one colour. The top bit of every word stays clear: see
- * NO_REGION_ARRAY. */
-static void paint_texture(u16 colour)
+/* The background plane's texture is 8x8 with 8-bit palette indices, at the
+ * start of video memory. Fill it with one index. The top bit of every word
+ * stays clear: see NO_REGION_ARRAY. */
+static void paint_texture(u32 index)
 {
    volatile u32 *texel = (volatile u32 *)0xA4000000;
-   u32 pair = colour | ((u32)colour << 16);
+   u32 four = index | (index << 8) | (index << 16) | (index << 24);
    u32 i;
 
-   for (i = 0; i < 32; i++)
-      texel[i] = pair;
+   for (i = 0; i < 16; i++)
+      texel[i] = four;
+}
+
+/* Palette entry @index, in the 1555 the palette is left in at reset. */
+static void set_palette(u32 index, u16 colour)
+{
+   PVR(0x1000 + index * 4) = colour;
 }
 
 /* Wait for the beam to start a new frame: the scanline counter in
@@ -119,6 +126,11 @@ void cmain(void)
    PVR(0x8C) = 0;                                      /* ISP_BACKGND_T */
    PVR(0x88) = 0x38D1B717;                             /* ISP_BACKGND_D: 0.0001, far away */
    (*(volatile u32 *)0xA5100000) = 0x02000000;         /* ISP word: textured */
+   (*(volatile u32 *)0xA5100008) = 6u << 27;           /* TCW: 8-bit palette, at address 0 */
+   set_palette(1, 0x7C00);                             /* red */
+   set_palette(2, 0x03E0);                             /* green */
+   set_palette(3, 0x001F);                             /* blue */
+   set_palette(4, 0x7FFF);                             /* white, until frame 70 */
 #ifdef NO_REGION_ARRAY
    /* No region array: REGION_BASE points at empty video memory, as it does
     * for a program that starts a render before it has written one. Nothing
@@ -141,15 +153,19 @@ void cmain(void)
    {
       /* Repaint the texture four times, once each and never again: every
        * one of these has to reach the screen through the core's texture
-       * cache, and the last one is what the screen shows from then on. */
+       * cache. The last one stays, and then its palette entry is changed,
+       * once: what the screen shows from then on takes both the texture
+       * write and the palette write having arrived. */
       if (frame == 15)
-         paint_texture(0x7C00);                        /* red */
+         paint_texture(1);
       else if (frame == 30)
-         paint_texture(0x03E0);                        /* green */
+         paint_texture(2);
       else if (frame == 45)
-         paint_texture(0x001F);                        /* blue */
+         paint_texture(3);
       else if (frame == 60)
-         paint_texture(0x7FE0);                        /* yellow, for good */
+         paint_texture(4);
+      else if (frame == 70)
+         set_palette(4, 0x7FE0);                       /* yellow, for good */
 
       if ((frame & 3) == 3 && frame < 64)
       {
@@ -189,9 +205,9 @@ void cmain(void)
          }
          tick = now;
          if (frame == 250 && longest - shortest > 200)
-            paint_texture(0x7C00);                     /* red: uneven frames */
+            set_palette(4, 0x7C00);                    /* red: uneven frames */
          else if (frame == 250 && stale)
-            paint_texture(0x7C1F);                     /* magenta: a register with junk in it */
+            set_palette(4, 0x7C1F);                    /* magenta: a register with junk in it */
       }
 
       /* ...and shown at the next vblank, the way a game flips buffers */

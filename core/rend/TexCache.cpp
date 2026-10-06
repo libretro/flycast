@@ -1,3 +1,6 @@
+/* The texture cache works for the renderer: it reads the registers the
+ * frame is rendered with, not the ones the emulation has moved on to. */
+#define PVR_REGS_FOR_RENDERER
 #include "TexCache.h"
 #include "lockfree.h"
 #include "CustomTexture.h"
@@ -86,14 +89,27 @@ static void BuildTwiddleTables()
 
 static OnLoad btt(&BuildTwiddleTables);
 
+/* Converts the palette for the renderer when it is not the one converted
+ * last. Called by the renderer for each frame, with the registers that
+ * frame is drawn with.
+ *
+ * This used to be driven by a flag the register writes set, and was run
+ * by the emulation thread when the game started a render. With Threaded
+ * Rendering the frame before could still be drawing then, reading the very
+ * tables this rewrites. Now the tables belong to the thread that draws, and
+ * whether they are stale is seen from the palette itself: 4 KB to compare. */
 void palette_update()
 {
-	if (!pal_needs_update)
-		return;
-	pal_needs_update = false;
-	palette_updated = true;
+	static u32 converted[1024];
+	static u32 converted_ctrl = 0xFFFFFFFF;
+	const u32 ctrl = PAL_RAM_CTRL & 3;
 
-	switch(PAL_RAM_CTRL&3)
+	if (ctrl == converted_ctrl && !memcmp(converted, PALETTE_RAM, sizeof(converted)))
+		return;
+	converted_ctrl = ctrl;
+	memcpy(converted, PALETTE_RAM, sizeof(converted));
+	palette_updated = true;
+	switch (ctrl)
 	{
 	case 0:
 		for (int i=0;i<1024;i++)

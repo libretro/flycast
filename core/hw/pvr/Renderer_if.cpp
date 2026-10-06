@@ -170,6 +170,10 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
    if (settings.rend.ThreadedRendering)
       rend_pvr_regs = ctx->regs;
 #endif
+   /* The palette this frame is drawn with, converted here, on the thread
+    * that draws, from the registers the frame is drawn with. */
+   palette_update();
+
    bool proc = renderer->Process(ctx);
 #if !defined(TARGET_NO_THREADS)
    /* Process() has read everything the frame takes from the game's memory:
@@ -271,7 +275,6 @@ void rend_start_render(void)
 
          if (QueueRender(ctx))
          {
-            palette_update();
 #if !defined(TARGET_NO_THREADS)
             if (settings.rend.ThreadedRendering)
             {

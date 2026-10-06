@@ -4,7 +4,6 @@
 #include "ta.h"
 #include "spg.h"
 
-extern bool pal_needs_update;
 
 u8 pvr_regs[pvr_RegSize];
 u8 *rend_pvr_regs = pvr_regs;
@@ -103,15 +102,7 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		data &= 0x01fffffc;
 		break;
 
-	case PAL_RAM_CTRL_addr:
-		pal_needs_update = pal_needs_update || ((data ^ PAL_RAM_CTRL) & 3) != 0;
-		break;
-
 	default:
-		if (addr >= PALETTE_RAM_START_addr && PvrReg(addr,u32) != data)
-		{
-			pal_needs_update = true;
-		}
 		break;
 	}
 	PvrReg(addr, u32) = data;

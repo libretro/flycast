@@ -12,7 +12,6 @@
 #include <cmath>
 
 // TODO/FIXME - should be moved later
-bool pal_needs_update=true;
 
 u32 _pal_rev_256[4]={0};
 u32 _pal_rev_16[64]={0};

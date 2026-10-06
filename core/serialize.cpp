@@ -161,7 +161,6 @@ extern u8 ta_fsm[2049];	//[2048] stores the current state
 extern u32 ta_fsm_cl;
 
 //./core/hw/pvr/ta_vtx.o
-extern bool pal_needs_update;
 
 //./core/rend/TexCache.o
 extern VArray2 vram;
@@ -915,7 +914,6 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_SKIP(4 * 1024 * 8 * 2); // detwiddle
 	}
 	KillTex = true;
-	pal_needs_update = true;
 	if (version >= V10)
 		UnserializeTAContext(data, total_size, VCUR_LIBRETRO);
 
