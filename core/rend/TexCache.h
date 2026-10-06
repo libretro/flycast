@@ -704,7 +704,9 @@ public:
 
 	bool IsMipmapped()
 	{
-		return tcw.MipMapped != 0 && tcw.ScanOrder == 0 && settings.rend.UseMipmaps;
+		// for a paletted texture that bit is not the scan order but part of
+		// the palette selection
+		return tcw.MipMapped != 0 && (IsPaletted() || tcw.ScanOrder == 0) && settings.rend.UseMipmaps;
 	}
 
 	const char* GetPixelFormatName()

@@ -528,8 +528,18 @@ void BaseTextureCacheData::Create()
 	}
 	else
 	{
-		tcw.ScanOrder = 0;
-		tcw.StrideSel = 0;
+		/* These two bits mean nothing for a twiddled texture and are taken
+		 * out of the way - unless the texture is paletted. There they are
+		 * the top two bits of the palette selection, which says which part
+		 * of the palette the texture uses. With them cleared, NeedsUpdate()
+		 * looked for changes in the wrong part: a texture using the upper
+		 * half of the palette was not decoded again when its colours
+		 * changed, and was when some other texture's did. */
+		if (!IsPaletted())
+		{
+			tcw.ScanOrder = 0;
+			tcw.StrideSel = 0;
+		}
 		// Quake 3 Arena uses one
 		if (tcw.MipMapped)
 			// Mipmapped texture must be square and TexV is ignored
