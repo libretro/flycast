@@ -211,18 +211,6 @@ PICOTCP_SOURCES_C = \
 
 XXHASH_SOURCES_C = $(DEPS_DIR)/xxhash/xxhash.c
 
-ZLIB_SOURCES_C = \
-					$(DEPS_DIR)/zlib/deflate.c \
-					$(DEPS_DIR)/zlib/uncompr.c \
-					$(DEPS_DIR)/zlib/zutil.c \
-					$(DEPS_DIR)/zlib/inffast.c \
-					$(DEPS_DIR)/zlib/crc32.c \
-					$(DEPS_DIR)/zlib/inflate.c \
-					$(DEPS_DIR)/zlib/infback.c \
-					$(DEPS_DIR)/zlib/inftrees.c \
-					$(DEPS_DIR)/zlib/trees.c \
-					$(DEPS_DIR)/zlib/adler32.c
-
 SOURCES_ASM :=
 
 ifeq ($(SYSTEM_PICOTCP), 1)
@@ -444,9 +432,3 @@ endif
 
 SOURCES_C += $(ARCHIVE_SOURCES_C)
 
-ifeq ($(SYSTEM_ZLIB), 1)
-	CFLAGS += $(shell pkg-config --cflags zlib)
-	LIBS += $(shell pkg-config --libs zlib)
-else
-	SOURCES_C += $(ZLIB_SOURCES_C)
-endif

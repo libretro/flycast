@@ -48,7 +48,7 @@
  */
 
 /* For crc32 */
-#include <zlib.h>
+#include <encodings/crc32.h>
 #include "rtl8139c.h"
 
 /* debug RTL8139 card */
@@ -853,7 +853,7 @@ static ssize_t rtl8139_do_receive(RTL8139State *s, const uint8_t *buf, size_t si
 	rtl8139_write_buffer(s, buf, size);
 
 	/* write checksum */
-	val = cpu_to_le32(crc32(0, buf, size));
+	val = cpu_to_le32(encoding_crc32(0, buf, size));
 	rtl8139_write_buffer(s, (uint8_t *)&val, 4);
 
 	/* correct buffer write pointer */

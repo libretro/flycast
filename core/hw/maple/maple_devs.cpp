@@ -9,7 +9,7 @@
 #include <math.h>
 #include <time.h>
 
-#include "deps/zlib/zlib.h"
+#include <encodings/deflate.h>
 #include "deps/xxhash/xxhash.h"
 
 #define LOGJVS(...) DEBUG_LOG(JVS, __VA_ARGS__)
@@ -540,6 +540,23 @@ u8 vmu_default[] = {
 		  0x17, 0xc8, 0x37, 0x7a, 0x6b, 0xe6, 0x6e
 };
 
+/* The default VMU image is kept as a zlib stream; inflate it into @dst,
+ * which must hold exactly the uncompressed size. */
+static bool vmu_inflate_default(u8 *dst, size_t dst_len)
+{
+   void *inf;
+   size_t wr = 0;
+   int rv;
+
+   if (!(inf = rinflate_new(15)))
+      return false;
+   rinflate_set_in(inf, vmu_default, sizeof(vmu_default));
+   rinflate_set_out(inf, dst, dst_len);
+   rv = rinflate_process(inf, NULL, &wr);
+   rinflate_free(inf);
+   return rv == RDEFLATE_PROCESS_END && wr == dst_len;
+}
+
 struct maple_sega_vmu: maple_base
 {
 	RFILE* file;
@@ -577,12 +594,8 @@ struct maple_sega_vmu: maple_base
 		// What the renderer shows until the game draws: the screen as it is now
 		vmu_lcd_publish(bus_id, lcd_data_decoded);
 
-		uLongf dec_sz = sizeof(flash_data);
 		INFO_LOG(MAPLE, "Initializing VMU data...");
-		int rv=uncompress(flash_data, &dec_sz, vmu_default, sizeof(vmu_default));
-
-		verify(rv == Z_OK);
-		verify(dec_sz == sizeof(flash_data));
+		verify(vmu_inflate_default(flash_data, sizeof(flash_data)));
 
 		file=filestream_open(apath.c_str(), RETRO_VFS_FILE_ACCESS_READ_WRITE | RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 		if (!file)
