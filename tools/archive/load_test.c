@@ -32,6 +32,7 @@
 #endif
 
 static char system_dir[512];
+static struct retro_disk_control_ext_callback disk_control;
 
 static void log_cb(enum retro_log_level level, const char *fmt, ...)
 {
@@ -64,6 +65,12 @@ static bool environ_cb(unsigned cmd, void *data)
       }
       case RETRO_ENVIRONMENT_SET_HW_RENDER:
          return true;   /* accepted, never reset: no frame is ever run */
+      case RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION:
+         *(unsigned*)data = 1;
+         return true;
+      case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE:
+         disk_control = *(const struct retro_disk_control_ext_callback*)data;
+         return true;
       default:
          return false;
    }
@@ -157,7 +164,29 @@ int main(int argc, char **argv)
 
       if (retro_load_game_fn(&info))
       {
-         printf("loaded %s\n", loads[i]);
+         /* The disc list is this content's: image 0 must be the archive
+          * or image just loaded, not a leftover of the previous load. */
+         char        image[512];
+         char        want[128];
+         const char *base = strrchr(loads[i], '/');
+         size_t      want_len;
+
+         base     = base ? base + 1 : loads[i];
+         want_len = strcspn(base, "#");
+         if (want_len >= sizeof(want))
+            want_len = sizeof(want) - 1;
+         memcpy(want, base, want_len);
+         want[want_len] = '\0';
+         image[0]       = '\0';
+         if (!disk_control.get_image_path
+               || !disk_control.get_image_path(0, image, sizeof(image))
+               || !strstr(image, want))
+         {
+            printf("FAIL: %s loaded but disc 0 is \"%s\"\n", loads[i], image);
+            failures++;
+         }
+         else
+            printf("loaded %s\n", loads[i]);
          retro_unload_game_fn();
       }
       else

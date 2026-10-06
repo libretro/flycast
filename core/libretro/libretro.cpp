@@ -2115,6 +2115,10 @@ void retro_unload_game(void)
    if (game_data)
       free(game_data);
    game_data = NULL;
+   /* The disc list belongs to this content: the next load starts its own */
+   disk_paths.clear();
+   disk_labels.clear();
+   disk_index = 0;
 
 #if !defined(TARGET_NO_THREADS)
    if (emu_thread_started)
