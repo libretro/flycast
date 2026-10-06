@@ -565,11 +565,6 @@ struct settings_t
 	
 	struct
 	{
-		u32 run_counts;
-	} profile;
-
-	struct
-	{
 		u32 cable;			// 0 -> VGA, 1 -> VGA, 2 -> RGB, 3 -> TV
 		u32 region;			// 0 -> JP, 1 -> USA, 2 -> EU, 3 -> default
 		u32 broadcast;		// 0 -> NTSC, 1 -> PAL, 2 -> PAL/M, 3 -> PAL/N, 4 -> default
@@ -587,19 +582,9 @@ struct settings_t
 
 	struct
 	{
-		struct 
-		{
-			u32 MultiSampleCount;
-			u32 MultiSampleQuality;
-			u32 AspectRatioMode;
-		} Enhancements;
-
 		struct
 		{
-			u32 PaletteMode;
 			u32 AlphaSortMode;
-			u32 ZBufferMode;
-			u32 TexCacheMode;
 			f32 zMin;
 			f32 zMax;
 		} Emulation;
