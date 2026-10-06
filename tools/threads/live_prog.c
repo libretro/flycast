@@ -156,21 +156,20 @@ static void ta_volume(u32 x0, u32 y0, u32 x1, u32 y1, u32 near)
  * take shadows and a modifier volume that crosses them all.
  *
  *   A, on the left, has no texture and is white.
- *   C, in the middle, is white too, blended as "source times its alpha",
- *   with an alpha of a half: grey.
+ *   C, in the middle, is white too, and its blend instructions say
+ *   "source times its alpha", with an alpha of a half. That would make it
+ *   grey, and it has to be white: an opaque polygon of the first render
+ *   pass is not blended, whatever its instructions say. Games leave all
+ *   sorts in there.
  *   B, on the right, has a decal texture, all blue.
  *   The volume is a slab in front of and behind a band across the three,
  *   from the middle of A to the middle of B, and the background between.
  *
  * In the volume the PowerVR2 halves what a polygon is shaded with, its base
- * and offset colours (FPU_SHAD_SCALE says by how much). So A is grey there,
- * and C darker grey. B is not changed: a decal texture replaces the base
- * colour, and the texture is not scaled. Nor is the background: it does not
- * take shadows.
- *
- * (C is there for the per-triangle renderers, which draw A and B a second
- * time for their shadows and cannot do that with a polygon that is
- * blended.) */
+ * and offset colours (FPU_SHAD_SCALE says by how much). So A and C are
+ * grey there. B is not changed: a decal texture replaces the base colour,
+ * and the texture is not scaled. Nor is the background: it does not take
+ * shadows. */
 static void ta_scene(void)
 {
    /* The screen is 320 by 240 in the video mode the program is started in. */
@@ -217,6 +216,13 @@ static void ta_scene(void)
  *   middle of P. P has to stay cyan there: a renderer that still has A
  *   down as what is showing at those pixels darkens it.
  *
+ *   D, lower right, is C over again: white, takes shadows, "source times
+ *   its alpha" with an alpha of a half. In this pass, a continuation,
+ *   an opaque polygon's blend instructions do count, so D is grey, and
+ *   darker grey under the volume that covers its middle. (It is also the
+ *   one polygon here that the per-triangle renderers cannot draw a second
+ *   time for its shadow, being blended, and darken the old way.)
+ *
  *   The translucent pair again, lower down, blue near and red far, sent
  *   nearest first. Not being sorted, the blue is drawn first and writes
  *   its depth, and the red, behind it, is then not drawn where they
@@ -224,8 +230,10 @@ static void ta_scene(void)
 static void ta_scene_pass2(void)
 {
    ta_quad(0, TSP_PLAIN, 0, 0xFF00FFFF, F(0.7f), F(40.0f), F(95.0f), F(70.0f), F(108.0f));
+   ta_quad(TA_SHADOW, TSP_BY_ALPHA, 0, 0x80FFFFFF, F(0.5f), F(256.0f), F(180.0f), F(300.0f), F(210.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
    ta_volume(F(45.0f), F(97.0f), F(65.0f), F(106.0f), F(0.9f));
+   ta_volume(F(270.0f), F(185.0f), F(290.0f), F(205.0f), F(0.9f));
    ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x800000FF, F(0.6f), F(140.0f), F(180.0f), F(200.0f), F(210.0f));
    ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x80FF0000, F(0.3f), F(120.0f), F(180.0f), F(180.0f), F(210.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the translucent list */
@@ -349,7 +357,9 @@ void cmain(void)
           * frames are over, with the shadow test's scene in it and into one
           * of two buffers in turn */
          if (frame >= 64)
+         {
             PVR(0x60) = (frame & 1) ? 0x400000 : 0x200000;   /* FB_W_SOF1 */
+         }
          PVR(0x144) = 0x80000000;                      /* TA_LIST_INIT */
          if (frame >= 64)
          {

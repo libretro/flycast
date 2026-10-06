@@ -16,7 +16,9 @@ Above the middle the disc draws three polygons that take shadows and a
 modifier volume across them (live_prog.c says what and why). Where the
 volume is, the untextured ones have to be half as bright, the one with a
 decal texture has to be as it is outside, and the background between
-them has to be untouched; every renderer has to agree on that.
+them has to be untouched; every renderer has to agree on that. The middle
+one has blend instructions that would halve it and has to be drawn as
+if it had none, being an opaque polygon of the first render pass.
 
 Below those are two translucent polygons, a blue one near and a red one
 far, sent nearest first. Where they overlap the red has to have been
@@ -29,7 +31,8 @@ and one with a transparent one: light green, magenta, and nothing.
 
 A second render pass draws a cyan polygon, which does not take shadows,
 over a corner of the first white one, with a modifier volume of its own
-over it: it has to stay cyan. And the translucent pair again, lower
+over it: it has to stay cyan. An opaque polygon with those halving
+blend instructions again, which in this pass do apply. And the translucent pair again, lower
 down, this time marked as already sorted: where they overlap the blue,
 drawn first, hides the red behind it.
 
@@ -104,8 +107,9 @@ def main():
         ('A, above the volume',    104,  75, (255, 255, 255)),
         ('A, in the volume',       104,  90, (127, 127, 127)),
         ('the background, in the volume', 136, 90, (255, 255, 0)),
-        ('C, lit',                 160,  75, (128, 128, 128)),
-        ('C, in the volume',       160,  90, (64, 64, 64)),
+        # blend instructions that would halve it, in the first pass: not blended
+        ('C, lit',                 160,  75, (255, 255, 255)),
+        ('C, in the volume',       160,  90, (127, 127, 127)),
         ('B, in the volume',       216,  90, (0, 0, 255)),
         ('B, lit',                 270,  90, (0, 0, 255)),
         # the translucent pair: blended twice, so a little more rounding
@@ -118,6 +122,9 @@ def main():
         # the second render pass
         ('P, in its volume',        55, 101, (0, 255, 255)),
         ('P, outside it',           42,  96, (0, 255, 255)),
+        # the same instructions in a list continuation: blended
+        ('D, lit',                 262, 195, (128, 128, 128)),
+        ('D, in its volume',       280, 195, (64, 64, 64)),
         ('unsorted: red over the background', 130, 195, (254, 127, 0)),
         ('unsorted: blue in front of red', 160, 195, (127, 127, 127)),
         ('unsorted: blue over the background', 190, 195, (127, 127, 127)),
