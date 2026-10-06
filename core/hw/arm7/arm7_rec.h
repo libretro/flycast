@@ -401,6 +401,22 @@ public:
 		}
 	}
 
+	/* Writes back every register whose latest value is only in a host
+	 * register. For the backend to call before code that may be skipped: a
+	 * conditional instruction that runs short of host registers pushes one
+	 * out, and if the one pushed out still had to be written back, the
+	 * write would be in the skipped code - written when the condition
+	 * holds and lost when it does not, with nothing to tell which. */
+	void storeDirty()
+	{
+		for (auto& alloc : allocs)
+			if (alloc.host_reg != -1 && alloc.dirty)
+			{
+				static_cast<T*>(this)->StoreReg(alloc.host_reg, (Arm7Reg)(&alloc - &allocs.front()));
+				alloc.dirty = false;
+			}
+	}
+
 	void store(u32 opidx)
 	{
 		const ArmOp& op = block_ops[opidx];

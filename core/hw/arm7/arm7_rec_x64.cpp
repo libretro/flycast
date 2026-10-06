@@ -772,6 +772,8 @@ public:
 			{
 				endConditional(condLabel);
 				currentCondition = op.condition;
+				if (op.condition != ArmOp::AL)
+					regalloc->storeDirty();
 				condLabel = startConditional(op.condition);
 			}
 
