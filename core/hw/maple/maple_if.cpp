@@ -332,6 +332,15 @@ void maple_Term()
 	
 }
 
+void maple_FlushSaves()
+{
+	int bus, port;
+	for (bus = 0; bus < 4; bus++)
+		for (port = 0; port < 6; port++)
+			if (MapleDevices[bus][port])
+				MapleDevices[bus][port]->FlushSave();
+}
+
 static u64 reconnect_time;
 
 void maple_ReconnectDevices()

@@ -9,3 +9,5 @@ void maple_Term();
 void maple_ReconnectDevices();
 
 void maple_vblank();
+/* Flush pending VMU and EEPROM writes; the machine must be idle. */
+void maple_FlushSaves();

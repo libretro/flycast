@@ -89,6 +89,8 @@ struct maple_device
 	void Setup(u32 prt);
 
 	virtual void OnSetup(){};
+	/* Write out what the game changed, off the emulation path. */
+	virtual void FlushSave(){};
 	virtual ~maple_device();
 	u32 Dma(u32 Command,u32* buffer_in,u32 buffer_in_len,u32* buffer_out,u32& buffer_out_len);
 	virtual u32 RawDma(u32* buffer_in, u32 buffer_in_len, u32* buffer_out) = 0;

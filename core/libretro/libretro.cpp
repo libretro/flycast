@@ -1225,6 +1225,8 @@ void retro_run (void)
 
       /* This frame's audio, sent from this thread like its video. */
       FlushAudioFrame();
+      /* The machine is asleep: what it saved this frame goes to disk now */
+      maple_FlushSaves();
       emu_release();
    }
    else
@@ -1235,6 +1237,7 @@ void retro_run (void)
 	   /* Emit exactly this frame's audio as one consecutive batch, so the
 	    * frame's video and audio are delivered together per retro_run. */
 	   FlushAudioFrame();
+	   maple_FlushSaves();
    }
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);

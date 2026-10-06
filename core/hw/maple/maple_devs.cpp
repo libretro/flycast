@@ -560,6 +560,9 @@ static bool vmu_inflate_default(u8 *dst, size_t dst_len)
 struct maple_sega_vmu: maple_base
 {
 	RFILE* file;
+	/* Bytes of flash_data changed since the last flush: [dirty_lo, dirty_hi) */
+	u32 dirty_lo;
+	u32 dirty_hi;
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[VMU_SCREEN_WIDTH*VMU_SCREEN_HEIGHT];
@@ -588,6 +591,8 @@ struct maple_sega_vmu: maple_base
 	{
 		memset(flash_data,0,sizeof(flash_data));
 		memset(lcd_data,0,sizeof(lcd_data));
+		dirty_lo = 0;
+		dirty_hi = 0;
       std::string apath = get_writable_vmu_path(logical_port);
 
 		vmu_screen_params[bus_id].vmu_lcd_screen = lcd_data_decoded ;
@@ -620,8 +625,24 @@ struct maple_sega_vmu: maple_base
 			NOTICE_LOG(MAPLE, "Loaded VMU from file \"%s\"", apath.c_str());
 		}
 	}
+	virtual void FlushSave()
+	{
+		if (dirty_lo >= dirty_hi)
+			return;
+		if (file)
+		{
+			filestream_seek(file, dirty_lo, RETRO_VFS_SEEK_POSITION_START);
+			filestream_write(file, &flash_data[dirty_lo], dirty_hi - dirty_lo);
+			filestream_flush(file);
+		}
+		else
+			INFO_LOG(MAPLE, "Failed to save VMU %s data", logical_port);
+		dirty_lo = 0;
+		dirty_hi = 0;
+	}
 	virtual ~maple_sega_vmu()
 	{
+		FlushSave();
 		if (file) filestream_close(file);
 	}
 	virtual u32 dma(u32 cmd)
@@ -828,15 +849,18 @@ struct maple_sega_vmu: maple_base
 						}
 						rptr(&flash_data[write_adr],write_len);
 
-						if (file)
+						/* Written out by FlushSave() between frames */
+						if (dirty_lo >= dirty_hi)
 						{
-							filestream_seek(file,write_adr,RETRO_VFS_SEEK_POSITION_START);
-							filestream_write(file,&flash_data[write_adr],write_len);
-							filestream_flush(file);
+							dirty_lo = write_adr;
+							dirty_hi = write_adr + write_len;
 						}
 						else
 						{
-							INFO_LOG(MAPLE, "Failed to save VMU %s data", logical_port);
+							if (write_adr < dirty_lo)
+								dirty_lo = write_adr;
+							if (write_adr + write_len > dirty_hi)
+								dirty_hi = write_adr + write_len;
 						}
 						return MDRS_DeviceReply;//just ko
 					}
@@ -2013,13 +2037,31 @@ struct maple_naomi_jamma : maple_sega_controller
 	u8 jvs_repeat_request[32][256];
 	u8 jvs_receive_buffer[32][258];
 	u32 jvs_receive_length[32] = { 0 };
+	bool eeprom_dirty = false;
 
 	maple_naomi_jamma()
 	{
 	}
 	virtual ~maple_naomi_jamma()
 	{
+		FlushSave();
 		EEPROM_loaded = false;
+	}
+
+	virtual void FlushSave()
+	{
+		RFILE* f;
+		if (!eeprom_dirty)
+			return;
+		eeprom_dirty = false;
+		f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+		if (f)
+		{
+			filestream_write(f, EEPROM, 0x80);
+			filestream_close(f);
+		}
+		else
+			WARN_LOG(MAPLE, "Cannot save EEPROM to file %s", eeprom_file);
 	}
 
 	void create_io_boards()
@@ -2368,15 +2410,7 @@ struct maple_naomi_jamma : maple_sega_controller
 				DEBUG_LOG(MAPLE, "EEprom write %08X %08X\n", address, size);
 				//printState(Command,buffer_in,buffer_in_len);
 				memcpy(EEPROM + address, dma_buffer_in + 4, size);
-
-				RFILE* f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-				if (f)
-				{
-				   filestream_write(f, EEPROM, 0x80);
-				   filestream_close(f);
-				}
-				else
-					WARN_LOG(MAPLE, "Cannot save EEPROM to file %s", eeprom_file);
+				eeprom_dirty = true;
 
 				w8(MDRS_JVSReply);
 				w8(0x00);
