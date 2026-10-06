@@ -20,7 +20,7 @@ Disc*(*drivers[])(const char* path)=
 
 u8 q_subchannel[96];
 
-bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to,int sector)
+bool ConvertSector(const u8* in_buff , u8* out_buff , int from , int to,int sector)
 {
    //get subchannel data, if any
    if (from==2448)

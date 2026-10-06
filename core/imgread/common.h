@@ -80,7 +80,7 @@ enum SubcodeFormat
 	SUBFMT_96					//raw 96-byte subcode info
 };
 
-bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to,int sector);
+bool ConvertSector(const u8* in_buff , u8* out_buff , int from , int to,int sector);
 
 bool InitDrive(u32 fileflags=0);
 void TermDrive();
@@ -110,6 +110,10 @@ struct Session
 struct TrackFile
 {
 	virtual void Read(u32 FAD,u8* dst,SectorFormat* sector_type,u8* subcode,SubcodeFormat* subcode_type)=0;
+	/* The sector's bytes where they already are - a mapped file, a decoded
+	 * hunk - or NULL when they have to be read into a buffer. Valid until
+	 * the next call on the same disc. */
+	virtual const u8* View(u32 FAD, SectorFormat* sector_type) { return NULL; }
 	virtual ~TrackFile() {};
 };
 
@@ -138,6 +142,10 @@ struct Track
 		}
       return false;
 	}
+	bool Holds(u32 FAD) const
+	{
+		return FAD>=StartFAD && (FAD<=EndFAD || EndFAD==0) && file;
+	}
 	void Destroy() { if (file) delete file; file=0; }
 };
 
@@ -163,6 +171,17 @@ struct Disc
 		return false;
 	}
 
+	/* The sector in place from the track that holds it, or NULL. */
+	const u8* SectorView(u32 FAD, SectorFormat* sector_type)
+	{
+		for (size_t i=tracks.size();i-->0;)
+			if (tracks[i].Holds(FAD))
+				return tracks[i].file->View(FAD, sector_type);
+		return NULL;
+	}
+
+	/* Each sector is converted straight out of the image when the track
+	 * can show it in place; only a track that cannot goes through temp. */
 	void ReadSectors(u32 FAD,u32 count,u8* dst,u32 fmt)
 	{
 		u8 temp[2448];
@@ -171,28 +190,31 @@ struct Disc
 
 		while(count)
 		{
-			if (ReadSector(FAD,temp,&secfmt,q_subchannel,&subfmt))
+			const u8* src = SectorView(FAD, &secfmt);
+			if (!src && ReadSector(FAD,temp,&secfmt,q_subchannel,&subfmt))
+				src = temp;
+			if (src)
 			{
 				//TODO: Proper sector conversions
 				if (secfmt==SECFMT_2352)
 				{
-					ConvertSector(temp,dst,2352,fmt,FAD);
+					ConvertSector(src,dst,2352,fmt,FAD);
 				}
 				else if (fmt == 2048 && secfmt==SECFMT_2336_MODE2)
-					memcpy(dst,temp+8,2048);
+					memcpy(dst,src+8,2048);
 				else if (fmt==2048 && (secfmt==SECFMT_2048_MODE1 || secfmt==SECFMT_2048_MODE2_FORM1 ))
 				{
-					memcpy(dst,temp,2048);
+					memcpy(dst,src,2048);
 				}
 				else if (fmt==2352 && (secfmt==SECFMT_2048_MODE1 || secfmt==SECFMT_2048_MODE2_FORM1 ))
 				{
 					INFO_LOG(GDROM, "GDR:fmt=2352;secfmt=2048");
-					memcpy(dst,temp,2048);
+					memcpy(dst,src,2048);
 				}
 				else if (fmt==2048 && secfmt==SECFMT_2448_MODE2)
 				{
 					// Pier Solar and the Great Architects
-					ConvertSector(temp, dst, 2448, fmt, FAD);
+					ConvertSector(src, dst, 2448, fmt, FAD);
 				}
 				else
 				{
@@ -302,6 +324,24 @@ struct RawTrackFile : TrackFile
       }
 
 		core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
+	}
+	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
+	{
+		size_t map_len;
+		const u8* map = core_fmap(file, &map_len);
+		u32 at = (u32)(offset + FAD * fmt);
+
+		if (!map || at > map_len || fmt > map_len - at)
+			return NULL;
+		switch (fmt)
+		{
+			case 2352: *sector_type=SECFMT_2352; break;
+			case 2048: *sector_type=SECFMT_2048_MODE2_FORM1; break;
+			case 2336: *sector_type=SECFMT_2336_MODE2; break;
+			case 2448: *sector_type=SECFMT_2448_MODE2; break;
+			default: return NULL;
+		}
+		return map + at;
 	}
 	virtual ~RawTrackFile()
 	{

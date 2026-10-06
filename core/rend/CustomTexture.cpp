@@ -17,6 +17,7 @@
 	 along with reicast.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "CustomTexture.h"
+#include "deps/coreio/coreio.h"
 
 #include <algorithm>
 #include <sstream>
@@ -161,8 +162,31 @@ u8* CustomTexture::LoadCustomTexture(u32 hash, int& width, int& height)
 		return nullptr;
 
 	int n;
-	stbi_set_flip_vertically_on_load(1);
-	return stbi_load(it->second.c_str(), &width, &height, &n, STBI_rgb_alpha);
+	core_file* f = core_fopen(it->second.c_str());
+	const u8* data;
+	u8* buf = NULL;
+	u8* image = NULL;
+	size_t len;
+
+	if (!f)
+		return nullptr;
+	/* Decoded out of the mapping when there is one, else from one read. */
+	len = core_fsize(f);
+	data = core_fmap(f, NULL);
+	if (!data)
+	{
+		buf = (u8*)malloc(len ? len : 1);
+		if (buf && core_fread_at(f, 0, buf, len) == len)
+			data = buf;
+	}
+	if (data && len <= 0x7fffffff)
+	{
+		stbi_set_flip_vertically_on_load(1);
+		image = stbi_load_from_memory(data, (int)len, &width, &height, &n, STBI_rgb_alpha);
+	}
+	free(buf);
+	core_fclose(f);
+	return image;
 }
 
 void CustomTexture::LoadCustomTextureAsync(BaseTextureCacheData *texture_data)

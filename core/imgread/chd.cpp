@@ -149,6 +149,20 @@ struct CHDTrack : TrackFile
 		//memcpy(subcode,disc->hunk_mem+hunk_ofs*(2352+96)+2352,96);
 		*subcode_type=SUBFMT_NONE;
 	}
+
+	/* The sector inside the decoded hunk; a track whose bytes have to
+	 * be swapped is read through a buffer. */
+	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
+	{
+		u32 fad_offs = FAD + Offset;
+		u8* hmem;
+
+		if (swap_bytes)
+			return NULL;
+		hmem = disc->hunk_get(fad_offs / disc->sph);
+		*sector_type = fmt==2352?SECFMT_2352:SECFMT_2048_MODE1;
+		return hmem + (fad_offs % disc->sph) * (2352 + 96);
+	}
 };
 
 bool CHDDisc::TryOpen(const char* file)
