@@ -1,6 +1,5 @@
 #pragma once
 #include <unordered_map>
-#include <atomic>
 #include <libretro.h>
 #include <glsm/glsm.h>
 #include <glsm/glsmsym.h>

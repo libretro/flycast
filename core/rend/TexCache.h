@@ -4,7 +4,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
+#include <retro_atomic.h>
 #include <memory>
 #include <unordered_map>
 
@@ -692,7 +692,7 @@ public:
 	u8* custom_image_data;		// loaded custom image data
 	u32 custom_width;
 	u32 custom_height;
-	std::atomic_int custom_load_in_progress;
+	retro_atomic_int_t custom_load_in_progress;
 	BaseTextureCacheData *custom_load_next;	// link in the custom texture loader's work list
 
 	void PrintTextureName();
@@ -725,7 +725,7 @@ public:
 
 	bool IsCustomTextureAvailable()
 	{
-		return custom_load_in_progress == 0 && custom_image_data != NULL;
+		return retro_atomic_load_acquire_int(&custom_load_in_progress) == 0 && custom_image_data != NULL;
 	}
 
 	void Create();

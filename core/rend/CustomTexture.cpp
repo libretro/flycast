@@ -45,7 +45,7 @@ void CustomTexture::Load(BaseTextureCacheData *texture)
 {
 	for (;;)
 	{
-		int requests = texture->custom_load_in_progress;
+		int requests = retro_atomic_load_acquire_int(&texture->custom_load_in_progress);
 
 		texture->ComputeHash();
 		if (texture->custom_image_data != NULL)
@@ -68,7 +68,7 @@ void CustomTexture::Load(BaseTextureCacheData *texture)
 				texture->custom_image_data = image_data;
 			}
 		}
-		if (texture->custom_load_in_progress.fetch_sub(requests) == requests)
+		if (retro_atomic_fetch_sub_int(&texture->custom_load_in_progress, requests) == requests)
 			break;
 	}
 }
@@ -89,7 +89,7 @@ void CustomTexture::LoaderThread()
 			if (retro_atomic_load_acquire_int(&initialized))
 				Load(texture);
 			else
-				texture->custom_load_in_progress = 0;
+				retro_atomic_store_release_int(&texture->custom_load_in_progress, 0);
 			texture = next;
 		}
 
@@ -147,7 +147,7 @@ void CustomTexture::Terminate()
 		while (texture != NULL)
 		{
 			BaseTextureCacheData *next = texture->custom_load_next;
-			texture->custom_load_in_progress = 0;
+			retro_atomic_store_release_int(&texture->custom_load_in_progress, 0);
 			texture = next;
 		}
 		texture_map.clear();
@@ -170,7 +170,7 @@ void CustomTexture::LoadCustomTextureAsync(BaseTextureCacheData *texture_data)
 	if (!Init())
 		return;
 
-	if (texture_data->custom_load_in_progress++ == 0)
+	if (retro_atomic_fetch_add_int(&texture_data->custom_load_in_progress, 1) == 0)
 	{
 		work_queue.Push(texture_data);
 		wakeup_thread.Set();

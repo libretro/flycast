@@ -447,7 +447,7 @@ bool BaseTextureCacheData::NeedsUpdate() {
 
 bool BaseTextureCacheData::Delete()
 {
-	if (custom_load_in_progress > 0)
+	if (retro_atomic_load_acquire_int(&custom_load_in_progress) > 0)
 		return false;
 
 	if (lock_block)
@@ -466,7 +466,7 @@ void BaseTextureCacheData::Create()
 	dirty = FrameCount;
 	lock_block = nullptr;
 	custom_image_data = nullptr;
-	custom_load_in_progress = 0;
+	retro_atomic_store_release_int(&custom_load_in_progress, 0);
 
 	//decode info from tsp/tcw into the texture struct
 	tex = &format[tcw.PixelFmt == PixelReserved ? Pixel1555 : tcw.PixelFmt];	//texture format table entry

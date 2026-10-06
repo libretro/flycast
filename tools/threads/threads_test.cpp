@@ -205,7 +205,7 @@ static void test_triple_buffer(void)
 
 struct mpsc_node
 {
-	std::atomic_int pending;	/* requests not answered yet */
+	retro_atomic_int_t pending;	/* requests not answered yet */
 	mpsc_node *next;
 	long handled;			/* plain: consumer only */
 };
@@ -224,7 +224,7 @@ static void mpsc_producer(void *p)
 	{
 		mpsc_node *n = &nodes[rng_next(&seed) % MPSC_NODES];
 		/* Queue the node only when it is not queued already. */
-		if (n->pending++ == 0)
+		if (retro_atomic_fetch_add_int(&n->pending, 1) == 0)
 		{
 			mpsc_list.Push(n);
 			mpsc_wake.Set();
@@ -246,9 +246,9 @@ static void mpsc_consumer(void *)
 			mpsc_node *next = n->next;
 			for (;;)
 			{
-				int requests = n->pending;
+				int requests = retro_atomic_load_acquire_int(&n->pending);
 				n->handled += requests;
-				if (n->pending.fetch_sub(requests) == requests)
+				if (retro_atomic_fetch_sub_int(&n->pending, requests) == requests)
 					break;
 			}
 			n = next;
@@ -275,7 +275,7 @@ static void test_mpsc_list(void)
 	for (int i = 0; i < MPSC_PRODUCERS; i++)
 		for (int j = 0; j < MPSC_NODES; j++)
 		{
-			CHECK(mpsc_nodes[i][j].pending == 0);
+			CHECK(retro_atomic_load_acquire_int(&mpsc_nodes[i][j].pending) == 0);
 			handled += mpsc_nodes[i][j].handled;
 		}
 	/* Every request answered exactly once. */

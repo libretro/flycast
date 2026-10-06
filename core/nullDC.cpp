@@ -2,7 +2,7 @@
 //
 
 //initialse Emu
-#include <atomic>
+#include <retro_atomic.h>
 #include "types.h"
 #include "hw/mem/_vmem.h"
 #include "hw/mem/vmem32.h"
@@ -38,7 +38,7 @@ settings_t settings;
 extern char game_dir[1024];
 extern char *game_data;
 extern bool boot_to_bios;
-extern std::atomic<bool> reset_requested;
+extern retro_atomic_int_t reset_requested;
 
 /*
 	libndc
@@ -547,7 +547,7 @@ bool dc_is_running()
 // Called on the emulator thread for soft reset
 void dc_request_reset()
 {
-	reset_requested = true;
+	retro_atomic_store_release_int(&reset_requested, 1);
 	dc_stop();
 }
 

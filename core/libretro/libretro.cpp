@@ -39,7 +39,7 @@ char* strdup(const char *str)
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
 #endif
-#include <atomic>
+#include <retro_atomic.h>
 #include <retro_timers.h>
 #include "emulator.h"
 #include "emu_baton.h"
@@ -208,7 +208,7 @@ static bool emu_thread_started = false;   /* libretro thread only */
 EmuBaton emu_baton;
 #endif
 static bool gl_ctx_resetting = false;
-std::atomic<bool> reset_requested{false};
+retro_atomic_int_t reset_requested;
 
 // Disk swapping
 static struct retro_disk_control_callback retro_disk_control_cb;
@@ -230,10 +230,10 @@ static void *emu_thread_func(void *)
 {
    while (emu_baton.WaitForFrame())
    {
-      if (reset_requested)
+      if (retro_atomic_load_acquire_int(&reset_requested))
       {
          dc_reset(false);
-         reset_requested = false;
+         retro_atomic_store_release_int(&reset_requested, 0);
       }
       dc_run();
       emu_baton.EndFrame();
