@@ -924,7 +924,6 @@ u32* ngen_readm_fail_v2(u32* ptrv,u32* regs,u32 fault_addr)
 	u32 sh4_addr=regs[raddr];
 	u32 fault_offs=fault_addr-regs[8];
 	u8* sh4_ctr=(u8*)regs[8];
-	bool is_sq=(sh4_addr>>26)==0x38;
 
 	verify(emit_ptr==0);
 	emit_ptr=(u32*)ptr;
@@ -949,71 +948,43 @@ u32* ngen_readm_fail_v2(u32* ptrv,u32* regs,u32 fault_addr)
 	//fault offset must always be the addr from ubfx (sanity check)
 	verify((fault_offs==0) || fault_offs==(0x1FFFFFFF&sh4_addr));
 
-	if (settings.dynarec.unstable_opt && is_sq) //THPS2 uses cross area SZ_32F so this is disabled for now
+	//Fallback to function !
+
+	if (offs==2)
 	{
-		//SQ !
-		s32 sq_offs=sq_both-sh4_ctr;
-		verify(sq_offs==rcb_noffs(sq_both));
-		
-		verify(!read && optp>=SZ_32I);
-
-		if (optp==SZ_32I)
-		{
-			MOV(r1,rt);
-
-			CALL((size_t)_mem_hndl_SQ32[raddr]);
-		}
+		if (raddr!=r0)
+			MOV(r0,(eReg)raddr);
 		else
-		{
-			//UBFX(r1,raddr,0,6);
-			AND(r1,raddr,0x3F);
-			ADD(r1,r1,r8);
-
-			if (optp==SZ_32I) STR(rt,r1,sq_offs); // cross writes are possible, so this can't be assumed
-			else if (optp==SZ_32F) VSTR(ft,r1,sq_offs/4);
-			else if (optp==SZ_64F) VSTR(fd,r1,sq_offs/4);
-		}
+			NOP();
 	}
-	else
+
+	if (!read)
 	{
-		//Fallback to function !
+		if (optp<=SZ_32I) MOV(r1,rt);
+		else if (optp==SZ_32F) VMOV(r1,ft);
+		else if (optp==SZ_64F) VMOV(r2,r3,fd);
+	}
 
-		if (offs==2)
-		{
-			if (raddr!=r0)
-				MOV(r0,(eReg)raddr);
-			else
-				NOP();
-		}
+	if (fd!=d0 && optp==SZ_64F)
+	{
+		die("BLAH");
+	}
 
-		if (!read)
-		{
-			if (optp<=SZ_32I) MOV(r1,rt);
-			else if (optp==SZ_32F) VMOV(r1,ft);
-			else if (optp==SZ_64F) VMOV(r2,r3,fd);
-		}
+	u32 funct=0;
 
-		if (fd!=d0 && optp==SZ_64F)
-		{
-			die("BLAH");
-		}
+	if (offs==1)
+		funct=_mem_hndl[read][optp][raddr];
+	else if (offs==2)
+		funct=_mem_func[read][optp];
 
-		u32 funct=0;
+	verify(funct!=0);
+	CALL(funct);
 
-		if (offs==1)
-			funct=_mem_hndl[read][optp][raddr];
-		else if (offs==2)
-			funct=_mem_func[read][optp];
-
-		verify(funct!=0);
-		CALL(funct);
-
-		if (read)
-		{
-			if (optp<=SZ_32I) MOV(rt,r0);
-			else if (optp==SZ_32F) VMOV(ft,r0);
-			else if (optp==SZ_64F) VMOV(fd,r0,r1);
-		}
+	if (read)
+	{
+		if (optp<=SZ_32I) MOV(rt,r0);
+		else if (optp==SZ_32F) VMOV(ft,r0);
+		else if (optp==SZ_64F) VMOV(fd,r0,r1);
 	}
 
 

@@ -195,7 +195,7 @@ static void LoadSpecialSettings(void)
          	NOTICE_LOG(BOOT, "[Hack]: Applying Disable DIV hack.");
          	settings.dynarec.ForceDisableDivMatching = settings.dynarec.DisableDivMatching = lut_games[i].disable_div;
          }
-         if (lut_games[i].extra_depth_scale != 1 && settings.rend.AutoExtraDepthScale)
+         if (lut_games[i].extra_depth_scale != 1)
          {
          	NOTICE_LOG(BOOT, "[Hack]: Applying auto extra depth scale.");
          	settings.rend.ExtraDepthScale = lut_games[i].extra_depth_scale;
@@ -304,7 +304,7 @@ static void LoadSpecialSettingsNaomi(const char *name)
             settings.mapping.JammaSetup = lut_games_naomi[i].jamma_setup;
          }
 
-         if (lut_games_naomi[i].extra_depth_scale != 1 && settings.rend.AutoExtraDepthScale)
+         if (lut_games_naomi[i].extra_depth_scale != 1)
          {
          	NOTICE_LOG(BOOT, "[Hack]: Applying auto extra depth scale.");
             settings.rend.ExtraDepthScale = lut_games_naomi[i].extra_depth_scale;
@@ -595,37 +595,17 @@ void dc_request_reset()
 void LoadSettings(void)
 {
 	settings.dynarec.Enable			= 1;
-	settings.dynarec.idleskip		= 1;
-	settings.dynarec.unstable_opt	= 0; 
 	//settings.dynarec.DisableDivMatching       = 0;
 	//disable_nvmem can't be loaded, because nvmem init is before cfg load
 	settings.dynarec.disable_vmem32 = false;
 	settings.dreamcast.FullMMU		= false;
-	settings.pvr.subdivide_transp	= 0;
 	//settings.pvr.Emulation.AlphaSortMode= 0;
-	settings.pvr.Emulation.zMin         = 0.f;
-	settings.pvr.Emulation.zMax         = 1.0f;
-
-	settings.pvr.MaxThreads			       = 3;
-#ifndef __LIBRETRO__
-	settings.pvr.Emulation.ModVol       = true;
-	settings.rend.RenderToTextureBuffer  = false;
-	settings.rend.RenderToTextureUpscale = 1;
-	settings.rend.MaxFilteredTextureSize = 256;
-#endif
-	settings.rend.AutoExtraDepthScale    = true;
 	settings.rend.ExtraDepthScale        = 1.f;
-
-	settings.rend.Clipping               = true;
 
 
 	settings.rend.TranslucentPolygonDepthMask = false;
 
-	settings.debug.SerialConsole         = 0;
-
 	settings.reios.ElfFile               = "";
-
-	settings.validate.OpenGlChecks      = 0;
 
 	settings.network.ActAsServer = false;
 	settings.network.dns = "46.101.91.123";		// Dreamcast Live DNS

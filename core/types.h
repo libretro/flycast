@@ -537,10 +537,8 @@ struct settings_t
 		bool RenderToTextureBuffer;
 		int RenderToTextureUpscale;
 		bool TranslucentPolygonDepthMask;
-		bool Clipping;
 		int TextureUpscale;
 		int MaxFilteredTextureSize;
-		bool AutoExtraDepthScale;
 		f32 ExtraDepthScale;
 		bool ThreadedRendering;
 		bool CustomTextures;
@@ -554,8 +552,6 @@ struct settings_t
 	{
 		bool Enable;
 		unsigned Type;
-		bool idleskip;
-		bool unstable_opt;
 		bool disable_nvmem;
 		bool disable_vmem32;
 		bool DisableDivMatching;
@@ -575,7 +571,6 @@ struct settings_t
 
 	struct
 	{
-		bool PatchRegion;
 		bool LoadDefaultImage;
 		char DefaultImage[512];
 	} imgread;
@@ -585,25 +580,13 @@ struct settings_t
 		struct
 		{
 			u32 AlphaSortMode;
-			f32 zMin;
-			f32 zMax;
 		} Emulation;
 
 		u32 ta_skip;
-		u32 subdivide_transp;
 		u32 rend;
 		
-		u32 MaxThreads;
 	} pvr;
 
-
-	struct {
-		bool SerialConsole;
-	} debug;
-
-	struct {
-		bool OpenGlChecks;
-	} validate;
 
 	struct {
 		JVS JammaSetup;

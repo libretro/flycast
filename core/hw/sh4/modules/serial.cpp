@@ -54,9 +54,6 @@ static void Serial_UpdateInterrupts()
 
 static void SerialWrite(u32 addr, u32 data)
 {
-	if (settings.debug.SerialConsole)
-		putc(data, stdout);
-
 	SCIF_SCFSR2.TDFE = 1;
 	SCIF_SCFSR2.TEND = 1;
 

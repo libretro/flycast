@@ -1081,51 +1081,44 @@ _end:
 #endif
 
 	//cycle tricks
-	if (settings.dynarec.idleskip)
+	//Experimental hash-id based idle skip
+	if (!mmu_enabled() && strstr(idle_hash, blk->hash()))
 	{
-		//Experimental hash-id based idle skip
-		if (!mmu_enabled() && strstr(idle_hash, blk->hash()))
-		{
-			//printf("IDLESKIP: %08X reloc match %s\n",blk->addr,blk->hash());
-			blk->guest_cycles=max_cycles*100;
-		}
-		else
-		{
-			//Small-n-simple idle loop detector :p
-			if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && blk->guest_opcodes<6)
-			{
-				if (blk->BlockType==BET_Cond_0 || (blk->BlockType==BET_Cond_1 && blk->BranchBlock<=blk->vaddr))
-				{
-					blk->guest_cycles*=3;
-				}
-
-				if (blk->BranchBlock==blk->vaddr)
-				{
-					blk->guest_cycles*=10;
-				}
-			}
-
-			//if in syscalls area (ip.bin etc) skip fast :p
-			if ((blk->addr&0x1FFF0000)==0x0C000000)
-			{
-				if (blk->addr&0x8000)
-				{
-					//ip.bin (boot loader/img etc)
-					blk->guest_cycles*=15;
-				}
-				else
-				{
-					//syscalls
-					blk->guest_cycles*=5;
-				}
-			}
-
-			//blk->guest_cycles=5;
-		}
+		//printf("IDLESKIP: %08X reloc match %s\n",blk->addr,blk->hash());
+		blk->guest_cycles=max_cycles*100;
 	}
 	else
 	{
-		blk->guest_cycles*=1.5;
+		//Small-n-simple idle loop detector :p
+		if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && blk->guest_opcodes<6)
+		{
+			if (blk->BlockType==BET_Cond_0 || (blk->BlockType==BET_Cond_1 && blk->BranchBlock<=blk->vaddr))
+			{
+				blk->guest_cycles*=3;
+			}
+
+			if (blk->BranchBlock==blk->vaddr)
+			{
+				blk->guest_cycles*=10;
+			}
+		}
+
+		//if in syscalls area (ip.bin etc) skip fast :p
+		if ((blk->addr&0x1FFF0000)==0x0C000000)
+		{
+			if (blk->addr&0x8000)
+			{
+				//ip.bin (boot loader/img etc)
+				blk->guest_cycles*=15;
+			}
+			else
+			{
+				//syscalls
+				blk->guest_cycles*=5;
+			}
+		}
+
+		//blk->guest_cycles=5;
 	}
 	// Win CE boost
 	if (mmu_enabled())

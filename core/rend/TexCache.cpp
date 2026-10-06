@@ -300,7 +300,7 @@ static inline int getThreadCount()
 	int tcount = omp_get_num_procs() - 1;
 	if (tcount < 1)
 		tcount = 1;
-	return std::min(tcount, (int)settings.pvr.MaxThreads);
+	return std::min(tcount, 3);
 }
 
 template<typename Func>

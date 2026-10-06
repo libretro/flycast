@@ -20,42 +20,6 @@ Disc*(*drivers[])(const char* path)=
 
 u8 q_subchannel[96];
 
-static void PatchRegion_0(u8* sector,int size)
-{
-	if (!settings.imgread.PatchRegion)
-		return;
-
-	u8* usersect=sector;
-
-	if (size!=2048)
-	{
-		INFO_LOG(GDROM, "PatchRegion_0 -> sector size %d , skipping patch", size);
-	}
-
-	//patch meta info
-	u8* p_area_symbol=&usersect[0x30];
-	memcpy(p_area_symbol,"JUE     ",8);
-}
-
-static void PatchRegion_6(u8* sector,int size)
-{
-	if (!settings.imgread.PatchRegion)
-		return;
-
-	u8* usersect=sector;
-
-	if (size!=2048)
-	{
-		INFO_LOG(GDROM, "PatchRegion_6 -> sector size %d , skipping patch", size);
-	}
-
-	//patch area symbols
-	u8* p_area_text=&usersect[0x700];
-	memcpy(&p_area_text[4],"For JAPAN,TAIWAN,PHILIPINES.",28);
-	memcpy(&p_area_text[4 + 32],"For USA and CANADA.         ",28);
-	memcpy(&p_area_text[4 + 32 + 32],"For EUROPE.                 ",28);
-}
-
 bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to,int sector)
 {
    //get subchannel data, if any
@@ -297,12 +261,6 @@ void GetDriveSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
       return;
 
    disc->ReadSectors(StartSector,SectorCount,buff,secsz);
-
-   if (disc->type == GdRom && StartSector==45150 && SectorCount==7)
-   {
-      PatchRegion_0(buff,secsz);
-      PatchRegion_6(buff+2048*6,secsz);
-   }
 }
 void GetDriveToc(u32* to,DiskArea area)
 {

@@ -27,9 +27,6 @@ enum class TileClipping {
 // clip_rect[] will contain x, y, width, height
 static inline TileClipping GetTileClip(u32 val, const glm::mat4& viewport, int *clip_rect)
 {
-	if (!settings.rend.Clipping)
-		return TileClipping::Off;
-
 	u32 clipmode = val >> 28;
 	if (clipmode < 2)
 		return TileClipping::Off;	//always passes
