@@ -140,6 +140,30 @@ static void ta_volume_triangle(u32 x0, u32 y0, u32 x1, u32 y1, u32 x2, u32 y2, u
 /* Where in video memory the render to a texture goes: see render_to_texture(). */
 #define RTT_ADDRESS 0x700000
 
+/* A screen-aligned rectangle at depth 0.5 whose colour is given the other
+ * two ways the Tile Accelerator takes one: as four floats with every
+ * vertex (@intensity 0), or as a face colour in the polygon's header and an
+ * intensity with every vertex that it is multiplied by (@intensity 1). */
+static void ta_float_quad(int intensity, u32 colour, u32 scale, u32 x0, u32 y0, u32 x1, u32 y1)
+{
+   const u32 pcw = intensity ? 0x20 : 0x10, z = F(0.5f), one = F(1.0f);
+   u32 i;
+
+   if (intensity)
+      ta_send(TA_POLYGON | pcw, ISP_GEQUAL, TSP_PLAIN, 0, one, colour, colour, colour);
+   else
+      ta_send(TA_POLYGON | pcw, ISP_GEQUAL, TSP_PLAIN, 0, 0, 0, 0, 0);
+   for (i = 0; i < 4; i++)
+   {
+      const u32 x = (i & 2) ? x1 : x0, y = (i & 1) ? y1 : y0, last = i == 3 ? TA_LAST : 0;
+
+      if (intensity)
+         ta_send(TA_VERTEX | last, x, y, z, 0, 0, scale, 0);
+      else
+         ta_send(TA_VERTEX | last, x, y, z, one, colour, colour, colour);
+   }
+}
+
 /* A modifier volume, as its own list: a slab over a rectangle of the
  * screen, from depth 0.25 up to @near. Its near face and its far face, two
  * triangles each; the last triangle of a volume comes under a parameter of
@@ -190,6 +214,10 @@ static void ta_scene(void)
     * RGB565, not twiddled, 128 by 128. */
    ta_quad(TA_TEXTURED, TSP_PLAIN | (4u << 3) | 4u, (1u << 27) | (1u << 26) | (RTT_ADDRESS >> 3),
          0xFFFFFFFF, F(0.5f), F(250.0f), F(125.0f), F(300.0f), F(175.0f));
+   /* Bottom middle: a white polygon whose colour is given as an intensity, 1,
+    * and a face colour, 1. The two are multiplied and made eight bits, and
+    * that is 255: not the 254 that 255 * 255 / 256 makes of it. */
+   ta_float_quad(1, F(1.0f), F(1.0f), F(175.0f), F(215.0f), F(195.0f), F(235.0f));
    /* Bottom left: one 8-bit texture drawn twice, with the third and the
     * fourth of the four palette banks an 8-bit texture can pick, the first
     * with bilinear filtering and the second without. Both banks start out

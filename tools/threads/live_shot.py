@@ -38,6 +38,10 @@ On the right, below the three, is a polygon whose texture is one the
 disc renders to every frame before it renders the screen: orange with a
 blue top left quarter, and it has to be the same way up on the polygon.
 
+At the bottom, in the middle, is a polygon lit by intensity: a white face
+colour at full intensity, which has to come out as 255 and not a level
+less.
+
 A second render pass draws a cyan polygon, which does not take shadows,
 over a corner of the first white one, with a modifier volume of its own
 over it: it has to stay cyan. An opaque polygon with those halving
@@ -137,6 +141,8 @@ def main():
         ('the render target, top right',    288, 137, (255, 128, 0)),
         ('the render target, bottom left',  262, 163, (255, 128, 0)),
         ('the render target, bottom right', 288, 163, (255, 128, 0)),
+        # a face colour of 1 at an intensity of 1: exactly white
+        ('full intensity',         185, 225, (255, 255, 255), 0),
         # the second render pass
         ('P, in its volume',        55, 101, (0, 255, 255)),
         ('P, outside it',           42,  96, (0, 255, 255)),
@@ -147,10 +153,13 @@ def main():
         ('unsorted: blue in front of red', 160, 195, (127, 127, 127)),
         ('unsorted: blue over the background', 190, 195, (127, 127, 127)),
     )
-    for name, sx, sy, want in scene:
+    for entry in scene:
+        name, sx, sy, want = entry[:4]
+        # how far off a channel may be: 3 unless the entry says otherwise
+        allowed = entry[4] if len(entry) > 4 else 3
         x, y = width * sx // 320, height * sy // 240
         got = tuple(rows[y][x * bpp:x * bpp + 3])
-        if any(abs(got[i] - want[i]) > 3 for i in range(3)):
+        if any(abs(got[i] - want[i]) > allowed for i in range(3)):
             bad.append('%s is %d,%d,%d, not %d,%d,%d' % ((name,) + got + want))
     if bad:
         print('the scene: ' + '; '.join(bad))
