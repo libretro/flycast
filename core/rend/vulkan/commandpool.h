@@ -97,6 +97,21 @@ public:
 		return *inFlightBuffers[index].back();
 	}
 
+	/* Waits until the GPU is done with everything submitted through this
+	 * pool. For before things those frames use are destroyed outright: when
+	 * the renderer is taken down or resized. The frontend's own wait
+	 * (wait_sync_index) is for the frontend's frames, not these.
+	 *
+	 * It gives up after a second rather than hang on a frame that was begun
+	 * and never submitted. */
+	void WaitAll()
+	{
+		if (fences.empty())
+			return;
+		const std::vector<vk::Fence> all = vk::uniqueToRaw(fences);
+		(void)VulkanContext::Instance()->GetDevice().waitForFences(all, true, 1000000000ull);
+	}
+
 	vk::Fence GetCurrentFence()
 	{
 		return *fences[index];

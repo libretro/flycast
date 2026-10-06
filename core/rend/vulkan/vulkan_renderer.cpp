@@ -45,6 +45,8 @@ public:
 
 	void Resize(int w, int h) override
 	{
+		// what is replaced below may be in use by frames still on the GPU
+		texCommandPool.WaitAll();
 		screenDrawer.Init(&samplerManager, &shaderManager);
 		BaseInit(screenDrawer.GetRenderPass());
 	}
@@ -53,6 +55,7 @@ public:
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");
 		GetContext()->WaitIdle();
+		texCommandPool.WaitAll();
 		samplerManager.Term();
 		BaseVulkanRenderer::Term();
 	}

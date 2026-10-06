@@ -46,6 +46,8 @@ public:
 	void Resize(int w, int h) override
 	{
 		NOTICE_LOG(RENDERER, "OIT Resize %d x %d", w, h);
+		// what is replaced below may be in use by frames still on the GPU
+		texCommandPool.WaitAll();
 		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers);
 		BaseInit(screenDrawer.GetRenderPass(), 2);
 	}
@@ -54,6 +56,7 @@ public:
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");
 		GetContext()->WaitIdle();
+		texCommandPool.WaitAll();
 		oitShaderManager.Term();
 		samplerManager.Term();
 		screenDrawer.Term();
