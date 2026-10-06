@@ -167,25 +167,47 @@ void QuadDrawer::Init(QuadPipeline *pipeline)
 {
 	this->pipeline = pipeline;
 	buffer = std::unique_ptr<QuadBuffer>(new QuadBuffer());
-	descriptorSets.resize(VulkanContext::Instance()->GetSwapChainSize());
+	slots.clear();
+	slots.resize(VulkanContext::Instance()->GetSwapChainSize());
 }
 
 void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, QuadVertex vertices[], bool nearestFilter)
 {
 	VulkanContext *context = GetContext();
-	auto &descSet = descriptorSets[context->GetCurrentImageIndex()];
-	if (!descSet)
+	Slot& slot = slots[context->GetCurrentImageIndex()];
+	const vk::Sampler sampler = nearestFilter ? pipeline->GetNearestSampler() : pipeline->GetLinearSampler();
+
+	/* Sets replaced long enough ago that no frame can still be using them */
+	for (size_t i = 0; i < retired.size(); )
 	{
-		vk::DescriptorSetLayout layout = pipeline->GetDescSetLayout();
-		descSet = std::move(context->GetDevice().allocateDescriptorSetsUnique(
-				vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &layout)).front());
+		if (--retired[i].draws == 0)
+			retired.erase(retired.begin() + i);
+		else
+			i++;
 	}
-	vk::DescriptorImageInfo imageInfo(nearestFilter ? pipeline->GetNearestSampler() : pipeline->GetLinearSampler(), imageView, vk::ImageLayout::eShaderReadOnlyOptimal);
-	std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
-	writeDescriptorSets.push_back(
-			vk::WriteDescriptorSet(*descSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr));
-	context->GetDevice().updateDescriptorSets(writeDescriptorSets, nullptr);
-	commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline->GetPipelineLayout(), 0, 1, &descSet.get(), 0, nullptr);
+
+	/* The set says which image to draw and how to sample it, and that is the
+	 * same from one frame to the next, so it is written when it changes and
+	 * not every time. Writing it every time was also not allowed: the frame
+	 * before can still be on its way through the GPU using this very set -
+	 * the frontend's frame index, which picks the set, does not move when the
+	 * game renders twice in one run - and a set in use must not be written.
+	 * When it does change, the old set is left as it is for the frames that
+	 * use it and a new one takes its place. */
+	if (!slot.set || slot.view != imageView || slot.sampler != sampler)
+	{
+		if (slot.set)
+			retired.push_back({ std::move(slot.set), 2 * (u32)slots.size() + 1 });
+		vk::DescriptorSetLayout layout = pipeline->GetDescSetLayout();
+		slot.set = std::move(context->GetDevice().allocateDescriptorSetsUnique(
+				vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &layout)).front());
+		slot.view = imageView;
+		slot.sampler = sampler;
+		vk::DescriptorImageInfo imageInfo(sampler, imageView, vk::ImageLayout::eShaderReadOnlyOptimal);
+		vk::WriteDescriptorSet write(*slot.set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr);
+		context->GetDevice().updateDescriptorSets(1, &write, 0, nullptr);
+	}
+	commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline->GetPipelineLayout(), 0, 1, &slot.set.get(), 0, nullptr);
 
 	buffer->Update(vertices);
 	buffer->Bind(commandBuffer);
