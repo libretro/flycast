@@ -387,6 +387,9 @@ struct ChannelEx
 	
 		SampleType prev1;
 		SampleType prev2;
+		/* What the filter's last sample dropped below its lowest bit, to
+		 * go into the next one: see Step() */
+		s32 fract;
 		s32 q;
 		u32 AttackRate;
 		u32 Decay1Rate;
@@ -472,7 +475,16 @@ struct ChannelEx
 				u32 fv = FEG.GetValue();
 				s32 f = (((fv & 0xFF) | 0x100) << 4) >> ((fv >> 8) ^ 0x1F);
 				f = std::max(1, f);
-				sample = f * sample + (0x2000 - f + FEG.q) * FEG.prev1 - FEG.q * FEG.prev2;
+				/* The filter feeds its output back into itself, and the
+				 * 13 bits the shift drops are carried into the next sample
+				 * and not thrown away. Thrown away, every sample was
+				 * rounded down, and that went round the loop: a channel
+				 * whose input had gone quiet settled not at 0 but at up to
+				 * -127, the lower its cutoff the further down, and a sound
+				 * quieter than that came out as that constant, or as one
+				 * half of itself. */
+				sample = f * sample + (0x2000 - f + FEG.q) * FEG.prev1 - FEG.q * FEG.prev2 + FEG.fract;
+				FEG.fract = sample & 0x1FFF;
 				sample >>= 13;
 				clip16(sample);
 				FEG.prev2 = FEG.prev1;
@@ -562,6 +574,7 @@ struct ChannelEx
 			FEG.SetValue(ccd->FLV0);
 			FEG.prev1 = 0;
 			FEG.prev2 = 0;
+			FEG.fract = 0;
 		}
 	}
 
@@ -1478,6 +1491,7 @@ bool channel_serialize(void **data, unsigned int *total_size)
 		LIBRETRO_S(Chans[i].FEG.state);
 		LIBRETRO_S(Chans[i].FEG.prev1);
 		LIBRETRO_S(Chans[i].FEG.prev2);
+		LIBRETRO_S(Chans[i].FEG.fract);
 
 		LIBRETRO_S(Chans[i].lfo.counter) ;
 		LIBRETRO_S(Chans[i].lfo.state) ;
@@ -1562,6 +1576,11 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			Chans[i].FEG.prev1 = 0;
 			Chans[i].FEG.prev2 = 0;
 		}
+		/* The filter's carried fraction: not in states from before V16 */
+		if (ver >= V16)
+			LIBRETRO_US(Chans[i].FEG.fract);
+		else
+			Chans[i].FEG.fract = 0;
 		/* SetFegState() resets value/prev1/prev2 to the register level when the
 		 * saved state is EG_Attack, which would discard the restored mid-attack
 		 * filter-envelope state and desync audio after a savestate/runahead load.
@@ -1570,10 +1589,12 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			u32 feg_value       = Chans[i].FEG.value;
 			SampleType feg_prev1 = Chans[i].FEG.prev1;
 			SampleType feg_prev2 = Chans[i].FEG.prev2;
+			s32 feg_fract        = Chans[i].FEG.fract;
 			Chans[i].SetFegState(Chans[i].FEG.state);
 			Chans[i].FEG.value = feg_value;
 			Chans[i].FEG.prev1 = feg_prev1;
 			Chans[i].FEG.prev2 = feg_prev2;
+			Chans[i].FEG.fract = feg_fract;
 		}
 		Chans[i].UpdateFEG();
 		if (ver < V8)
