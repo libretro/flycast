@@ -376,7 +376,11 @@ static int gd_dma(u32 dest, u32 len)
  *   B, the same five in ten transfers of half a sector, so that no
  *      transfer has a whole sector to move and every sector is split
  *      across two;
- *   C, eight sectors, more than the drive's DMA moves in one step.
+ *   C, eight sectors, more than the drive's DMA moves in one step;
+ *   D, two sectors asked of the drive and a transfer of three asked of
+ *      the DMA. The two there are arrive, the transfer is left waiting
+ *      for a third that is not coming, and can be called off. An emulator
+ *      that goes on trying to fill the transfer never comes back.
  * An emulator may well move whole sectors and parts of sectors by
  * different routes, and A and B then check one against the other.
  * Non-zero, saying which, if anything is off. */
@@ -386,10 +390,11 @@ static int gd_test(void)
    volatile unsigned char *a = (volatile unsigned char *)0xAC200000;
    volatile unsigned char *b = (volatile unsigned char *)0xAC210000;
    volatile unsigned char *c = (volatile unsigned char *)0xAC220000;
+   volatile unsigned char *d = (volatile unsigned char *)0xAC230000;
    u32 i;
 
    for (i = 0; i < 9 * 2048; i++)
-      a[i] = b[i] = c[i] = 0xEE;
+      a[i] = b[i] = c[i] = d[i] = 0xEE;
    if (!gd_read(45150, 5) || !gd_dma(0x0C200000, 5 * 2048))
       return 1;
    if (!gd_read(45150, 5))
@@ -408,6 +413,25 @@ static int gd_test(void)
    for (i = 0; i < 5 * 2048; i++)
       if (c[i] != a[i])
          return 6;
+   if (!gd_read(45150, 2))
+      return 8;
+   G1(0x404) = 0x0C230000;
+   G1(0x408) = 3 * 2048;
+   G1(0x40C) = 1;
+   G1(0x414) = 1;
+   G1(0x418) = 1;
+   for (i = 0; i < 400000 && (G1(0x418) & 1); i++)
+      ;
+   if (!(G1(0x418) & 1))
+      return 9;                                        /* finished, on two sectors? */
+   G1(0x414) = 0;                                      /* called off */
+   if (G1(0x418) & 1)
+      return 10;
+   for (i = 0; i < 2 * 2048; i++)
+      if (d[i] != a[i])
+         return 11;
+   if (d[2 * 2048] != 0xEE)
+      return 12;
    /* ...and nothing was written past the end of what was asked for */
    if (a[5 * 2048] != 0xEE || b[5 * 2048] != 0xEE || c[8 * 2048] != 0xEE)
       return 7;
