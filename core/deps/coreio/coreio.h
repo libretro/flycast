@@ -26,6 +26,9 @@ size_t core_ftell(core_file* fc);
 /* The whole file as addressable bytes when it is mapped or already in
  * memory, else NULL. Valid until core_fclose(). */
 const uint8_t* core_fmap(core_file* fc, size_t* len);
+/* Ask the OS to start bringing [offset, offset + len) in, ahead of the
+ * reads that follow. A hint; returns at once. */
+void core_fprefetch(core_file* fc, uint64_t offset, size_t len);
 
 /* Close the archive kept open for archive#member paths, once no member
  * file refers to it any more. */

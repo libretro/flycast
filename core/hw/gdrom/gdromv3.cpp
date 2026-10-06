@@ -615,6 +615,7 @@ void gd_process_spi_cmd()
 			else
 				read_params.remaining_sectors = (packet_cmd.data_8[6] << 8) | packet_cmd.data_8[7];
 			read_params.sector_type = sector_type;//yeah i know , not really many types supported...
+			libGDR_Prefetch(read_params.start_sector, read_params.remaining_sectors);
 
 			printf_spicmd("SPI_CD_READ - Sector=%d Size=%d/%d DMA=%d",read_params.start_sector,read_params.remaining_sectors,read_params.sector_type,Features.CDRead.DMA);
 			if (Features.CDRead.DMA == 1)

@@ -648,6 +648,8 @@ void libCore_gdrom_disc_change(void);
 
 //IO
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz);
+/* Read-ahead hint for a read about to be made of those sectors. */
+void libGDR_Prefetch(u32 StartSector, u32 SectorCount);
 void libGDR_ReadSubChannel(u8 * buff, u32 format, u32 len);
 void libGDR_GetToc(u32* toc,u32 area);
 u32 libGDR_GetDiscType(void);

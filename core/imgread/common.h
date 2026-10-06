@@ -114,6 +114,8 @@ struct TrackFile
 	 * hunk - or NULL when they have to be read into a buffer. Valid until
 	 * the next call on the same disc. */
 	virtual const u8* View(u32 FAD, SectorFormat* sector_type) { return NULL; }
+	/* Read-ahead hint for the sectors a read is about to ask for. */
+	virtual void Prefetch(u32 FAD, u32 count) {}
 	virtual ~TrackFile() {};
 };
 
@@ -169,6 +171,27 @@ struct Disc
 		}
 
 		return false;
+	}
+
+	/* Hints the tracks holding [FAD, FAD + count) that it is about to be
+	 * read, before the reads themselves land. */
+	void Prefetch(u32 FAD, u32 count)
+	{
+		while (count)
+		{
+			size_t i;
+			u32 n = count;
+			for (i=tracks.size();i-->0;)
+				if (tracks[i].Holds(FAD))
+					break;
+			if (i == (size_t)-1)
+				return;
+			if (tracks[i].EndFAD && tracks[i].EndFAD - FAD + 1 < n)
+				n = tracks[i].EndFAD - FAD + 1;
+			tracks[i].file->Prefetch(FAD, n);
+			FAD += n;
+			count -= n;
+		}
 	}
 
 	/* The sector in place from the track that holds it, or NULL. */
@@ -324,6 +347,10 @@ struct RawTrackFile : TrackFile
       }
 
 		core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
+	}
+	virtual void Prefetch(u32 FAD, u32 count)
+	{
+		core_fprefetch(file, (u32)(offset + FAD * fmt), (size_t)count * fmt);
 	}
 	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
 	{

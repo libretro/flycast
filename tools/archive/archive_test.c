@@ -77,6 +77,12 @@ static void check_reads(core_file *cf, const uint8_t *want, size_t len,
 
    CHECK(core_fsize(cf) == len, what);
 
+   /* the read-ahead hint, in every shape: a hint changes no bytes */
+   core_fprefetch(cf, 0, len);
+   core_fprefetch(cf, len / 2, len);
+   core_fprefetch(cf, len, 4096);
+   core_fprefetch(cf, 0, 0);
+
    for (i = 0; i < 64 && len; i++)
    {
       size_t n = (i * 2351 + 7) % 70000 + 1;

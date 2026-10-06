@@ -13,6 +13,11 @@ void libGDR_ReadSubChannel(u8 * buff, u32 format, u32 len)
 		memcpy(buff,q_subchannel,len);
 }
 
+void libGDR_Prefetch(u32 StartSector, u32 SectorCount)
+{
+	if (disc)
+		disc->Prefetch(StartSector, SectorCount);
+}
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 {
 	GetDriveSector(buff,StartSector,SectorCount,secsz);

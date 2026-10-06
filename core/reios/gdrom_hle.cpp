@@ -72,6 +72,7 @@ template<bool virtual_addr>
 static void read_sectors_to(u32 addr, u32 sector, u32 count)
 {
 	gd_hle_state.cur_sector = sector + count - 1;
+	libGDR_Prefetch(sector, count);
 	if (virtual_addr)
 		gd_hle_state.xfer_end_time = 0;
 	else if (count > 5 && GDROM_TICK == 1500000)
@@ -133,6 +134,7 @@ static void GDROM_HLE_ReadDMA()
 	gd_hle_state.dma_read_sector = s;
 	gd_hle_state.dma_read_count  = n;
 	gd_hle_state.dma_read_addr   = b;
+	libGDR_Prefetch(s, n);
 	gd_hle_state.result[2] = 0;
 	gd_hle_state.result[3] = 0;
 }
@@ -431,6 +433,7 @@ static void GD_HLE_Command(u32 cc)
 			gd_hle_state.multi_read_count = num * 2048;
 			gd_hle_state.multi_read_total = gd_hle_state.multi_read_count;
 			gd_hle_state.multi_read_offset = 0;
+			libGDR_Prefetch(sector, num);
 			gd_hle_state.result[2] = 2048;
 			gd_hle_state.result[3] = num > 0 ? 1 : 0;
 		}
@@ -561,6 +564,7 @@ static void GD_HLE_Command(u32 cc)
 			gd_hle_state.multi_read_count = num * 2048;
 			gd_hle_state.multi_read_total = gd_hle_state.multi_read_count;
 			gd_hle_state.multi_read_offset = 0;
+			libGDR_Prefetch(sector, num);
 
 			// wild guesses here
 			gd_hle_state.result[2] = 0;

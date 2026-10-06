@@ -468,3 +468,10 @@ int archive_resolve_disc(const char *path, char *out, size_t out_len)
    free(arc);
    return 1;
 }
+
+void archive_prefetch(archive_t *a, const uint8_t *p, size_t len)
+{
+   if (!a || !a->map || p < a->map || p >= a->map + a->map_len)
+      return;
+   core_fprefetch(a->f, (uint64_t)(p - a->map), len);
+}

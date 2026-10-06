@@ -211,6 +211,22 @@ const uint8_t* core_fmap(core_file* fc, size_t* len)
    return cf->mem;
 }
 
+void core_fprefetch(core_file* fc, uint64_t offset, size_t len)
+{
+   core_file_impl *cf = (core_file_impl*)fc;
+
+   if (!cf || offset >= cf->size)
+      return;
+   if (len > cf->size - (size_t)offset)
+      len = cf->size - (size_t)offset;
+   if (cf->lf)
+      retro_vfs_file_prefetch_impl(cf->lf, offset, len);
+   else if (cf->f)
+      filestream_prefetch(cf->f, cf->base + offset, len);
+   else if (cf->in_archive && cf->mem && cur_archive)
+      archive_prefetch(cur_archive, cf->mem + (size_t)offset, len);
+}
+
 size_t core_fread_at(core_file* fc, uint64_t offset, void* buff, size_t len)
 {
    core_file_impl *cf = (core_file_impl*)fc;

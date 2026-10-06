@@ -61,6 +61,9 @@ const uint8_t *archive_entry_data(archive_t *a, unsigned index, size_t *len);
  * reading anything: a stored member of an unmapped archive is better
  * read in place at data_off than pulled into memory. */
 const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len);
+/* Read-ahead hint for @len bytes at @p, when @p lies in the archive's
+ * mapping; bytes already decoded into memory need none. */
+void archive_prefetch(archive_t *a, const uint8_t *p, size_t len);
 
 /* For a zip or 7z at @path holding a disc image, writes "path#member"
  * into @out, preferring a .gdi, then .cue, .chd, .cdi. A @path that
