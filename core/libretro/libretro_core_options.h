@@ -360,6 +360,22 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "auto",
    },
+#ifdef FEAT_AREC_SELECTABLE
+   {
+      CORE_OPTION_NAME "_arm7_recompiler",
+      "Sound CPU Recompiler",
+      NULL,
+      "Run the sound chip's ARM7 processor through the recompiler. Disable to run it through the slower interpreter instead, to find out whether a sound problem comes from the recompiler. Takes effect at once.",
+      NULL,
+      NULL,
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
+      "enabled",
+   },
+#endif
    {
       CORE_OPTION_NAME "_force_wince",
       "Force Windows CE Mode",

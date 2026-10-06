@@ -775,6 +775,33 @@ void *getMemOp(bool Load, bool Byte)
 
 void run(u32 samples)
 {
+	/* The interpreter instead, when the core option asks for it: for
+	 * telling whether a sound problem is the recompiler's. The two keep the
+	 * ARM's state in the same place and can change over between any two
+	 * samples. Coming back, everything compiled is thrown away: the
+	 * recompiler was not there to see what ran in the meantime, and the
+	 * program in the ARM's memory may be another by now. */
+	static bool interpreting;
+
+	if (settings.dynarec.Arm7Interpreter)
+	{
+		if (!interpreting)
+			NOTICE_LOG(AICA_ARM, "ARM7: interpreter");
+		interpreting = true;
+		for (u32 i = 0; i < samples; i++)
+		{
+			arm_Run_(ARM_CYCLES_PER_SAMPLE);
+			libAICA_TimeStep();
+		}
+		return;
+	}
+	if (interpreting)
+	{
+		NOTICE_LOG(AICA_ARM, "ARM7: recompiler");
+		interpreting = false;
+		recompiler::flush();
+	}
+
 	for (u32 i = 0; i < samples; i++)
 	{
 		if (Arm7Enabled)

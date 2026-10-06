@@ -238,6 +238,12 @@
 	#endif
 #endif
 
+// Where the ARM7's recompiler can be switched for the interpreter while
+// running, which the build then also has: a core option does it
+#if HOST_CPU == CPU_X64 && FEAT_AREC != DYNAREC_NONE
+#define FEAT_AREC_SELECTABLE 1
+#endif
+
 #ifndef FEAT_DSPREC
 	#if HOST_CPU == CPU_X86 || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64
 		#define FEAT_DSPREC DYNAREC_JIT

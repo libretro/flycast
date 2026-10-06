@@ -108,3 +108,6 @@ extern u8 cpuBitsSet[256];
 extern "C" void CPUFiq();
 void CPUUpdateCPSR();
 void libAICA_TimeStep();
+// The interpreter, for that many of the ARM's cycles: all there is where
+// there is no recompiler, and there to be chosen where FEAT_AREC_SELECTABLE
+void arm_Run_(u32 CycleCount);

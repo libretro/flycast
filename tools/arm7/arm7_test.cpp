@@ -20,6 +20,9 @@
  * for that, and the sound drivers do not do it.
  *
  * arm7_test [programs [first]] runs that many, from the first given.
+ * $ARM7_TEST_INTERPRET has the build with the recompiler run them through
+ * the interpreter it also has, and $ARM7_TEST_SWITCH has it change between
+ * the two over its first samples; see run.sh.
  * $ARM7_TEST_CASE runs one; $ARM7_TEST_PRINT also prints its instructions,
  * and $ARM7_TEST_PROGRAM names a file of hex words to run in their place. */
 #include <stdio.h>
@@ -35,6 +38,7 @@
 #include "hw/aica/aica_if.h"
 #include "log/Log.h"
 
+settings_t settings;
 unsigned ARAM_SIZE = 2 * 1024 * 1024;
 unsigned ARAM_MASK = 2 * 1024 * 1024 - 1;
 VArray2 aica_ram;
@@ -215,7 +219,30 @@ static void run_case(unsigned number)
       printf("%u %u stopped on a check of its own\n", number, count);
       return;
    }
-   aicaarm::run(64);
+   /* how the build with the recompiler in it is asked for the interpreter
+    * instead, as the core option does: for the whole program, or changing
+    * over and back while it runs */
+   if (getenv("ARM7_TEST_INTERPRET"))
+   {
+      settings.dynarec.Arm7Interpreter = true;
+      aicaarm::run(64);
+      settings.dynarec.Arm7Interpreter = false;
+   }
+   else if (getenv("ARM7_TEST_SWITCH"))
+   {
+      /* over the first samples, which is where a program this short
+       * does its work; every change back to the recompiler makes it start
+       * over, which takes time, so not for all 64 */
+      for (i = 0; i < 4; i++)
+      {
+         settings.dynarec.Arm7Interpreter = (number + i) & 1;
+         aicaarm::run(1);
+      }
+      settings.dynarec.Arm7Interpreter = false;
+      aicaarm::run(60);
+   }
+   else
+      aicaarm::run(64);
 
    if (memcmp(&ram[PROGRAM], program, (count + 1) * 4) || *(u32*)&ram[0] != (0xEA000000 | ((PROGRAM - 8) / 4)))
    {

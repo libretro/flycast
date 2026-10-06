@@ -58,7 +58,7 @@ void CPUSoftwareInterrupt(int comment);
 void CPUUndefinedException();
 void libAICA_TimeStep();
 
-#if FEAT_AREC == DYNAREC_NONE
+#if FEAT_AREC == DYNAREC_NONE || defined(FEAT_AREC_SELECTABLE)
 
 //
 // ARM7 interpreter
@@ -80,7 +80,9 @@ void arm_Run_(u32 CycleCount)
 		#include "arm-new.h"
 	}
 }
+#endif
 
+#if FEAT_AREC == DYNAREC_NONE
 void aicaarm::run(u32 samples)
 {
 	for (u32 i = 0; i < samples; i++)

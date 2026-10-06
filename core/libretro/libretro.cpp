@@ -949,6 +949,13 @@ static void update_variables(bool first_startup)
    if ( environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value )
       input_set_deadzone_trigger( atoi( var.value ) );
 
+#ifdef FEAT_AREC_SELECTABLE
+   var.key = CORE_OPTION_NAME "_arm7_recompiler";
+   var.value = NULL;
+   settings.dynarec.Arm7Interpreter = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+      && !strcmp("disabled", var.value);
+#endif
+
    var.key = CORE_OPTION_NAME "_precompile_fpcb";
    var.value = NULL;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

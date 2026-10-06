@@ -561,6 +561,7 @@ struct settings_t
 		bool DisableDivMatching;
 		bool ForceDisableDivMatching;
 		bool PrecompileFpcb;	// eagerly commit the whole block-dispatch table
+		bool Arm7Interpreter;	// the sound chip's ARM7 interpreted, where there is the choice
 	} dynarec;
 	
 	struct
