@@ -74,6 +74,10 @@
 # a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
 # than skips when one is missing. Uses UDP port 55355.
 set -e
+# The checkers import one another; Python is not to leave compiled copies of
+# them in the tree
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CORE=${1:-$ROOT/flycast_libretro.so}
 RETROARCH=${RETROARCH:-retroarch}

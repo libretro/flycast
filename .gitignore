@@ -57,3 +57,7 @@ reicast-ios.xccheckout
 .vscode/c_cpp_properties.json
 
 *.d
+
+# Python leaves these beside the scripts in tools/
+__pycache__/
+*.pyc
