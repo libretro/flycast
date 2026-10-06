@@ -164,8 +164,8 @@ CHD_SOURCES_C = \
 					$(LIBRETRO_COMM_DIR)/encodings/encoding_rzstd.c \
 					$(LIBRETRO_COMM_DIR)/formats/flac/rflac.c
 
-# zip and 7z archives: deflate through encoding_deflate.c, LZMA/LZMA2/BCJ
-# through the r7z units, members filled through data_transfer.c.
+# zip and 7z archives: rzip_archive over encoding_deflate.c, r7z_archive
+# over the LZMA/LZMA2/BCJ units.
 ARCHIVE_SOURCES_C = \
 					$(CORE_DIR)/core/archive/archive.c \
 					$(LIBRETRO_COMM_DIR)/encodings/encoding_deflate.c \
@@ -176,8 +176,7 @@ ARCHIVE_SOURCES_C = \
 					$(LIBRETRO_COMM_DIR)/formats/7z/r7z_lzma_stream.c \
 					$(LIBRETRO_COMM_DIR)/formats/7z/r7z_bcj2.c \
 					$(LIBRETRO_COMM_DIR)/formats/7z/r7z_filters.c \
-					$(LIBRETRO_COMM_DIR)/formats/data_transfer.c \
-					$(LIBRETRO_COMM_DIR)/memmap/memmap.c \
+					$(LIBRETRO_COMM_DIR)/formats/zip/rzip_archive.c \
 					$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
 PICOTCP_INCFLAGS = \

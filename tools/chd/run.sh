@@ -46,8 +46,7 @@ $CC -O1 -g $DEFS -fsanitize=address,undefined \
    $L/encodings/encoding_crc32.c $L/formats/7z/r7z_lzma.c \
    $L/formats/7z/r7z_archive.c $L/formats/7z/r7z_lzma2.c \
    $L/formats/7z/r7z_lzma_stream.c $L/formats/7z/r7z_bcj2.c \
-   $L/formats/7z/r7z_filters.c $L/formats/data_transfer.c \
-   $L/memmap/memmap.c \
+   $L/formats/7z/r7z_filters.c $L/formats/zip/rzip_archive.c \
    $L/formats/flac/rflac.c $L/features/features_cpu.c \
    $L/streams/file_stream.c $L/vfs/vfs_implementation.c \
    $L/file/file_path.c $L/file/file_path_io.c $L/file/retro_dirent.c \
