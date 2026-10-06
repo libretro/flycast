@@ -82,7 +82,7 @@ public:
 	// FIXME way too many params
 	void UpdateUniforms(vk::Buffer buffer, u32 vertexUniformOffset, u32 fragmentUniformOffset, vk::ImageView fogImageView,
 			u32 polyParamsOffset, u32 polyParamsSize, vk::ImageView stencilImageView, vk::ImageView depthImageView,
-			vk::ImageView paletteImageView)
+			vk::ImageView paletteImageView, vk::ImageLayout depthInputLayout)
 	{
 		if (!perFrameDescSet)
 		{
@@ -124,9 +124,9 @@ public:
 			polyParamsBufferInfo = vk::DescriptorBufferInfo(buffer, polyParamsOffset, polyParamsSize);
 			writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perFrameDescSet, 3, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &polyParamsBufferInfo, nullptr));
 		}
-		vk::DescriptorImageInfo stencilImageInfo(vk::Sampler(), stencilImageView, vk::ImageLayout::eDepthStencilReadOnlyOptimal);
+		vk::DescriptorImageInfo stencilImageInfo(vk::Sampler(), stencilImageView, depthInputLayout);
 		writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perFrameDescSet, 4, 0, 1, vk::DescriptorType::eInputAttachment, &stencilImageInfo, nullptr, nullptr));
-		vk::DescriptorImageInfo depthImageInfo(vk::Sampler(), depthImageView, vk::ImageLayout::eDepthStencilReadOnlyOptimal);
+		vk::DescriptorImageInfo depthImageInfo(vk::Sampler(), depthImageView, depthInputLayout);
 		writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perFrameDescSet, 5, 0, 1, vk::DescriptorType::eInputAttachment, &depthImageInfo, nullptr, nullptr));
 
 		GetContext()->GetDevice().updateDescriptorSets(writeDescriptorSets, nullptr);
@@ -313,7 +313,7 @@ public:
 	vk::DescriptorSetLayout GetPerPolyDSLayout() const { return *perPolyLayout; }
 	vk::DescriptorSetLayout GetColorInputDSLayout() const { return *colorInputLayout; }
 
-	vk::RenderPass GetRenderPass(bool initial, bool last) { return renderPasses->GetRenderPass(initial, last); }
+	vk::RenderPass GetRenderPass(bool initial, bool last, bool depthWrites = false) { return renderPasses->GetRenderPass(initial, last, depthWrites); }
 
 private:
 	void CreateModVolPipeline(ModVolMode mode, int cullMode);

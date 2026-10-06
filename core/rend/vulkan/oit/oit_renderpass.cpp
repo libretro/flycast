@@ -21,7 +21,7 @@
 */
 #include "oit_renderpass.h"
 
-vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last)
+vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool depthWrites)
 {
     vk::AttachmentDescription attachmentDescriptions[] = {
     		// Swap chain image
@@ -43,7 +43,7 @@ vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last)
     vk::AttachmentReference colorReference(1, vk::ImageLayout::eColorAttachmentOptimal);
     vk::AttachmentReference depthReference(2, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
-    vk::AttachmentReference depthReadOnlyRef(2, vk::ImageLayout::eDepthStencilReadOnlyOptimal);
+    vk::AttachmentReference depthReadOnlyRef(2, DepthInputLayout(depthWrites));
     vk::AttachmentReference colorInput(1, vk::ImageLayout::eShaderReadOnlyOptimal);
 
     vk::SubpassDescription subpasses[] = {

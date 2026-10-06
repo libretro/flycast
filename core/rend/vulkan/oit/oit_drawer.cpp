@@ -276,12 +276,28 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 
 	quadBuffer->Update();
 
+	/* Translucent polygons that are not sorted are drawn in the colour
+	 * subpass and write depth there. A frame that has any is drawn with the
+	 * render passes that allow that: see RenderPasses::GetRenderPass(). */
+	bool depthWrites = false;
+	{
+		int tr_count = 0;
+		for (int i = 0; i < pvrrc.render_passes.used(); i++)
+		{
+			const RenderPass& pass = pvrrc.render_passes.head()[i];
+			if (!pass.autosort && pass.tr_count > tr_count)
+				depthWrites = true;
+			tr_count = pass.tr_count;
+		}
+	}
+
 	// Update per-frame descriptor set and bind it
 	const vk::Buffer mainBuffer = GetMainBuffer(0)->buffer.get();
 	GetCurrentDescSet().UpdateUniforms(mainBuffer, offsets.vertexUniformOffset, offsets.fragmentUniformOffset,
 			fogTexture->GetImageView(), offsets.polyParamsOffset,
 			offsets.polyParamsSize, depthAttachment->GetStencilView(),
-			depthAttachment->GetImageView(), paletteTexture->GetImageView());
+			depthAttachment->GetImageView(), paletteTexture->GetImageView(),
+			RenderPasses::DepthInputLayout(depthWrites));
 	GetCurrentDescSet().BindPerFrameDescriptorSets(cmdBuffer);
 	GetCurrentDescSet().UpdateColorInputDescSet(0, colorAttachments[0]->GetImageView());
 	GetCurrentDescSet().UpdateColorInputDescSet(1, colorAttachments[1]->GetImageView());
@@ -329,7 +345,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
     	else
     		targetFramebuffer = GetFinalFramebuffer();
     	cmdBuffer.beginRenderPass(
-    			vk::RenderPassBeginInfo(pipelineManager->GetRenderPass(initialPass, finalPass),
+    			vk::RenderPassBeginInfo(pipelineManager->GetRenderPass(initialPass, finalPass, depthWrites),
     					targetFramebuffer, viewport, clear_colors.size(), clear_colors.data()),
     			vk::SubpassContents::eInline);
 

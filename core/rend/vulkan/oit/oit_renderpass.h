@@ -24,12 +24,24 @@
 class RenderPasses
 {
 public:
-	vk::RenderPass GetRenderPass(bool initial, bool last)
+	/* @depthWrites: the colour subpass may write depth. It reads the depth
+	 * buffer as an input, so the buffer is normally in a read-only layout
+	 * there, which forbids writing; translucent polygons that are not
+	 * sorted are drawn in that subpass and do write. For a frame that has
+	 * such polygons the buffer is in the general layout instead, which
+	 * allows both. The two kinds of render pass differ in nothing else and
+	 * a pipeline made for one works with the other. */
+	vk::RenderPass GetRenderPass(bool initial, bool last, bool depthWrites = false)
 	{
-		size_t index = (initial ? 1 : 0) | (last ? 2 : 0);
+		size_t index = (initial ? 1 : 0) | (last ? 2 : 0) | (depthWrites ? 4 : 0);
 		if (!renderPasses[index])
-			renderPasses[index] = MakeRenderPass(initial, last);
+			renderPasses[index] = MakeRenderPass(initial, last, depthWrites);
 		return *renderPasses[index];
+	}
+	// The layout the depth buffer is in while the colour subpass reads it
+	static vk::ImageLayout DepthInputLayout(bool depthWrites)
+	{
+		return depthWrites ? vk::ImageLayout::eGeneral : vk::ImageLayout::eDepthStencilReadOnlyOptimal;
 	}
 	void Reset()
 	{
@@ -40,7 +52,7 @@ public:
 
 protected:
 	VulkanContext *GetContext() const { return VulkanContext::Instance(); }
-	vk::UniqueRenderPass MakeRenderPass(bool initial, bool last);
+	vk::UniqueRenderPass MakeRenderPass(bool initial, bool last, bool depthWrites);
 	virtual vk::AttachmentDescription GetAttachment0Description(bool initial, bool last) const
 	{
 		return vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetContext()->GetColorFormat(), vk::SampleCountFlagBits::e1,
@@ -57,7 +69,7 @@ protected:
 	}
 
 private:
-	std::array<vk::UniqueRenderPass, 4> renderPasses;
+	std::array<vk::UniqueRenderPass, 8> renderPasses;
 };
 
 class RttRenderPasses : public RenderPasses
