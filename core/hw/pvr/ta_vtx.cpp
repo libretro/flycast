@@ -29,30 +29,21 @@ extern int screen_height;
 //cache state vars
 static u32 tileclip_val = 0;
 
-static u8 f32_su8_tbl[65536];
-#define float_to_satu8(val) f32_su8_tbl[((u32&)val)>>16]
-
-#ifndef NDEBUG
-/*
-	This uses just 1k of lookup, but does more calcs
-	The full 64k table will be much faster -- as only a small sub-part of it will be used anyway (the same 1k)
-*/
-static u8 float_to_satu8_2(float val)
+/* A colour component given as a float, as the hardware takes it: clamped to
+ * 0..1 (anything negative is 0; anything above 1, infinity and NaN are 1). */
+static inline float saturate01(float val)
 {
-	s32 vl=(s32&)val>>16;
-	u32 m1=(vl-0x3b80)>>31;	//1 if smaller 0x3b80 or negative
-	u32 m2=(vl-0x3f80)>>31;  //1 if smaller 0x3f80 or negative
-	u32 vo=vl-0x3b80;
-	vo &= (~m1>>22);
-	
-	return f32_su8_tbl[0x3b80+vo] | (~m2>>24);
+	const s32 bits = (s32&)val;
+	return bits < 0 ? 0.f : bits > 0x3f800000 ? 1.f : val;
 }
-#endif
 
-#define saturate01(x)       (((s32&)x)<0?0:(s32&)x>0x3f800000?1:x)
-static u8 float_to_satu8_math(float val)
+/* ...and as eight bits. This used to go through a table of 65536 entries
+ * looked up by the top 16 bits of the float, which leaves seven bits of
+ * mantissa: any colour from a half up came out as the value for the start
+ * of its 1/256th, one too low about half the time. */
+static inline u8 float_to_satu8(float val)
 {
-	return u8(saturate01(val)*255);
+	return (u8)(saturate01(val) * 255.f);
 }
 
 //vdec state variables
@@ -66,6 +57,12 @@ DECL_ALIGN(4) static u8 FaceBaseColor[4];
 DECL_ALIGN(4) static u8 FaceOffsColor[4];
 DECL_ALIGN(4) static u8 FaceBaseColor1[4];
 DECL_ALIGN(4) static u8 FaceOffsColor1[4];
+/* The same face colours as they were given, floats clamped to 0..1, for the
+ * intensity modes: red, green, blue. */
+static float FaceBaseColorF[3];
+static float FaceOffsColorF[3];
+static float FaceBaseColor1F[3];
+static float FaceOffsColor1F[3];
 static u32 SFaceBaseColor;
 static u32 SFaceOffsColor;
 
@@ -634,6 +631,8 @@ public:
 		memset(FaceOffsColor, 0xff, sizeof(FaceOffsColor));
 		memset(FaceBaseColor1, 0xff, sizeof(FaceBaseColor1));
 		memset(FaceOffsColor1, 0xff, sizeof(FaceOffsColor1));
+		for (int i = 0; i < 3; i++)
+			FaceBaseColorF[i] = FaceOffsColorF[i] = FaceBaseColor1F[i] = FaceOffsColor1F[i] = 1.f;
 		SFaceBaseColor = 0;
 		SFaceOffsColor = 0;
 		lmr = NULL;
@@ -725,7 +724,10 @@ private:
 
 
 	#define poly_float_color(to,src) \
-		poly_float_color_(to,pp->src##A,pp->src##R,pp->src##G,pp->src##B)
+		poly_float_color_(to,pp->src##A,pp->src##R,pp->src##G,pp->src##B) \
+		to##F[0] = saturate01(pp->src##R); \
+		to##F[1] = saturate01(pp->src##G); \
+		to##F[2] = saturate01(pp->src##B);
 
 	// Poly param handling
 
@@ -873,17 +875,17 @@ private:
 		}
 
    #define vert_face_base_color1(baseint) \
-		{ u32 satint=float_to_satu8(vtx->baseint); \
-		cv->col1[0] = FaceBaseColor1[0]*satint/256;  \
-		cv->col1[1] = FaceBaseColor1[1]*satint/256;  \
-		cv->col1[2] = FaceBaseColor1[2]*satint/256;  \
+		{ const float intensity = saturate01(vtx->baseint) * 255.f; \
+		cv->col1[0] = (u8)(FaceBaseColor1F[0] * intensity);  \
+		cv->col1[1] = (u8)(FaceBaseColor1F[1] * intensity);  \
+		cv->col1[2] = (u8)(FaceBaseColor1F[2] * intensity);  \
 		cv->col1[3] = FaceBaseColor1[3]; }
 
 	#define vert_face_offs_color1(offsint) \
-		{ u32 satint=float_to_satu8(vtx->offsint); \
-		cv->spc1[0] = FaceOffsColor1[0]*satint/256;  \
-		cv->spc1[1] = FaceOffsColor1[1]*satint/256;  \
-		cv->spc1[2] = FaceOffsColor1[2]*satint/256;  \
+		{ const float intensity = saturate01(vtx->offsint) * 255.f; \
+		cv->spc1[0] = (u8)(FaceOffsColor1F[0] * intensity);  \
+		cv->spc1[1] = (u8)(FaceOffsColor1F[1] * intensity);  \
+		cv->spc1[2] = (u8)(FaceOffsColor1F[2] * intensity);  \
 		cv->spc1[3] = FaceOffsColor1[3]; }
 
 	#define vert_float_color_(to,a,r,g,b) \
@@ -904,19 +906,24 @@ private:
 		//Notes:
 		//Alpha doesn't get intensity
 		//Intensity is clamped before the mul, as well as on face color to work the same as the hardware. [Fixes red dog]
+		//The face colour and the intensity are multiplied as the floats they are
+		//and the product made eight bits, once. Both used to be made eight
+		//bits first and multiplied as a/256 fractions, which lost up to two
+		//levels on the way and could not reach 255: full intensity on a white
+		//face came out 254.
 
 	#define vert_face_base_color(baseint) \
-		{ u32 satint=float_to_satu8(vtx->baseint); \
-		cv->col[0] = FaceBaseColor[0]*satint/256;  \
-		cv->col[1] = FaceBaseColor[1]*satint/256;  \
-		cv->col[2] = FaceBaseColor[2]*satint/256;  \
+		{ const float intensity = saturate01(vtx->baseint) * 255.f; \
+		cv->col[0] = (u8)(FaceBaseColorF[0] * intensity);  \
+		cv->col[1] = (u8)(FaceBaseColorF[1] * intensity);  \
+		cv->col[2] = (u8)(FaceBaseColorF[2] * intensity);  \
 		cv->col[3] = FaceBaseColor[3]; }
 
 	#define vert_face_offs_color(offsint) \
-		{ u32 satint=float_to_satu8(vtx->offsint); \
-		cv->vtx_spc[0] = FaceOffsColor[0]*satint/256;  \
-		cv->vtx_spc[1] = FaceOffsColor[1]*satint/256;  \
-		cv->vtx_spc[2] = FaceOffsColor[2]*satint/256;  \
+		{ const float intensity = saturate01(vtx->offsint) * 255.f; \
+		cv->vtx_spc[0] = (u8)(FaceOffsColorF[0] * intensity);  \
+		cv->vtx_spc[1] = (u8)(FaceOffsColorF[1] * intensity);  \
+		cv->vtx_spc[2] = (u8)(FaceOffsColorF[2] * intensity);  \
 		cv->vtx_spc[3] = FaceOffsColor[3]; }
 
 	//vert_float_color_(cv->vtx_spc,FaceOffsColor[3],FaceOffsColor[0]*satint/256,FaceOffsColor[1]*satint/256,FaceOffsColor[2]*satint/256); }
@@ -1709,27 +1716,6 @@ static void decode_pvr_vertex(u32 base,u32 ptr,Vertex* cv)
 
 void vtxdec_init(void)
 {
-	/*
-		0x3b80 ~ 0x3f80 -> actual useful range. Rest is clamping to 0 or 255 ~
-	*/
-
-	for (u32 i=0;i<65536;i++)
-	{
-		u32 fr=i<<16;
-		
-		f32_su8_tbl[i]=float_to_satu8_math((f32&)fr);
-	}
-
-#ifndef NDEBUG
-	for (u32 i=0;i<65536;i++)
-	{
-		u32 fr=i<<16;
-		f32 ff=(f32&)fr;
-
-		verify(float_to_satu8_math(ff)==float_to_satu8_2(ff));
-		verify(float_to_satu8_math(ff)==float_to_satu8(ff));
-	}
-#endif
 }
 
 
