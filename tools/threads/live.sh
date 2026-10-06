@@ -115,8 +115,23 @@ reicast_hle_bios = "enabled"
 reicast_vmu1_screen_display = "enabled"
 CFG
 
+# With VALIDATE=1 every run is made with the Vulkan validation layer on
+# (VK_LAYER_KHRONOS_validation has to be installed), and anything it
+# reports as an error fails the test.
+if [ -n "$VALIDATE" ]; then
+   cat > "$WORK/vk_layer_settings.txt" <<CFG
+khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG
+khronos_validation.log_filename = $WORK/validation.txt
+khronos_validation.report_flags = error
+CFG
+   VK_LAYER_SETTINGS_PATH="$WORK/vk_layer_settings.txt"
+   VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+   export VK_LAYER_SETTINGS_PATH VK_INSTANCE_LAYERS
+fi
+
 # run <log> <frames> [disc] [screenshot]
 run() {
+   rm -f "$WORK/validation.txt"
    LIBGL_ALWAYS_SOFTWARE=1 timeout 300 xvfb-run -a -s "-screen 0 800x600x24" \
       "$RETROARCH" --config "$WORK/ra.cfg" --appendconfig "$WORK/driver.cfg" \
       -L "$CORE" "${3:-$WORK/test.gdi}" \
@@ -126,6 +141,11 @@ run() {
          tail -n 20 "$WORK/$1" >&2
          exit 1
       }
+   if [ -s "$WORK/validation.txt" ]; then
+      echo "FAIL: the Vulkan validation layer reported errors ($1)" >&2
+      head -c 2000 "$WORK/validation.txt" >&2
+      exit 1
+   fi
 }
 
 expect() {
