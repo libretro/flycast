@@ -763,5 +763,3 @@ void reios_reset(u8* rom, MemChip* flash)
 	}
 }
 
-void reios_term() {
-}

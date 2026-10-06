@@ -312,9 +312,6 @@ public :
 
 //Set the path !
 void set_user_config_dir(const std::string& dir);
-void set_user_data_dir(const std::string& dir);
-void add_system_config_dir(const std::string& dir);
-void add_system_data_dir(const std::string& dir);
 
 //subpath format: /data/fsca-table.bit
 std::string get_writable_data_path(const std::string& filename);
@@ -337,10 +334,8 @@ public:
 	//void Init(void* data,u32 sz);
 	//void Term();
 #ifdef TARGET_NO_EXCEPTIONS
-	void LockRegion(u32 offset,u32 size) {}
 	void UnLockRegion(u32 offset,u32 size) {}
 #else
-	void LockRegion(u32 offset,u32 size);
 	void UnLockRegion(u32 offset,u32 size);
 #endif
 

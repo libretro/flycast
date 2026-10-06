@@ -324,23 +324,6 @@ void GetDriveSessionInfo(u8* to,u8 session)
 	}
 }
 
-void printtoc(TocInfo* toc,SessionInfo* ses)
-{
-	INFO_LOG(GDROM, "Sessions %d", ses->SessionCount);
-	for (u32 i=0;i<ses->SessionCount;i++)
-	{
-		INFO_LOG(GDROM, "Session %d: FAD %d,First Track %d", i + 1, ses->SessionFAD[i], ses->SessionStart[i]);
-		for (u32 t=toc->FistTrack-1;t<=toc->LastTrack;t++)
-		{
-			if (toc->tracks[t].Session==i+1)
-			{
-				INFO_LOG(GDROM, "    Track %d : FAD %d CTRL %d ADR %d", t, toc->tracks[t].FAD, toc->tracks[t].Control, toc->tracks[t].Addr);
-			}
-		}
-	}
-	INFO_LOG(GDROM, "Session END: FAD END %d", ses->SessionsEndFAD);
-}
-
 DiscType GuessDiscType(bool m1, bool m2, bool da)
 {
 	if ((m1==true) && (da==false) && (m2==false))

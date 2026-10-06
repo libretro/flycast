@@ -8,7 +8,6 @@ u32 vri(u32 addr);
 extern VArray2 vram;
 
 //regs
-u32 pvr_ReadReg(u32 addr);
 void pvr_WriteReg(u32 paddr,u32 data);
 
 void TAWrite(u32 address,u32* data,u32 count);

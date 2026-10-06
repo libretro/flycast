@@ -252,22 +252,6 @@ void SaveRomFiles(const std::string& root)
    }
 }
 
-u8 *get_nvmem_data(void)
-{
-   switch (settings.System)
-   {
-      case DC_PLATFORM_DREAMCAST:
-      case DC_PLATFORM_DEV_UNIT:
-      case DC_PLATFORM_ATOMISWAVE:
-         return sys_nvmem_flash.data;
-      case DC_PLATFORM_NAOMI:
-      case DC_PLATFORM_NAOMI2:
-         return sys_nvmem_sram.data;
-   }
-
-   return NULL;
-}
-
 bool LoadHle(const std::string& root) {
 	if (!nvmem_load(root, "%nvmem.bin;%flash_wb.bin;%flash.bin;%flash.bin.bin", "nvram")) {
 		WARN_LOG(FLASHROM, "No nvmem loaded\n");

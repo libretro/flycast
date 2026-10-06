@@ -8,7 +8,6 @@ bool reios_init();
 
 void reios_reset(u8* rom, MemChip *flash);
 
-void reios_term();
 
 void DYNACALL reios_trap(u32 op);
 

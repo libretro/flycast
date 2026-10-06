@@ -514,11 +514,6 @@ void cThread::WaitToEnd()
 #endif
 
 #ifndef TARGET_NO_EXCEPTIONS
-void VArray2::LockRegion(u32 offset,u32 size_bytes)
-{
-   mem_region_lock(&data[offset], size_bytes);
-}
-
 void VArray2::UnLockRegion(u32 offset,u32 size_bytes)
 {
    mem_region_unlock(&data[offset], size_bytes);

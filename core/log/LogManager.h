@@ -42,7 +42,6 @@ public:
   LogTypes::LOG_LEVELS GetLogLevel() const;
   void SetLogLevel(LogTypes::LOG_LEVELS level);
 
-  void SetEnable(LogTypes::LOG_TYPE type, bool enable);
   bool IsEnabled(LogTypes::LOG_TYPE type, LogTypes::LOG_LEVELS level = LogTypes::LNOTICE) const;
 
   const char* GetShortName(LogTypes::LOG_TYPE type) const;

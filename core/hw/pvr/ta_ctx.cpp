@@ -116,11 +116,6 @@ TA_context* DequeueRender(void)
 	return rv;
 }
 
-bool rend_framePending(void)
-{
-	return retro_atomic_load_acquire_ptr(&rqueue) != NULL;
-}
-
 void FinishRender(TA_context* ctx)
 {
 	if (ctx != NULL)

@@ -182,11 +182,6 @@ void aica_Reset(bool hard)
 	ARMRST = 0;
 }
 
-void aica_Term()
-{
-
-}
-
 static int dma_end_sched(int tag, int cycl, int jitt)
 {
 	u32 len=SB_ADLEN & 0x7FFFFFFF;

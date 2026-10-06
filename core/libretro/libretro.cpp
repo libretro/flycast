@@ -3280,16 +3280,6 @@ void retro_keyboard_event(bool down, unsigned keycode, uint32_t character, uint1
    }
 }
 
-void* libPvr_GetRenderTarget()
-{
-   return NULL;
-}
-
-void* libPvr_GetRenderSurface()
-{
-   return NULL;
-}
-
 int msgboxf(const char* text, unsigned int type, ...)
 {
    if (log_cb)

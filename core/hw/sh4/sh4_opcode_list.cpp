@@ -36,10 +36,6 @@ u64 dec_Fill(DecMode mode,DecParam d,DecParam s,shilop op,u32 extra=0)
 {
 	return (((u64)extra)<<32)|(mode<<24)|(d<<16)|(s<<8)|op;
 }
-u64 dec_Un_rNrN(shilop op)
-{
-	return dec_Fill(DM_UnaryOp,PRM_RN,PRM_RN,op);
-}
 u64 dec_Un_rNrM(shilop op)
 {
 	return dec_Fill(DM_UnaryOp,PRM_RN,PRM_RM,op);
@@ -47,10 +43,6 @@ u64 dec_Un_rNrM(shilop op)
 u64 dec_Un_frNfrN(shilop op)
 {
 	return dec_Fill(DM_UnaryOp,PRM_FRN,PRM_FRN,op);
-}
-u64 dec_Un_frNfrM(shilop op)
-{
-	return dec_Fill(DM_UnaryOp,PRM_FRN,PRM_FRM,op);
 }
 u64 dec_Bin_frNfrM(shilop op, u32 haswrite=1)
 {
@@ -98,7 +90,6 @@ u64 dec_MRd(DecParam d,DecParam s,u32 sz) { return dec_Fill(DM_ReadM,d,s,shop_re
 u64 dec_MWt(DecParam d,DecParam s,u32 sz) { return dec_Fill(DM_WriteM,d,s,shop_writem,sz); }
 
 //use this to disable opcodes :p
-u64 dec_rz(...) { return 0; }
 
 //jump for now..
 //how bout a decoded switch list ? could that _much_ faster ?

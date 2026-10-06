@@ -221,11 +221,6 @@ bool rend_single_frame(void)
 	}
 }
 
-void rend_resize(int width, int height)
-{
-	renderer->Resize(width, height);
-}
-
 void rend_start_render(void)
 {
 #if !defined(TARGET_NO_THREADS)
@@ -301,36 +296,6 @@ void rend_end_render(void)
     * which leaves the renderer alone. */
    if (pend_rend && !settings.rend.ThreadedRendering && renderer != NULL)
       renderer->Present();
-}
-
-bool rend_init(void)
-{
-   rend_create_renderer();
-
-#if !defined(TARGET_NO_THREADS)
-	if (!settings.rend.ThreadedRendering)
-#endif
-	{
-	   rend_init_renderer();
-
-	   renderer->Resize(screen_width, screen_height);
-	}
-
-#if SET_AFNT
-	cpu_set_t mask;
-
-	/* CPU_ZERO initializes all the bits in the mask to zero. */
-	CPU_ZERO( &mask );
-	/* CPU_SET sets only the bit corresponding to cpu. */
-	CPU_SET( 0, &mask );
-
-	/* sched_setaffinity returns 0 in success */
-
-	if( sched_setaffinity( 0, sizeof(mask), &mask ) == -1 )
-		WARN_LOG(PVR, "WARNING: Could not set CPU Affinity, continuing...");
-#endif
-
-	return true;
 }
 
 void rend_term(void)

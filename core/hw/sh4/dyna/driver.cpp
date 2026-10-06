@@ -56,7 +56,6 @@ void* emit_GetCCPtr(void)
       return (void*)emit_ptr;
    return (void*)&CodeCache[LastAddr];
 }
-void emit_WriteCodeCache() {}
 
 void emit_SetBaseAddr(void)
 {

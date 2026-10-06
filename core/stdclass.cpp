@@ -11,24 +11,6 @@
 
 #include "hw/mem/_vmem.h"
 
-std::string user_data_dir;
-std::vector<std::string> system_config_dirs;
-std::vector<std::string> system_data_dirs;
-
-void set_user_data_dir(const std::string& dir)
-{
-	user_data_dir = dir;
-}
-
-void add_system_config_dir(const std::string& dir)
-{
-	system_config_dirs.push_back(dir);
-}
-
-void add_system_data_dir(const std::string& dir)
-{
-	system_data_dirs.push_back(dir);
-}
 
 std::string get_writable_data_path(const std::string& filename)
 {

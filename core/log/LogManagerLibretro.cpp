@@ -134,11 +134,6 @@ void LogManager::SetLogLevel(LogTypes::LOG_LEVELS level)
 	m_level = level;
 }
 
-void LogManager::SetEnable(LogTypes::LOG_TYPE type, bool enable)
-{
-	m_log[type].m_enable = enable;
-}
-
 bool LogManager::IsEnabled(LogTypes::LOG_TYPE type, LogTypes::LOG_LEVELS level) const
 {
 	return m_log[type].m_enable && m_level >= level;

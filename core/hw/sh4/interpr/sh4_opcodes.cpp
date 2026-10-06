@@ -29,7 +29,6 @@
 #define GetSImm12(str) (((s16)((GetImm12(str))<<4))>>4)
 
 #define iNimp cpu_iNimp
-#define iWarn cpu_iWarn
 
 //Read Mem macros
 
@@ -60,11 +59,6 @@ void cpu_iNimp(u32 op, const char* info)
 	//next_pc = pr; //debug hackfix: try to recover by returning from call
 	die("iNimp reached\n");
 	//sh4_cpu.Stop();
-}
-
-void cpu_iWarn(u32 op, const char* info)
-{
-	INFO_LOG(INTERPRETER, "Check opcode : %X : %s @ %X", op, info, curr_pc);
 }
 
 //this file contains ALL register to register full moves

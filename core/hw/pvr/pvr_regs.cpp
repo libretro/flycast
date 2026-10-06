@@ -8,11 +8,6 @@
 u8 pvr_regs[pvr_RegSize];
 u8 *rend_pvr_regs = pvr_regs;
 
-u32 pvr_ReadReg(u32 addr)
-{
-	return PvrReg(addr,u32);
-}
-
 void pvr_WriteReg(u32 paddr,u32 data)
 {
 	u32 addr=paddr&pvr_RegMask;

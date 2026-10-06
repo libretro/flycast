@@ -385,24 +385,6 @@ void bm_Term()
 	bm_Reset();
 }
 
-void bm_WriteBlockMap(const std::string& file)
-{
-	FILE* f=fopen(file.c_str(),"wb");
-	if (f)
-	{
-		INFO_LOG(DYNAREC, "Writing block map !");
-		for (auto& it : blkmap)
-		{
-			RuntimeBlockInfoPtr& block = it.second;
-			fprintf(f, "block: %d:%08X:%p:%d:%d:%d\n", block->BlockType, block->addr, block->code, block->host_code_size, block->guest_cycles, block->guest_opcodes);
-			for(size_t j = 0; j < block->oplist.size(); j++)
-				fprintf(f,"\top: %zd:%d:%s\n", j, block->oplist[j].guest_offs, block->oplist[j].dissasm().c_str());
-		}
-		fclose(f);
-		INFO_LOG(DYNAREC, "Finished writing block map");
-	}
-}
-
 #if 0
 void sh4_jitsym(FILE* out)
 {

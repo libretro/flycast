@@ -334,9 +334,6 @@ void UpscalexBRZ(int factor, u32* source, u32* dest, int width, int height, bool
 #endif
 }
 
-void shutdown_thread_pool()
-{
-}
 #endif
 
 struct PvrTexInfo

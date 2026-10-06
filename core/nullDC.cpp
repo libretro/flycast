@@ -575,11 +575,6 @@ void dc_stop()
 }
 
 
-void dc_start()
-{
-	sh4_cpu.Start();
-}
-
 bool dc_is_running()
 {
 	return sh4_cpu.IsCpuRunning();

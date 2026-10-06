@@ -466,27 +466,6 @@ static u8 buffer[BUFFER_SIZE];
 static u8 line_buffer[LINE_SIZE];
 static u8 line_buffer_prev[LINE_SIZE];
 
-void cryptoReset()
-{
-  cryptoKey = 0;
-  cryptoSubKey = 0;
-  cryptoAddr = 0;
-  cryptoReady = 0;
-  bufferBit = 0;
-  bufferBit2 = 0;
-
-  memset(buffer, 0, BUFFER_SIZE);
-  memset(line_buffer, 0, LINE_SIZE);
-  memset(line_buffer_prev, 0, LINE_SIZE);
-
-	dec_hist = 0;
-	dec_header = 0;
-
-	buffer_pos = 0;
-	line_buffer_pos = 0;
-	line_buffer_size = 0;
-}
-
 void cyptoSetKey(u32 privKey)
 {
   cryptoKey = privKey;

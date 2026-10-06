@@ -90,7 +90,6 @@ struct RuntimeBlockInfo: RuntimeBlockInfo_Core
 	bool read_only;
 };
 
-void bm_WriteBlockMap(const std::string& file);
 
 extern "C" {
 __attribute__((used)) DynarecCodeEntryPtr DYNACALL bm_GetCodeByVAddr(u32 addr);

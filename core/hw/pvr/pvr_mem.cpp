@@ -224,11 +224,6 @@ void TAWrite(u32 address, u32* data, u32 count)
       YUV_data(data, count);
 }
 
-void NOINLINE MemWrite32(void* dst, void* src)
-{
-	memcpy((u64*)dst,(u64*)src,32);
-}
-
 #if HOST_CPU!=CPU_ARM
 extern "C" void DYNACALL TAWriteSQ(u32 address,u8* sqb)
 {
