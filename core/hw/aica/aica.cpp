@@ -2,6 +2,7 @@
 #include "aica_if.h"
 #include "aica_mem.h"
 #include "sgc_if.h"
+#include "hw/arm7/arm_mem.h"
 #include "hw/holly/holly_intc.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/sh4_sched.h"
@@ -42,6 +43,11 @@ static u32 GetL(u32 which)
 static void update_arm_interrupts()
 {
    u32 p_ints=SCIEB->full & SCIPD->full;
+
+   /* Nothing pending and nothing raised: there is nothing to tell the ARM.
+    * This is how it is for nearly every sample, and each of them asks. */
+   if (p_ints == 0 && !aica_interr)
+      return;
 
    u32 Lval=0;
    if (p_ints)
