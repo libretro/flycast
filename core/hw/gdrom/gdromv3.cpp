@@ -1080,10 +1080,19 @@ static int GDRomschd(int i, int c, int j)
       return 0;
 	}
 
-	//if we don't have any more sectors to read
-   //make sure we don't underrun the cache :)
-	if (read_params.remaining_sectors == 0)
-		len = std::min(len, read_buff.cache_size);
+	/* No more than the drive has to give: what is left in the cache and
+	 * the sectors still to be read. This used to be checked only when no
+	 * sectors were left on the way in. A transfer longer than the read it
+	 * belongs to then ran the sectors out halfway through the loop below,
+	 * which went round for ever with nothing to move. The transfer now
+	 * stops with what there was and stays unfinished, as it would on the
+	 * hardware, until it is given more or called off. */
+	{
+		const u64 have = (u64)read_buff.cache_size
+				+ (u64)read_params.remaining_sectors * read_params.sector_type;
+		if (len > have)
+			len = (u32)have;
+	}
 
 	len = std::min(len, (u32)10240);
 
