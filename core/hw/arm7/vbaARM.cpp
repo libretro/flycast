@@ -11,12 +11,6 @@ s32 libARM_Init()
 	return 0;
 }
 
-//called when plugin is unloaded by emu, only if dcInit is called (eg, not called to enumerate plugins)
-void libARM_Term()
-{
-	//arm7_Term ?
-}
-
 //It's supposed to reset anything
 void libARM_Reset(bool hard)
 {

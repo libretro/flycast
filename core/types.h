@@ -680,7 +680,6 @@ static void libExtDevice_WriteMem_A5(u32 addr,u32 data,u32 size) { }
 //ARM
 s32 libARM_Init();
 void libARM_Reset(bool hard);
-void libARM_Term();
 
 template<u32 sz>
 u32 ReadMemArr(u8 *array, u32 addr)
