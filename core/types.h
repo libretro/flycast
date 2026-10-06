@@ -545,7 +545,6 @@ struct settings_t
 		bool ThreadedRendering;
 		bool CustomTextures;
 		bool DumpTextures;
-		bool DelayFrameSwapping; // Delay swapping frame until FB_R_SOF matches FB_W_SOF
 		bool WidescreenGameHacks;
 		int AnisotropicFiltering;
 		bool PowerVR2Filter;
@@ -610,7 +609,6 @@ struct settings_t
 		u32 rend;
 		
 		u32 MaxThreads;
-		u32 SynchronousRendering;
 	} pvr;
 
 

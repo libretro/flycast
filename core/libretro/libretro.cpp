@@ -444,17 +444,6 @@ static void set_variable_visibility(void)
    option_display.key = CORE_OPTION_NAME "_show_vmu_screen_settings";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
-   /* Threaded rendering makes the frame non-threaded rendering makes, one
-    * for each retro_run: it never runs ahead of the renderer and presents
-    * at vblank, so there is nothing left for these two to choose. */
-   option_display.visible = false;
-
-   option_display.key = CORE_OPTION_NAME "_synchronous_rendering";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-
-   option_display.key = CORE_OPTION_NAME "_delay_frame_swapping";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-
    // Only for per-pixel renderers
    option_display.visible = settings.pvr.rend == 3 || settings.pvr.rend == 5;
    option_display.key = CORE_OPTION_NAME "_oit_abuffer_size";
@@ -930,28 +919,6 @@ static void update_variables(bool first_startup)
       }
    }
 #endif
-
-   var.key = CORE_OPTION_NAME "_synchronous_rendering";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-	   if (!strcmp("enabled", var.value))
-		   settings.pvr.SynchronousRendering = 1;
-	   else
-		   settings.pvr.SynchronousRendering = 0;
-   }
-   else
-	   settings.pvr.SynchronousRendering = 0;
-
-   var.key = CORE_OPTION_NAME "_delay_frame_swapping";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-	   if (!strcmp("enabled", var.value))
-		   settings.rend.DelayFrameSwapping = true;
-	   else
-		   settings.rend.DelayFrameSwapping = false;
-   }
-   else
-   	settings.rend.DelayFrameSwapping = false;
 
    var.key = CORE_OPTION_NAME "_frame_skipping";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

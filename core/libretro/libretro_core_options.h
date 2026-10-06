@@ -574,38 +574,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "enabled",
    },
-   {
-      CORE_OPTION_NAME "_synchronous_rendering",
-      "Synchronous Rendering",
-      NULL,
-      "Waits for the GPU to finish rendering the previous frame instead of dropping the current one. Note: This setting only applies when 'Threaded Rendering' is enabled.",
-      NULL,
-      NULL,
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-#ifdef LOW_END
-      "disabled",
-#else
-      "enabled",
-#endif
-   },
-   {
-      CORE_OPTION_NAME "_delay_frame_swapping",
-      "Delay Frame Swapping",
-      NULL,
-      "Useful to avoid flashing screens or glitchy videos. Not recommended on slow platforms. Note: This setting only applies when 'Threaded Rendering' is enabled.",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
 #endif
    {
       CORE_OPTION_NAME "_frame_skipping",

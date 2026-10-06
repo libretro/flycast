@@ -612,7 +612,6 @@ void LoadSettings(void)
 	settings.rend.RenderToTextureBuffer  = false;
 	settings.rend.RenderToTextureUpscale = 1;
 	settings.rend.MaxFilteredTextureSize = 256;
-	settings.pvr.SynchronousRendering	 = 0;
 #endif
 	settings.rend.AutoExtraDepthScale    = true;
 	settings.rend.ExtraDepthScale        = 1.f;
