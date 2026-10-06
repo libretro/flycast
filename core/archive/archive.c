@@ -237,6 +237,7 @@ static int zip_open(archive_t *a)
       size_t           name_len = rd_le16(p + 28);
       size_t           extra_len = rd_le16(p + 30);
       const uint8_t   *extra    = p + 46 + name_len;
+      size_t           extra_left = extra_len;
 
       memcpy(name_out, p + 46, name_len);
       name_out[name_len] = '\0';
@@ -245,10 +246,10 @@ static int zip_open(archive_t *a)
 
       /* zip64 extra field: 64-bit sizes and offset, in that order,
        * only for the fields the 32-bit record could not hold */
-      while (extra_len >= 4)
+      while (extra_left >= 4)
       {
          size_t flen = rd_le16(extra + 2);
-         if (flen > extra_len - 4)
+         if (flen > extra_left - 4)
             break;
          if (rd_le16(extra) == 0x0001)
          {
@@ -267,8 +268,8 @@ static int zip_open(archive_t *a)
                local = rd_le64(q);
             break;
          }
-         extra     += 4 + flen;
-         extra_len -= 4 + flen;
+         extra      += 4 + flen;
+         extra_left -= 4 + flen;
       }
 
       e->size   = size;

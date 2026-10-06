@@ -40,8 +40,18 @@ def main():
         with zipfile.ZipFile(os.path.join(work, name), 'w', method) as z:
             if decoy:
                 z.writestr(prefix + 'other.cue', 'FILE "x.bin" BINARY\n')
-            for m in MEMBERS:
-                z.write(os.path.join(src, m), prefix + m)
+            for i, m in enumerate(MEMBERS):
+                # Extra fields of different lengths on every member, as
+                # Info-ZIP and 7-Zip write them (timestamps, unix
+                # attributes): the directory walk has to step over them.
+                info = zipfile.ZipInfo.from_file(os.path.join(src, m),
+                                                 prefix + m)
+                info.compress_type = method
+                ut = b'\x55\x54\x05\x00\x03' + bytes(4)
+                ux = b'\x75\x78\x0b\x00\x01' + bytes(10)
+                info.extra = (ut, ut + ux, ux, b'')[i % 4]
+                with open(os.path.join(src, m), 'rb') as f:
+                    z.writestr(info, f.read())
 
     zip_of('stored.zip', zipfile.ZIP_STORED)
     zip_of('deflate.zip', zipfile.ZIP_DEFLATED)
