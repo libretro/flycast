@@ -393,6 +393,10 @@ struct ChannelEx
 		/* What the filter's last sample dropped below its lowest bit, to
 		 * go into the next one: see LowPassFilter() */
 		s32 fract;
+		/* The filter's coefficients, and the cutoff they were worked out
+		 * for: no cutoff is as high as the one this starts at */
+		u32 coef_fv = ~0u;
+		s64 a0, b1, b2;
 		s32 q;
 		u32 AttackRate;
 		u32 Decay1Rate;
@@ -497,19 +501,29 @@ struct ChannelEx
 	__forceinline SampleType LowPassFilter(SampleType sample)
 	{
 		const u32 fv = FEG.GetValue() & 0x1FFF;
-		const u32 exp = fv >> 9;
-		const u32 mant = (fv & 0x1FF) | 0x200;
-		u64 a0 = ((u64)mant << 30) >> ((15 - exp) * 2);
-		a0 *= (mant - 1) / 8;
-		a0 >>= 17;
-		s64 f = ((s64)mant << exp) << 5;
-		f += (s64)FEG.q * f / 4096;
-		const s64 b1 = ((s64)1 << 31) - (f + (s64)a0);
-		const s64 b2 = ((s64)1 << 30) - f;
-		if (exp == 0)
+
+		/* The coefficients follow from the cutoff and Q alone, and the
+		 * cutoff only moves when the envelope takes it to another of its
+		 * 8192 values: they are worked out then and kept. UpdateFEG()
+		 * forgets them when the Q register may have changed. */
+		if (fv != FEG.coef_fv)
+		{
+			const u32 exp = fv >> 9;
+			const u32 mant = (fv & 0x1FF) | 0x200;
+			u64 a0 = ((u64)mant << 30) >> ((15 - exp) * 2);
+			a0 *= (mant - 1) / 8;
+			a0 >>= 17;
+			s64 f = ((s64)mant << exp) << 5;
+			f += (s64)FEG.q * f / 4096;
+			FEG.coef_fv = fv;
+			FEG.a0 = (s64)a0;
+			FEG.b1 = ((s64)1 << 31) - (f + (s64)a0);
+			FEG.b2 = ((s64)1 << 30) - f;
+		}
+		if (fv < 0x200)
 			FEG.fract = 0;
 
-		const s64 mac = -(s64)a0 * sample + b1 * FEG.prev1 - b2 * FEG.prev2 - FEG.fract;
+		const s64 mac = -FEG.a0 * sample + FEG.b1 * FEG.prev1 - FEG.b2 * FEG.prev2 - FEG.fract;
 		sample = (SampleType)(mac >> 30);
 		FEG.fract = (s32)(((s64)sample << 30) - mac);
 		FEG.prev2 = FEG.prev1;
@@ -813,6 +827,7 @@ struct ChannelEx
 				ccd->FLV0, ccd->FLV1, ccd->FLV2, ccd->FLV3, ccd->FLV4,
 				ccd->FAR, ccd->FD1R, ccd->FD2R, ccd->FRR);
 		FEG.q = qtable[ccd->Q];
+		FEG.coef_fv = ~0u;
 		s32 base_rate = EG_BaseRate();
 		FEG.AttackRate = FEG_SPS[EG_EffRate(base_rate, ccd->FAR)];
 		FEG.Decay1Rate = FEG_SPS[EG_EffRate(base_rate, ccd->FD1R)];
