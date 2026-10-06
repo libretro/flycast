@@ -20,6 +20,7 @@
 #include <sstream>
 #include "types.h"
 #include "common.h"
+#include <file/file_path.h>
 
 static u32 getSectorSize(const std::string& type) {
 		if (type == "AUDIO")
@@ -72,14 +73,16 @@ Disc* cue_parse(const char* file)
 
 	char path[512];
 	strcpy(path, file);
-	while (len >= 0)
+	const char* delim = path_get_archive_delim(file);
+	ssize_t dir_end = (ssize_t)len;
+	while (dir_end >= 0)
 	{
-		if (path[len]=='\\' || path[len]=='/')
+		if (path[dir_end]=='\\' || path[dir_end]=='/' || (delim && &file[dir_end] == delim))
 			break;
-		len--;
+		dir_end--;
 	}
-	len++;
-	char* pathptr = &path[len];
+	dir_end++;
+	char* pathptr = &path[dir_end];
 
 	Disc* disc = new Disc();
 	u32 current_fad = 150;

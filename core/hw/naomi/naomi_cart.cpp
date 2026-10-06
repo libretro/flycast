@@ -397,8 +397,7 @@ int naomi_cart_GetSystemType(const char* file)
 	  if (!stricmp(Games[gameid].name, game_name))
 		 break;
    if (Games[gameid].name == NULL)
-	  // Not found. Will fail later
-	  return DC_PLATFORM_NAOMI;
+	  return -1;
 
    if (Games[gameid].cart_type == AW)
 	  return DC_PLATFORM_ATOMISWAVE;

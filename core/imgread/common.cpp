@@ -1,4 +1,5 @@
 #include "common.h"
+#include "archive/archive.h"
 
 Disc* chd_parse(const char* file);
 Disc* gdi_parse(const char* file);
@@ -112,7 +113,11 @@ bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to,int sector)
 Disc* OpenDisc(const char* fn)
 {
 	Disc* rv;
-	
+	char archived[1024];
+
+	if (archive_resolve_disc(fn, archived, sizeof(archived)))
+		fn = archived;
+
 	for (int i=0;drivers[i] && !(rv=drivers[i](fn));i++) ;
 
 	return rv;
@@ -242,6 +247,7 @@ void TermDrive()
 		delete disc;
 
 	disc = NULL;
+	core_archive_release();
 }
 
 

@@ -11,9 +11,16 @@
 # The test is built twice: with HAVE_MMAP, so stored members are served out
 # of the mapping, and without, so they are read in place and deflated
 # members are inflated from chunked reads.
+#
+# Then load_test loads the built core (default: flycast_libretro.so, or the
+# path given as the first argument) and runs retro_load_game() on the same
+# fixture as a plain .gdi and inside each archive, and on an archive with
+# no disc image in it, which has to be refused.
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
+CORE=${1:-$ROOT/flycast_libretro.so}
+[ -f "$CORE" ] || { echo "$CORE not found: build the core first" >&2; exit 1; }
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 python3 -c 'import py7zr' 2>/dev/null \
@@ -51,7 +58,15 @@ for mode in mmap nommap; do
       -o "$WORK/archive_test_$mode" $SOURCES -lm -lpthread
 done
 
+case $(uname -s) in
+   MINGW*|MSYS*) LDL= ;;
+   *)            LDL=-ldl ;;
+esac
+$CC -O1 -g -I$L/include -o "$WORK/load_test" tools/archive/load_test.c \
+   $L/compat/compat_strl.c $LDL
+
 python3 tools/archive/make_fixture.py "$WORK/fx"
+mkdir -p "$WORK/fx/dc"
 
 export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
 fail=0
@@ -60,8 +75,12 @@ for mode in mmap nommap; do
       || { echo "FAIL: $mode build"; fail=1; }
 done
 
+"$WORK/load_test" "$CORE" "$WORK/fx" > "$WORK/load.log" 2>&1 \
+   && tail -1 "$WORK/load.log" | grep -q PASS \
+   || { cat "$WORK/load.log"; echo "FAIL: load_test"; fail=1; }
+
 if [ $fail = 0 ]; then
-   echo "archive_test: PASS (mmap and no-mmap builds)"
+   echo "archive_test: PASS (mmap and no-mmap builds, core loads)"
 else
    exit 1
 fi

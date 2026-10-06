@@ -1,4 +1,5 @@
 #include "common.h"
+#include <file/file_path.h>
 #include <ctype.h>
 #include <sstream>
 
@@ -36,9 +37,10 @@ Disc* load_gdi(const char* file)
 	char path[512];
 	strcpy(path,file);
 	ssize_t len=strlen(file);
+	const char* delim = path_get_archive_delim(file);
 	while (len>=0)
 	{
-		if (path[len]=='\\' || path[len]=='/')
+		if (path[len]=='\\' || path[len]=='/' || (delim && &file[len] == delim))
 			break;
 		len--;
 	}

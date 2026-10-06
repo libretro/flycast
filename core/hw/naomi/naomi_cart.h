@@ -86,6 +86,8 @@ private:
 };
 
 bool naomi_cart_SelectFile();
+/* The platform of the romset at @file, or -1 for an archive that is not
+ * a known Naomi or AtomisWave romset. */
 int naomi_cart_GetSystemType(const char* file);
 int naomi_cart_GetRotation();
 void naomi_cart_Close();

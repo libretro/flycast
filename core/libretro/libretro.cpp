@@ -54,6 +54,7 @@ char* strdup(const char *str)
 #include "hw/maple/maple_cfg.h"
 #include "../hw/pvr/spg.h"
 #include "../hw/naomi/naomi_cart.h"
+#include "../archive/archive.h"
 #include "../imgread/common.h"
 #include "../hw/aica/dsp.h"
 #include "log/LogManager.h"
@@ -1945,7 +1946,19 @@ bool retro_load_game(const struct retro_game_info *game)
         	   || !strcmp(".zip", ext) || !strcmp(".ZIP", ext)
         	   || !strcmp(".7z", ext) || !strcmp(".7Z", ext))
          {
-            settings.System = naomi_cart_GetSystemType(game->path);
+            int system = naomi_cart_GetSystemType(game->path);
+            if (system < 0)
+            {
+               /* Not a romset: a zip or 7z holding a Dreamcast disc image */
+               char archived[1024];
+               if (!archive_resolve_disc(game->path, archived, sizeof(archived)))
+               {
+                  log_cb(RETRO_LOG_ERROR, "%s is neither a known Naomi/AtomisWave romset nor an archive holding a disc image (gdi, cue, chd, cdi)\n", game->path);
+                  return false;
+               }
+               system = DC_PLATFORM_DREAMCAST;
+            }
+            settings.System = system;
             /* System may have changed - have to update
              * hidden core options */
             set_variable_visibility();
