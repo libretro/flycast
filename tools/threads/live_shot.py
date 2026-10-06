@@ -29,6 +29,11 @@ Above the three there is a white polygon in fog that is half green at
 every depth, and two punch-through polygons, one with an opaque texture
 and one with a transparent one: light green, magenta, and nothing.
 
+At the bottom left one paletted texture is drawn with two of the palette
+banks, which start out blue and are changed while running, one after
+the other: green and magenta. Blue means a decoded copy of the texture
+was not made again when its bank changed.
+
 A second render pass draws a cyan polygon, which does not take shadows,
 over a corner of the first white one, with a modifier volume of its own
 over it: it has to stay cyan. An opaque polygon with those halving
@@ -119,6 +124,9 @@ def main():
         ('the fogged polygon',      64,  42, (127, 254, 127)),
         ('the opaque cut-out',     216,  42, (255, 0, 255)),
         ('the transparent cut-out', 266,  42, (255, 255, 0)),
+        # palette banks changed while running: the third, then the fourth
+        ('the third palette bank',  20, 225, (0, 255, 0)),
+        ('the fourth palette bank', 45, 225, (255, 0, 255)),
         # the second render pass
         ('P, in its volume',        55, 101, (0, 255, 255)),
         ('P, outside it',           42,  96, (0, 255, 255)),

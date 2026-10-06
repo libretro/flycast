@@ -183,6 +183,17 @@ static void ta_scene(void)
     * one value throughout, a half, and the fog is green, so whatever the
     * depth it comes out half white and half green. */
    ta_quad(0, TSP_FOGGED, 0, 0xFFFFFFFF, F(0.5f), F(32.0f), F(30.0f), F(96.0f), F(55.0f));
+   /* Bottom left: one 8-bit texture drawn twice, with the third and the
+    * fourth of the four palette banks an 8-bit texture can pick, the first
+    * with bilinear filtering and the second without. Both banks start out
+    * blue and are changed while running, each on its own and with nothing
+    * else in the palette changing after: green, and magenta. A renderer
+    * that keeps a decoded copy of a paletted texture has to notice which
+    * bank changed. */
+   ta_quad(TA_TEXTURED, TSP_PLAIN | (1u << 13), (6u << 27) | (0x20u << 21) | (0x60000 >> 3), 0xFFFFFFFF, F(0.5f),
+         F(10.0f), F(215.0f), F(30.0f), F(235.0f));
+   ta_quad(TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x30u << 21) | (0x60000 >> 3), 0xFFFFFFFF, F(0.5f),
+         F(35.0f), F(215.0f), F(55.0f), F(235.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
 
    ta_volume(x0, y0, x1, y1, F(0.75f));
@@ -191,9 +202,9 @@ static void ta_scene(void)
     * or not texel by texel, by the texture's alpha. One has a texture that
     * is all opaque magenta, the other one that is all transparent: the
     * first is there and the second is not. */
-   ta_quad(TA_PUNCH | TA_TEXTURED, TSP_CUTOUT, (6u << 27) | (0x2000 >> 3), 0xFFFFFFFF, F(0.5f),
+   ta_quad(TA_PUNCH | TA_TEXTURED, TSP_CUTOUT, (6u << 27) | (0x62000 >> 3), 0xFFFFFFFF, F(0.5f),
          F(200.0f), F(30.0f), F(232.0f), F(55.0f));
-   ta_quad(TA_PUNCH | TA_TEXTURED, TSP_CUTOUT, (6u << 27) | (0x3000 >> 3), 0xFFFFFFFF, F(0.5f),
+   ta_quad(TA_PUNCH | TA_TEXTURED, TSP_CUTOUT, (6u << 27) | (0x63000 >> 3), 0xFFFFFFFF, F(0.5f),
          F(250.0f), F(30.0f), F(282.0f), F(55.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the punch-through list */
 
@@ -299,11 +310,18 @@ void cmain(void)
     * magenta with the alpha bit set, 6 the same without it. */
    for (i = 0; i < 16; i++)
    {
-      (*(volatile u32 *)(0xA4002000 + i * 4)) = 0x05050505;
-      (*(volatile u32 *)(0xA4003000 + i * 4)) = 0x06060606;
+      (*(volatile u32 *)(0xA4062000 + i * 4)) = 0x05050505;
+      (*(volatile u32 *)(0xA4063000 + i * 4)) = 0x06060606;
    }
    set_palette(5, 0xFC1F);
    set_palette(6, 0x7C1F);
+   /* The texture for the palette bank polygons, all entry 7, and that entry
+    * in the third and fourth banks: blue to start with. (These textures are
+    * where the framebuffer writes of the first frames do not reach.) */
+   for (i = 0; i < 16; i++)
+      (*(volatile u32 *)(0xA4060000 + i * 4)) = 0x07070707;
+   set_palette(2 * 256 + 7, 0x001F);
+   set_palette(3 * 256 + 7, 0x001F);
    PVR(0x11C) = 0x80;                                  /* PT_ALPHA_REF */
    (*(volatile u32 *)0xFF000038) = 0x10;               /* QACR0: store queues go to the TA */
    (*(volatile u32 *)0xFF00003C) = 0x10;               /* QACR1 */
@@ -343,6 +361,10 @@ void cmain(void)
          paint_texture(4);
       else if (frame == 70)
          set_palette(4, 0x7FE0);                       /* yellow, for good */
+      else if (frame == 90)
+         set_palette(2 * 256 + 7, 0x03E0);             /* the third bank: green */
+      else if (frame == 100)
+         set_palette(3 * 256 + 7, 0x7C1F);             /* the fourth bank: magenta */
 
       if ((frame & 3) == 3 && frame < 64)
       {
