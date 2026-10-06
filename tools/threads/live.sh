@@ -269,6 +269,12 @@ for DRV in $PIXEL_DRIVERS; do
    run $DRV-pixel.log 300 "$WORK/test.gdi" "$WORK/$DRV-pixel.png"
    expect $DRV-pixel.log "core options file to .*core-options-pixel.cfg"
    expect $DRV-pixel.log "$CREATED"
+   # ...and that it stayed: the OpenGL one hands over to the per-triangle
+   # renderer when the context it is given is older than OpenGL 4.3
+   if grep -aq "doesn't support per-pixel sorting" "$WORK/$DRV-pixel.log"; then
+      echo "FAIL: the per-pixel renderer gave way to the per-triangle one ($DRV-pixel.log)" >&2
+      exit 1
+   fi
    python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-pixel.png" || {
       echo "FAIL: wrong picture from the per-pixel renderer" >&2
       exit 1

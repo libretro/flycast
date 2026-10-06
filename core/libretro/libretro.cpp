@@ -1839,8 +1839,15 @@ static bool set_opengl_hw_render(u32 preferred)
 		}
 		else
 		{
-			params.major = 4;
-			params.minor = 3;
+			/* A core context: ask for no more than the per-triangle
+			 * renderer does. Drivers answer that with the newest version
+			 * they have, which is 4.3 or later wherever per-pixel sorting
+			 * can work, and renderer init checks, as above. Asking for 4.3
+			 * outright does not come back as a refusal where there is none:
+			 * the frontend finds out when it opens its video driver, and
+			 * gives up on the content altogether. */
+			params.major = 3;
+			params.minor = 0;
 		}
 	}
 	else
