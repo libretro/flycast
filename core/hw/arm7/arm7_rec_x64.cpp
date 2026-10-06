@@ -26,6 +26,7 @@
 using namespace Xbyak::util;
 
 #include "arm7_rec.h"
+#include "hw/aica/aica_if.h"
 
 namespace aicaarm
 {
@@ -577,7 +578,45 @@ class Arm7Compiler : public Xbyak::CodeGenerator
 				mov(call_regs[1], regalloc->map(op.arg[2].getReg().armreg));
 		}
 
+		/* Nearly every access is to the ARM's memory, and that is one move
+		 * to or from the host's: it is done here. What is left for the call
+		 * is the sound chip's registers, above 0x800000, and a word read
+		 * from an address that is not a word's, which comes back rotated. */
+		Xbyak::Label slow, done;
+		mov(eax, addr_reg);
+		and_(eax, 0x00ffffff);
+		cmp(eax, 0x00800000);
+		jae(slow);
+		if (!op.byte_xfer)
+		{
+			if (op.op_type == ArmOp::LDR)
+			{
+				test(eax, 3);
+				jnz(slow);
+			}
+			else
+				and_(eax, 0xfffffffc);		// a word is stored at a word's address
+		}
+		and_(eax, dword[rip + &ARAM_MASK]);
+		mov(r10, qword[rip + &aica_ram.data]);
+		if (op.op_type == ArmOp::LDR)
+		{
+			if (op.byte_xfer)
+				movzx(eax, byte[r10 + rax]);
+			else
+				mov(eax, dword[r10 + rax]);
+		}
+		else
+		{
+			if (op.byte_xfer)
+				mov(byte[r10 + rax], call_regs[1].cvt8());
+			else
+				mov(dword[r10 + rax], call_regs[1]);
+		}
+		jmp(done);
+		L(slow);
 		call(recompiler::getMemOp(op.op_type == ArmOp::LDR, op.byte_xfer));
+		L(done);
 
 		if (op.op_type == ArmOp::LDR)
 			mov(regalloc->map(op.rd.getReg().armreg), eax);
