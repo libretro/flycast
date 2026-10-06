@@ -139,8 +139,7 @@ def main():
         # palette banks changed while running: the third, then the fourth
         ('the third palette bank',  20, 225, (0, 255, 0)),
         ('the fourth palette bank', 45, 225, (255, 0, 255)),
-        # the texture rendered to: orange, its top left quarter blue. It is
-        # RGB565, so the orange's green is as near 128 as six bits get
+        # the texture rendered to: orange, its top left quarter blue
         ('the render target, top left',     262, 137, (0, 0, 255)),
         ('the render target, top right',    288, 137, (255, 128, 0)),
         ('the render target, bottom left',  262, 163, (255, 128, 0)),

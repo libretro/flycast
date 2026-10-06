@@ -963,7 +963,14 @@ static bool RenderFrame(void)
 
 			case 1: //0x1   565 RGB 16 bit
 				channels=GL_RGB;
-				format=GL_UNSIGNED_SHORT_5_6_5;
+				/* Five or six bits a channel is what the game asked for, and
+				 * what the picture is cut down to if it is copied back to
+				 * video memory. Kept as a texture it does not have to lose
+				 * them: eight bits a channel, as the Vulkan renderer keeps
+				 * it, where the driver is sure to render to that (OpenGL 3
+				 * and OpenGL ES 3 on). */
+				format = (settings.rend.RenderToTextureBuffer || gl.gl_major < 3)
+						? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
 				break;
 
 			case 2: //0x2   4444 ARGB 16 bit
