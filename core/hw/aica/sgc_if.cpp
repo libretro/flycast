@@ -413,6 +413,10 @@ struct ChannelEx
 
 	bool enabled;	//set to false to 'freeze' the channel
 	int ChannelNumber;
+	/* One bit for every channel that is enabled, bit n for channel n: the
+	 * channels StepAll() has anything to do for. enable(), disable() and
+	 * RefreshActive() are the only places it changes. */
+	static u64 active;
 
 	void Init(int cn,u8* ccd_raw)
 	{
@@ -425,12 +429,22 @@ struct ChannelEx
 	void disable()
 	{
 		enabled=false;
+		active &= ~((u64)1 << ChannelNumber);
 		SetAegState(EG_Release);
 		AEG.SetValue(0x3FF);
 	}
 	void enable()
 	{
 		enabled=true;
+		active |= (u64)1 << ChannelNumber;
+	}
+	/* After the enabled flags were set some other way: a state was loaded */
+	static void RefreshActive()
+	{
+		active = 0;
+		for (int i = 0; i < 64; i++)
+			if (Chans[i].enabled)
+				active |= (u64)1 << i;
 	}
 	__forceinline SampleType InterpolateSample()
 	{
@@ -520,10 +534,17 @@ struct ChannelEx
 		mixr+=oRight;
 	}
 
+	/* Only the channels that are on. A channel that is off adds nothing
+	 * to anything, and going to all 64 to find that out - a load, and an
+	 * add of zero into its DSP input - was most of what this cost with a
+	 * handful of them playing. A channel may switch itself off as it is
+	 * stepped; that changes the set, not this pass over a copy of it. */
 	__forceinline static void StepAll(SampleType& mixl, SampleType& mixr)
 	{
-		for (int i = 0; i < 64; i++)
-			Chans[i].Step(mixl, mixr);
+		u64 on = active;
+		for (int i = 0; on != 0; i++, on >>= 1)
+			if (on & 1)
+				Chans[i].Step(mixl, mixr);
 	}
 	void SetAegState(_EG_state newstate)
 	{
@@ -1209,6 +1230,7 @@ static void staticinitialise()
 }
 
 ChannelEx ChannelEx::Chans[64];
+u64 ChannelEx::active;
 
 #define Chans ChannelEx::Chans
 
@@ -1386,8 +1408,10 @@ void AICA_Sample()
 	DSPData->EXTS[1] = EXTS0R;
 	dsp_step();
 
+	/* A DSP output sent at level 0 is multiplied by 0: left out */
 	for (int i=0;i<16;i++)
-		VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
+		if (dsp_out_vol[i].EFSDL)
+			VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
 
 	//Mono !
 	if (CommonData->Mono)
@@ -1581,6 +1605,8 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			LIBRETRO_US(dum); // Chans[i].ChannelNumber
 
 	}
+	// the flags came from the state: the set of channels that are on follows them
+	ChannelEx::RefreshActive();
 
 	return true;
 }
