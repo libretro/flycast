@@ -61,8 +61,20 @@ void OITPipelineManager::CreatePipeline(u32 listType, bool autosort, const PolyP
 	else
 		depthOp = depthOps[pp.isp.DepthMode];
 	bool depthWriteEnable;
-	// FIXME temporary Intel driver bug workaround
-	if (pass != Pass::Depth && !((!autosort || GetContext()->GetVendorID() == VENDOR_INTEL) && pass == Pass::Color))
+	/* Depth is written in the depth pass. In the colour pass the depth buffer
+	 * is read-only - it is an input to the shaders there - and depth writes
+	 * are not allowed. For opaque and punch-through polygons there is nothing
+	 * to write anyway: they are drawn where their depth is the one the depth
+	 * pass left, so a write would put the same value back.
+	 *
+	 * Translucent polygons that are not sorted are the exception. They are
+	 * drawn in the colour pass only, in order, each tested against the depth
+	 * the ones before it wrote, so they still write. So does everything on
+	 * Intel, which is the driver bug workaround this condition came with. */
+	const bool colourPassWrites = pass == Pass::Color
+			&& (GetContext()->GetVendorID() == VENDOR_INTEL
+				|| (!autosort && listType == ListType_Translucent));
+	if (pass != Pass::Depth && !colourPassWrites)
 		depthWriteEnable = false;
 	// Z Write Disable seems to be ignored for punch-through.
 	// Fixes Worms World Party, Bust-a-Move 4 and Re-Volt
