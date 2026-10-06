@@ -50,7 +50,13 @@ public:
 
 		if (!pixelBuffer)
 		{
-			pixelBuffer = std::unique_ptr<BufferData>(new BufferData(std::min(pixel_buffer_size, context->GetMaxMemoryAllocationSize()),
+			/* No larger than the device can allocate in one piece, nor than a
+			 * shader can be given as one storage buffer: the whole buffer is
+			 * bound as one. Mesa's software Vulkan stops at 128 MB, and a
+			 * buffer bound past the limit drew nothing at all. */
+			vk::DeviceSize size = std::min((vk::DeviceSize)pixel_buffer_size, context->GetMaxMemoryAllocationSize());
+			size = std::min(size, (vk::DeviceSize)context->GetMaxStorageBufferRange());
+			pixelBuffer = std::unique_ptr<BufferData>(new BufferData(size,
 					vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal));
 		}
 		if (!pixelCounter)

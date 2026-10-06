@@ -92,6 +92,7 @@ public:
 	bool SupportsDedicatedAllocation() const { return dedicatedAllocationSupported; }
 	VulkanHeap& GetHeap() { return heap; }
 	vk::DeviceSize GetMaxMemoryAllocationSize() const { return maxMemoryAllocationSize; }
+	u32 GetMaxStorageBufferRange() const { return maxStorageBufferRange; }
 	f32 GetMaxSamplerAnisotropy() const { return samplerAnisotropy ? maxSamplerAnisotropy : 1.f; }
 	u32 GetVendorID() const { return vendorID; }
 
