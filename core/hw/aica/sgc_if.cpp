@@ -452,14 +452,22 @@ struct ChannelEx
 			if (Chans[i].enabled)
 				active |= (u64)1 << i;
 	}
+	/* The sample between the last one read and the next, by how far the
+	 * channel has moved on from the one towards the other, as 20 bits.
+	 *
+	 * The two products are added and then scaled, once, and the four bits
+	 * below a 16-bit sample that the scaling used to throw away are kept:
+	 * the filter and the DSP both work on 20. Scaling each product on its
+	 * own first, as this did, lost up to two units of the 16 - between two
+	 * equal samples it could come out one below either - before a single
+	 * zero was shifted in for the other four. Exactly on a sample, which is
+	 * every sample of a sound played at the rate it was made for, the two
+	 * ways give the same. */
 	__forceinline SampleType InterpolateSample()
 	{
-		SampleType rv;
-		u32 fp=step.fp;
-		rv=FPMul(s0,(s32)(1024-fp),10);
-		rv+=FPMul(s1,(s32)(fp),10);
+		const s32 fp = step.fp;
 
-		return rv;
+		return (s0 * (1024 - fp) + s1 * fp) >> 6;
 	}
 	/* The channel's low-pass filter, on a 20-bit sample: two poles, with
 	 * resonance.
@@ -524,7 +532,7 @@ struct ChannelEx
 			/* 20 bits from here to the outputs: the filter needs the four
 			 * extra, and the DSP takes 20-bit samples. A channel with its
 			 * filter off comes out exactly as it did with 16. */
-			SampleType sample = InterpolateSample() << 4;
+			SampleType sample = InterpolateSample();
 
 			if (FEG.active)
 				sample = LowPassFilter(sample);
