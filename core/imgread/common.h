@@ -301,8 +301,7 @@ struct RawTrackFile : TrackFile
             break;
       }
 
-		core_fseek(file,offset+FAD*fmt,SEEK_SET);
-		core_fread(file, dst, fmt);
+		core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
 	}
 	virtual ~RawTrackFile()
 	{

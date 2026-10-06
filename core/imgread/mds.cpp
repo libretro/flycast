@@ -25,8 +25,7 @@ u32 mds_ReadSSect(u8* p_out,u32 sector,u32 secsz)
 		if (mds_Track[i+1].FAD>sector)
 		{
 			u32 fad_off=sector-mds_Track[i].FAD;
-			core_fseek(fp_mdf,mds_Track[i].Offset+fad_off*mds_Track[i].SectorSize,SEEK_SET);
-			core_fread(fp_mdf,mds_SecTemp,mds_Track[i].SectorSize);
+			core_fread_at(fp_mdf, mds_Track[i].Offset + fad_off * mds_Track[i].SectorSize, mds_SecTemp, mds_Track[i].SectorSize);
 
 			ConvertSector(mds_SecTemp,p_out,mds_Track[i].SectorSize,secsz,sector);
 			return mds_Track[i].SectorSize;

@@ -6,13 +6,13 @@
 #include <string.h>
 
 #include <formats/rchd.h>
-#include <streams/file_stream.h>
 #include <file/file_path.h>
 #include <retro_dirent.h>
 #include <string/stdstring.h>
 #include <compat/strl.h>
 
 #include "chd_image.h"
+#include "deps/coreio/coreio.h"
 
 /* Every CD codec chdman writes. rchd treats a codec it was built without
  * as unsupported only when a hunk needs it, so a build that dropped one
@@ -37,12 +37,12 @@
  * supplies and asks again. */
 #define CHD_IO_CHUNK 65536
 
-/* One image of a chain: the decoder and the file it is fed from. Every
- * request the decoder makes is read through the filestream. */
+/* One image of a chain: the decoder and the file it is fed from. A
+ * mapped file is fed in place; any other is read into io_buf first. */
 typedef struct
 {
-   rchd_t *chd;
-   RFILE  *fp;
+   rchd_t    *chd;
+   core_file *fp;
 } chd_src;
 
 struct chd_image
@@ -70,7 +70,7 @@ static void chd_src_close(chd_src *src)
    if (src->chd)
       rchd_free(src->chd);
    if (src->fp)
-      filestream_close(src->fp);
+      core_fclose(src->fp);
    src->chd = NULL;
    src->fp  = NULL;
 }
@@ -81,19 +81,31 @@ static void chd_src_close(chd_src *src)
 static bool chd_src_supply(chd_src *src, const rchd_request_t *rq,
       uint8_t *io_buf, bool reading)
 {
-   int64_t got;
+   const uint8_t *map;
+   size_t         map_len;
+   size_t         got;
 
-   if (filestream_seek(src->fp, (int64_t)rq->offset,
-            RETRO_VFS_SEEK_POSITION_START) < 0)
-      return false;
-   got = filestream_read(src->fp, io_buf,
+   if ((map = core_fmap(src->fp, &map_len)))
+   {
+      if (rq->offset >= map_len)
+         return false;
+      map    += (size_t)rq->offset;
+      map_len -= (size_t)rq->offset;
+      got     = rq->length < map_len ? rq->length : map_len;
+      if (reading)
+         return rchd_feed_at(src->chd, rq->offset, rq->source,
+               map, got) == RCHD_OK;
+      return rchd_feed(src->chd, map, got) == RCHD_OK;
+   }
+
+   got = core_fread_at(src->fp, rq->offset, io_buf,
          rq->length < CHD_IO_CHUNK ? rq->length : CHD_IO_CHUNK);
-   if (got <= 0)
+   if (got == 0)
       return false;
    if (reading)
       return rchd_feed_at(src->chd, rq->offset, rq->source,
-            io_buf, (size_t)got) == RCHD_OK;
-   return rchd_feed(src->chd, io_buf, (size_t)got) == RCHD_OK;
+            io_buf, got) == RCHD_OK;
+   return rchd_feed(src->chd, io_buf, got) == RCHD_OK;
 }
 
 /* Opens @path into @src and runs the decoder's open sequence (header,
@@ -103,10 +115,7 @@ static bool chd_src_open(chd_src *src, const char *path, uint8_t *io_buf)
    rchd_request_t rq;
    int            err;
 
-   src->fp = filestream_open(path,
-         RETRO_VFS_FILE_ACCESS_READ,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
-   if (!src->fp)
+   if (!(src->fp = core_fopen(path)))
       return false;
 
    if (!(src->chd = rchd_new()))
@@ -134,18 +143,16 @@ static bool chd_src_open(chd_src *src, const char *path, uint8_t *io_buf)
  * to read of each candidate. Versions 1 and 2 carry no SHA-1. */
 static bool chd_peek_sha1(const char *path, uint8_t *sha1)
 {
-   uint8_t  h[124];
-   uint32_t version;
-   size_t   at;
-   int64_t  got;
-   RFILE   *fp = filestream_open(path,
-         RETRO_VFS_FILE_ACCESS_READ,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   uint8_t    h[124];
+   uint32_t   version;
+   size_t     at;
+   size_t     got;
+   core_file *fp = core_fopen(path);
 
    if (!fp)
       return false;
-   got = filestream_read(fp, h, sizeof(h));
-   filestream_close(fp);
+   got = core_fread_at(fp, 0, h, sizeof(h));
+   core_fclose(fp);
 
    if (got < 16 || memcmp(h, "MComprHD", 8))
       return false;
@@ -159,7 +166,7 @@ static bool chd_peek_sha1(const char *path, uint8_t *sha1)
       case 5:  at = 84; break;
       default: return false;
    }
-   if ((size_t)got < at + 20)
+   if (got < at + 20)
       return false;
    memcpy(sha1, h + at, 20);
    return true;

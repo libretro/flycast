@@ -1121,6 +1121,17 @@ ifeq ($(NEED_CXX11), 1)
 	CXXFLAGS     += -std=c++11
 endif
 
+# Content files are memory-mapped where the platform has mmap().
+ifeq ($(platform), win)
+else ifeq ($(platform), libnx)
+else ifeq ($(platform), emscripten)
+else
+	HAVE_MMAP ?= 1
+endif
+ifeq ($(HAVE_MMAP), 1)
+	CORE_DEFINES += -DHAVE_MMAP
+endif
+
 ifeq ($(HAVE_CHD),1)
 CORE_DEFINES += -D_7ZIP_ST -DHAVE_CHD -DHAVE_RCHD -DHAVE_RCHD_DEFLATE -DHAVE_RCHD_LZMA -DHAVE_RCHD_FLAC -DHAVE_RCHD_ZSTD -DHAVE_RFLAC -DHAVE_RZSTD
 endif
