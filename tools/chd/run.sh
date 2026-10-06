@@ -36,9 +36,14 @@ WORK=${TMPDIR:-/tmp}/chd_image_test.$$
 mkdir -p "$WORK/gd"
 trap 'rm -rf "$WORK"' EXIT
 
-$CC -O1 -g $DEFS -fsanitize=address,undefined \
+# Built twice: with the core's flags the decoder is lent the mapped file,
+# without HAVE_MMAP every request is read into the bounce buffer.
+NOMAP_DEFS=$(echo "$DEFS" | sed 's/-DHAVE_MMAP //')
+for v in map nomap; do
+if [ $v = map ]; then VDEFS=$DEFS; else VDEFS=$NOMAP_DEFS; fi
+$CC -O1 -g $VDEFS -fsanitize=address,undefined \
    -fno-sanitize-recover=undefined -I$L/include -Icore \
-   -o "$WORK/chd_image_test" \
+   -o "$WORK/chd_image_test_$v" \
    tools/chd/chd_image_test.c core/imgread/chd_image.c \
    core/deps/coreio/coreio.c core/archive/archive.c \
    $L/formats/chd/rchd.c $L/encodings/encoding_huffman.c \
@@ -55,6 +60,7 @@ $CC -O1 -g $DEFS -fsanitize=address,undefined \
    $L/string/stdstring.c $L/string/rstrtod.c $L/time/rtime.c \
    $L/memmap/memalign.c \
    -lm -lpthread
+done
 
 python3 tools/chd/make_fixture.py "$WORK/base"
 python3 tools/chd/make_fixture.py "$WORK/child" --variant 1
@@ -95,8 +101,10 @@ chdman info -v -i "$WORK/chain/child.chd" | grep -q "%  Copy from parent" \
 export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
 fail=0
 check() {
-   "$WORK/chd_image_test" "$@" | tail -1 | grep -q PASS \
-      || { echo "FAIL: $1"; fail=1; }
+   for v in map nomap; do
+      "$WORK/chd_image_test_$v" "$@" | tail -1 | grep -q PASS \
+         || { echo "FAIL ($v): $1"; fail=1; }
+   done
 }
 for c in cdzs cdlz cdzl cdfl; do
    check "$WORK/$c.chd" "$WORK/base.bin"
@@ -108,7 +116,7 @@ done
 check "$WORK/chain/child.chd" "$WORK/child.bin"
 
 if [ $fail = 0 ]; then
-   echo "chd_image_test: all images PASS"
+   echo "chd_image_test: all images PASS (mapped and bounce-buffer builds)"
 else
    exit 1
 fi

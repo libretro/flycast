@@ -37,6 +37,10 @@
  * supplies and asks again. */
 #define CHD_IO_CHUNK 65536
 
+/* Most hunks one read-ahead hint covers: at chdman's eight frames per
+ * hunk this is 2048 sectors, more than any one GD-ROM command reads. */
+#define CHD_PREFETCH_HUNKS 256
+
 /* One image of a chain: the decoder and the file it is fed from. A
  * mapped file is fed in place; any other is read into io_buf first. */
 typedef struct
@@ -77,7 +81,9 @@ static void chd_src_close(chd_src *src)
 
 /* Satisfies one request from @src, or the first CHD_IO_CHUNK bytes of
  * it; the decoder asks again for the rest. @reading selects the
- * read-time feed, which names the range it is supplying. */
+ * read-time feed, which names the range it is supplying. A mapped
+ * file is lent to the decoder where it lies: the mapping outlives the
+ * decoder, so the compressed hunk is never copied before decoding. */
 static bool chd_src_supply(chd_src *src, const rchd_request_t *rq,
       uint8_t *io_buf, bool reading)
 {
@@ -93,7 +99,7 @@ static bool chd_src_supply(chd_src *src, const rchd_request_t *rq,
       map_len -= (size_t)rq->offset;
       got     = rq->length < map_len ? rq->length : map_len;
       if (reading)
-         return rchd_feed_at(src->chd, rq->offset, rq->source,
+         return rchd_feed_borrow(src->chd, rq->offset, rq->source,
                map, got) == RCHD_OK;
       return rchd_feed(src->chd, map, got) == RCHD_OK;
    }
@@ -339,6 +345,43 @@ bool chd_image_track(const chd_image_t *img, uint32_t index,
    else
       return false;
    return true;
+}
+
+/* Hunks are written to the file in order, so the blobs of a run of
+ * hunks are usually one contiguous range; neighbours are merged and
+ * each range is hinted once. A hunk that carries no blob of its own
+ * (a self or parent reference, an uncompressed run) is skipped. */
+void chd_image_prefetch(chd_image_t *img, uint32_t hunk, uint32_t count)
+{
+   rchd_request_t rq;
+   uint64_t       run_off = 0;
+   size_t         run_len = 0;
+   uint32_t       last    = chd_image_hunk_count(img);
+
+   if (hunk >= last)
+      return;
+   if (count > last - hunk)
+      count = last - hunk;
+   if (count > CHD_PREFETCH_HUNKS)
+      count = CHD_PREFETCH_HUNKS;
+
+   for (last = hunk + count; hunk < last; hunk++)
+   {
+      if (rchd_hunk_location(img->chain[0].chd, hunk, &rq) != RCHD_OK
+            || !rq.length || rq.source != RCHD_SOURCE_SELF)
+         continue;
+      if (run_len && rq.offset == run_off + run_len)
+      {
+         run_len += rq.length;
+         continue;
+      }
+      if (run_len)
+         core_fprefetch(img->chain[0].fp, run_off, run_len);
+      run_off = rq.offset;
+      run_len = rq.length;
+   }
+   if (run_len)
+      core_fprefetch(img->chain[0].fp, run_off, run_len);
 }
 
 /* Requests for a hunk that a child shares with its parent are made by

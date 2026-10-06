@@ -79,6 +79,19 @@ uint32_t chd_image_version(const chd_image_t *img);
  */
 bool chd_image_read_hunk(chd_image_t *img, uint32_t hunk, uint8_t *dst);
 
+/**
+ * chd_image_prefetch:
+ * @img   : image
+ * @hunk  : first hunk about to be read
+ * @count : how many hunks follow it
+ *
+ * Asks the OS to start bringing in the compressed bytes those hunks
+ * occupy in the file, ahead of the reads that decode them. A hint:
+ * returns at once, decodes nothing, and is capped at a few hundred
+ * hunks. Only the image's own file is hinted, not a parent's.
+ */
+void chd_image_prefetch(chd_image_t *img, uint32_t hunk, uint32_t count);
+
 #ifdef __cplusplus
 }
 #endif

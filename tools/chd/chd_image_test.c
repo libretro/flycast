@@ -93,6 +93,13 @@ int main(int argc, char **argv)
    src.next  = 0;
    src.fp    = NULL;
 
+   /* The read-ahead hint in every shape, before the reads it is for:
+    * a hint changes no bytes, and one past the end hints nothing. */
+   chd_image_prefetch(img, 0, chd_image_hunk_count(img));
+   chd_image_prefetch(img, chd_image_hunk_count(img) / 2, 3);
+   chd_image_prefetch(img, chd_image_hunk_count(img), 1);
+   chd_image_prefetch(img, 0, 0);
+
    for (index = 0; chd_image_track(img, index, &t); index++)
    {
       int32_t i;

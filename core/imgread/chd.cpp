@@ -150,6 +150,18 @@ struct CHDTrack : TrackFile
 		*subcode_type=SUBFMT_NONE;
 	}
 
+	/* The compressed bytes of every hunk the sectors span, so neither
+	 * this thread nor the read-ahead worker stalls on a cold page. Both
+	 * handles are on the same file, so one hint serves both. */
+	virtual void Prefetch(u32 FAD, u32 count)
+	{
+		u32 first = (FAD + Offset) / disc->sph;
+		u32 last  = (FAD + Offset + count - 1) / disc->sph;
+
+		if (count)
+			chd_image_prefetch(disc->chd, first, last - first + 1);
+	}
+
 	/* The sector inside the decoded hunk; a track whose bytes have to
 	 * be swapped is read through a buffer. */
 	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
