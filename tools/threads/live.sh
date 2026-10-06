@@ -67,7 +67,10 @@
 # of the core: it loads the core, passes everything through, and writes
 # down every sample the core sends on the way. live_audio.py checks that
 # against the track: after a moment of silence it has to be the track,
-# sample for sample, round and round. $SOUND_DRIVER is the video driver
+# sample for sample, round and round. Then once more with a state saved
+# and loaded every second or so while it plays: that run has to be the
+# first with stretches of it heard again, going on from every load exactly
+# as the first run did from that point. $SOUND_DRIVER is the video driver
 # this runs with (default: "gl"); empty leaves the pass out.
 #
 # Needs python3, a C compiler, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
@@ -352,9 +355,33 @@ if [ -n "$SOUND_DRIVER" ]; then
    export AUDIO_TAP_CORE AUDIO_TAP_OUT
    CORE=$WORK/audio_tap.so
    run sound.log 300
-   CORE=$AUDIO_TAP_CORE
    python3 "$ROOT/tools/threads/live_audio.py" "$WORK/sound.pcm" || {
       echo "FAIL: wrong sound" >&2
+      exit 1
+   }
+
+   echo "== $SOUND_DRIVER: the sound, with states saved and loaded while it plays"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   python3 - <<'PY' &
+import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+time.sleep(3)
+while True:
+    s.sendto(b"SAVE_STATE", ("127.0.0.1", 55355))
+    time.sleep(0.4)
+    s.sendto(b"LOAD_STATE", ("127.0.0.1", 55355))
+    time.sleep(0.8)
+PY
+   POKE=$!
+   trap 'kill $POKE 2>/dev/null || true; rm -rf "$WORK"' EXIT
+   AUDIO_TAP_OUT=$WORK/sound-reloaded.pcm
+   run sound-reloaded.log 300
+   kill $POKE 2>/dev/null || true
+   CORE=$AUDIO_TAP_CORE
+   python3 "$ROOT/tools/threads/live_audio.py" --reloaded "$WORK/sound.pcm" \
+      "$WORK/sound-reloaded.pcm" || {
+      echo "FAIL: the sound did not go on from a loaded state as it had from there" >&2
       exit 1
    }
 fi

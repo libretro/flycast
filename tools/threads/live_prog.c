@@ -612,6 +612,26 @@ void cmain(void)
    AICA(0x80 + 0x40) = 0;                              /* and no hurry between them */
    AICA(0x80 + 0x44) = 0;
    AICA(0x80 + 0x00) = 0x4202;                         /* 16-bit, looping, key down */
+   /* A third, for channel 2: 4096 samples played an octave down, so that
+    * every other sample that comes out lies halfway between two of them
+    * and has to be worked out. Full level, all the way to the left, filter
+    * and attenuation off, key down from the start like channel 1. The
+    * sample after the last is the first again, so that the one worked out
+    * across the end of the loop is the same whichever of them the chip
+    * takes. */
+   for (i = 0; i <= 4096; i++)
+      (*(volatile u16 *)(0xA0830000 + i * 2)) = (u16)((int)(((i & 4095) * 131) % 1999) - 999);
+   AICA(0x100 + 0x04) = 0x0000;                        /* SA: 0x30000, low */
+   AICA(0x100 + 0x08) = 0;
+   AICA(0x100 + 0x0C) = 4096;
+   AICA(0x100 + 0x10) = 0x001F;
+   AICA(0x100 + 0x14) = 0x3C1F;
+   AICA(0x100 + 0x18) = 0xF << 11;                     /* one octave down */
+   AICA(0x100 + 0x1C) = 0;
+   AICA(0x100 + 0x20) = 0;
+   AICA(0x100 + 0x24) = (0xF << 8) | 0x1F;             /* full level, left */
+   AICA(0x100 + 0x28) = 0x0060;                        /* filter off, attenuation off */
+   AICA(0x100 + 0x00) = 0x4203;                        /* 16-bit, looping, key down */
 
    for (;;)
    {
