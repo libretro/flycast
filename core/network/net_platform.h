@@ -26,6 +26,11 @@
 #include <ws2tcpip.h>
 #endif
 
+/* libnx's <netinet/in.h> has no INADDR_LOOPBACK. 127.0.0.1, host order. */
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK 0x7f000001
+#endif
+
 #ifndef _WIN32
 #define closesocket close
 typedef int sock_t;

@@ -115,8 +115,10 @@ int NaomiNetwork::waitReadable(const sock_t *socks, int count, int64_t usec)
 		max_fd = std::max(max_fd, (int)wake_sock);
 	}
 	else if (usec < 0)
-		// Nothing could ever end the wait
-		return 0;
+		/* No wake socket (it could not be made on this platform): nothing
+		 * would end a wait without a time, so give it one and let the
+		 * caller look at the stop flag again. */
+		usec = 100 * 1000;
 
 	if (usec >= 0)
 	{
