@@ -1580,6 +1580,22 @@ bool ta_parse_vdrc(TA_context* ctx)
          if (ctx->rend.Overrun)
             break;
 
+			/* Opaque polygons of the first render pass are not blended,
+			 * whatever their blend instructions say: they are drawn as
+			 * "source x 1, destination x 0". It is only in the passes that
+			 * follow, a list continuation, that an opaque polygon's
+			 * instructions are gone by. Upstream flycast sets them here in
+			 * the same way, and the renderers go by what they find. */
+			if (pass == 0)
+			{
+				PolyParam *pp = vd_rc.global_param_op.head();
+				for (int i = vd_rc.global_param_op.used(); i > 0; i--, pp++)
+				{
+					pp->tsp.SrcInstr = 1;
+					pp->tsp.DstInstr = 0;
+				}
+			}
+
 			bool empty_pass = vd_rc.global_param_op.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->op_count)
 					&& vd_rc.global_param_pt.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->pt_count)
 					&& vd_rc.global_param_tr.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->tr_count);
