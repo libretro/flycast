@@ -600,16 +600,6 @@ static void update_variables(bool first_startup)
    }
 
 
-   var.key = CORE_OPTION_NAME "_cpu_mode";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "dynamic_recompiler"))
-         settings.dynarec.Type = 0;
-      else if (!strcmp(var.value, "generic_recompiler"))
-         settings.dynarec.Type = 1;
-   }
-
    var.key = CORE_OPTION_NAME "_boot_to_bios";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

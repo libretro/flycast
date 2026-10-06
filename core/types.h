@@ -551,7 +551,6 @@ struct settings_t
 	struct
 	{
 		bool Enable;
-		unsigned Type;
 		bool disable_nvmem;
 		bool disable_vmem32;
 		bool DisableDivMatching;
