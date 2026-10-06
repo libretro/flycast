@@ -109,15 +109,15 @@ static void ta_send(u32 w0, u32 w1, u32 w2, u32 w3, u32 w4, u32 w5, u32 w6, u32 
 #define TA_SHADOW    0x00000080u     /* polygon: modifier volumes affect it */
 #define TA_TEXTURED  0x00000008u
 #define TA_MODIFIER  0x01000000u     /* list: opaque modifier volumes */
+#define TA_TRANSLUCENT 0x02000000u   /* list: translucent polygons */
 #define ISP_GEQUAL   (6u << 29)
 #define TSP_PLAIN    ((1u << 29) | (2u << 22))   /* source x 1, destination x 0; no fog; decal */
 #define TSP_BY_ALPHA ((4u << 29) | (2u << 22) | (1u << 20))   /* source x its alpha, destination x 0 */
+#define TSP_BLEND    ((4u << 29) | (5u << 26) | (2u << 22) | (1u << 20))   /* source x alpha + destination x (1 - alpha) */
 
-/* A screen-aligned rectangle at depth 1/w = 0.5, as a strip of four. */
-static void ta_quad(u32 pcw, u32 tsp, u32 tcw, u32 white, u32 x0, u32 y0, u32 x1, u32 y1)
+/* A screen-aligned rectangle at depth 1/w = z, as a strip of four. */
+static void ta_quad(u32 pcw, u32 tsp, u32 tcw, u32 white, u32 z, u32 x0, u32 y0, u32 x1, u32 y1)
 {
-   const u32 z = F(0.5f);
-
    ta_send(TA_POLYGON | pcw, ISP_GEQUAL, tsp, tcw, 0, 0, 0, 0);
    /* x, y, z, u, v, base colour, offset colour. Without a texture the
     * colour is in the same place and the words before it are ignored. */
@@ -158,9 +158,9 @@ static void ta_scene(void)
    /* The screen is 320 by 240 in the video mode the program is started in. */
    const u32 x0 = F(80.0f), x1 = F(240.0f), y0 = F(80.0f), y1 = F(100.0f);
 
-   ta_quad(TA_SHADOW, TSP_PLAIN, 0, 0xFFFFFFFF, F(32.0f), F(70.0f), F(128.0f), F(110.0f));
-   ta_quad(TA_SHADOW, TSP_BY_ALPHA, 0, 0x80FFFFFF, F(144.0f), F(70.0f), F(176.0f), F(110.0f));
-   ta_quad(TA_SHADOW | TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x1000 >> 3), 0xFFFFFFFF,
+   ta_quad(TA_SHADOW, TSP_PLAIN, 0, 0xFFFFFFFF, F(0.5f), F(32.0f), F(70.0f), F(128.0f), F(110.0f));
+   ta_quad(TA_SHADOW, TSP_BY_ALPHA, 0, 0x80FFFFFF, F(0.5f), F(144.0f), F(70.0f), F(176.0f), F(110.0f));
+   ta_quad(TA_SHADOW | TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x1000 >> 3), 0xFFFFFFFF, F(0.5f),
          F(192.0f), F(70.0f), F(288.0f), F(110.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
 
@@ -174,6 +174,15 @@ static void ta_scene(void)
    ta_send(TA_POLYGON | TA_MODIFIER, (1u << 29) | (1u << 26), 0, 0, 0, 0, 0, 0);
    ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.25f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */
+
+   /* Below those, two translucent polygons that overlap, each half
+    * transparent: a blue one near and a red one far, sent nearest first.
+    * They have to be blended farthest first all the same, the red over the
+    * background and the blue over that, which is the renderer's sorting to
+    * do. The other way round the overlap comes out reddish, not purple. */
+   ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x800000FF, F(0.6f), F(140.0f), F(130.0f), F(200.0f), F(170.0f));
+   ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x80FF0000, F(0.3f), F(120.0f), F(130.0f), F(180.0f), F(170.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the translucent list */
 }
 
 /* TMU channel 0, counting down at a 16th of a microsecond (12.5 MHz). */

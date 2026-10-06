@@ -18,6 +18,11 @@ volume is, the untextured ones have to be half as bright, the one with a
 decal texture has to be as it is outside, and the background between
 them has to be untouched; every renderer has to agree on that.
 
+Below those are two translucent polygons, a blue one near and a red one
+far, sent nearest first. Where they overlap the red has to have been
+blended first and the blue over it: purple, not the reddish colour the
+order they were sent in would give.
+
 Reads the PNG itself (8-bit RGB or RGBA, not interlaced), so nothing
 beyond the standard library is needed.
 """
@@ -93,14 +98,18 @@ def main():
         ('C, in the volume',       160,  90, (64, 64, 64)),
         ('B, in the volume',       216,  90, (0, 0, 255)),
         ('B, lit',                 270,  90, (0, 0, 255)),
+        # the translucent pair: blended twice, so a little more rounding
+        ('red over the background', 130, 150, (254, 127, 0)),
+        ('blue over red',          160, 150, (127, 63, 127)),
+        ('blue over the background', 190, 150, (127, 127, 127)),
     )
     for name, sx, sy, want in scene:
         x, y = width * sx // 320, height * sy // 240
         got = tuple(rows[y][x * bpp:x * bpp + 3])
-        if any(abs(got[i] - want[i]) > 2 for i in range(3)):
+        if any(abs(got[i] - want[i]) > 3 for i in range(3)):
             bad.append('%s is %d,%d,%d, not %d,%d,%d' % ((name,) + got + want))
     if bad:
-        print('shadows: ' + '; '.join(bad))
+        print('the scene: ' + '; '.join(bad))
         return 1
     # live.sh turns the first VMU's screen on, which is drawn over the top
     # left corner: the corner is the LCD's colour, not the background's.
