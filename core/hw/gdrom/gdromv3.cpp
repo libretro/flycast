@@ -71,12 +71,18 @@ GD_HardwareInfo_t GD_HardwareInfo;
 #define printf_spicmd(...)  DEBUG_LOG(GDROM, __VA_ARGS__)
 #define printf_subcode(...)  DEBUG_LOG(GDROM, __VA_ARGS__)
 
-void libCore_CDDA_Sector(s16* sector)
+const s16* libCore_CDDA_Sector(s16* sector)
 {
+	const s16* out = sector;
+
 	//silence ! :p
 	if (cdda.status == cdda_t::Playing)
 	{
-		libGDR_ReadSector((u8*)sector,cdda.CurrAddr.FAD,1,2352);
+		const u8* lent = libGDR_LendRawSector(cdda.CurrAddr.FAD);
+		if (lent)
+			out = (const s16*)lent;
+		else
+			libGDR_ReadSector((u8*)sector,cdda.CurrAddr.FAD,1,2352);
 		cdda.CurrAddr.FAD++;
 		if (cdda.CurrAddr.FAD >= cdda.EndAddr.FAD)
 		{
@@ -100,6 +106,7 @@ void libCore_CDDA_Sector(s16* sector)
 	{
 		memset(sector,0,2352);
 	}
+	return out;
 }
 void gd_spi_pio_end(const u8* buffer, u32 len, gd_states next_state = gds_pio_end);
 void gd_process_spi_cmd();

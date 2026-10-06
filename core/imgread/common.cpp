@@ -207,6 +207,7 @@ bool DiscSwap(u32 fileflags)
 
 void TermDrive()
 {
+	libCore_CDDA_Detach();
 	if (disc != NULL)
 		delete disc;
 

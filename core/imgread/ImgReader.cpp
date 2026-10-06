@@ -18,6 +18,17 @@ void libGDR_Prefetch(u32 StartSector, u32 SectorCount)
 	if (disc)
 		disc->Prefetch(StartSector, SectorCount);
 }
+/* A raw 2352-byte sector lent from the image for as long as the disc
+ * stays loaded, or NULL when it has to be read. */
+const u8* libGDR_LendRawSector(u32 Sector)
+{
+	SectorFormat fmt;
+	const u8* p;
+
+	if (!disc || !(p = disc->SectorLend(Sector, &fmt)) || fmt != SECFMT_2352)
+		return NULL;
+	return p;
+}
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 {
 	GetDriveSector(buff,StartSector,SectorCount,secsz);

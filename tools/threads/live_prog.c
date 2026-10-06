@@ -355,6 +355,31 @@ static int gd_read(u32 fad, u32 sectors)
    return 1;
 }
 
+/* Start CDDA playback of [@fad, @end], looping, so the drive hands the
+ * sound chip one audio sector every 588 samples for as long as the disc
+ * is in. 0 if the drive never asked for the packet. */
+static int gd_play(u32 fad, u32 end)
+{
+   u16 packet[6];
+   u32 i;
+
+   packet[0] = 0x20 | (0x01 << 8);                     /* CD play, FAD */
+   packet[1] = ((fad >> 16) & 0xFF) | (((fad >> 8) & 0xFF) << 8);
+   packet[2] = (fad & 0xFF) | (0x0F << 8);             /* repeat for ever */
+   packet[3] = 0;
+   packet[4] = ((end >> 16) & 0xFF) | (((end >> 8) & 0xFF) << 8);
+   packet[5] = end & 0xFF;
+   GD8(0x84) = 0;
+   GD8(0x9C) = 0xA0;
+   for (i = 0; i < 100000 && !(GD8(0x18) & 0x08); i++)
+      ;
+   if (!(GD8(0x18) & 0x08))
+      return 0;
+   for (i = 0; i < 6; i++)
+      GD16(0x80) = packet[i];
+   return 1;
+}
+
 /* Transfer @len bytes of what the drive has to @dest. 0 if it never ends. */
 static int gd_dma(u32 dest, u32 len)
 {
@@ -529,6 +554,11 @@ void cmain(void)
 
    /* The disc, read the way a game reads it, before anything is drawn */
    gd_bad = gd_test();
+   /* and the audio track playing underneath everything that follows:
+    * the sector the sound chip mixes from is lent out of the image, and
+    * the save, load, reset and unload below all happen while it is */
+   if (!gd_play(600, 899))
+      gd_bad = 9;
 
    for (;;)
    {

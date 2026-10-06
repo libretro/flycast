@@ -404,6 +404,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 
 	channel_serialize(data, total_size) ;
 
+	libCore_CDDA_Detach();
 	LIBRETRO_SA(cdda_sector,CDDA_SIZE);
 	LIBRETRO_S(cdda_index);
 
@@ -729,6 +730,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	channel_unserialize(data, total_size, version);
 
+	libCore_CDDA_Detach();
 	LIBRETRO_USA(cdda_sector,CDDA_SIZE);
 	LIBRETRO_US(cdda_index);
 	if (version < V9)

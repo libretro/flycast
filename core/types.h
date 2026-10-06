@@ -259,7 +259,12 @@ enum DiskArea
 //************************ AICA ************************
 //******************************************************
 void libARM_InterruptChange(u32 bits,u32 L);
-void libCore_CDDA_Sector(s16* sector);
+/* The next CDDA sector: lent from the image, or read into @sector and
+ * returned as @sector. */
+const s16* libCore_CDDA_Sector(s16* sector);
+/* Copies a lent CDDA sector into the AICA's own buffer; called before
+ * the disc it is lent from goes away. */
+void libCore_CDDA_Detach(void);
 
 
 //passed on AICA init call
@@ -650,6 +655,7 @@ void libCore_gdrom_disc_change(void);
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz);
 /* Read-ahead hint for a read about to be made of those sectors. */
 void libGDR_Prefetch(u32 StartSector, u32 SectorCount);
+const u8* libGDR_LendRawSector(u32 Sector);
 void libGDR_ReadSubChannel(u8 * buff, u32 format, u32 len);
 void libGDR_GetToc(u32* toc,u32 area);
 u32 libGDR_GetDiscType(void);

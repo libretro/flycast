@@ -116,6 +116,9 @@ struct TrackFile
 	virtual const u8* View(u32 FAD, SectorFormat* sector_type) { return NULL; }
 	/* Read-ahead hint for the sectors a read is about to ask for. */
 	virtual void Prefetch(u32 FAD, u32 count) {}
+	/* Like View(), but the bytes stay where they are until the disc is
+	 * closed: a mapped file can lend them, a decoded hunk cannot. */
+	virtual const u8* Lend(u32 FAD, SectorFormat* sector_type) { return NULL; }
 	virtual ~TrackFile() {};
 };
 
@@ -200,6 +203,15 @@ struct Disc
 		for (size_t i=tracks.size();i-->0;)
 			if (tracks[i].Holds(FAD))
 				return tracks[i].file->View(FAD, sector_type);
+		return NULL;
+	}
+
+	/* The sector lent for the disc's lifetime, or NULL. */
+	const u8* SectorLend(u32 FAD, SectorFormat* sector_type)
+	{
+		for (size_t i=tracks.size();i-->0;)
+			if (tracks[i].Holds(FAD))
+				return tracks[i].file->Lend(FAD, sector_type);
 		return NULL;
 	}
 
@@ -351,6 +363,10 @@ struct RawTrackFile : TrackFile
 	virtual void Prefetch(u32 FAD, u32 count)
 	{
 		core_fprefetch(file, (u32)(offset + FAD * fmt), (size_t)count * fmt);
+	}
+	virtual const u8* Lend(u32 FAD, SectorFormat* sector_type)
+	{
+		return View(FAD, sector_type);
 	}
 	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
 	{

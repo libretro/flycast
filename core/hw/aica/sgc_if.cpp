@@ -1342,6 +1342,17 @@ void WriteCommonReg8(u32 reg,u32 data)
 #define CDDA_SIZE  (2352/2)
 s16 cdda_sector[CDDA_SIZE]={0};
 u32 cdda_index=CDDA_SIZE<<1;
+/* The sector being mixed: lent from the disc image, or cdda_sector. */
+static const s16* cdda_src = cdda_sector;
+
+void libCore_CDDA_Detach(void)
+{
+	if (cdda_src != cdda_sector)
+	{
+		memcpy(cdda_sector, cdda_src, sizeof(cdda_sector));
+		cdda_src = cdda_sector;
+	}
+}
 
 void AICA_Sample()
 {
@@ -1358,10 +1369,10 @@ void AICA_Sample()
 	if (cdda_index>=CDDA_SIZE)
 	{
 		cdda_index=0;
-		libCore_CDDA_Sector(cdda_sector);
+		cdda_src = libCore_CDDA_Sector(cdda_sector);
 	}
-	s32 EXTS0L=cdda_sector[cdda_index];
-	s32 EXTS0R=cdda_sector[cdda_index+1];
+	s32 EXTS0L=cdda_src[cdda_index];
+	s32 EXTS0R=cdda_src[cdda_index+1];
 	cdda_index+=2;
 
 	//Final MIX ..
