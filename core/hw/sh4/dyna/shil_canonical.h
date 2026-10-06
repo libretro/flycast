@@ -98,6 +98,7 @@ extern "C" f32 fipr_asm(float* fn, float* fm);
 #if SHIL_MODE==1 || SHIL_MODE==2
 //only in structs we use the code :)
 #include <math.h>
+#include <cmath>
 #include "types.h"
 #include "shil.h"
 #include "decoder.h"
@@ -731,8 +732,9 @@ u32,f1,(f32 f1),
 	{
 		s32 res = (s32)f1;
 
-		// Fix result sign for Intel CPUs
-		if (res == 0x80000000 && *(s32 *)&f1 > 0)
+		// Fix result sign for Intel CPUs. Not for a NaN, which is not
+		// greater than zero whatever its sign bit and stays 0x80000000.
+		if ((u32)res == 0x80000000 && f1 > 0)
 			res = 0x7fffffff;
 
 		return res;
@@ -744,6 +746,8 @@ shil_canonical
 u32,f1,(f32 f1),
 	if (f1 > 2147483520.0f) // IEEE 754: 0x4effffff
 		return 0x7fffffff;
+	else if (f1 != f1)	// a NaN: these hosts would make it 0
+		return 0x80000000;
 	else
 		return (s32)f1;
 )
@@ -1032,7 +1036,7 @@ shil_opc(fmac)
 shil_canonical
 (
 f32,f1,(float fn, float f0,float fm),
-   return fixNaN(fn + f0 * fm);
+   return fixNaN(std::fma(f0, fm, fn));
 )
 shil_compile
 (

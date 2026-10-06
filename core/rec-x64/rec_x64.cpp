@@ -1144,17 +1144,33 @@ public:
 
             case shop_cvt_f2i_t:
 					{
+						/* Too large for 32 bits, the host answers
+						 * 0x80000000 whatever the sign, and so it does for
+						 * a NaN. That is right for a negative value and
+						 * for a NaN; a positive one is 0x7fffffff. So the
+						 * value is compared with zero: below it or not
+						 * comparable (a NaN) keeps 0x80000000.
+						 *
+						 * This used to go by the sign bit, which made a NaN
+						 * with it clear 0x7fffffff, and it also turned
+						 * 2147483520, the largest float that does fit,
+						 * into 0x7fffffff. */
 						Xbyak::Reg32 rd = regalloc.MapRegister(op.rd);
-						cvttss2si(rd, regalloc.MapXRegister(op.rs1));
-						mov(eax, 0x7fffffff);
-						cmp(rd, 0x7fffff80);	// 2147483520.0f
-						cmovge(rd, eax);
-						cmp(rd, 0x80000000);	// indefinite integer
 						Xbyak::Label done;
+
+						cvttss2si(edx, regalloc.MapXRegister(op.rs1));
+						mov(rd, 0x7fffffff);
+						cmp(edx, 0x7fffff80);	// 2147483520.0f
+						jg(done, T_SHORT);
+						mov(rd, edx);
+						cmp(rd, 0x80000000);	// indefinite integer
 						jne(done, T_SHORT);
-						movd(ecx, regalloc.MapXRegister(op.rs1));
-						cmp(ecx, 0);
-						cmovge(rd, eax);		// restore the correct sign
+						xor_(eax, eax);
+						pxor(xmm0, xmm0);
+						ucomiss(regalloc.MapXRegister(op.rs1), xmm0);
+						setb(al);
+						add(eax, 0x7fffffff);
+						mov(rd, eax);
 						L(done);
 					}
                break;

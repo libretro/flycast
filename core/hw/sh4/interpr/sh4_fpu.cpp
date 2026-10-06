@@ -1,5 +1,6 @@
 #include "types.h"
 #include <math.h>
+#include <cmath>
 #include <float.h>
 
 #include "sh4_opcodes.h"
@@ -504,23 +505,16 @@ sh4op(i1111_nnmm_1110_1101)
 	int m=(GetN(op)&0x3)<<2;
 	if (fpscr.PR == 0)
 	{
-#if HOST_CPU == CPU_X86 || HOST_CPU == CPU_X64
-		// multiplications are done with 28 bits of precision (53 - 25) and the final sum at 30 bits
-		double idp = reduce_precision<25>((double)fr[n + 0] * fr[m + 0]);
-		idp += reduce_precision<25>((double)fr[n + 1] * fr[m + 1]);
-		idp += reduce_precision<25>((double)fr[n + 2] * fr[m + 2]);
-		idp += reduce_precision<25>((double)fr[n + 3] * fr[m + 3]);
+		/* In doubles, as the recompilers do it and upstream does, on every
+		 * host: this used to cut each product down to 28 bits on x86 and
+		 * to work in floats elsewhere, and the interpreter came out
+		 * different from recompiled code. */
+		double idp = (double)fr[n + 0] * fr[m + 0];
+		idp += (double)fr[n + 1] * fr[m + 1];
+		idp += (double)fr[n + 2] * fr[m + 2];
+		idp += (double)fr[n + 3] * fr[m + 3];
 
-		fr[n + 3] = (float)fixNaN64(idp);
-#else
-		float rv = fr[n + 0] * fr[m + 0];
-		rv += fr[n + 1] * fr[m + 1];
-		rv += fr[n + 2] * fr[m + 2];
-		rv += fr[n + 3] * fr[m + 3];
-
-		CHECK_FPU_32(rv);
-		fr[n + 3] = rv;
-#endif
+		fr[n + 3] = fixNaN((float)idp);
 	}
 	else
 	{
@@ -632,29 +626,45 @@ sh4op(i1111_nnnn_0110_1101)
 //ftrc <FREG_N>, FPUL
 sh4op(i1111_nnnn_0011_1101)
 {
+	/* A value too large for 32 bits comes out as the largest or smallest
+	 * there is, by its sign, and something that is not a number as the
+	 * smallest: 0x80000000, whatever sign the NaN has. The largest float
+	 * below 2^31, 2147483520, is itself and is not too large.
+	 *
+	 * This used to hold every value down to 2147483520 first, so that
+	 * anything from 2^31 up came out as 0x7fffff80, and gave a NaN with
+	 * its sign bit clear 0x7fffffff. */
 	if (fpscr.PR == 0)
 	{
 		u32 n = GetN(op);
-      fpul = (u32)(s32)std::min(fr[n], 2147483520.0f);	// IEEE 754: 0x4effffff
-
-      // Intel CPUs convert out of range float numbers to 0x80000000. Manually set the correct sign
-      if (fpul == 0x80000000)
+		if (std::isnan(fr[n]))
+			fpul = 0x80000000;
+		else
 		{
-         if (*(int *)&fr[n] > 0)	// Using integer math to avoid issues with Inf and NaN
+			fpul = (u32)(s32)fr[n];
+			if ((s32)fpul > 0x7fffff80)
+				fpul = 0x7fffffff;
+#if HOST_CPU == CPU_X86 || HOST_CPU == CPU_X64
+			// Intel CPUs convert out of range float numbers to 0x80000000. Manually set the correct sign
+			else if (fpul == 0x80000000 && fr[n] > 0)
 				fpul--;
+#endif
 		}
 	}
 	else
 	{
 		u32 n = (op >> 9) & 0x07;
-      f64 f = GetDR(n);
-		fpul = (u32)(s32)f;
-
-      // Intel CPUs convert out of range float numbers to 0x80000000. Manually set the correct sign
-      if (fpul == 0x80000000)
+		f64 f = GetDR(n);
+		if (std::isnan(f))
+			fpul = 0x80000000;
+		else
 		{
-         if (*(s64 *)&f > 0)	// Using integer math to avoid issues with Inf and NaN
+			fpul = (u32)(s32)f;
+#if HOST_CPU == CPU_X86 || HOST_CPU == CPU_X64
+			// Intel CPUs convert out of range float numbers to 0x80000000. Manually set the correct sign
+			if (fpul == 0x80000000 && f > 0)
 				fpul--;
+#endif
 		}
 	}
 }
@@ -669,7 +679,9 @@ sh4op(i1111_nnnn_mmmm_1110)
 		u32 n = GetN(op);
 		u32 m = GetM(op);
 
-		fr[n] =(f32) ((f64)fr[n]+(f64)fr[0] * (f64)fr[m]);
+		// The product is not rounded before the sum: one rounding, of the
+		// result. Done in doubles the sum was rounded and then the result.
+		fr[n] = std::fma(fr[0], fr[m], fr[n]);
 		CHECK_FPU_32(fr[n]);
 	}
 	else
