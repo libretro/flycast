@@ -240,9 +240,6 @@ void main()
 	#if pp_UseAlpha==0
 		color.a=1.0;
 	#endif
-	#if pp_FogCtrl==3
-		color=vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
-	#endif
 	#if pp_Texture==1
 	{
 		#if pp_Palette == 0
@@ -298,6 +295,15 @@ void main()
 	
 	color = fog_clamp(color);
 	
+	// Look-up table mode 2: the fog colour takes the place of the pixel's
+	// colour and the fog coefficient the place of its alpha. This is a mode
+	// of the fog unit, which comes after the texture has been combined in,
+	// so it is the combined colour that is replaced: a textured polygon
+	// comes out in plain fog colour. It used to be done to the base colour,
+	// before texturing, and the texture was then applied on top.
+	#if pp_FogCtrl == 3
+		color = vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
+	#endif
 	#if pp_FogCtrl == 0
 	{
 		highp float fog = fog_mode2(gl_FragCoord.w);

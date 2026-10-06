@@ -13,7 +13,12 @@
  * that rises steadily, and every pixel must come out with the fog
  * coefficient the hardware has for the depth at that pixel. The varying
  * used to carry depth itself, which perspective-correct interpolation gets
- * wrong inside a polygon. */
+ * wrong inside a polygon.
+ *
+ * And fog look-up table mode 2, on a textured polygon: the fog colour takes
+ * the place of the pixel's colour and the fog coefficient the place of its
+ * alpha, after the texture has been combined in. A green texture with blue
+ * fog must come out blue, with the coefficient for the depth as alpha. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +72,37 @@ static GLuint compile(GLenum type, const char *source)
       exit(1);
    }
    return shader;
+}
+
+/* The core's shaders, bound the way the core binds them */
+static GLuint make_program(const char *fragment)
+{
+   GLuint program = glCreateProgram();
+   GLint ok = 0;
+
+   glAttachShader(program, compile(GL_VERTEX_SHADER, vertex_source));
+   glAttachShader(program, compile(GL_FRAGMENT_SHADER, fragment));
+   glBindAttribLocation(program, 0, "in_pos");
+   glBindAttribLocation(program, 1, "in_base");
+   glBindAttribLocation(program, 2, "in_offs");
+   glBindAttribLocation(program, 3, "in_uv");
+   glLinkProgram(program);
+   glGetProgramiv(program, GL_LINK_STATUS, &ok);
+   CHECK(ok, "the program links");
+   return program;
+}
+
+/* What every program here is given: where things are on the screen, the
+ * depth range (up to 8), the fog's density and colour, and which texture
+ * units hold what. */
+static void set_uniforms(GLuint program, const GLfloat *matrix, float fog_blue)
+{
+   glUniformMatrix4fv(glGetUniformLocation(program, "normal_matrix"), 1, GL_FALSE, matrix);
+   glUniform1f(glGetUniformLocation(program, "sp_FOG_DENSITY"), 1.0f);
+   glUniform3f(glGetUniformLocation(program, "sp_FOG_COL_RAM"), 0.0f, 0.0f, fog_blue);
+   glUniform1i(glGetUniformLocation(program, "fog_table"), 1);
+   glUniform1i(glGetUniformLocation(program, "tex"), 0);
+   glUniform4f(glGetUniformLocation(program, "depth_scale"), 2.0f / 8.0f, -1.0f, 0.0f, 0.0f);
 }
 
 struct vertex
@@ -149,17 +185,7 @@ int main(void)
    CHECK(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE, "framebuffer");
    glViewport(0, 0, W, H);
 
-   /* The core's shaders, bound the way the core binds them */
-   program = glCreateProgram();
-   glAttachShader(program, compile(GL_VERTEX_SHADER, vertex_source));
-   glAttachShader(program, compile(GL_FRAGMENT_SHADER, fragment_source));
-   glBindAttribLocation(program, 0, "in_pos");
-   glBindAttribLocation(program, 1, "in_base");
-   glBindAttribLocation(program, 2, "in_offs");
-   glBindAttribLocation(program, 3, "in_uv");
-   glLinkProgram(program);
-   glGetProgramiv(program, GL_LINK_STATUS, &i);
-   CHECK(i, "the program links");
+   program = make_program(fragment_source);
    glUseProgram(program);
    for (i = 0; i < 4; i++)
       glEnableVertexAttribArray(i);
@@ -184,15 +210,9 @@ int main(void)
    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, 128, 2, 0, GL_ALPHA, GL_UNSIGNED_BYTE, fog_pixels);
 
-   glUniformMatrix4fv(glGetUniformLocation(program, "normal_matrix"), 1, GL_FALSE, matrix);
-   glUniform1f(glGetUniformLocation(program, "sp_FOG_DENSITY"), 1.0f);
-   glUniform3f(glGetUniformLocation(program, "sp_FOG_COL_RAM"), 0.0f, 0.0f, 0.0f);
-   glUniform1i(glGetUniformLocation(program, "fog_table"), 1);
-   glUniform1i(glGetUniformLocation(program, "tex"), 0);
-
    /* --- Fog across a polygon: depth 1 on the left, 5 on the right, in a
-    * depth range that reaches to 8. */
-   glUniform4f(glGetUniformLocation(program, "depth_scale"), 2.0f / 8.0f, -1.0f, 0.0f, 0.0f);
+    * depth range that reaches to 8. White, with black fog. */
+   set_uniforms(program, matrix, 0.0f);
    glDisable(GL_DEPTH_TEST);
    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
    glClear(GL_COLOR_BUFFER_BIT);
@@ -210,6 +230,41 @@ int main(void)
    }
    printf("fog across a polygon: off by at most %d of 255\n", worst);
    CHECK(worst <= 2, "the fog at each pixel is the fog for the depth at that pixel");
+
+   /* --- Look-up table mode 2 on a textured polygon: the same quad, with a
+    * green texture, and blue fog. */
+   {
+      static const uint8_t green[4] = { 0, 255, 0, 255 };
+      GLuint texture, table2 = make_program(fragment_source_table2);
+      int worst_alpha = 0, wrong_colour = 0;
+
+      glActiveTexture(GL_TEXTURE0);
+      glGenTextures(1, &texture);
+      glBindTexture(GL_TEXTURE_2D, texture);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, green);
+      glUseProgram(table2);
+      set_uniforms(table2, matrix, 1.0f);
+      glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      draw_quad(1.0f, 5.0f, 255, 255, 255);
+      glReadPixels(0, H / 2, W, 1, GL_RGBA, GL_UNSIGNED_BYTE, row);
+      for (x = 0; x < W; x++)
+      {
+         const float z = 1.0f + 4.0f * ((float)x + 0.5f) / W;
+         const int diff = abs((int)row[x * 4 + 3] - hardware(z));
+
+         if (diff > worst_alpha)
+            worst_alpha = diff;
+         if (row[x * 4] > 2 || row[x * 4 + 1] > 2 || row[x * 4 + 2] < 253)
+            wrong_colour++;
+      }
+      printf("fog table mode 2: %d of %d pixels not the fog colour, alpha off by at most %d of 255\n",
+            wrong_colour, W, worst_alpha);
+      CHECK(wrong_colour == 0, "table mode 2 gives the fog colour, whatever the texture");
+      CHECK(worst_alpha <= 2, "table mode 2 gives the fog coefficient as alpha");
+   }
 
    puts(failures ? "gles2: FAILED" : "gles2: ok");
    return failures ? 1 : 0;
