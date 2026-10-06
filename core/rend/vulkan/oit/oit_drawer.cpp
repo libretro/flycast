@@ -400,7 +400,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 
 void OITDrawer::MakeBuffers(int width, int height)
 {
-	oitBuffers->Init(width, height);
+	oitBuffers->Init(width, height, commandPool);
 
 	if (width <= maxWidth && height <= maxHeight)
 		return;

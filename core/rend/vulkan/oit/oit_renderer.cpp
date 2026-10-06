@@ -32,7 +32,7 @@ public:
 	{
 		DEBUG_LOG(RENDERER, "OITVulkanRenderer::Init");
 
-		oitBuffers.Init(0, 0);
+		oitBuffers.Init(0, 0, &texCommandPool);
 		textureDrawer.Init(&samplerManager, &oitShaderManager, &textureCache, &oitBuffers);
 		textureDrawer.SetCommandPool(&texCommandPool);
 

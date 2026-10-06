@@ -22,13 +22,14 @@
 #include <memory>
 #include "../buffer.h"
 #include "../texture.h"
+#include "../commandpool.h"
 
 extern u64 pixel_buffer_size;
 
 class OITBuffers
 {
 public:
-	void Init(int width, int height)
+	void Init(int width, int height, CommandPool *commandPool)
 	{
 		const VulkanContext *context = VulkanContext::Instance();
 		if (!descSetLayout)
@@ -67,18 +68,26 @@ public:
 			const int zero = 0;
 			pixelCounterReset->upload(sizeof(zero), &zero);
 		}
-		// We need to wait until this buffer is not used before deleting it
-		context->WaitIdle();
-		abufferPointerAttachment.reset();
+		/* Frames already handed to the GPU may still be using the image and
+		 * the descriptor set that names it. Neither is touched: the image is
+		 * retired, to be destroyed once those frames are done, and so is the
+		 * descriptor set, with a new one written in its place below.
+		 *
+		 * This used to wait for the frontend's frames, which are not the
+		 * ones in question - the core submits its own - and then rewrote
+		 * the descriptor set those were using. */
+		if (abufferPointerAttachment)
+			commandPool->DeferDelete(std::move(abufferPointerAttachment));
+		if (descSet)
+			commandPool->DeferDelete(std::unique_ptr<vk::UniqueDescriptorSet>(new vk::UniqueDescriptorSet(std::move(descSet))));
 		abufferPointerAttachment = std::unique_ptr<FramebufferAttachment>(
 				new FramebufferAttachment(context->GetPhysicalDevice(), context->GetDevice()));
 		abufferPointerAttachment->Init(maxWidth, maxHeight, vk::Format::eR32Uint, vk::ImageUsageFlagBits::eStorage);
 		abufferPointerTransitionNeeded = true;
 		firstFrameAfterInit = true;
 
-		if (!descSet)
-			descSet = std::move(context->GetDevice().allocateDescriptorSetsUnique(
-					vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &descSetLayout.get())).front());
+		descSet = std::move(context->GetDevice().allocateDescriptorSetsUnique(
+				vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &descSetLayout.get())).front());
 		std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
 		vk::DescriptorBufferInfo pixelBufferInfo(*pixelBuffer->buffer, 0, VK_WHOLE_SIZE);
 		writeDescriptorSets.push_back(vk::WriteDescriptorSet(*descSet, 0, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &pixelBufferInfo, nullptr));
