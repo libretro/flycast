@@ -4,7 +4,6 @@ DEBUG_UBSAN   := 0
 NO_REND       := 0
 HAVE_GL       := 1
 HAVE_GL2      := 0
-HAVE_OIT      ?= 0
 HAVE_VULKAN   := 0
 HAVE_CORE     := 0
 NO_THREADS    := 0
@@ -137,9 +136,7 @@ ifneq (,$(findstring unix,$(platform)))
 	endif
 
 	ifneq ($(HAVE_GL2), 1)
-		ifneq ($(HAVE_OIT), 1)
-			HAVE_GL3 = 1
-		endif
+		HAVE_GL3 = 1
 	endif
 
 	HAVE_CDROM = 1
@@ -877,9 +874,7 @@ else ifeq ($(platform), emscripten)
 # Windows
 else
 	ifneq ($(HAVE_GL2), 1)
-		ifneq ($(HAVE_OIT), 1)
-			HAVE_GL3 = 1
-		endif
+		HAVE_GL3 = 1
 	endif
 	EXT       ?= dll
 	HAVE_GENERIC_JIT = 0
@@ -964,6 +959,17 @@ endif
 CFLAGS       += $(HOST_CPU_FLAGS)
 CXXFLAGS     += $(HOST_CPU_FLAGS)
 RZDCY_CFLAGS += $(HOST_CPU_FLAGS)
+
+# The OpenGL per-pixel renderer needs OpenGL 4.3, which is desktop OpenGL
+# only. It is built wherever the core is built for desktop OpenGL 3 and up.
+# Whether it is used is up to the Alpha Sorting core option: set to
+# per-pixel, the core asks the frontend for a 4.3 context, and goes back to
+# the per-triangle renderer if there is none to be had.
+ifeq ($(HAVE_GL3), 1)
+	ifneq ($(GLES), 1)
+		HAVE_GL4 = 1
+	endif
+endif
 
 include Makefile.common
 
@@ -1061,9 +1067,8 @@ ifeq (,$(findstring msvc,$(platform)))
 	CORE_DEFINES   += -funroll-loops
 endif
 
-ifeq ($(HAVE_OIT), 1)
-	HAVE_CORE = 1
-	CORE_DEFINES += -DHAVE_OIT -DHAVE_GL4
+ifeq ($(HAVE_GL4), 1)
+	CORE_DEFINES += -DHAVE_GL4
 endif
 
 ifeq ($(HAVE_CORE), 1)

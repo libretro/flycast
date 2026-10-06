@@ -722,7 +722,7 @@ static void update_variables(bool first_startup)
       else
       	settings.bios.UseReios = false;
 
-#if defined(HAVE_OIT) || defined(HAVE_VULKAN)
+#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
       var.key = CORE_OPTION_NAME "_oit_abuffer_size";
 
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1822,7 +1822,7 @@ static bool set_opengl_hw_render(u32 preferred)
 #endif
 	params.imm_vbo_draw          = NULL;
 	params.imm_vbo_disable       = NULL;
-#ifdef HAVE_OIT
+#ifdef HAVE_GL4
 	if (settings.pvr.rend == 3)
 	{
 		params.context_type          = (retro_hw_context_type)preferred;
@@ -1858,7 +1858,7 @@ static bool set_opengl_hw_render(u32 preferred)
 	if (glsm_ctl(GLSM_CTL_STATE_CONTEXT_INIT, &params))
 		return true;
 
-#ifdef HAVE_OIT
+#ifdef HAVE_GL4
 	/* The per-pixel (OIT) context could not be obtained -- e.g. the frontend's
 	 * driver cannot provide GL 4.3 (the 2020 shape of libretro/flycast#874).
 	 * Degrade to the per-triangle renderer and retry with a plain GL 3.0

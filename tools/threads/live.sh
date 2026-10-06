@@ -45,12 +45,14 @@
 # three.
 #
 # Then the per-pixel renderers, which are different renderers with their own
-# shaders and passes: for each driver in $PIXEL_DRIVERS (default: "vulkan")
+# shaders and passes: for each driver in $PIXEL_DRIVERS (default: "glcore
+# vulkan")
 # the disc is run with Alpha Sorting set to per-pixel and the screenshot is
 # checked. The log has to say the per-pixel renderer was the one created:
 # the core falls back to the per-triangle one when it cannot have it, and
-# a test of the wrong renderer passes just as well. "glcore" can be added
-# for a core built with HAVE_OIT=1, which is what builds the OpenGL one.
+# a test of the wrong renderer passes just as well. The OpenGL one needs
+# OpenGL 4.3 from the frontend's driver; take "glcore" out where there is
+# none.
 #
 # Needs python3, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
 # a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
@@ -61,7 +63,7 @@ CORE=${1:-$ROOT/flycast_libretro.so}
 RETROARCH=${RETROARCH:-retroarch}
 DRIVERS=${DRIVERS:-gl vulkan}
 RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}
-PIXEL_DRIVERS=${PIXEL_DRIVERS:-vulkan}
+PIXEL_DRIVERS=${PIXEL_DRIVERS:-glcore vulkan}
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 1; }

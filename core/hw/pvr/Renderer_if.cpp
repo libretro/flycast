@@ -102,7 +102,7 @@ void rend_create_renderer()
 		NOTICE_LOG(PVR, "Creating Open GL per-triangle/strip renderer");
 		renderer = rend_GLES2();
 		break;
-#if defined(HAVE_OIT)
+#if defined(HAVE_GL4)
 	case 3:
 		NOTICE_LOG(PVR, "Creating Open GL per-pixel renderer");
 		renderer = rend_GL4();

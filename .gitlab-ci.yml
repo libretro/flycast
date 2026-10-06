@@ -10,11 +10,6 @@
     JNI_PATH: .
     CORENAME: flycast
     
-.core-defs-oit:
-  extends: .core-defs
-  variables:
-    HAVE_OIT: 1
-
 # Inclusion templates, required for the build to work
 include:
   ################################## DESKTOPS ################################
@@ -59,7 +54,7 @@ stages:
 #libretro-build-windows-x64:
 #  extends:
 #    - .libretro-windows-x64-mingw-make-default
-#    - .core-defs-oit
+#    - .core-defs
 #  variables:
 #    platform: win
     
@@ -67,7 +62,7 @@ stages:
 #libretro-build-windows-i686:
 #  extends:
 #    - .libretro-windows-i686-mingw-make-default
-#    - .core-defs-oit
+#    - .core-defs
 #  variables:
 #    platform: win
     
@@ -75,7 +70,7 @@ stages:
 #libretro-build-linux-x64:
 #  extends:
 #    - .libretro-linux-x64-make-default
-#    - .core-defs-oit
+#    - .core-defs
 
 # MacOS 64-bit
 #libretro-build-osx-x64:
