@@ -144,7 +144,10 @@ public:
 			else
 			{
 				//X = DSP->TEMP[(TRA + DSP->regs.MDEC_CT) & 0x7F];
-				if (!op.ZERO && !op.BSEL)
+				/* B was read from the same place and will do for X - unless
+				 * the step takes B negated, which has been done to it by
+				 * now: X is not negated. */
+				if (!op.ZERO && !op.BSEL && !op.NEGB)
 					X_alias = &B;
 				else
 				{

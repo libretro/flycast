@@ -187,7 +187,11 @@ public:
 			else
 			{
 				//X = DSP->TEMP[(TRA + DSP->regs.MDEC_CT) & 0x7F];
-				if (!op.ZERO && !op.BSEL)
+				/* B was read from the same place and will do for X - unless
+				 * the step takes B negated, which has been done to it by
+				 * now: X is not negated. This used to take B then too, and
+				 * such a step multiplied by minus the value. */
+				if (!op.ZERO && !op.BSEL && !op.NEGB)
 					X_alias = B;
 				else
 				{
@@ -319,7 +323,15 @@ public:
 					CalculateADDR(ADDR, op, ADRS_REG, MDEC_CT);
 					mov(rcx, (uintptr_t)&aica_ram[0]);
 					movzx(call_arg0, word[rcx + ADDR.cvt64()]);
+					/* A step may write memory as well as read it, and what it
+					 * writes is in rdx, which a call does not keep: without
+					 * this the write below stored whatever UNPACK() left
+					 * there. */
+					if (op.MWT)
+						push(rdx);
 					GenCall(UNPACK);
+					if (op.MWT)
+						pop(rdx);
 					mov(dword[rbx + dsp_operand(&DSP->MEMVAL[(step + 2) & 3])], eax);
 				}
 				if (op.MWT)
