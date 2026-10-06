@@ -4,6 +4,7 @@
 */
 
 #include "gdromv3.h"
+#include "hw/mem/_vmem.h"
 
 #include "types.h"
 #include "hw/sh4/sh4_mem.h"
@@ -104,13 +105,15 @@ void gd_spi_pio_end(const u8* buffer, u32 len, gd_states next_state = gds_pio_en
 void gd_process_spi_cmd();
 void gd_process_ata_cmd();
 
+/* The cache only ever holds the sector a transfer consumed part of:
+ * whole sectors go from the image to RAM without it. */
 static void FillReadBuffer(void)
 {
 	read_buff.cache_index=0;
 	u32 count = read_params.remaining_sectors;
 
-	if (count > 32)
-		count = 32;
+	if (count > 1)
+		count = 1;
 
 	read_buff.cache_size=count*read_params.sector_type;
 
@@ -206,7 +209,6 @@ void gd_set_state(gd_states state)
 			break;
 			
 		case gds_readsector_dma:
- 			FillReadBuffer();
 			break;
 
 		case gds_pio_end:
@@ -1104,6 +1106,28 @@ static int GDRomschd(int i, int c, int j)
 		while(len)
 		{
 			u32 buff_size =read_buff.cache_size;
+
+			/* Whole sectors bound for RAM go straight from the image into
+			 * it; only a partial sector, or a destination that is not
+			 * plain memory, passes through the cache. */
+			if (buff_size == 0 && len >= read_params.sector_type
+					&& read_params.remaining_sectors)
+			{
+				bool  dst_ismem;
+				void* dst_ptr = _vmem_write_const(src, dst_ismem, 4);
+				if (dst_ismem)
+				{
+					u32 n = len / read_params.sector_type;
+					if (n > read_params.remaining_sectors)
+						n = read_params.remaining_sectors;
+					libGDR_ReadSector((u8*)dst_ptr, read_params.start_sector, n, read_params.sector_type);
+					read_params.start_sector     += n;
+					read_params.remaining_sectors -= n;
+					src += n * read_params.sector_type;
+					len -= n * read_params.sector_type;
+					continue;
+				}
+			}
          //buffer is empty , fill it
 			if (buff_size==0)
 				FillReadBuffer();
