@@ -626,10 +626,20 @@ static void reios_boot()
 	WriteMem32(0x80800000, 0xEAFFFFFE);
 
 	if (!settings.reios.ElfFile.empty()) {
-		if (!reios_loadElf(settings.reios.ElfFile)) {
+		/* Where a Dreamcast program is linked to start, unless the file
+		 * says otherwise and means main memory by it */
+		u32 entry = 0x8C010000;
+		if (!reios_loadElf(settings.reios.ElfFile, &entry)) {
+			/* Nothing to run: the CPU idles where the program would have
+			 * started, as it does when there is no disc to boot, and
+			 * does not go off into whatever memory holds. */
+			u16* idle = (u16*)GetMemPtr(0x8c010000, 4);
 			msgboxf("Failed to open %s", MBX_ICONERROR, settings.reios.ElfFile.c_str());
+			idle[0] = 0xAFFE;   /* bra to itself */
+			idle[1] = 0x0009;   /* nop in the delay slot */
+			entry = 0x8c010000;
 		}
-		reios_setup_state(0x8C010000);
+		reios_setup_state(entry);
 	}
 	else {
 		if (settings.System == DC_PLATFORM_DREAMCAST) {

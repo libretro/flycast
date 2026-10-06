@@ -59,7 +59,8 @@ extern retro_atomic_int_t reset_requested;
 
 int GetFile(char *szFileName, char *szParse=0,u32 flags=0) 
 {
-   if (!boot_to_bios)
+   /* No disc image when the content is an ELF: the drive stays empty */
+   if (!boot_to_bios && game_data)
    {
       strcpy(szFileName, game_data);
       strcpy(settings.imgread.DefaultImage, szFileName);
@@ -493,7 +494,7 @@ int dc_init()
    switch (settings.System)
    {
       case DC_PLATFORM_DREAMCAST:
-         if (libGDR_GetDiscType() == NoDisk)
+         if (libGDR_GetDiscType() == NoDisk && settings.reios.ElfFile.empty())
          {
             /* Content loading failed so force HLE off and boot the BIOS */
             settings.bios.UseReios = false;
@@ -599,8 +600,6 @@ void LoadSettings(void)
 
 
 	settings.rend.TranslucentPolygonDepthMask = false;
-
-	settings.reios.ElfFile               = "";
 
 	settings.network.ActAsServer = false;
 	settings.network.dns = "46.101.91.123";		// Dreamcast Live DNS

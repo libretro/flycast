@@ -701,6 +701,10 @@ static void update_variables(bool first_startup)
       	settings.bios.UseReios = !strcmp(var.value, "enabled") && !boot_to_bios;
       else
       	settings.bios.UseReios = false;
+      /* A program given as an ELF is started by the HLE BIOS, which is
+       * what loads it; the real one would only see an empty drive. */
+      if (!settings.reios.ElfFile.empty())
+      	settings.bios.UseReios = true;
 
 #if defined(HAVE_GL4) || defined(HAVE_VULKAN)
       var.key = CORE_OPTION_NAME "_oit_abuffer_size";
@@ -1918,9 +1922,18 @@ bool retro_load_game(const struct retro_game_info *game)
    // Per-content VMU additions END
 
    settings.dreamcast.cable = 3;
-   update_variables(true);
 
    char *ext = strrchr(g_base_name, '.');
+
+   /* A Dreamcast program as an ELF file, not a disc: the HLE BIOS loads it
+    * into memory and starts it, with the drive empty. Said before the
+    * options are read, which choose the BIOS. */
+   if (ext && (!strcmp(ext, ".elf") || !strcmp(ext, ".ELF")))
+      settings.reios.ElfFile = content_path;
+   else
+      settings.reios.ElfFile.clear();
+
+   update_variables(true);
 
    {
       /* Check for extension .lst, .bin, .dat or .zip. If found, we will set the system type
@@ -1985,10 +1998,10 @@ bool retro_load_game(const struct retro_game_info *game)
 	  else
 		 return false;
    }
-   if (settings.System != DC_PLATFORM_DREAMCAST)
+   if (settings.System != DC_PLATFORM_DREAMCAST || !settings.reios.ElfFile.empty())
    	boot_to_bios = false;
 
-   if (!boot_to_bios)
+   if (!boot_to_bios && settings.reios.ElfFile.empty())
    {
       // if an m3u file was loaded, disk_paths will already be populated so load the game from there
       if (disk_paths.size() > 0)
@@ -2118,6 +2131,7 @@ void retro_unload_game(void)
    if (game_data)
       free(game_data);
    game_data = NULL;
+   settings.reios.ElfFile.clear();
    /* The disc list belongs to this content: the next load starts its own */
    disk_paths.clear();
    disk_labels.clear();
