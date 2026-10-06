@@ -873,5 +873,6 @@ enum serialize_version_enum {
    V14,
    V15,
    V16,
-   VCUR_LIBRETRO = V16,
+   V17,
+   VCUR_LIBRETRO = V17,
 };

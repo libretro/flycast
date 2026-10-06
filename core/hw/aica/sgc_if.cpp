@@ -98,15 +98,18 @@ static const s32 adpcm_scale[16] =
 	-1,-3,-5,-7,-9,-11,-13,-15,
 };
 
+/* What each value of the Q register does to the low-pass filter's damping,
+ * in 4096ths of it: more at the top, which takes the edge off the corner,
+ * and less and less below, which leaves a peak there. */
 static const s32 qtable[32] = {
-0x0E00,0x0E80,0x0F00,0x0F80,
-0x1000,0x1080,0x1100,0x1180,
-0x1200,0x1280,0x1300,0x1380,
-0x1400,0x1480,0x1500,0x1580,
-0x1600,0x1680,0x1700,0x1780,
-0x1800,0x1880,0x1900,0x1980,
-0x1A00,0x1A80,0x1B00,0x1B80,
-0x1C00,0x1D00,0x1E00,0x1F00
+	 2048,  1536,  1024,   512,
+	    0,  -256,  -512,  -768,
+	-1024, -1280, -1536, -1792,
+	-2048, -2176, -2304, -2432,
+	-2560, -2688, -2816, -2944,
+	-3072, -3136, -3200, -3264,
+	-3328, -3392, -3456, -3520,
+	-3584, -3648, -3712, -3776
 };
 
 void AICA_Sample();
@@ -388,7 +391,7 @@ struct ChannelEx
 		SampleType prev1;
 		SampleType prev2;
 		/* What the filter's last sample dropped below its lowest bit, to
-		 * go into the next one: see Step() */
+		 * go into the next one: see LowPassFilter() */
 		s32 fract;
 		s32 q;
 		u32 AttackRate;
@@ -458,6 +461,57 @@ struct ChannelEx
 
 		return rv;
 	}
+	/* The channel's low-pass filter, on a 20-bit sample: two poles, with
+	 * resonance.
+	 *
+	 *    y = -a0 x + (2 - f - a0) y1 - (1 - f) y2
+	 *
+	 * The cutoff register is a 4-bit exponent and a 9-bit mantissa, sixteen
+	 * octaves from wide open. Out of it come the corner frequency, as the
+	 * damping term f, and its square, a0, which is how much of the input
+	 * gets in. The Q register scales f: less damping, more of a peak at the
+	 * corner, from none to some 22 dB. The level at DC is exactly that of
+	 * the input, whatever the settings, with the sign turned over.
+	 *
+	 * This is the filter of upstream flycast, coefficient for coefficient.
+	 * What it replaces took the same a0 but a damping that did not follow
+	 * the cutoff down. Wide open or at the highest Q the two agree on where
+	 * the corner is; anywhere else the old one was overdamped, the more so
+	 * the lower the cutoff - 64 Hz for a setting whose corner is at 400 -
+	 * and its Q register made a peak only near the top of either range.
+	 * Here a Q value makes the same peak at every cutoff.
+	 *
+	 * Thirty bits of fraction are worked in. The ones the output cannot hold
+	 * are kept in FEG.fract and go into the next sample, so that nothing
+	 * the feedback loop drops builds up in it. At the lowest exponent
+	 * nothing of the input gets in at all and the filter holds its level;
+	 * there the fraction is dropped, or the level would creep. */
+	__forceinline SampleType LowPassFilter(SampleType sample)
+	{
+		const u32 fv = FEG.GetValue() & 0x1FFF;
+		const u32 exp = fv >> 9;
+		const u32 mant = (fv & 0x1FF) | 0x200;
+		u64 a0 = ((u64)mant << 30) >> ((15 - exp) * 2);
+		a0 *= (mant - 1) / 8;
+		a0 >>= 17;
+		s64 f = ((s64)mant << exp) << 5;
+		f += (s64)FEG.q * f / 4096;
+		const s64 b1 = ((s64)1 << 31) - (f + (s64)a0);
+		const s64 b2 = ((s64)1 << 30) - f;
+		if (exp == 0)
+			FEG.fract = 0;
+
+		const s64 mac = -(s64)a0 * sample + b1 * FEG.prev1 - b2 * FEG.prev2 - FEG.fract;
+		sample = (SampleType)(mac >> 30);
+		FEG.fract = (s32)(((s64)sample << 30) - mac);
+		FEG.prev2 = FEG.prev1;
+		if (sample < -512 * 1024)
+			sample = -512 * 1024;
+		else if (sample > 512 * 1024 - 1)
+			sample = 512 * 1024 - 1;
+		FEG.prev1 = sample;
+		return sample;
+	}
 	__forceinline bool Step(SampleType& oLeft, SampleType& oRight, SampleType& oDsp)
 	{
 		if (!enabled)
@@ -467,29 +521,13 @@ struct ChannelEx
 		}
 		else
 		{
-			SampleType sample = InterpolateSample();
+			/* 20 bits from here to the outputs: the filter needs the four
+			 * extra, and the DSP takes 20-bit samples. A channel with its
+			 * filter off comes out exactly as it did with 16. */
+			SampleType sample = InterpolateSample() << 4;
 
-			// Low-pass filter
 			if (FEG.active)
-			{
-				u32 fv = FEG.GetValue();
-				s32 f = (((fv & 0xFF) | 0x100) << 4) >> ((fv >> 8) ^ 0x1F);
-				f = std::max(1, f);
-				/* The filter feeds its output back into itself, and the
-				 * 13 bits the shift drops are carried into the next sample
-				 * and not thrown away. Thrown away, every sample was
-				 * rounded down, and that went round the loop: a channel
-				 * whose input had gone quiet settled not at 0 but at up to
-				 * -127, the lower its cutoff the further down, and a sound
-				 * quieter than that came out as that constant, or as one
-				 * half of itself. */
-				sample = f * sample + (0x2000 - f + FEG.q) * FEG.prev1 - FEG.q * FEG.prev2 + FEG.fract;
-				FEG.fract = sample & 0x1FFF;
-				sample >>= 13;
-				clip16(sample);
-				FEG.prev2 = FEG.prev1;
-				FEG.prev1 = sample;
-			}
+				sample = LowPassFilter(sample);
 
 			//Volume & Mixer processing
 			//All attenuations are added together then applied and mixed :)
@@ -516,9 +554,9 @@ struct ChannelEx
 			u32 dr = std::min(VolMix.DRAtt, max_att);
 			u32 ds = std::min(VolMix.DSPAtt, max_att);
 
-			oLeft = FPMul(sample, logtable[dl], 15);
-			oRight = FPMul(sample, logtable[dr], 15);
-			oDsp = FPMul(sample, logtable[ds], 11);	// 20 bits
+			oLeft = (SampleType)FPMul((s64)sample, (s64)logtable[dl], 19);	// 16 bits
+			oRight = (SampleType)FPMul((s64)sample, (s64)logtable[dr], 19);	// 16 bits
+			oDsp = (SampleType)FPMul((s64)sample, (s64)logtable[ds], 15);	// 20 bits
 
 			clip_verify(((s16)oLeft)==oLeft);
 			clip_verify(((s16)oRight)==oRight);
@@ -1576,11 +1614,17 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			Chans[i].FEG.prev1 = 0;
 			Chans[i].FEG.prev2 = 0;
 		}
-		/* The filter's carried fraction: not in states from before V16 */
+		/* The filter's carried fraction: not in states from before V16.
+		 * From V17 the filter is another one: its two last outputs are
+		 * 20-bit where they were 16, and the fraction is its own. */
 		if (ver >= V16)
 			LIBRETRO_US(Chans[i].FEG.fract);
-		else
+		if (ver < V17)
+		{
+			Chans[i].FEG.prev1 <<= 4;
+			Chans[i].FEG.prev2 <<= 4;
 			Chans[i].FEG.fract = 0;
+		}
 		/* SetFegState() resets value/prev1/prev2 to the register level when the
 		 * saved state is EG_Attack, which would discard the restored mid-attack
 		 * filter-envelope state and desync audio after a savestate/runahead load.
