@@ -632,11 +632,7 @@ static bool RenderFrame()
 	gl4ShaderUniforms.fog_clamp_max[2] = ((pvrrc.fog_clamp_max >> 0) & 0xFF) / 255.0f;
 	gl4ShaderUniforms.fog_clamp_max[3] = ((pvrrc.fog_clamp_max >> 24) & 0xFF) / 255.0f;
 
-	if (fog_needs_update)
-	{
-		fog_needs_update=false;
-		UpdateFogTexture((u8 *)FOG_TABLE, GL_TEXTURE5, GL_RED);
-	}
+	UpdateFogTexture((u8 *)FOG_TABLE, GL_TEXTURE5, GL_RED);
 	if (palette_updated)
 	{
 		UpdatePaletteTexture(GL_TEXTURE6);
@@ -924,7 +920,6 @@ struct gl4rend : Renderer
 			UpscalexBRZ(2, src, dst, 2, 2, false);
 		}
 #endif
-		fog_needs_update = true;
 		palette_updated = true;
 		TexCache.Clear();
 

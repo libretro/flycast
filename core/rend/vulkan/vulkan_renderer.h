@@ -162,13 +162,15 @@ protected:
 			fogTexture->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
 			fogTexture->SetDevice(GetContext()->GetDevice());
 			fogTexture->tex_type = TextureType::_8;
-			fog_needs_update = true;
+			fogUploadedValid = false;
 		}
-		if (!fog_needs_update)
-			return;
-		fog_needs_update = false;
+		// Uploaded when it differs from what the GPU has: see UpdateFogTexture() in gles.cpp
 		u8 texData[256];
 		MakeFogTexture(texData);
+		if (fogUploadedValid && !memcmp(fogUploaded, texData, sizeof(fogUploaded)))
+			return;
+		memcpy(fogUploaded, texData, sizeof(fogUploaded));
+		fogUploadedValid = true;
 		fogTexture->SetCommandBuffer(texCommandPool.Allocate());
 
 		fogTexture->UploadToGPU(128, 2, texData, false);
@@ -199,6 +201,8 @@ protected:
 
 	ShaderManager shaderManager;
 	std::unique_ptr<Texture> fogTexture;
+	u8 fogUploaded[256];
+	bool fogUploadedValid = false;
 	std::unique_ptr<Texture> paletteTexture;
 	CommandPool texCommandPool;
 	std::vector<std::unique_ptr<Texture>> framebufferTextures;

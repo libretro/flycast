@@ -717,6 +717,24 @@ static bool gl_create_resources(void)
 
 void UpdateFogTexture(u8 *fog_table, GLenum texture_slot, GLint fog_image_format)
 {
+	/* The table is 256 bytes, so whether it needs uploading is decided by
+	 * looking at it: build the texture's contents from the registers this
+	 * frame is rendered with and upload them if they are not what the GPU
+	 * already has.
+	 *
+	 * This used to go by a flag the register write set and the renderer
+	 * cleared. With Threaded Rendering the two are different threads, and
+	 * the write could come after this frame's copy of the registers was
+	 * taken: the renderer then uploaded the old table, cleared the flag,
+	 * and the new table was never uploaded. A game that rewrites the same
+	 * table every frame also no longer uploads it every frame. */
+	static u8 uploaded[256];
+	u8 temp_tex_buffer[256];
+	MakeFogTexture(temp_tex_buffer);
+
+	if (fogTextureId != 0 && !memcmp(uploaded, temp_tex_buffer, sizeof(uploaded)))
+		return;
+
 	glActiveTexture(texture_slot);
 	if (fogTextureId == 0)
 	{
@@ -730,12 +748,10 @@ void UpdateFogTexture(u8 *fog_table, GLenum texture_slot, GLint fog_image_format
 	else
 		glcache.BindTexture(GL_TEXTURE_2D, fogTextureId);
 
-	u8 temp_tex_buffer[256];
-	MakeFogTexture(temp_tex_buffer);
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	glTexImage2D(GL_TEXTURE_2D, 0, fog_image_format, 128, 2, 0, fog_image_format, GL_UNSIGNED_BYTE, temp_tex_buffer);
 	glCheck();
+	memcpy(uploaded, temp_tex_buffer, sizeof(uploaded));
 
 	glActiveTexture(GL_TEXTURE0);
 }
@@ -855,11 +871,7 @@ static bool RenderFrame(void)
 	ShaderUniforms.fog_clamp_max[3] = ((pvrrc.fog_clamp_max >> 24) & 0xFF) / 255.0f;
 
 
-	if (fog_needs_update)
-	{
-		fog_needs_update=false;
-		UpdateFogTexture((u8 *)FOG_TABLE, GL_TEXTURE1, gl.single_channel_format);
-	}
+	UpdateFogTexture((u8 *)FOG_TABLE, GL_TEXTURE1, gl.single_channel_format);
 	if (palette_updated)
 	{
 		UpdatePaletteTexture(GL_TEXTURE2);
@@ -1108,7 +1120,6 @@ struct glesrend : Renderer
          UpscalexBRZ(2, src, dst, 2, 2, false);
       }
 #endif
-      fog_needs_update = true;
       palette_updated = true;
       TexCache.Clear();
 

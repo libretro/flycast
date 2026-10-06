@@ -5,7 +5,6 @@
 #include "spg.h"
 
 extern bool pal_needs_update;
-bool fog_needs_update=true;
 
 u8 pvr_regs[pvr_RegSize];
 u8 *rend_pvr_regs = pvr_regs;
@@ -112,10 +111,6 @@ void pvr_WriteReg(u32 paddr,u32 data)
 		if (addr >= PALETTE_RAM_START_addr && PvrReg(addr,u32) != data)
 		{
 			pal_needs_update = true;
-		}
-		else if (addr >= FOG_TABLE_START_addr && addr <= FOG_TABLE_END_addr && PvrReg(addr,u32) != data)
-		{
-			fog_needs_update = true;
 		}
 		break;
 	}
