@@ -13,7 +13,25 @@ static u32 vblk_cnt;
 
 #define PIXEL_CLOCK (54*1000*1000/2)
 
-static u32 Line_Cycles;
+/* How long a scanline lasts, in SH4 cycles, as the fraction it is:
+ * Line_Num / Line_Den. An NTSC or VGA line is 6355.56 cycles (858 pixels at
+ * 27 MHz, on a 200 MHz clock), and counting it as 6355, which this used to
+ * do, made every frame 290 cycles short: 59.9453 frames a second where the
+ * hardware makes 59.9401.
+ *
+ * Lines are still whole cycles each, but not all the same: line n of a frame
+ * begins at floor(n * Line_Num / Line_Den) cycles into it, so they come out
+ * 6355 or 6356 as the fraction requires and a frame is as long as it should
+ * be to within a cycle. Nothing is carried from one frame to the next, so
+ * there is no state to this beyond the scanline the beam is on. */
+static u64 Line_Num;
+static u64 Line_Den = 1;
+
+// The cycle, counted from the start of the frame, at which a scanline begins
+static inline u64 line_start(u32 line)
+{
+	return (u64)line * Line_Num / Line_Den;
+}
 int render_end_schid;
 int vblank_schid;
 
@@ -28,14 +46,15 @@ void CalculateSync(bool reschedule)
 	//We need to calculate the pixel clock
 	pvr_numscanlines = SPG_LOAD.vcount + 1;
 
-	Line_Cycles = (u32)((u64)SH4_MAIN_CLOCK * (u64)(SPG_LOAD.hcount + 1) / (u64)pixel_clock);
+	Line_Num = (u64)SH4_MAIN_CLOCK * (u64)(SPG_LOAD.hcount + 1);
+	Line_Den = pixel_clock;
 
 	float scale_x = 1.f, scale_y = 1.f;
 
 	if (SPG_CONTROL.interlace)
 	{
 		//this is a temp hack
-		Line_Cycles /= 2;
+		Line_Den *= 2;
 
 		//u32 interl_mode      = VO_CONTROL.field_mode;
 		
@@ -60,33 +79,28 @@ void CalculateSync(bool reschedule)
 	if (reschedule)
 	{
 		pvr_cur_scanline = 0;
-		sh4_sched_request(vblank_schid, Line_Cycles);
+		sh4_sched_request(vblank_schid, (int)line_start(1));
 	}
 }
 
 /*
- * Actual emulated vertical refresh rate, derived from the same SPG timing the
- * scheduler runs on: pixel_clock / ((hcount+1) * (vcount+1)), i.e.
- * SH4_MAIN_CLOCK / (Line_Cycles * pvr_numscanlines). This is the rate at which
+ * Actual emulated vertical refresh rate: the SH4 clock over the cycles a frame
+ * takes, which is what the scheduler below runs on. This is the rate at which
  * frames (and thus audio) are actually produced, so reporting it to the
  * frontend via retro_get_system_av_info keeps timing.fps in step with the core
- * instead of a bucketed 60/59.94/50 guess. It naturally yields the hardware
- * figures: ~59.94 for VGA and 480i, ~59.83 for 240p NTSC, 50.00 for PAL 480i,
- * and the higher NAOMI rates for boards that program the SPG accordingly.
- * Falls back to 60 before CalculateSync has run.
+ * instead of a bucketed 60/59.94/50 guess. It yields the hardware's figures to
+ * within a cycle a frame: 59.9401 for VGA and 480i, 59.8261 for 240p NTSC,
+ * 50 for PAL 480i, and the higher NAOMI rates for boards that program the SPG
+ * accordingly. Do not round or snap it: the frontend wants the exact figure
+ * the core produces frames at. Falls back to 60 before CalculateSync has run.
  */
 double spg_get_refresh_rate(void)
 {
-	if (Line_Cycles == 0 || pvr_numscanlines == 0)
+	const u64 frame = line_start(pvr_numscanlines);
+
+	if (frame == 0)
 		return 60.0;
-	/* Derived straight from the emulated line timing. Line_Cycles and
-	 * pvr_numscanlines are integers programmed from the SPG registers and the
-	 * division is deterministic, so a given mode always yields the same exact
-	 * double: NTSC 240p -> 59.826628413520460, NTSC 480p/480i ->
-	 * 59.945299913828634, PAL 240p -> 49.920127795527157, PAL 480i -> 50. This
-	 * is the true emulated refresh rate at full precision; do not round or snap
-	 * it -- the frontend wants the exact figure the core produces frames at. */
-	return (double)SH4_MAIN_CLOCK / ((double)Line_Cycles * (double)pvr_numscanlines);
+	return (double)SH4_MAIN_CLOCK / (double)frame;
 }
 
 
@@ -104,15 +118,19 @@ int spg_line_sched(int tag, int cycl, int jit)
 	 * shortfall built up until a call came out one line short of where it
 	 * was aimed, and that line was never made up: about every sixteenth
 	 * frame was a scanline longer than the game had set, and the machine
-	 * ran that much slower than the refresh rate reported for it. */
-	clc_pvr_scanline = ((u32)(cycl + jit) + Line_Cycles / 2) / Line_Cycles * Line_Cycles;
+	 * ran that much slower than the refresh rate reported for it.
+	 *
+	 * Lines differ by a cycle from one to the next (see Line_Num), which
+	 * is nothing next to half a line: the time is divided by the line's
+	 * length as a fraction and rounded. */
+	u32 lines = (u32)(((u64)(u32)(cycl + jit) * Line_Den + Line_Num / 2) / Line_Num);
 
-	while (clc_pvr_scanline >=  Line_Cycles)//60 ~hertz = 200 mhz / 60=3333333.333 cycles per screen refresh
+	clc_pvr_scanline = 0;
+	for (; lines != 0; lines--)//60 ~hertz = 200 mhz / 60=3333333.333 cycles per screen refresh
 	{
 		//ok .. here , after much effort , we did one line
 		//now , we must check for raster beam interrupts and vblank
 		pvr_cur_scanline = (pvr_cur_scanline + 1) % pvr_numscanlines;
-		clc_pvr_scanline -= Line_Cycles;
 		//Check for scanline interrupts -- really need to test the scanline values
 		
       /* Vblank in */
@@ -208,7 +226,8 @@ int spg_line_sched(int tag, int cycl, int jit)
 
 	min_active = std::max(min_active,min_scanline);
 
-	return (min_active - pvr_cur_scanline)*Line_Cycles;
+	// from the start of the line the beam is on to the start of that one
+	return (int)(line_start(min_active) - line_start(pvr_cur_scanline));
 }
 
 void read_lightgun_position(int x, int y)
