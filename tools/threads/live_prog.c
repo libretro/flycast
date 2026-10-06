@@ -587,6 +587,31 @@ void cmain(void)
    AICA(0x20) = 0;                                     /* nothing to the DSP */
    AICA(0x24) = (0xF << 8) | 0x1F;                     /* full level, left */
    AICA(0x28) = 0x0060;                                /* filter off, attenuation off */
+   /* A second sound, for channel 1 and its low-pass filter: 4096 samples,
+    * the first half a square wave and the second half silence, looping, at
+    * full level and all the way to the right. The filter is on, its cutoff
+    * held at one value the whole time and its resonance turned up. What the
+    * channel adds to the right is then what the filter makes of the wave,
+    * which live_audio.py works out for itself and compares. Its key is
+    * down from the start: it sounds when channel 0 is first keyed on, and
+    * goes on to the end. */
+   for (i = 0; i < 4096; i++)
+      (*(volatile u16 *)(0xA0820000 + i * 2)) = (u16)(i >= 2048 ? 0 : (i & 32) ? -6000 : 6000);
+   AICA(0x80 + 0x04) = 0x0000;                         /* SA: 0x20000, low */
+   AICA(0x80 + 0x08) = 0;
+   AICA(0x80 + 0x0C) = 4096;
+   AICA(0x80 + 0x10) = 0x001F;
+   AICA(0x80 + 0x14) = 0x3C1F;
+   AICA(0x80 + 0x18) = 0;
+   AICA(0x80 + 0x1C) = 0;
+   AICA(0x80 + 0x20) = 0;
+   AICA(0x80 + 0x24) = (0xF << 8) | 0x0F;              /* full level, right */
+   AICA(0x80 + 0x28) = 0x0048;                         /* filter on, Q 8, attenuation off */
+   for (i = 0; i < 5; i++)
+      AICA(0x80 + 0x2C + i * 4) = 0x1900;              /* the cutoff, at every stage */
+   AICA(0x80 + 0x40) = 0;                              /* and no hurry between them */
+   AICA(0x80 + 0x44) = 0;
+   AICA(0x80 + 0x00) = 0x4202;                         /* 16-bit, looping, key down */
 
    for (;;)
    {
