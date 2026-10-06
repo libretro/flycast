@@ -565,14 +565,12 @@ void LoadSettings(void)
 	settings.rend.MaxFilteredTextureSize = 256;
 	settings.pvr.SynchronousRendering	 = 0;
 #endif
-	settings.rend.Fog				= true;
 	settings.rend.AutoExtraDepthScale    = true;
 	settings.rend.ExtraDepthScale        = 1.f;
 
 	settings.rend.Clipping               = true;
 
 
-	settings.rend.ModifierVolumes        = true;
 	settings.rend.TranslucentPolygonDepthMask = false;
 
 	settings.debug.SerialConsole         = 0;

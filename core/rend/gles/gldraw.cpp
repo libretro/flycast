@@ -115,7 +115,7 @@ __forceinline
 		ShaderUniforms.trilinear_alpha = 1.f;
 
 	bool color_clamp = gp->tsp.ColorClamp && (pvrrc.fog_clamp_min != 0 || pvrrc.fog_clamp_max != 0xffffffff);
-	int fog_ctrl = settings.rend.Fog ? gp->tsp.FogCtrl : 2;
+	int fog_ctrl = gp->tsp.FogCtrl;
 
 	int clip_rect[4] = {};
 	TileClipping clipmode = GetTileClip(gp->tileclip, ViewportMatrix, clip_rect);
@@ -598,7 +598,7 @@ void DrawStrips()
 			previous_pass.pt_count, current_pass.pt_count - previous_pass.pt_count);
 
 		// Modifier volumes
-		if (gl.stencil_present && settings.rend.ModifierVolumes)
+		if (gl.stencil_present)
 			DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count);
 
 		//Alpha blended

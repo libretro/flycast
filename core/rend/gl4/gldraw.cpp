@@ -122,7 +122,7 @@ static void SetGPState(const PolyParam* gp)
 		bool two_volumes_mode = (gp->tsp1.full != (u32)-1) && Type != ListType_Translucent;
 		bool color_clamp = gp->tsp.ColorClamp && (pvrrc.fog_clamp_min != 0 || pvrrc.fog_clamp_max != 0xffffffff);
 
-		int fog_ctrl = settings.rend.Fog ? gp->tsp.FogCtrl : 2;
+		int fog_ctrl = gp->tsp.FogCtrl;
 
 		palette = BaseTextureCacheData::IsGpuHandledPaletted(gp->tsp, gp->tcw);
 
@@ -542,8 +542,7 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 			DrawList<ListType_Punch_Through, false, Pass::Depth>(pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count - previous_pass.pt_count);
 
 			// Modifier volumes
-			if (settings.rend.ModifierVolumes)
-				DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count);
+			DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count);
 
 			//
 			// PASS 2: Render OP and PT to fbo
@@ -605,11 +604,8 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 				DrawList<ListType_Translucent, true, Pass::OIT>(pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count);
 
 				// Translucent modifier volumes
-				if (settings.rend.ModifierVolumes)
-				{
-					SetBaseClipping();
-					DrawTranslucentModVols(previous_pass.mvo_tr_count, current_pass.mvo_tr_count - previous_pass.mvo_tr_count);
-				}
+				SetBaseClipping();
+				DrawTranslucentModVols(previous_pass.mvo_tr_count, current_pass.mvo_tr_count - previous_pass.mvo_tr_count);
 
 				// Rebind the depth/stencil texture to the framebuffer
 				glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, stencilTexId, 0);
