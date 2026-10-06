@@ -84,6 +84,7 @@ for san in thread address,undefined; do
    echo "== -fsanitize=$san"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/threads_test"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/pico_test"
+   TSAN_OPTIONS=halt_on_error=1 "$WORK/pico_test" bba
    TSAN_OPTIONS=halt_on_error=1 "$WORK/m3comm_test"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/naomi_net_test"
 done

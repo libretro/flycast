@@ -27,6 +27,7 @@
 #if !defined(_MSC_VER) && !defined(TARGET_NO_THREADS)
 
 #include "stdclass.h"
+#include "hw/sh4/sh4_sched.h"
 
 #ifdef __MINGW32__
 #define _POSIX_SOURCE
@@ -73,6 +74,21 @@ static retro_spsc_t out_ring;	/* modem -> stack */
 static bool rings_ready;	/* emulation thread only */
 /* Where the stack sleeps while in_ring is full. */
 static cEventCount in_ring_ec;
+
+/* Ethernet frames, for the broadband adapter. The adapter is emulated on
+ * the emulation thread and the stack runs on the pico thread, and neither
+ * may call into the other: the adapter's registers, its receive ring in
+ * guest memory and its interrupt belong to one, the stack's queues to the
+ * other. So a frame crosses as bytes in a ring, a 16-bit length and then
+ * the frame, written whole or not at all. */
+#define ETH_RING_BYTES 65536
+#define ETH_FRAME_MAX 1600
+static retro_spsc_t eth_out_ring;	/* adapter -> stack */
+static retro_spsc_t eth_in_ring;	/* stack -> adapter */
+/* Set by the pico thread when the adapter's ring had no room for a frame;
+ * the emulation thread wakes it once it has taken some out. */
+static retro_atomic_int_t eth_in_blocked;
+static int eth_schid = -1;		/* emulation thread */
 
 /* The pico thread does not tick on a timer. It waits, in select(), for the
  * things that give it work: its native sockets, the stack's next timer,
@@ -808,18 +824,104 @@ static void closeDumpFile()
 		pcapngDump = nullptr;
 	}
 }
+/* Emulation thread: the adapter has sent a frame. */
 void pico_receive_eth_frame(const u8 *frame, u32 size)
 {
-	dumpFrame(frame, size);
-	pico_stack_recv(pico_dev, (u8 *)frame, size);
+	u8 buf[2 + ETH_FRAME_MAX];
+
+	if (!rings_ready || size == 0 || size > ETH_FRAME_MAX)
+		return;
+	// No room: dropped, as a switch with a full queue would
+	if (retro_spsc_write_avail(&eth_out_ring) < size + 2)
+		return;
+	buf[0] = (u8)size;
+	buf[1] = (u8)(size >> 8);
+	memcpy(&buf[2], frame, size);
+	retro_spsc_write(&eth_out_ring, buf, size + 2);
 	wake_pico();
 }
+
+/* Pico thread: give the stack the frames the adapter has sent. */
+static void take_eth_frames()
+{
+	u8 buf[ETH_FRAME_MAX];
+	u8 len[2];
+
+	while (retro_spsc_read(&eth_out_ring, len, 2) == 2)
+	{
+		const u32 size = len[0] | (len[1] << 8);
+
+		if (size > ETH_FRAME_MAX || retro_spsc_read(&eth_out_ring, buf, size) != size)
+			break;
+		dumpFrame(buf, size);
+		if (pico_dev != nullptr)
+			pico_stack_recv(pico_dev, buf, size);
+	}
+}
+/* Pico thread: the stack has a frame for the adapter. */
 static int send_eth_frame(pico_device *dev, void *data, int len)
 {
+	u8 buf[2 + ETH_FRAME_MAX];
+
+	if (len <= 0 || len > ETH_FRAME_MAX)
+		return len;		// nothing the adapter could take: let the stack drop it
+	if (retro_spsc_write_avail(&eth_in_ring) < (size_t)len + 2)
+	{
+		// The stack keeps the frame and tries again when it is next woken
+		retro_atomic_store_release_int(&eth_in_blocked, 1);
+		if (retro_spsc_write_avail(&eth_in_ring) < (size_t)len + 2)
+			return 0;
+	}
 	dumpFrame((const u8 *)data, len);
-	return pico_send_eth_frame((const u8 *)data, len);
+	buf[0] = (u8)len;
+	buf[1] = (u8)(len >> 8);
+	memcpy(&buf[2], data, len);
+	retro_spsc_write(&eth_in_ring, buf, len + 2);
+	return len;
 }
 
+/* Emulation thread, once every millisecond of emulated time while the
+ * adapter is in use: hand it the frames the stack has sent. A frame it has
+ * no room for is kept and offered again. */
+static int eth_deliver_sched(int tag, int cycles, int jitter)
+{
+	static u8 pending[ETH_FRAME_MAX];
+	static u32 pending_size;
+	bool took = false;
+
+	if (!rings_ready || !retro_atomic_load_acquire_int(&pico_thread_running))
+	{
+		pending_size = 0;
+		return 0;
+	}
+	for (;;)
+	{
+		if (pending_size == 0)
+		{
+			u8 len[2];
+
+			if (retro_spsc_read(&eth_in_ring, len, 2) != 2)
+				break;
+			pending_size = len[0] | (len[1] << 8);
+			if (pending_size > ETH_FRAME_MAX
+					|| retro_spsc_read(&eth_in_ring, pending, pending_size) != pending_size)
+			{
+				pending_size = 0;
+				break;
+			}
+			took = true;
+		}
+		if (!pico_send_eth_frame(pending, pending_size))
+			break;
+		pending_size = 0;
+	}
+	if (took && retro_atomic_load_acquire_int(&eth_in_blocked))
+	{
+		retro_atomic_store_release_int(&eth_in_blocked, 0);
+		wake_pico();
+	}
+	return SH4_MAIN_CLOCK / 1000;
+}
 /* Waits until the thread has something to do: a native socket to read,
  * accept on or finish connecting, a timer of the stack's come due,
  * something handed over by the emulation thread, or the order to stop.
@@ -1074,6 +1176,7 @@ static void *pico_thread_func(void *)
     {
 		const int kicks = retro_atomic_load_acquire_int(&pico_kicks);
 
+		take_eth_frames();
     	read_native_sockets();
     	pico_stack_tick();
     	check_dns_entries();
@@ -1153,18 +1256,41 @@ bool start_pico()
 			retro_spsc_free(&in_ring);
 			return false;
 		}
+		if (!retro_spsc_init(&eth_out_ring, ETH_RING_BYTES))
+		{
+			retro_spsc_free(&in_ring);
+			retro_spsc_free(&out_ring);
+			return false;
+		}
+		if (!retro_spsc_init(&eth_in_ring, ETH_RING_BYTES))
+		{
+			retro_spsc_free(&in_ring);
+			retro_spsc_free(&out_ring);
+			retro_spsc_free(&eth_out_ring);
+			return false;
+		}
 		rings_ready = true;
 	}
 	else
 	{
 		retro_spsc_clear(&in_ring);
 		retro_spsc_clear(&out_ring);
+		retro_spsc_clear(&eth_out_ring);
+		retro_spsc_clear(&eth_in_ring);
 	}
+	retro_atomic_store_release_int(&eth_in_blocked, 0);
 	if (!make_wake_socket())
 		return false;
 	retro_atomic_store_release_int(&pico_waiting, 0);
 	retro_atomic_store_release_int(&pico_thread_running, 1);
 	pico_thread.Start();
+
+	if (settings.network.EmulateBBA)
+	{
+		if (eth_schid < 0)
+			eth_schid = sh4_sched_register(0, &eth_deliver_sched);
+		sh4_sched_request(eth_schid, SH4_MAIN_CLOCK / 1000);
+	}
     return true;
 }
 
