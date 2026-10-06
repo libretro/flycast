@@ -581,13 +581,6 @@ struct settings_t
 
 	struct
 	{
-		u32 LimitFPS;		//0 -> no , (1) -> limit
-		u32 CDDAMute;
-		u32 NoSound;        //0 ->sound, 1 -> no sound
-	} aica;
-
-	struct
-	{
 		bool PatchRegion;
 		bool LoadDefaultImage;
 		char DefaultImage[512];
@@ -595,12 +588,6 @@ struct settings_t
 
 	struct
 	{
-		struct
-		{
-			u32 ResolutionMode;
-			u32 VSync;
-		} Video;
-
 		struct 
 		{
 			u32 MultiSampleCount;
@@ -617,12 +604,6 @@ struct settings_t
 			f32 zMin;
 			f32 zMax;
 		} Emulation;
-
-		struct
-		{
-			u32 ShowFPS;
-			u32 ShowStats;
-		} OSD;
 
 		u32 ta_skip;
 		u32 subdivide_transp;

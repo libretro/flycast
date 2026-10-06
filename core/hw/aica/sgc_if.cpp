@@ -1368,26 +1368,15 @@ void AICA_Sample()
 	//Add CDDA / DSP effect(s)
 
 	//CDDA
-	if (settings.aica.CDDAMute==0) 
-	{
-		VOLPAN(EXTS0L,dsp_out_vol[16].EFSDL,dsp_out_vol[16].EFPAN,mixl,mixr);
-		VOLPAN(EXTS0R,dsp_out_vol[17].EFSDL,dsp_out_vol[17].EFPAN,mixl,mixr);
+	VOLPAN(EXTS0L,dsp_out_vol[16].EFSDL,dsp_out_vol[16].EFPAN,mixl,mixr);
+	VOLPAN(EXTS0R,dsp_out_vol[17].EFSDL,dsp_out_vol[17].EFPAN,mixl,mixr);
 
-		DSPData->EXTS[0] = EXTS0L;
-		DSPData->EXTS[1] = EXTS0R;
-	}
-	else
-	{
-		DSPData->EXTS[0] = 0;
-		DSPData->EXTS[1] = 0;
-	}
+	DSPData->EXTS[0] = EXTS0L;
+	DSPData->EXTS[1] = EXTS0R;
 	dsp_step();
 
 	for (int i=0;i<16;i++)
 		VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
-
-    if (settings.aica.NoSound)
-        return;
 
 	//Mono !
 	if (CommonData->Mono)
