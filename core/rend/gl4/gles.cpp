@@ -126,14 +126,36 @@ INTERPOLATION in vec4 vtx_base1;
 INTERPOLATION in vec4 vtx_offs1;
 			  in vec2 vtx_uv1;
 
+// The fog coefficient for a depth, worked out the way the PowerVR2 does it.
+// The depth times the fog density, between 1 and just under 256, is taken
+// apart as a float: its exponent and the top four bits of its mantissa
+// pick one of the 128 table entries, and the next eight bits of mantissa
+// blend that entry with the following one. The blend is done in whole
+// numbers out of 256 and so is the result, which is returned over 256.
+// Splitting the float is done by comparing and halving, which is exact
+// and costs less than the log2() and pow() this used to take.
 float fog_mode2(float w)
 {
-	float z = clamp(w * sp_FOG_DENSITY, 1.0, 255.9999);
-	float exp = floor(log2(z));
-	float m = z * 16.0 / pow(2.0, exp) - 16.0;
-	float idx = floor(m) + exp * 16.0 + 0.5;
-	vec4 fog_coef = texture(fog_table, vec2(idx / 128.0, 0.75 - (m - floor(m)) / 2.0));
-	return fog_coef.r;
+	float z = w * sp_FOG_DENSITY;
+	// Not clamp(): where the depth is infinite and the density zero their
+	// product is not a number, and that has to come out as 1 like anything
+	// else below 1. The texture lookup this used to end in swallowed it.
+	if (!(z >= 1.0))
+		z = 1.0;
+	if (z > 255.9999)
+		z = 255.9999;
+	float e = 0.0;
+	if (z >= 16.0) { z *= 0.0625; e = 4.0; }
+	if (z >= 4.0) { z *= 0.25; e += 2.0; }
+	if (z >= 2.0) { z *= 0.5; e += 1.0; }
+	float t = (z - 1.0) * 16.0;
+	float i = floor(t);
+	float blend = floor((t - i) * 256.0);
+	float u = (e * 16.0 + i + 0.5) / 128.0;
+	// The table is two rows: the entry's own value under 0.75, the next entry's under 0.25
+	float next = floor(texture(fog_table, vec2(u, 0.25)).r * 255.0 + 0.5);
+	float cur = floor(texture(fog_table, vec2(u, 0.75)).r * 255.0 + 0.5);
+	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
 }
 
 vec4 fog_clamp(vec4 col)
@@ -206,7 +228,7 @@ void main()
 	#endif
    #if pp_FogCtrl==3 || pp_TwoVolumes == 1 // LUT Mode 2
       IF(cur_fog_control == 3)
-         color=vec4(sp_FOG_COL_RAM.rgb,fog_mode2(gl_FragCoord.w));
+         color=vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
 	#endif
 	#if pp_Texture==1
 	{
@@ -249,6 +271,11 @@ void main()
 		{
 			color.rgb*=texcol.rgb;
 			color.a=texcol.a;
+	#if PASS == PASS_COLOR && pp_TwoVolumes == 0
+      uvec4 stencil = texture(shadow_stencil, gl_FragCoord.xy / textureSize(shadow_stencil, 0));
+	   if (stencil.r == 0x81u)
+			color.rgb *= shade_scale_factor;
+	#endif
 		}
 		#endif
       #if pp_ShadInstr==2 || pp_TwoVolumes == 1 // DECAL ALPHA
@@ -271,24 +298,21 @@ void main()
 		#endif
 	}
 	#endif
-	#if PASS == PASS_COLOR && pp_TwoVolumes == 0
-      uvec4 stencil = texture(shadow_stencil, gl_FragCoord.xy / textureSize(shadow_stencil, 0));
-	   if (stencil.r == 0x81u)
-			color.rgb *= shade_scale_factor;
-	#endif
    
 	color = fog_clamp(color);
 	
    #if pp_FogCtrl==0 || pp_TwoVolumes == 1 // LUT
    	IF(cur_fog_control == 0)
 		{
-			color.rgb=mix(color.rgb,sp_FOG_COL_RAM.rgb,fog_mode2(gl_FragCoord.w)); 
+			float fog = fog_mode2(gl_FragCoord.w);
+			color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
 		}
 	#endif
 	#if pp_Offset==1 && pp_BumpMap == 0 && (pp_FogCtrl == 1 || pp_TwoVolumes == 1)  // Per vertex
 		IF(cur_fog_control == 1)
 		{
-			color.rgb=mix(color.rgb, sp_FOG_COL_VERT.rgb, offset.a);
+			float fog = offset.a * (255.0 / 256.0);
+			color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_VERT.rgb * fog;
 		}
 	#endif
    

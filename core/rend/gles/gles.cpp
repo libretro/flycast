@@ -85,7 +85,10 @@ void main()
 #if TARGET_GL != GLES2
    vpos.z = vpos.w;
 #else
-   fog_depth = vpos.z * sp_FOG_DENSITY;
+   // Interpolated with perspective correction, 1/depth comes out as one over
+   // the depth at the pixel, which is what fog goes by. depth itself does not:
+   // it came out too large inside any triangle that spans a range of depths.
+   fog_depth = vpos.w;
    vpos.z=depth_scale.x+depth_scale.y*vpos.w; 
 #endif
 	vpos.xy *= vpos.w;
@@ -168,18 +171,41 @@ in mediump vec2 vtx_uv;
 in highp float fog_depth;
 #endif
 
-lowp float fog_mode2(highp float w)
+// The fog coefficient for a depth, worked out the way the PowerVR2 does it.
+// The depth times the fog density, between 1 and just under 256, is taken
+// apart as a float: its exponent and the top four bits of its mantissa
+// pick one of the 128 table entries, and the next eight bits of mantissa
+// blend that entry with the following one. The blend is done in whole
+// numbers out of 256 and so is the result, which is returned over 256.
+// Splitting the float is done by comparing and halving, which is exact
+// and costs less than the log2() and pow() this used to take.
+highp float fog_mode2(highp float w)
 {
 #if TARGET_GL == GLES2
-	highp float z = clamp(fog_depth, 1.0, 255.9999);
+	// fog_depth is 1/depth, the one thing a varying carries across a triangle exactly
+	highp float z = sp_FOG_DENSITY / fog_depth;
 #else
-	highp float z = clamp(w * sp_FOG_DENSITY, 1.0, 255.9999);
+	highp float z = w * sp_FOG_DENSITY;
 #endif
-	mediump float exp = floor(log2(z));
-	highp float m = z * 16.0 / pow(2.0, exp) - 16.0;
-	mediump float idx = floor(m) + exp * 16.0 + 0.5;
-	highp vec4 fog_coef = texture(fog_table, vec2(idx / 128.0, 0.75 - (m - floor(m)) / 2.0));
-	return fog_coef.FOG_CHANNEL;
+	// Not clamp(): where the depth is infinite and the density zero their
+	// product is not a number, and that has to come out as 1 like anything
+	// else below 1. The texture lookup this used to end in swallowed it.
+	if (!(z >= 1.0))
+		z = 1.0;
+	if (z > 255.9999)
+		z = 255.9999;
+	highp float e = 0.0;
+	if (z >= 16.0) { z *= 0.0625; e = 4.0; }
+	if (z >= 4.0) { z *= 0.25; e += 2.0; }
+	if (z >= 2.0) { z *= 0.5; e += 1.0; }
+	highp float t = (z - 1.0) * 16.0;
+	highp float i = floor(t);
+	highp float blend = floor((t - i) * 256.0);
+	highp float u = (e * 16.0 + i + 0.5) / 128.0;
+	// The table is two rows: the entry's own value under 0.75, the next entry's under 0.25
+	highp float next = floor(texture(fog_table, vec2(u, 0.25)).FOG_CHANNEL * 255.0 + 0.5);
+	highp float cur = floor(texture(fog_table, vec2(u, 0.75)).FOG_CHANNEL * 255.0 + 0.5);
+	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
 }
 
 highp vec4 fog_clamp(highp vec4 col)
@@ -215,7 +241,7 @@ void main()
 		color.a=1.0;
 	#endif
 	#if pp_FogCtrl==3
-		color=vec4(sp_FOG_COL_RAM.rgb,fog_mode2(gl_FragCoord.w));
+		color=vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
 	#endif
 	#if pp_Texture==1
 	{
@@ -274,12 +300,14 @@ void main()
 	
 	#if pp_FogCtrl == 0
 	{
-		color.rgb=mix(color.rgb,sp_FOG_COL_RAM.rgb,fog_mode2(gl_FragCoord.w)); 
+		highp float fog = fog_mode2(gl_FragCoord.w);
+		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
 	}
 	#endif
 	#if pp_FogCtrl == 1 && pp_Offset==1 && pp_BumpMap == 0
 	{
-		color.rgb=mix(color.rgb,sp_FOG_COL_VERT.rgb,vtx_offs.a);
+		highp float fog = vtx_offs.a * (255.0 / 256.0);
+		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_VERT.rgb * fog;
 	}
 	#endif
 	
