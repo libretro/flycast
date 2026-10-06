@@ -171,14 +171,19 @@ public:
 		}
 	}
 
-	vk::Pipeline GetPipeline(u32 listType, bool sortTriangles, const PolyParam& pp)
+	// What a polygon is being drawn for: itself, or a second time for the part
+	// of it that is in a modifier volume (see rend/shadows.h), in which case
+	// which of two polygons at the same depth is left showing matters.
+	enum class ShadowPass { None, LaterWins, EarlierWins };
+
+	vk::Pipeline GetPipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass = ShadowPass::None)
 	{
-		u32 pipehash = hash(listType, sortTriangles, &pp);
+		u32 pipehash = hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28);
 		const auto &pipeline = pipelines.find(pipehash);
 		if (pipeline != pipelines.end())
 			return pipeline->second.get();
 
-		CreatePipeline(listType, sortTriangles, pp);
+		CreatePipeline(listType, sortTriangles, pp, shadowPass);
 
 		return *pipelines[pipehash];
 	}
@@ -253,7 +258,7 @@ private:
 				full ? vertexInputAttributeDescriptions : vertexInputLightAttributeDescriptions);
 	}
 
-	void CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp);
+	void CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass);
 
 	std::map<u32, vk::UniquePipeline> pipelines;
 	std::map<u32, vk::UniquePipeline> modVolPipelines;

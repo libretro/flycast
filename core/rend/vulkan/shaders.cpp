@@ -75,6 +75,7 @@ static const char FragmentShaderSource[] = R"(#version 450
 #define ColorClamping %d
 #define pp_TriLinear %d
 #define pp_Palette %d
+#define pp_Shadowed %d
 #define PI 3.1415926
 
 layout (location = 0) out vec4 FragColor;
@@ -94,6 +95,7 @@ layout (std140, set = 0, binding = 1) uniform FragmentShaderUniforms
 	vec4 sp_FOG_COL_VERT;
 	float cp_AlphaTestValue;
 	float sp_FOG_DENSITY;
+	float shade_scale_factor;
 } uniformBuffer;
 
 layout (push_constant) uniform pushBlock
@@ -183,6 +185,15 @@ void main()
 	#if pp_UseAlpha == 0
 		color.a = 1.0;
 	#endif
+	#if pp_Shadowed == 1
+		// A pixel inside a modifier volume: what the polygon is shaded with,
+		// its base and offset colours, is scaled before the texture is
+		// combined with them. The texture itself is not.
+		color.rgb *= uniformBuffer.shade_scale_factor;
+		vec4 offset = vec4(vtx_offs.rgb * uniformBuffer.shade_scale_factor, vtx_offs.a);
+	#else
+		#define offset vtx_offs
+	#endif
 	#if pp_Texture == 1
 	{
 		#if pp_Palette == 0
@@ -194,7 +205,7 @@ void main()
 		#if pp_BumpMap == 1
 			float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
 			float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
-			texcol.a = clamp(vtx_offs.a + vtx_offs.r * sin(s) + vtx_offs.g * cos(s) * cos(r - 2.0 * PI * vtx_offs.b), 0.0, 1.0);
+			texcol.a = clamp(offset.a + offset.r * sin(s) + offset.g * cos(s) * cos(r - 2.0 * PI * offset.b), 0.0, 1.0);
 			texcol.rgb = vec3(1.0, 1.0, 1.0);	
 		#else
 			#if pp_IgnoreTexA == 1
@@ -230,7 +241,7 @@ void main()
 		
 		#if pp_Offset == 1 && pp_BumpMap == 0
 		{
-			color.rgb += vtx_offs.rgb;
+			color.rgb += offset.rgb;
 		}
 		#endif
 	}
@@ -255,7 +266,7 @@ void main()
 	#endif
 	#if pp_FogCtrl == 1 && pp_Offset==1 && pp_BumpMap == 0
 	{
-		float fog = vtx_offs.a * (255.0 / 256.0);
+		float fog = offset.a * (255.0 / 256.0);
 		color.rgb = color.rgb * (255.0 / 256.0 - fog) + uniformBuffer.sp_FOG_COL_VERT.rgb * fog;
 	}
 	#endif
@@ -359,7 +370,8 @@ vk::UniqueShaderModule ShaderManager::compileShader(const FragmentShaderParams& 
 
 	sprintf(buf, FragmentShaderSource, (int)params.alphaTest, (int)params.insideClipTest, (int)params.useAlpha, (int)params.texture,
 			(int)params.ignoreTexAlpha, params.shaderInstr, (int)params.offset, params.fog, (int)params.gouraud,
-			(int)params.bumpmap, (int)params.clamping, (int)params.trilinear, (int)params.palette);
+			(int)params.bumpmap, (int)params.clamping, (int)params.trilinear, (int)params.palette,
+			(int)params.shadowed);
 	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, buf);
 }
 

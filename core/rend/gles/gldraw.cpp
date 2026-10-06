@@ -1,5 +1,6 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "gles.h"
+#include "rend/shadows.h"
 
 /*
 
@@ -102,7 +103,7 @@ static void SetBaseClipping()
 
 template <u32 Type, bool SortingEnabled>
 __forceinline
-	void SetGPState(const PolyParam* gp,u32 cflip=0)
+	void SetGPState(const PolyParam* gp, u32 cflip = 0, bool shadowed = false)
 {
 	if (gp->pcw.Texture && gp->tsp.FilterMode > 1 && Type != ListType_Punch_Through && gp->tcw.MipMapped == 1)
 	{
@@ -133,7 +134,8 @@ __forceinline
 								  gp->tcw.PixelFmt == PixelBumpMap,
 								  color_clamp,
 								  ShaderUniforms.trilinear_alpha != 1.f,
-								  palette);
+								  palette,
+								  shadowed);
 
 	glcache.UseProgram(CurrentShader->program);
 	if (CurrentShader->trilinear_alpha != -1)
@@ -491,7 +493,72 @@ static void SetupModvolVBO(void)
 	glDisableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
 }
 
-static void DrawModVols(int first, int count)
+/* Shadows: see rend/shadows.h. */
+
+// The scissor for a polygon drawn again for its shadow: where it may be
+// drawn at all, and within the volumes' rectangle. False if that is nowhere.
+static bool SetShadowScissor(const PolyParam *gp, const int *volumes)
+{
+	int x0 = volumes[0], y0 = volumes[1], x1 = x0 + volumes[2], y1 = y0 + volumes[3];
+	int clip[4] = {};
+	bool clipped = true;
+
+	if (GetTileClip(gp->tileclip, ViewportMatrix, clip) != TileClipping::Outside)
+	{
+		clipped = ShaderUniforms.base_clipping.enabled;
+		clip[0] = ShaderUniforms.base_clipping.x;
+		clip[1] = ShaderUniforms.base_clipping.y;
+		clip[2] = ShaderUniforms.base_clipping.width;
+		clip[3] = ShaderUniforms.base_clipping.height;
+	}
+	if (clipped)
+	{
+		x0 = std::max(x0, clip[0]);
+		y0 = std::max(y0, clip[1]);
+		x1 = std::min(x1, clip[0] + clip[2]);
+		y1 = std::min(y1, clip[1] + clip[3]);
+	}
+	if (x1 <= x0 || y1 <= y0)
+		return false;
+	glcache.Enable(GL_SCISSOR_TEST);
+	glcache.Scissor(x0, y0, x1 - x0, y1 - y0);
+	return true;
+}
+
+template <u32 Type>
+static void DrawShadowed(const List<PolyParam>& gply, int first, int count, const ScreenBounds& area, const int *scissor)
+{
+	const PolyParam *gp = &gply.head()[first];
+
+	for (; count > 0; count--, gp++)
+	{
+		if (!CanDrawShadowed(Type, gp) || !PolyOverlaps(gp, area))
+			continue;
+
+		SetGPState<Type, false>(gp, 0, true);
+		if (!SetShadowScissor(gp, scissor))
+			continue;
+		glcache.Disable(GL_BLEND);
+		glcache.DepthFunc(GL_EQUAL);
+		glcache.DepthMask(GL_FALSE);
+		/* In a volume (bit 0) and taking shadows (bit 7); bit 6 says a pixel
+		 * has been drawn here already, and is set by this. */
+		if (ShadowLaterWins(Type, gp))
+		{
+			glcache.StencilFunc(GL_EQUAL, 0xC1, 0x81);
+			glcache.StencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+		}
+		else
+		{
+			glcache.StencilFunc(GL_EQUAL, 0x81, 0xC1);
+			glcache.StencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+		}
+		glDrawElements(GL_TRIANGLE_STRIP, gp->count, gl.index_type,
+				(GLvoid*)(gl.get_index_size() * gp->first));
+	}
+}
+
+static void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
 {
 	/* A bit of explanation:
 	 * In theory it works like this: generate a 1-bit stencil for each polygon
@@ -550,25 +617,45 @@ static void DrawModVols(int first, int count)
 	//enable color writes
 	glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
 
+	SetupMainVBO();
+
+	// The polygons that take shadows, again, where they are in a volume
+	const ScreenBounds area = ModVolBounds(first, count);
+	if (!area.empty())
+	{
+		int scissor[4];
+		BoundsToScissor(area, ViewportMatrix, scissor);
+		glcache.Enable(GL_STENCIL_TEST);
+		glcache.StencilMask(0x40);
+		DrawShadowed<ListType_Opaque>(pvrrc.global_param_op, previous_pass.op_count,
+				current_pass.op_count - previous_pass.op_count, area, scissor);
+		DrawShadowed<ListType_Punch_Through>(pvrrc.global_param_pt, previous_pass.pt_count,
+				current_pass.pt_count - previous_pass.pt_count, area, scissor);
+		SetCull(0);
+		SetBaseClipping();
+		glcache.UseProgram(gl.modvol_shader.program);
+	}
+
 	//black out any stencil with '1'
 	glcache.Enable(GL_BLEND);
 	glcache.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	glcache.Enable(GL_STENCIL_TEST);
-	glcache.StencilFunc(GL_EQUAL, 0x81, 0x81); //only pixels that are Modvol enabled, and in area 1
+	// only pixels that take shadows, are in a volume, and were not drawn again above
+	glcache.StencilFunc(GL_EQUAL, 0x81, 0xC1);
 
-	//clear the stencil result bit
-	glcache.StencilMask(0x3);    //write to lsb
+	// clear the volume bits and the mark
+	glcache.StencilMask(0x43);
 	glcache.StencilOp(GL_ZERO, GL_ZERO, GL_ZERO);
 
 	//don't do depth testing
 	glcache.Disable(GL_DEPTH_TEST);
 
-	SetupMainVBO();
 	glDrawArrays(GL_TRIANGLE_STRIP,0,4);
 
 	//restore states
 	glcache.Enable(GL_DEPTH_TEST);
+	glcache.StencilMask(0x3);
 }
 
 void DrawStrips()
@@ -604,7 +691,8 @@ void DrawStrips()
 
 		// Modifier volumes
 		if (gl.stencil_present)
-			DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count);
+			DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count,
+					previous_pass, current_pass);
 
 		//Alpha blended
 		{

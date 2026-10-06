@@ -18,7 +18,12 @@
  * And fog look-up table mode 2, on a textured polygon: the fog colour takes
  * the place of the pixel's colour and the fog coefficient the place of its
  * alpha, after the texture has been combined in. A green texture with blue
- * fog must come out blue, with the coefficient for the depth as alpha. */
+ * fog must come out blue, with the coefficient for the depth as alpha.
+ *
+ * And the shaders polygons are drawn with a second time where they are in
+ * a modifier volume: what the polygon is shaded with is scaled, the texture
+ * is not. With a scale of a half, white without a texture comes out grey
+ * and white with a green decal texture comes out green. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,6 +108,8 @@ static void set_uniforms(GLuint program, const GLfloat *matrix, float fog_blue)
    glUniform1i(glGetUniformLocation(program, "fog_table"), 1);
    glUniform1i(glGetUniformLocation(program, "tex"), 0);
    glUniform4f(glGetUniformLocation(program, "depth_scale"), 2.0f / 8.0f, -1.0f, 0.0f, 0.0f);
+   if (glGetUniformLocation(program, "shade_scale_factor") != -1)
+      glUniform1f(glGetUniformLocation(program, "shade_scale_factor"), 0.5f);
 }
 
 struct vertex
@@ -264,6 +271,31 @@ int main(void)
             wrong_colour, W, worst_alpha);
       CHECK(wrong_colour == 0, "table mode 2 gives the fog colour, whatever the texture");
       CHECK(worst_alpha <= 2, "table mode 2 gives the fog coefficient as alpha");
+   }
+
+   /* --- In a modifier volume: white, scaled by a half; and the same with
+    * the green texture as a decal, which is not scaled. */
+   {
+      GLuint shadowed = make_program(fragment_source_shadowed);
+      GLuint decal = make_program(fragment_source_shadowed_decal);
+
+      glUseProgram(shadowed);
+      set_uniforms(shadowed, matrix, 0.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      draw_quad(1.0f, 5.0f, 255, 255, 255);
+      glReadPixels(0, H / 2, W, 1, GL_RGBA, GL_UNSIGNED_BYTE, row);
+      printf("in a volume, no texture: %d,%d,%d\n", row[400], row[401], row[402]);
+      CHECK(abs((int)row[400] - 127) <= 1 && abs((int)row[401] - 127) <= 1 && abs((int)row[402] - 127) <= 1,
+            "the base colour is scaled in a modifier volume");
+
+      glUseProgram(decal);
+      set_uniforms(decal, matrix, 0.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      draw_quad(1.0f, 5.0f, 255, 255, 255);
+      glReadPixels(0, H / 2, W, 1, GL_RGBA, GL_UNSIGNED_BYTE, row);
+      printf("in a volume, decal texture: %d,%d,%d\n", row[400], row[401], row[402]);
+      CHECK(row[400] <= 1 && row[401] >= 254 && row[402] <= 1,
+            "a decal texture is not scaled in a modifier volume");
    }
 
    puts(failures ? "gles2: FAILED" : "gles2: ok");

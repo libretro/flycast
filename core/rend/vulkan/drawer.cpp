@@ -139,11 +139,24 @@ void BaseDrawer::SetProvokingVertices()
 	setProvokingVertex(pvrrc.global_param_tr);
 }
 
-void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, const PolyParam& poly, u32 first, u32 count)
+void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, const PolyParam& poly, u32 first, u32 count,
+		PipelineManager::ShadowPass shadowPass, const vk::Rect2D *within)
 {
 	vk::Rect2D scissorRect;
 	TileClipping tileClip = SetTileClip(poly.tileclip, scissorRect);
-	if (tileClip == TileClipping::Outside)
+	if (within != nullptr)
+	{
+		// only the part of it inside this rectangle, and nothing if there is none
+		const vk::Rect2D& clip = tileClip == TileClipping::Outside ? scissorRect : baseScissor;
+		const int x0 = std::max(within->offset.x, clip.offset.x);
+		const int y0 = std::max(within->offset.y, clip.offset.y);
+		const int x1 = std::min(within->offset.x + (int)within->extent.width, clip.offset.x + (int)clip.extent.width);
+		const int y1 = std::min(within->offset.y + (int)within->extent.height, clip.offset.y + (int)clip.extent.height);
+		if (x1 <= x0 || y1 <= y0)
+			return;
+		SetScissor(cmdBuffer, vk::Rect2D(vk::Offset2D(x0, y0), vk::Extent2D(x1 - x0, y1 - y0)));
+	}
+	else if (tileClip == TileClipping::Outside)
 		SetScissor(cmdBuffer, scissorRect);
 	else
 		SetScissor(cmdBuffer, baseScissor);
@@ -182,12 +195,25 @@ void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 	if (poly.pcw.Texture)
 		GetCurrentDescSet().SetTexture(poly.texid, poly.tsp);
 
-	vk::Pipeline pipeline = pipelineManager->GetPipeline(listType, sortTriangles, poly);
+	vk::Pipeline pipeline = pipelineManager->GetPipeline(listType, sortTriangles, poly, shadowPass);
 	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 	if (poly.pcw.Texture)
 		GetCurrentDescSet().BindPerPolyDescriptorSets(cmdBuffer, poly.texid, poly.tsp);
 
 	cmdBuffer.drawIndexed(count, 1, first, 0, 0);
+}
+
+// The polygons of a list that take shadows, drawn again where they are in a
+// modifier volume: see rend/shadows.h.
+void Drawer::DrawShadowed(const vk::CommandBuffer& cmdBuffer, u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
+		const ScreenBounds& area, const vk::Rect2D& scissor)
+{
+	const PolyParam *pp_end = polys.head() + last;
+	for (const PolyParam *pp = polys.head() + first; pp != pp_end; pp++)
+		if (CanDrawShadowed(listType, pp) && PolyOverlaps(pp, area))
+			DrawPoly(cmdBuffer, listType, false, *pp, pp->first, pp->count,
+					ShadowLaterWins(listType, pp) ? PipelineManager::ShadowPass::LaterWins : PipelineManager::ShadowPass::EarlierWins,
+					&scissor);
 }
 
 void Drawer::DrawSorted(const vk::CommandBuffer& cmdBuffer, const std::vector<SortTrigDrawParam>& polys)
@@ -204,7 +230,7 @@ void Drawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 			DrawPoly(cmdBuffer, listType, sortTriangles, *pp, pp->first, pp->count);
 }
 
-void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count)
+void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
 {
 	if (count == 0 || pvrrc.modtrig.used() == 0)
 		return;
@@ -249,6 +275,19 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 	const vk::DeviceSize offset = 0;
 	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offset);
 
+	// The polygons that take shadows, again, where they are in a volume
+	const ScreenBounds area = ModVolBounds(first, count);
+	if (!area.empty())
+	{
+		int rect[4];
+		BoundsToScissor(area, matrices.GetViewportMatrix(), rect);
+		const vk::Rect2D scissor(vk::Offset2D(rect[0], rect[1]), vk::Extent2D(rect[2], rect[3]));
+		DrawShadowed(cmdBuffer, ListType_Opaque, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count, area, scissor);
+		DrawShadowed(cmdBuffer, ListType_Punch_Through, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count, area, scissor);
+		SetScissor(cmdBuffer, baseScissor);
+	}
+
+	// What is left: darkened as it is
 	std::array<float, 5> pushConstants = { 1 - FPU_SHAD_SCALE.scale_factor / 256.f, 0, 0, 0, 0 };
 	cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
 
@@ -319,6 +358,7 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	vtxUniforms.normal_matrix = matrices.GetNormalMatrix();
 
 	FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<FragmentShaderUniforms>();
+	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
 
 	SortTriangles();
 	currentScissor = vk::Rect2D();
@@ -359,7 +399,7 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 				current_pass.mvo_count - previous_pass.mvo_count, current_pass.autosort);
 		DrawList(cmdBuffer, ListType_Opaque, false, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count);
 		DrawList(cmdBuffer, ListType_Punch_Through, false, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count);
-		DrawModVols(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count);
+		DrawModVols(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, previous_pass, current_pass);
 		if (current_pass.autosort)
 		{
 			if (!settings.pvr.Emulation.AlphaSortMode)

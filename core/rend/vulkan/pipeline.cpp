@@ -95,7 +95,9 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 		stencilOpState = vk::StencilOpState(vk::StencilOp::eZero, vk::StencilOp::eKeep, vk::StencilOp::eZero, vk::CompareOp::eEqual, 3, 3, 1);
 		break;
 	case ModVolMode::Final:
-		stencilOpState = vk::StencilOpState(vk::StencilOp::eZero, vk::StencilOp::eZero, vk::StencilOp::eZero, vk::CompareOp::eEqual, 0x81, 3, 0x81);
+		// takes shadows, in a volume, and not drawn again for it (bit 6);
+		// clears the volume bits and that mark
+		stencilOpState = vk::StencilOpState(vk::StencilOp::eZero, vk::StencilOp::eZero, vk::StencilOp::eZero, vk::CompareOp::eEqual, 0xC1, 0x43, 0x81);
 		break;
 	}
 	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo
@@ -168,7 +170,7 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 					graphicsPipelineCreateInfo);
 }
 
-void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp)
+void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass)
 {
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo();
 
@@ -220,7 +222,20 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 
 	bool shadowed = listType == ListType_Opaque || listType == ListType_Punch_Through;
 	vk::StencilOpState stencilOpState;
-	if (shadowed)
+	if (shadowPass != ShadowPass::None)
+	{
+		/* Drawn again for its shadow: where this polygon is the one showing
+		 * (same depth), takes shadows (stencil bit 7) and is in a volume
+		 * (bit 0). Bit 6 marks the pixels drawn this way; whether one already
+		 * marked may be drawn over is what tells the two kinds apart. */
+		depthOp = vk::CompareOp::eEqual;
+		depthWriteEnable = false;
+		if (shadowPass == ShadowPass::LaterWins)
+			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eEqual, 0x81, 0x40, 0xC1);
+		else
+			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eInvert, vk::StencilOp::eKeep, vk::CompareOp::eEqual, 0xC1, 0x40, 0x81);
+	}
+	else if (shadowed)
 	{
 		if (pp.pcw.Shadow != 0)
 			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eAlways, 0, 0x80, 0x80);
@@ -249,8 +264,9 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	// upstream flycast and in the Vulkan per-pixel renderer here. Source x 1
 	// and destination x 0, which nearly every opaque polygon has, is no
 	// blending at all, and is left as that so it costs nothing.
-	if (listType == ListType_Translucent || listType == ListType_Punch_Through
-			|| pp.tsp.SrcInstr != 1 || pp.tsp.DstInstr != 0)
+	if (shadowPass == ShadowPass::None
+			&& (listType == ListType_Translucent || listType == ListType_Punch_Through
+				|| pp.tsp.SrcInstr != 1 || pp.tsp.DstInstr != 0))
 	{
 		u32 src = pp.tsp.SrcInstr;
 		u32 dst = pp.tsp.DstInstr;
@@ -309,6 +325,7 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	params.trilinear = pp.pcw.Texture && pp.tsp.FilterMode > 1 && listType != ListType_Punch_Through && pp.tcw.MipMapped == 1;
 	params.useAlpha = pp.tsp.UseAlpha;
 	params.palette = BaseTextureCacheData::IsGpuHandledPaletted(pp.tsp, pp.tcw);
+	params.shadowed = shadowPass != ShadowPass::None;
 	vk::ShaderModule fragment_module = shaderManager->GetFragmentShader(params);
 
 	vk::PipelineShaderStageCreateInfo stages[] = {
@@ -333,6 +350,6 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  renderPass                                  // renderPass
 	);
 
-	pipelines[hash(listType, sortTriangles, &pp)] = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
+	pipelines[hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28)] = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
 			graphicsPipelineCreateInfo);
 }

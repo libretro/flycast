@@ -113,6 +113,7 @@ R"(%s
 #define FogClamping %d
 #define pp_TriLinear %d
 #define pp_Palette %d
+#define pp_Shadowed %d
 
 #define PI 3.1415926
 
@@ -162,6 +163,9 @@ uniform lowp vec4 fog_clamp_min;
 uniform lowp vec4 fog_clamp_max;
 uniform sampler2D palette;
 uniform mediump int palette_index;
+#if pp_Shadowed == 1
+uniform lowp float shade_scale_factor;
+#endif
 
 /* Vertex input*/
 INTERPOLATION in lowp vec4 vtx_base;
@@ -240,6 +244,15 @@ void main()
 	#if pp_UseAlpha==0
 		color.a=1.0;
 	#endif
+	#if pp_Shadowed == 1
+		// A pixel inside a modifier volume: what the polygon is shaded with,
+		// its base and offset colours, is scaled before the texture is
+		// combined with them. The texture itself is not.
+		color.rgb *= shade_scale_factor;
+		lowp vec4 offset = vec4(vtx_offs.rgb * shade_scale_factor, vtx_offs.a);
+	#else
+		#define offset vtx_offs
+	#endif
 	#if pp_Texture==1
 	{
 		#if pp_Palette == 0
@@ -251,7 +264,7 @@ void main()
 		#if pp_BumpMap == 1
 			highp float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
 			highp float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
-			texcol.a = clamp(vtx_offs.a + vtx_offs.r * sin(s) + vtx_offs.g * cos(s) * cos(r - 2.0 * PI * vtx_offs.b), 0.0, 1.0);
+			texcol.a = clamp(offset.a + offset.r * sin(s) + offset.g * cos(s) * cos(r - 2.0 * PI * offset.b), 0.0, 1.0);
 			texcol.rgb = vec3(1.0, 1.0, 1.0);	
 		#else
 			#if pp_IgnoreTexA==1
@@ -287,7 +300,7 @@ void main()
 		
 		#if pp_Offset==1 && pp_BumpMap == 0
 		{
-			color.rgb+=vtx_offs.rgb;
+			color.rgb+=offset.rgb;
 		}
 		#endif
 	}
@@ -312,7 +325,7 @@ void main()
 	#endif
 	#if pp_FogCtrl == 1 && pp_Offset==1 && pp_BumpMap == 0
 	{
-		highp float fog = vtx_offs.a * (255.0 / 256.0);
+		highp float fog = offset.a * (255.0 / 256.0);
 		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_VERT.rgb * fog;
 	}
 	#endif
@@ -375,7 +388,7 @@ glm::mat4 ViewportMatrix;
 PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 		bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr, bool pp_Offset,
 		u32 pp_FogCtrl, bool pp_Gouraud, bool pp_BumpMap, bool fog_clamping, bool trilinear,
-		bool palette)
+		bool palette, bool shadowed)
 {
 	u32 rv=0;
 
@@ -392,6 +405,7 @@ PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 	rv<<=1; rv|=fog_clamping;
 	rv<<=1; rv|=trilinear;
 	rv<<=1; rv|=palette;
+	rv<<=1; rv|=shadowed;
 
 	PipelineShader *shader = &gl.shaders[rv];
 	if (shader->program == 0)
@@ -409,6 +423,7 @@ PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 		shader->fog_clamping = fog_clamping;
 		shader->trilinear = trilinear;
 		shader->palette = palette;
+		shader->shadowed = shadowed;
 		CompilePipelineShader(shader);
 	}
 
@@ -599,7 +614,7 @@ bool CompilePipelineShader(	PipelineShader* s)
 	rc = sprintf(pshader,PixelPipelineShader, gl.glsl_version_header, gl.gl_version,
                 s->cp_AlphaTest,s->pp_InsideClipping,s->pp_UseAlpha,
                 s->pp_Texture,s->pp_IgnoreTexA,s->pp_ShadInstr,s->pp_Offset,s->pp_FogCtrl, s->pp_Gouraud, s->pp_BumpMap,
-				s->fog_clamping, s->trilinear, s->palette);
+				s->fog_clamping, s->trilinear, s->palette, s->shadowed);
 	verify(rc + 1 <= (int)sizeof(pshader));
 
 	s->program=gl_CompileAndLink(vshader, pshader);
@@ -655,6 +670,7 @@ bool CompilePipelineShader(	PipelineShader* s)
 		s->fog_clamp_max = -1;
 	}
 	s->normal_matrix = glGetUniformLocation(s->program, "normal_matrix");
+	s->shade_scale_factor = glGetUniformLocation(s->program, "shade_scale_factor");
 
 	ShaderUniforms.Set(s);
 
@@ -918,6 +934,7 @@ static bool RenderFrame(void)
 	glUniformMatrix4fv(gl.modvol_shader.normal_matrix, 1, GL_FALSE, &ShaderUniforms.normal_mat[0][0]);
 
 	ShaderUniforms.PT_ALPHA=(PT_ALPHA_REF&0xFF)/255.0f;
+	ShaderUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
 
 	for (const auto& it : gl.shaders)
 	{

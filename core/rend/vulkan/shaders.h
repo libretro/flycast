@@ -46,6 +46,7 @@ struct FragmentShaderParams
 	bool clamping;
 	bool trilinear;
 	bool palette;
+	bool shadowed;	// base and offset colours scaled: a pixel in a modifier volume
 
 	u32 hash()
 	{
@@ -53,7 +54,7 @@ struct FragmentShaderParams
 			| ((u32)texture << 3) | ((u32)ignoreTexAlpha << 4) | (shaderInstr << 5)
 			| ((u32)offset << 7) | ((u32)fog << 8) | ((u32)gouraud << 10)
 			| ((u32)bumpmap << 11) | ((u32)clamping << 12) | ((u32)trilinear << 13)
-			| ((u32)palette << 14);
+			| ((u32)palette << 14) | ((u32)shadowed << 15);
 	}
 };
 
@@ -72,6 +73,7 @@ struct FragmentShaderUniforms
 	float sp_FOG_COL_VERT[4];	// same comment
 	float cp_AlphaTestValue;
 	float sp_FOG_DENSITY;
+	float shade_scale_factor;
 };
 
 class ShaderManager

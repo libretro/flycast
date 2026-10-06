@@ -55,6 +55,7 @@ struct PipelineShader
 	GLint fog_clamp_min, fog_clamp_max;
 	GLint normal_matrix;
 	GLint palette_index;
+	GLint shade_scale_factor;
 
 	//
 	bool cp_AlphaTest;
@@ -70,6 +71,7 @@ struct PipelineShader
 	bool fog_clamping;
 	bool trilinear;
 	bool palette;
+	bool shadowed;
 };
 
 
@@ -150,7 +152,7 @@ void DrawFramebuffer();
 PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 		bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr, bool pp_Offset,
 		u32 pp_FogCtrl, bool pp_Gouraud, bool pp_BumpMap, bool fog_clamping, bool trilinear,
-		bool palette);
+		bool palette, bool shadowed = false);
 void vertex_buffer_unmap(void);
 
 void findGLVersion();
@@ -182,9 +184,13 @@ extern struct ShaderUniforms_t
 		int height;
 	} base_clipping;
 	int palette_index;
+	float shade_scale_factor;
 
 	void Set(const PipelineShader* s)
 	{
+		if (s->shade_scale_factor != -1)
+			glUniform1f(s->shade_scale_factor, shade_scale_factor);
+
 		if (s->cp_AlphaTestValue!=-1)
 			glUniform1f(s->cp_AlphaTestValue,PT_ALPHA);
 
