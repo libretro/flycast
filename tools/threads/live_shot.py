@@ -34,6 +34,10 @@ banks, which start out blue and are changed while running, one after
 the other: green and magenta. Blue means a decoded copy of the texture
 was not made again when its bank changed.
 
+On the right, below the three, is a polygon whose texture is one the
+disc renders to every frame before it renders the screen: orange with a
+blue top left quarter, and it has to be the same way up on the polygon.
+
 A second render pass draws a cyan polygon, which does not take shadows,
 over a corner of the first white one, with a modifier volume of its own
 over it: it has to stay cyan. An opaque polygon with those halving
@@ -127,6 +131,12 @@ def main():
         # palette banks changed while running: the third, then the fourth
         ('the third palette bank',  20, 225, (0, 255, 0)),
         ('the fourth palette bank', 45, 225, (255, 0, 255)),
+        # the texture rendered to: orange, its top left quarter blue. It is
+        # RGB565, so the orange's green is as near 128 as six bits get
+        ('the render target, top left',     262, 137, (0, 0, 255)),
+        ('the render target, top right',    288, 137, (255, 128, 0)),
+        ('the render target, bottom left',  262, 163, (255, 128, 0)),
+        ('the render target, bottom right', 288, 163, (255, 128, 0)),
         # the second render pass
         ('P, in its volume',        55, 101, (0, 255, 255)),
         ('P, outside it',           42,  96, (0, 255, 255)),

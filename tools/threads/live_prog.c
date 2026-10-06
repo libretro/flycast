@@ -137,6 +137,9 @@ static void ta_volume_triangle(u32 x0, u32 y0, u32 x1, u32 y1, u32 x2, u32 y2, u
    ta_send(y2, z, 0, 0, 0, 0, 0, 0);
 }
 
+/* Where in video memory the render to a texture goes: see render_to_texture(). */
+#define RTT_ADDRESS 0x700000
+
 /* A modifier volume, as its own list: a slab over a rectangle of the
  * screen, from depth 0.25 up to @near. Its near face and its far face, two
  * triangles each; the last triangle of a volume comes under a parameter of
@@ -183,6 +186,10 @@ static void ta_scene(void)
     * one value throughout, a half, and the fog is green, so whatever the
     * depth it comes out half white and half green. */
    ta_quad(0, TSP_FOGGED, 0, 0xFFFFFFFF, F(0.5f), F(32.0f), F(30.0f), F(96.0f), F(55.0f));
+   /* On the right, below B: what render_to_texture() drew, as a texture.
+    * RGB565, not twiddled, 128 by 128. */
+   ta_quad(TA_TEXTURED, TSP_PLAIN | (4u << 3) | 4u, (1u << 27) | (1u << 26) | (RTT_ADDRESS >> 3),
+         0xFFFFFFFF, F(0.5f), F(250.0f), F(125.0f), F(300.0f), F(175.0f));
    /* Bottom left: one 8-bit texture drawn twice, with the third and the
     * fourth of the four palette banks an 8-bit texture can pick, the first
     * with bilinear filtering and the second without. Both banks start out
@@ -216,6 +223,32 @@ static void ta_scene(void)
    ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x800000FF, F(0.6f), F(140.0f), F(130.0f), F(200.0f), F(170.0f));
    ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x80FF0000, F(0.3f), F(120.0f), F(130.0f), F(180.0f), F(170.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the translucent list */
+}
+
+/* A render to a texture: 128 by 128, at 0x700000 in video memory, orange
+ * with its top left quarter blue. The screen's scene then has a polygon
+ * with that texture, which has to show it the same way up. */
+
+static void render_to_texture(void)
+{
+   const u32 fb_w_ctrl = PVR(0x48), linestride = PVR(0x4C), fb_w_sof1 = PVR(0x60);
+
+   PVR(0x48) = 1;                                      /* FB_W_CTRL: RGB565 */
+   PVR(0x4C) = 128 * 2 / 8;                            /* FB_W_LINESTRIDE */
+   PVR(0x60) = 0x01000000 | RTT_ADDRESS;               /* FB_W_SOF1: a texture */
+   PVR(0x68) = 127 << 16;                              /* FB_X_CLIP: 0..127 */
+   PVR(0x6C) = 127 << 16;                              /* FB_Y_CLIP: 0..127 */
+   PVR(0x144) = 0x80000000;                            /* TA_LIST_INIT */
+   ta_quad(0, TSP_PLAIN, 0, 0xFFFF8000, F(0.5f), F(0.0f), F(0.0f), F(128.0f), F(128.0f));
+   ta_quad(0, TSP_PLAIN, 0, 0xFF0000FF, F(0.6f), F(0.0f), F(0.0f), F(64.0f), F(64.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
+   PVR(0x14) = 0xFFFFFFFF;                             /* STARTRENDER */
+
+   PVR(0x48) = fb_w_ctrl;
+   PVR(0x4C) = linestride;
+   PVR(0x60) = fb_w_sof1;
+   PVR(0x68) = 639 << 16;
+   PVR(0x6C) = 479 << 16;
 }
 
 /* A second render pass, drawn over the first: the lists are opened again
@@ -381,6 +414,7 @@ void cmain(void)
          if (frame >= 64)
          {
             PVR(0x60) = (frame & 1) ? 0x400000 : 0x200000;   /* FB_W_SOF1 */
+            render_to_texture();
          }
          PVR(0x144) = 0x80000000;                      /* TA_LIST_INIT */
          if (frame >= 64)
