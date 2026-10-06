@@ -661,6 +661,39 @@ class Arm7Compiler : public Xbyak::CodeGenerator
 			mov(regalloc->map(op.rd.getReg().armreg), dword[rip + &arm_Reg[RN_CPSR]]);
 	}
 
+	/* On to the next block. Every block used to jump to one dispatcher,
+	 * whose one indirect jump then had to serve every block in the program,
+	 * and the host has no way to guess where a jump like that goes next.
+	 * Each block now ends in its own: a block mostly goes on to the same
+	 * one or two, and its own jump learns them. Where the block ends by
+	 * going to a fixed address there is nothing to look up at all.
+	 *
+	 * The shared dispatcher still takes over when the time slice is used
+	 * up or an interrupt is waiting, which it checks for again itself. */
+	void emitDispatch(const std::vector<ArmOp>& block_ops)
+	{
+		cmp(dword[rip + &arm_Reg[CYCL_CNT]], 0);
+		jle((void*)arm_dispatch);
+		cmp(dword[rip + &arm_Reg[INTR_PEND]], 0);
+		jne((void*)arm_dispatch);
+
+		const ArmOp *last = block_ops.empty() ? nullptr : &block_ops.back();
+		if (last != nullptr && last->condition == ArmOp::AL && last->arg[0].isImmediate() && !last->arg[0].isShifted()
+				&& ((last->op_type == ArmOp::B || last->op_type == ArmOp::BL)
+					|| (last->op_type == ArmOp::MOV && last->rd.isReg() && last->rd.getReg().armreg == R15_ARM_NEXT)))
+		{
+			const u32 target = last->arg[0].getImmediate();
+			jmp(qword[rip + &recompiler::EntryPoints[(target & (ARAM_SIZE_MAX - 1)) / 4]]);
+		}
+		else
+		{
+			mov(ecx, dword[rip + &arm_Reg[R15_ARM_NEXT]]);
+			mov(rdx, qword[rip + &entry_points]);
+			and_(ecx, 0x7ffffc);
+			jmp(qword[rdx + rcx * 2]);
+		}
+	}
+
 	void emitFallback(const ArmOp& op)
 	{
 		set_flags = false;
@@ -741,7 +774,7 @@ public:
 		}
 		endConditional(condLabel);
 
-		jmp((void*)arm_dispatch);
+		emitDispatch(block_ops);
 
 		ready();
 		recompiler::advance(getSize());

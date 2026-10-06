@@ -437,6 +437,9 @@ void *getMemOp(bool load, bool byte);
 template<u32 Pd> void DYNACALL MSR_do(u32 v, u32 mask);
 void DYNACALL interpret(u32 opcode);
 
+// Where the code for each address of the ARM's memory is; the compiler's
+// own entry where there is none yet
+extern void (*EntryPoints[ARAM_SIZE_MAX / 4])();
 extern u8* icPtr;
 extern u8* ICache;
 const u32 ICacheSize = 4 * 1024 * 1024;
