@@ -623,15 +623,18 @@ int fillAndSortFragmentArray(ivec2 coords)
 	for (; idx != EOL && count < MAX_PIXELS_PER_FRAGMENT; count++)
 	{
 		const Pixel p = PixelBuffer.pixels[idx];
+		// Insertion sort. The entry before the first one is not looked at:
+		// this used to read pixel_list[-1], and the pixel buffer at whatever
+		// index that held, before finding out there was nothing there.
 		int j = count - 1;
-		Pixel jp = PixelBuffer.pixels[pixel_list[j]];
-		while (j >= 0
-			   && (jp.depth > p.depth
-				   || (jp.depth == p.depth && getPolyNumber(jp) > getPolyNumber(p))))
+		while (j >= 0)
 		{
+			const Pixel jp = PixelBuffer.pixels[pixel_list[j]];
+			if (!(jp.depth > p.depth
+					|| (jp.depth == p.depth && getPolyNumber(jp) > getPolyNumber(p))))
+				break;
 			pixel_list[j + 1] = pixel_list[j];
 			j--;
-			jp = PixelBuffer.pixels[pixel_list[j]];
 		}
 		pixel_list[j + 1] = idx;
 		idx = p.next;
