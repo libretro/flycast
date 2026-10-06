@@ -44,6 +44,14 @@
 # framebuffer it was given first shows the right picture one frame in
 # three.
 #
+# Then the per-pixel renderers, which are different renderers with their own
+# shaders and passes: for each driver in $PIXEL_DRIVERS (default: "vulkan")
+# the disc is run with Alpha Sorting set to per-pixel and the screenshot is
+# checked. The log has to say the per-pixel renderer was the one created:
+# the core falls back to the per-triangle one when it cannot have it, and
+# a test of the wrong renderer passes just as well. "glcore" can be added
+# for a core built with HAVE_OIT=1, which is what builds the OpenGL one.
+#
 # Needs python3, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
 # a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
 # than skips when one is missing. Uses UDP port 55355.
@@ -53,6 +61,7 @@ CORE=${1:-$ROOT/flycast_libretro.so}
 RETROARCH=${RETROARCH:-retroarch}
 DRIVERS=${DRIVERS:-gl vulkan}
 RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}
+PIXEL_DRIVERS=${PIXEL_DRIVERS:-vulkan}
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 1; }
@@ -93,6 +102,12 @@ cat > "$WORK/core-options.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
 reicast_hle_bios = "enabled"
 reicast_vmu1_screen_display = "enabled"
+CFG
+cat > "$WORK/core-options-pixel.cfg" <<CFG
+reicast_threaded_rendering = "enabled"
+reicast_hle_bios = "enabled"
+reicast_vmu1_screen_display = "enabled"
+reicast_alpha_sorting = "per-pixel (accurate)"
 CFG
 cat > "$WORK/core-options-off.cfg" <<CFG
 reicast_threaded_rendering = "disabled"
@@ -218,5 +233,23 @@ for DRV in $RING_DRIVERS; do
       }
    done
    expect $DRV-ring-302.log "Starting threaded video driver"
+done
+for DRV in $PIXEL_DRIVERS; do
+   case $DRV in
+      vulkan) CREATED="Creating Vulkan per-pixel renderer" ;;
+      *)      CREATED="Creating Open GL per-pixel renderer" ;;
+   esac
+   echo "== $DRV: the per-pixel renderer"
+   echo "video_driver = \"$DRV\"" > "$WORK/driver.cfg"
+   echo "core_options_path = \"$WORK/core-options-pixel.cfg\"" >> "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   run $DRV-pixel.log 300 "$WORK/test.gdi" "$WORK/$DRV-pixel.png"
+   expect $DRV-pixel.log "core options file to .*core-options-pixel.cfg"
+   expect $DRV-pixel.log "$CREATED"
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-pixel.png" || {
+      echo "FAIL: wrong picture from the per-pixel renderer" >&2
+      exit 1
+   }
 done
 echo "live threads test passed"

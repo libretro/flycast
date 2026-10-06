@@ -126,6 +126,11 @@ void cmain(void)
    PVR(0x8C) = 0;                                      /* ISP_BACKGND_T */
    PVR(0x88) = 0x38D1B717;                             /* ISP_BACKGND_D: 0.0001, far away */
    (*(volatile u32 *)0xA5100000) = 0x02000000;         /* ISP word: textured */
+   /* TSP word: source x 1 + destination x 0. Opaque polygons are blended
+    * by these instructions like any others, and with the word left at
+    * zero that is everything times zero: a black screen, whatever the
+    * texture holds. */
+   (*(volatile u32 *)0xA5100004) = 1u << 29;
    (*(volatile u32 *)0xA5100008) = 6u << 27;           /* TCW: 8-bit palette, at address 0 */
    set_palette(1, 0x7C00);                             /* red */
    set_palette(2, 0x03E0);                             /* green */
