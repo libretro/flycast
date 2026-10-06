@@ -996,7 +996,7 @@ static bool RenderFrame(void)
 
 	glcache.DepthMask(GL_TRUE);
 	glClearDepth(0.0);
-	glStencilMask(0xFF); glCheck();
+	glcache.StencilMask(0xFF); glCheck();
 	glClearStencil(0);
 	glClear(GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); glCheck();
 

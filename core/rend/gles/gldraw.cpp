@@ -258,6 +258,13 @@ static void DrawList(const List<PolyParam>& gply, int first, int count)
 	glcache.Enable(GL_STENCIL_TEST);
 	glcache.StencilFunc(GL_ALWAYS,0,0);
 	glcache.StencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);
+	/* Opaque and punch-through polygons say in the stencil buffer whether
+	 * what is showing at a pixel takes shadows; translucent ones leave it
+	 * alone. The mask has to be set here: the modifier volumes of the pass
+	 * before leave it letting through their own bits only, and a polygon
+	 * of this pass drawn over one that takes shadows was then taken for
+	 * it. */
+	glcache.StencilMask(Type == ListType_Translucent ? 0 : 0xFF);
 
 	while(count-->0)
 	{
@@ -313,6 +320,8 @@ void DrawSorted(bool multipass)
 			glcache.Enable(GL_STENCIL_TEST);
 			glcache.StencilFunc(GL_ALWAYS, 0, 0);
 			glcache.StencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+			// translucent: the stencil buffer is left alone (see DrawList)
+			glcache.StencilMask(0);
 
 			for (u32 p=0; p<count; p++)
 			{
