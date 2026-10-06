@@ -245,7 +245,12 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	vk::ColorComponentFlags colorComponentFlags(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
 	vk::PipelineColorBlendAttachmentState pipelineColorBlendAttachmentState;
 	// Apparently punch-through polys support blending, or at least some combinations
-	if (listType == ListType_Translucent || listType == ListType_Punch_Through)
+	// The blend instructions apply to opaque polygons as well, as they do in
+	// upstream flycast and in the Vulkan per-pixel renderer here. Source x 1
+	// and destination x 0, which nearly every opaque polygon has, is no
+	// blending at all, and is left as that so it costs nothing.
+	if (listType == ListType_Translucent || listType == ListType_Punch_Through
+			|| pp.tsp.SrcInstr != 1 || pp.tsp.DstInstr != 0)
 	{
 		u32 src = pp.tsp.SrcInstr;
 		u32 dst = pp.tsp.DstInstr;

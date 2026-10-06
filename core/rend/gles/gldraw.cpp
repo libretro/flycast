@@ -202,7 +202,12 @@ __forceinline
 	}
 
 	// Apparently punch-through polys support blending, or at least some combinations
-	if (Type == ListType_Translucent || Type == ListType_Punch_Through)
+	// The blend instructions apply to opaque polygons as well, as they do in
+	// upstream flycast and in the Vulkan per-pixel renderer here. Source x 1
+	// and destination x 0, which nearly every opaque polygon has, is no
+	// blending at all, and is left as that so it costs nothing.
+	if (Type == ListType_Translucent || Type == ListType_Punch_Through
+			|| gp->tsp.SrcInstr != 1 || gp->tsp.DstInstr != 0)
 	{
 		glcache.Enable(GL_BLEND);
 		glcache.BlendFunc(SrcBlendGL[gp->tsp.SrcInstr], DstBlendGL[gp->tsp.DstInstr]);
