@@ -222,6 +222,18 @@ void main()
       #endif
 	#endif
 	
+	#if PASS == PASS_COLOR && pp_TwoVolumes == 0
+		// Inside a modifier volume the PowerVR2 scales what the polygon is shaded
+		// with, its base and offset colours, before the texture is combined with
+		// them. Scaling the combined colour instead is the same thing for a
+		// modulated texture, but also darkens a decal texture, which the
+		// hardware leaves alone.
+		uvec4 stencil = texture(shadow_stencil, gl_FragCoord.xy / textureSize(shadow_stencil, 0));
+		if (stencil.r == 0x81u) {
+			color.rgb *= shade_scale_factor;
+			offset.rgb *= shade_scale_factor;
+		}
+	#endif
 	#if pp_UseAlpha==0 || pp_TwoVolumes == 1
       IF(!cur_use_alpha)
 			color.a=1.0;
@@ -271,11 +283,6 @@ void main()
 		{
 			color.rgb*=texcol.rgb;
 			color.a=texcol.a;
-	#if PASS == PASS_COLOR && pp_TwoVolumes == 0
-      uvec4 stencil = texture(shadow_stencil, gl_FragCoord.xy / textureSize(shadow_stencil, 0));
-	   if (stencil.r == 0x81u)
-			color.rgb *= shade_scale_factor;
-	#endif
 		}
 		#endif
       #if pp_ShadInstr==2 || pp_TwoVolumes == 1 // DECAL ALPHA
