@@ -182,6 +182,21 @@ public:
 
 	void Cleanup();
 
+	/* Empties the cache between two frames. The frames before this one can
+	 * still be on their way through the GPU, drawing with these textures, so
+	 * the images are not destroyed here: they are retired, as a texture that
+	 * is replaced is, and destroyed once those frames are done. */
+	void ClearLater()
+	{
+		for (auto& pair : cache)
+			DestroyLater(&pair.second);
+		BaseTextureCache::Clear();
+		for (auto& set : inFlightTextures)
+			set.clear();
+	}
+
+	/* Empties the cache and destroys everything now, what was retired too.
+	 * For when the renderer is going away and nothing is drawing any more. */
 	void Clear()
 	{
 		BaseTextureCache::Clear();

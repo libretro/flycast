@@ -85,7 +85,7 @@ public:
 			return RenderFramebuffer();
 
 		if (KillTex)
-			textureCache.Clear();
+			textureCache.ClearLater();
 
 		bool result = ta_parse_vdrc(ctx);
 
