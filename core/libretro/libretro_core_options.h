@@ -451,24 +451,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled",
    },
    {
-      CORE_OPTION_NAME "_enable_dsp",
-      "Enable DSP",
-      NULL,
-      "Enable emulation of the Dreamcast's audio DSP (digital signal processor). Improves the accuracy of generated sound, but increases performance requirements.",
-      NULL,
-      NULL,
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-#ifdef LOW_END
-      "disabled",
-#else
-      "enabled",
-#endif
-   },
-   {
       CORE_OPTION_NAME "_precompile_fpcb",
       "Reduce Recompiler Stalls (High Memory)",
       NULL,

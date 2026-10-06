@@ -516,8 +516,6 @@ struct ChannelEx
 		Step(oLeft, oRight, oDsp);
 
 		*VolMix.DSPOut+=oDsp;
-      if (oLeft + oRight == 0 && !settings.aica.DSPEnabled)
-			oLeft = oRight = oDsp >> 4;
 		mixl+=oLeft;
 		mixr+=oRight;
 	}
@@ -1345,112 +1343,6 @@ void WriteCommonReg8(u32 reg,u32 data)
 s16 cdda_sector[CDDA_SIZE]={0};
 u32 cdda_index=CDDA_SIZE<<1;
 
-//no DSP for now in this version
-void AICA_Sample32()
-{
-	SampleType mxlr[64];
-	memset(mxlr,0,sizeof(mxlr));
-
-	//Generate 32 samples for each channel, before moving to next channel
-	//much more cache efficient !
-	u32 sg=0;
-	for (int ch = 0; ch < 64; ch++)
-	{
-		for (int i=0;i<32;i++)
-		{
-			SampleType oLeft,oRight,oDsp;
-			//stop working on this channel if its turned off ...
-			if (!Chans[ch].Step(oLeft, oRight, oDsp))
-				break;
-
-			sg++;
-
-         if (oLeft + oRight == 0)
-            oLeft = oRight = oDsp;
-
-			mxlr[i*2+0] += oLeft;
-			mxlr[i*2+1] += oRight;
-		}
-	}
-	//OK , generated all Channels  , now DSP/ect + final mix ;p
-	//CDDA EXTS input
-	
-	for (int i=0;i<32;i++)
-	{
-		SampleType mixl,mixr;
-
-		mixl=mxlr[i*2+0];
-		mixr=mxlr[i*2+1];
-
-		if (cdda_index>=CDDA_SIZE)
-		{
-			cdda_index=0;
-			libCore_CDDA_Sector(cdda_sector);
-		}
-		s32 EXTS0L=cdda_sector[cdda_index];
-		s32 EXTS0R=cdda_sector[cdda_index+1];
-		cdda_index+=2;
-
-		//Final MIX ..
-		//Add CDDA / DSP effect(s)
-
-		//CDDA
-		if (settings.aica.CDDAMute==0) 
-		{
-			VOLPAN(EXTS0L,dsp_out_vol[16].EFSDL,dsp_out_vol[16].EFPAN,mixl,mixr);
-			VOLPAN(EXTS0R,dsp_out_vol[17].EFSDL,dsp_out_vol[17].EFPAN,mixl,mixr);
-		}
-
-		/*
-		no dsp for now -- needs special handling of oDSP for ch paraller version ...
-		if (settings.aica.DSPEnabled)
-		{
-			dsp_step();
-
-			for (int i=0;i<16;i++)
-			{
-				VOLPAN( (*(s16*)&DSPData->EFREG[i]) ,dsp_out_vol[i].EFSDL,dsp_out_vol[i].EFPAN,mixl,mixr);
-			}
-		}
-		*/
-
-		//Mono !
-		if (CommonData->Mono)
-		{
-			//Yay for mono =P
-			mixl+=mixr;
-			mixr=mixl;
-		}
-
-		//MVOL !
-		//we want to make sure mix* is *At least* 23 bits wide here, so 64 bit mul !
-		u32 mvol=CommonData->MVOL;
-		s32 val=volume_lut[mvol];
-		mixl=(s32)FPMul((s64)mixl,val,15);
-		mixr=(s32)FPMul((s64)mixr,val,15);
-
-
-		if (CommonData->DAC18B)
-		{
-			//If 18 bit output , make it 16b :p
-			mixl=FPs(mixl,2);
-			mixr=FPs(mixr,2);
-		}
-
-		//Sample is ready ! clip/saturate and store :}
-
-#ifdef CLIP_WARN
-	if (((s16)mixl) != mixl || ((s16)mixr) != mixr)
-		printf("Clipped mixl %d mixr %d\n", mixl, mixr);
-#endif
-
-		clip16(mixl);
-		clip16(mixr);
-
-		if (!settings.aica.NoSound) WriteSample(mixr,mixl);
-	}
-}
-
 void AICA_Sample()
 {
 	SampleType mixl,mixr;
@@ -1489,13 +1381,10 @@ void AICA_Sample()
 		DSPData->EXTS[0] = 0;
 		DSPData->EXTS[1] = 0;
 	}
-	if (settings.aica.DSPEnabled)
-	{
-		dsp_step();
+	dsp_step();
 
-		for (int i=0;i<16;i++)
-			VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
-	}
+	for (int i=0;i<16;i++)
+		VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
 
     if (settings.aica.NoSound)
         return;

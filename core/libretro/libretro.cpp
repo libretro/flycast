@@ -987,26 +987,6 @@ static void update_variables(bool first_startup)
    if ( environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value )
       input_set_deadzone_trigger( atoi( var.value ) );
 
-   var.key = CORE_OPTION_NAME "_enable_dsp";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp("enabled", var.value))
-      {
-         settings.aica.DSPEnabled = true;
-         settings.aica.NoBatch    = 1;
-      }
-      else
-      {
-         settings.aica.DSPEnabled = false;
-      }
-   }
-   else if (first_run)
-   {
-      settings.aica.DSPEnabled = true;
-      settings.aica.NoBatch    = 1;
-   }
-
    var.key = CORE_OPTION_NAME "_precompile_fpcb";
    var.value = NULL;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

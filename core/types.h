@@ -583,8 +583,6 @@ struct settings_t
 	{
 		u32 LimitFPS;		//0 -> no , (1) -> limit
 		u32 CDDAMute;
-		u32 DSPEnabled;		//0 -> no, 1 -> yes
-		u32 NoBatch;
 		u32 NoSound;        //0 ->sound, 1 -> no sound
 	} aica;
 
