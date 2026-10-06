@@ -709,9 +709,15 @@ class Arm7Compiler : public Xbyak::CodeGenerator
 	 *
 	 * The shared dispatcher still takes over when the time slice is used
 	 * up or an interrupt is waiting, which it checks for again itself. */
-	void emitDispatch(const std::vector<ArmOp>& block_ops)
+	void emitDispatch(const std::vector<ArmOp>& block_ops, u32 cycles)
 	{
-		cmp(dword[rip + &arm_Reg[CYCL_CNT]], 0);
+		/* The block's cycles come off here, at its end, where what is left
+		 * of the time slice is looked at: the subtraction leaves the flags
+		 * the jump wants. They used to come off at the top of the block,
+		 * with a compare against zero here. Nothing in between reads the
+		 * count; the interpreter, when a block calls it, only takes its
+		 * own cycles off. */
+		sub(dword[rip + &arm_Reg[CYCL_CNT]], cycles);
 		jle((void*)arm_dispatch);
 		cmp(dword[rip + &arm_Reg[INTR_PEND]], 0);
 		jne((void*)arm_dispatch);
@@ -746,8 +752,6 @@ public:
 	void compile(const std::vector<ArmOp>& block_ops, u32 cycles)
 	{
 		regalloc = new X64ArmRegAlloc(*this, block_ops);
-
-		sub(dword[rip + &arm_Reg[CYCL_CNT]], cycles);
 
 		ArmOp::Condition currentCondition = ArmOp::AL;
 		Xbyak::Label *condLabel = nullptr;
@@ -815,7 +819,7 @@ public:
 		}
 		endConditional(condLabel);
 
-		emitDispatch(block_ops);
+		emitDispatch(block_ops, cycles);
 
 		ready();
 		recompiler::advance(getSize());
