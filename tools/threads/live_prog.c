@@ -355,6 +355,9 @@ static int gd_read(u32 fad, u32 sectors)
    return 1;
 }
 
+/* A register of the sound chip, the AICA. */
+#define AICA(reg) (*(volatile u32 *)(0xA0700000 + (reg)))
+
 /* Start CDDA playback of [@fad, @end], looping, so the drive hands the
  * sound chip one audio sector every 588 samples for as long as the disc
  * is in. 0 if the drive never asked for the packet. */
@@ -365,8 +368,8 @@ static int gd_play(u32 fad, u32 end)
 
    packet[0] = 0x20 | (0x01 << 8);                     /* CD play, FAD */
    packet[1] = ((fad >> 16) & 0xFF) | (((fad >> 8) & 0xFF) << 8);
-   packet[2] = (fad & 0xFF) | (0x0F << 8);             /* repeat for ever */
-   packet[3] = 0;
+   packet[2] = fad & 0xFF;
+   packet[3] = 0x0F;                                   /* byte 6: repeat for ever */
    packet[4] = ((end >> 16) & 0xFF) | (((end >> 8) & 0xFF) << 8);
    packet[5] = end & 0xFF;
    GD8(0x84) = 0;
@@ -559,6 +562,14 @@ void cmain(void)
     * the save, load, reset and unload below all happen while it is */
    if (!gd_play(600, 899))
       gd_bad = 9;
+   /* ...and audible: the sound chip's master volume all the way up, and
+    * the CD's left and right channels sent at full level, the left one all
+    * the way to the left and the right one to the right. At that setting
+    * what comes out of the sound chip is the disc's samples, bit for bit,
+    * which is what tools/threads/live_audio.py checks it against. */
+   AICA(0x2800) = 0x000F;                              /* MVOL */
+   AICA(0x2040) = (0xF << 8) | 0x1F;                   /* CDDA left: level, pan */
+   AICA(0x2044) = (0xF << 8) | 0x0F;                   /* CDDA right */
 
    for (;;)
    {

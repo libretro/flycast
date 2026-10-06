@@ -54,7 +54,15 @@
 # OpenGL 4.3 from the frontend's driver; take "glcore" out where there is
 # none.
 #
-# Needs python3, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
+# Last, the sound. The disc plays its audio track, looping, through the
+# sound chip at full level. RetroArch is given audio_tap.c to load in place
+# of the core: it loads the core, passes everything through, and writes
+# down every sample the core sends on the way. live_audio.py checks that
+# against the track: after a moment of silence it has to be the track,
+# sample for sample, round and round. $SOUND_DRIVER is the video driver
+# this runs with (default: "gl"); empty leaves the pass out.
+#
+# Needs python3, a C compiler, xvfb-run, RetroArch ($RETROARCH, default: retroarch) and
 # a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
 # than skips when one is missing. Uses UDP port 55355.
 set -e
@@ -64,6 +72,7 @@ RETROARCH=${RETROARCH:-retroarch}
 DRIVERS=${DRIVERS:-gl vulkan}
 RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}
 PIXEL_DRIVERS=${PIXEL_DRIVERS:-glcore vulkan}
+SOUND_DRIVER=${SOUND_DRIVER-gl}
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 1; }
@@ -287,4 +296,24 @@ for DRV in $PIXEL_DRIVERS; do
       exit 1
    }
 done
+
+if [ -n "$SOUND_DRIVER" ]; then
+   echo "== $SOUND_DRIVER: the sound"
+   "${CC:-cc}" -O1 -shared -fPIC -o "$WORK/audio_tap.so" \
+      "$ROOT/tools/threads/audio_tap.c" -ldl
+   echo "video_driver = \"$SOUND_DRIVER\"" > "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   # RetroArch loads the tap, and the tap loads the core
+   AUDIO_TAP_CORE=$CORE
+   AUDIO_TAP_OUT=$WORK/sound.pcm
+   export AUDIO_TAP_CORE AUDIO_TAP_OUT
+   CORE=$WORK/audio_tap.so
+   run sound.log 300
+   CORE=$AUDIO_TAP_CORE
+   python3 "$ROOT/tools/threads/live_audio.py" "$WORK/sound.pcm" || {
+      echo "FAIL: wrong sound" >&2
+      exit 1
+   }
+fi
 echo "live threads test passed"
