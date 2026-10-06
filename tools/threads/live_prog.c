@@ -311,6 +311,14 @@ static void ta_scene_pass2(void)
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the translucent list */
 }
 
+/* How long 150 frames take, in ticks of that timer, in the video mode the
+ * program is started in: 263 lines of 858 pixels at 13.5 MHz, which is
+ * 3343022.2 CPU cycles a frame at 200 MHz, and a tick is 16 cycles. The
+ * frames timed have to add up to this, give or take 100 ticks. A scanline
+ * counted as a whole number of cycles, 12711 for 12711.11, makes them 274
+ * ticks short. */
+#define FRAMES_150 31340833u
+
 /* TMU channel 0, counting down at a 16th of a microsecond (12.5 MHz). */
 #define TMU_TSTR  (*(volatile unsigned char *)0xFFD80004)
 #define TMU_TCOR0 (*(volatile u32 *)0xFFD80008)
@@ -320,7 +328,7 @@ static void ta_scene_pass2(void)
 void cmain(void)
 {
    u32 frame = 0, i;
-   u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0;
+   u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0; u32 total = 0;
    /* Read-only system bus registers nothing has written yet: the Maple
     * status and its address counters, and the AICA DMA counters. They
     * read as zero, not as whatever the emulator had lying there. */
@@ -472,10 +480,13 @@ void cmain(void)
                shortest = took;
             if (took > longest)
                longest = took;
+            total += took;
          }
          tick = now;
          if (frame == 250 && longest - shortest > 200)
             set_palette(4, 0x7C00);                    /* red: uneven frames */
+         else if (frame == 250 && (total < FRAMES_150 - 100 || total > FRAMES_150 + 100))
+            set_palette(4, 0x03FF);                    /* cyan: frames of the wrong length */
          else if (frame == 250 && stale)
             set_palette(4, 0x7C1F);                    /* magenta: a register with junk in it */
       }

@@ -112,6 +112,10 @@ def main():
             bad.append('(%d,%d) is %d,%d,%d' % (x, y, r, g, b))
     if bad:
         print('not yellow: ' + '; '.join(bad))
+        # the disc turns its background other colours to say what it found
+        print('(the disc makes it red for frames of uneven length, cyan for '
+              'frames of the wrong length, magenta for a register read back '
+              'with junk in it; white or black is a write that never arrived)')
         return 1
     # The shadow scene: what is where, on a 320 by 240 screen, and the
     # colour it has to be, give or take the rounding.
