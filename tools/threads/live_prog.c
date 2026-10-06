@@ -110,9 +110,12 @@ static void ta_send(u32 w0, u32 w1, u32 w2, u32 w3, u32 w4, u32 w5, u32 w6, u32 
 #define TA_TEXTURED  0x00000008u
 #define TA_MODIFIER  0x01000000u     /* list: opaque modifier volumes */
 #define TA_TRANSLUCENT 0x02000000u   /* list: translucent polygons */
+#define TA_PUNCH     0x04000000u     /* list: punch-through polygons */
 #define ISP_GEQUAL   (6u << 29)
 #define TSP_PLAIN    ((1u << 29) | (2u << 22))   /* source x 1, destination x 0; no fog; decal */
 #define TSP_BY_ALPHA ((4u << 29) | (2u << 22) | (1u << 20))   /* source x its alpha, destination x 0 */
+#define TSP_FOGGED   (1u << 29)                  /* as plain, with fog from the table */
+#define TSP_CUTOUT   ((1u << 29) | (2u << 22) | (1u << 20))   /* as plain, with the texture's alpha */
 #define TSP_BLEND    ((4u << 29) | (5u << 26) | (2u << 22) | (1u << 20))   /* source x alpha + destination x (1 - alpha) */
 
 /* A screen-aligned rectangle at depth 1/w = z, as a strip of four. */
@@ -132,6 +135,21 @@ static void ta_volume_triangle(u32 x0, u32 y0, u32 x1, u32 y1, u32 x2, u32 y2, u
 {
    ta_send(TA_VERTEX, x0, y0, z, x1, y1, z, x2);
    ta_send(y2, z, 0, 0, 0, 0, 0, 0);
+}
+
+/* A modifier volume, as its own list: a slab over a rectangle of the
+ * screen, from depth 0.25 up to @near. Its near face and its far face, two
+ * triangles each; the last triangle of a volume comes under a parameter of
+ * its own that says so ("inside last polygon"). */
+static void ta_volume(u32 x0, u32 y0, u32 x1, u32 y1, u32 near)
+{
+   ta_send(TA_POLYGON | TA_MODIFIER, 0, 0, 0, 0, 0, 0, 0);
+   ta_volume_triangle(x0, y0, x0, y1, x1, y0, near);
+   ta_volume_triangle(x1, y0, x0, y1, x1, y1, near);
+   ta_volume_triangle(x0, y0, x0, y1, x1, y0, F(0.25f));
+   ta_send(TA_POLYGON | TA_MODIFIER, (1u << 29) | (1u << 26), 0, 0, 0, 0, 0, 0);
+   ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.25f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */
 }
 
 /* What every render draws on top of the background: three polygons that
@@ -162,18 +180,23 @@ static void ta_scene(void)
    ta_quad(TA_SHADOW, TSP_BY_ALPHA, 0, 0x80FFFFFF, F(0.5f), F(144.0f), F(70.0f), F(176.0f), F(110.0f));
    ta_quad(TA_SHADOW | TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x1000 >> 3), 0xFFFFFFFF, F(0.5f),
          F(192.0f), F(70.0f), F(288.0f), F(110.0f));
+   /* Above them, on the left: a white polygon in fog. The fog table holds
+    * one value throughout, a half, and the fog is green, so whatever the
+    * depth it comes out half white and half green. */
+   ta_quad(0, TSP_FOGGED, 0, 0xFFFFFFFF, F(0.5f), F(32.0f), F(30.0f), F(96.0f), F(55.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
 
-   /* The volume: its near face and its far face, two triangles each. The
-    * last triangle of a volume comes under a parameter of its own that
-    * says so ("inside last polygon"). */
-   ta_send(TA_POLYGON | TA_MODIFIER, 0, 0, 0, 0, 0, 0, 0);
-   ta_volume_triangle(x0, y0, x0, y1, x1, y0, F(0.75f));
-   ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.75f));
-   ta_volume_triangle(x0, y0, x0, y1, x1, y0, F(0.25f));
-   ta_send(TA_POLYGON | TA_MODIFIER, (1u << 29) | (1u << 26), 0, 0, 0, 0, 0, 0);
-   ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.25f));
-   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */
+   ta_volume(x0, y0, x1, y1, F(0.75f));
+
+   /* Above them, on the right: two punch-through polygons, which are drawn
+    * or not texel by texel, by the texture's alpha. One has a texture that
+    * is all opaque magenta, the other one that is all transparent: the
+    * first is there and the second is not. */
+   ta_quad(TA_PUNCH | TA_TEXTURED, TSP_CUTOUT, (6u << 27) | (0x2000 >> 3), 0xFFFFFFFF, F(0.5f),
+         F(200.0f), F(30.0f), F(232.0f), F(55.0f));
+   ta_quad(TA_PUNCH | TA_TEXTURED, TSP_CUTOUT, (6u << 27) | (0x3000 >> 3), 0xFFFFFFFF, F(0.5f),
+         F(250.0f), F(30.0f), F(282.0f), F(55.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the punch-through list */
 
    /* Below those, two translucent polygons that overlap, each half
     * transparent: a blue one near and a red one far, sent nearest first.
@@ -182,6 +205,29 @@ static void ta_scene(void)
     * do. The other way round the overlap comes out reddish, not purple. */
    ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x800000FF, F(0.6f), F(140.0f), F(130.0f), F(200.0f), F(170.0f));
    ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x80FF0000, F(0.3f), F(120.0f), F(130.0f), F(180.0f), F(170.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the translucent list */
+}
+
+/* A second render pass, drawn over the first: the lists are opened again
+ * (TA_LIST_CONT) and the region array's second entry says this pass's
+ * translucent polygons are already in order ("pre-sort").
+ *
+ *   P is cyan, opaque, does not take shadows, and lies in front of a
+ *   corner of A, which does. A modifier volume of this pass covers the
+ *   middle of P. P has to stay cyan there: a renderer that still has A
+ *   down as what is showing at those pixels darkens it.
+ *
+ *   The translucent pair again, lower down, blue near and red far, sent
+ *   nearest first. Not being sorted, the blue is drawn first and writes
+ *   its depth, and the red, behind it, is then not drawn where they
+ *   overlap: blue over the background there, with no red in it. */
+static void ta_scene_pass2(void)
+{
+   ta_quad(0, TSP_PLAIN, 0, 0xFF00FFFF, F(0.7f), F(40.0f), F(95.0f), F(70.0f), F(108.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
+   ta_volume(F(45.0f), F(97.0f), F(65.0f), F(106.0f), F(0.9f));
+   ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x800000FF, F(0.6f), F(140.0f), F(180.0f), F(200.0f), F(210.0f));
+   ta_quad(TA_TRANSLUCENT, TSP_BLEND, 0, 0x80FF0000, F(0.3f), F(120.0f), F(180.0f), F(180.0f), F(210.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the translucent list */
 }
 
@@ -226,7 +272,7 @@ void cmain(void)
     * by these instructions like any others, and with the word left at
     * zero that is everything times zero: a black screen, whatever the
     * texture holds. */
-   (*(volatile u32 *)0xA5100004) = 1u << 29;
+   (*(volatile u32 *)0xA5100004) = (1u << 29) | (2u << 22);   /* and no fog */
    (*(volatile u32 *)0xA5100008) = 6u << 27;           /* TCW: 8-bit palette, at address 0 */
    set_palette(1, 0x7C00);                             /* red */
    set_palette(2, 0x03E0);                             /* green */
@@ -236,6 +282,21 @@ void cmain(void)
    for (i = 0; i < 16; i++)
       (*(volatile u32 *)(0xA4001000 + i * 4)) = 0x03030303;
    PVR(0x74) = 0x100 | 128;                            /* FPU_SHAD_SCALE: shadows halve, by intensity */
+   /* The fog: green, and a table that says "half" at every depth. */
+   PVR(0xB0) = 0x0000FF00;                             /* FOG_COL_RAM */
+   PVR(0xB8) = 0xFF07;                                 /* FOG_DENSITY */
+   for (i = 0; i < 128; i++)
+      PVR(0x200 + i * 4) = 0x8080;                     /* FOG_TABLE */
+   /* The punch-through polygons' textures and their palette entries: 5 is
+    * magenta with the alpha bit set, 6 the same without it. */
+   for (i = 0; i < 16; i++)
+   {
+      (*(volatile u32 *)(0xA4002000 + i * 4)) = 0x05050505;
+      (*(volatile u32 *)(0xA4003000 + i * 4)) = 0x06060606;
+   }
+   set_palette(5, 0xFC1F);
+   set_palette(6, 0x7C1F);
+   PVR(0x11C) = 0x80;                                  /* PT_ALPHA_REF */
    (*(volatile u32 *)0xFF000038) = 0x10;               /* QACR0: store queues go to the TA */
    (*(volatile u32 *)0xFF00003C) = 0x10;               /* QACR1 */
 #ifdef NO_REGION_ARRAY
@@ -252,7 +313,8 @@ void cmain(void)
       (*(volatile u32 *)(0xA5180000 + i * 4)) = 0x80000000;
    (*(volatile u32 *)0xA5180000) = 0;                  /* tile 0,0 */
    (*(volatile u32 *)0xA5180004) = 0;                  /* its opaque list */
-   (*(volatile u32 *)0xA5180018) = 0x80000000 | (14 << 8) | (19 << 2);   /* tile 19,14, last */
+   /* tile 19,14, last; and what the second render pass goes by: pre-sorted */
+   (*(volatile u32 *)0xA5180018) = 0x80000000 | 0x20000000 | (14 << 8) | (19 << 2);
    PVR(0x2C) = 0x180000;                               /* REGION_BASE */
 #endif
 
@@ -290,7 +352,11 @@ void cmain(void)
             PVR(0x60) = (frame & 1) ? 0x400000 : 0x200000;   /* FB_W_SOF1 */
          PVR(0x144) = 0x80000000;                      /* TA_LIST_INIT */
          if (frame >= 64)
+         {
             ta_scene();
+            PVR(0x160) = 0x80000000;                   /* TA_LIST_CONT */
+            ta_scene_pass2();
+         }
          PVR(0x14) = 0xFFFFFFFF;                       /* STARTRENDER */
       }
       poll_controller();

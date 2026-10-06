@@ -23,6 +23,16 @@ far, sent nearest first. Where they overlap the red has to have been
 blended first and the blue over it: purple, not the reddish colour the
 order they were sent in would give.
 
+Above the three there is a white polygon in fog that is half green at
+every depth, and two punch-through polygons, one with an opaque texture
+and one with a transparent one: light green, magenta, and nothing.
+
+A second render pass draws a cyan polygon, which does not take shadows,
+over a corner of the first white one, with a modifier volume of its own
+over it: it has to stay cyan. And the translucent pair again, lower
+down, this time marked as already sorted: where they overlap the blue,
+drawn first, hides the red behind it.
+
 Reads the PNG itself (8-bit RGB or RGBA, not interlaced), so nothing
 beyond the standard library is needed.
 """
@@ -93,7 +103,7 @@ def main():
         ('A, lit',                  50,  90, (255, 255, 255)),
         ('A, above the volume',    104,  75, (255, 255, 255)),
         ('A, in the volume',       104,  90, (127, 127, 127)),
-        ('the background, in the volume', 136, 90, (254, 254, 0)),
+        ('the background, in the volume', 136, 90, (255, 255, 0)),
         ('C, lit',                 160,  75, (128, 128, 128)),
         ('C, in the volume',       160,  90, (64, 64, 64)),
         ('B, in the volume',       216,  90, (0, 0, 255)),
@@ -102,6 +112,15 @@ def main():
         ('red over the background', 130, 150, (254, 127, 0)),
         ('blue over red',          160, 150, (127, 63, 127)),
         ('blue over the background', 190, 150, (127, 127, 127)),
+        ('the fogged polygon',      64,  42, (127, 254, 127)),
+        ('the opaque cut-out',     216,  42, (255, 0, 255)),
+        ('the transparent cut-out', 266,  42, (255, 255, 0)),
+        # the second render pass
+        ('P, in its volume',        55, 101, (0, 255, 255)),
+        ('P, outside it',           42,  96, (0, 255, 255)),
+        ('unsorted: red over the background', 130, 195, (254, 127, 0)),
+        ('unsorted: blue in front of red', 160, 195, (127, 127, 127)),
+        ('unsorted: blue over the background', 190, 195, (127, 127, 127)),
     )
     for name, sx, sy, want in scene:
         x, y = width * sx // 320, height * sy // 240
