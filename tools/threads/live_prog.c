@@ -570,6 +570,23 @@ void cmain(void)
    AICA(0x2800) = 0x000F;                              /* MVOL */
    AICA(0x2040) = (0xF << 8) | 0x1F;                   /* CDDA left: level, pan */
    AICA(0x2044) = (0xF << 8) | 0x0F;                   /* CDDA right */
+   /* A sound of the sound chip's own to go with it: 256 samples of 16-bit
+    * PCM in its memory, which channel 0 will play in a loop at the rate
+    * they were made for, at full level and all the way to the left, with
+    * its filter and its envelope's attenuation switched off. Then what
+    * the channel adds to the left is those samples as they are. */
+   for (i = 0; i < 300; i++)
+      (*(volatile u16 *)(0xA0810000 + i * 2)) = (u16)(i < 256 ? (int)((i * 97) % 4001) - 2000 : 0x7777);
+   AICA(0x04) = 0x0000;                                /* SA: 0x10000, low */
+   AICA(0x08) = 0;                                     /* loop start */
+   AICA(0x0C) = 256;                                   /* loop end */
+   AICA(0x10) = 0x001F;                                /* fastest attack, no decay */
+   AICA(0x14) = 0x3C1F;                                /* fastest release, no key scaling */
+   AICA(0x18) = 0;                                     /* 44100 Hz */
+   AICA(0x1C) = 0;                                     /* no LFO */
+   AICA(0x20) = 0;                                     /* nothing to the DSP */
+   AICA(0x24) = (0xF << 8) | 0x1F;                     /* full level, left */
+   AICA(0x28) = 0x0060;                                /* filter off, attenuation off */
 
    for (;;)
    {
@@ -590,7 +607,14 @@ void cmain(void)
          set_palette(4, 0x7FE0);                       /* yellow, for good */
       else if (frame == 90)
          set_palette(2 * 256 + 7, 0x03E0);             /* the third bank: green */
-      else if (frame == 100)
+      /* The channel is keyed on, off and on again, well apart, so that it
+       * starts, stops and starts while the audio track plays on. */
+      if (frame == 100 || frame == 200)
+         AICA(0x00) = 0xC201;                          /* key on: 16-bit, looping */
+      else if (frame == 160)
+         AICA(0x00) = 0x8201;                          /* key off */
+
+      if (frame == 100)
          set_palette(3 * 256 + 7, 0x7C1F);             /* the fourth bank: magenta */
 
       if ((frame & 3) == 3 && frame < 64)
