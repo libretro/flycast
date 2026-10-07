@@ -171,31 +171,45 @@ __forceinline
 	SetTextureRepeatMode(GL_TEXTURE_WRAP_T, gp->tsp.ClampV, gp->tsp.FlipV);
 
 	//set texture filter mode
+	/* Mipmapping does not depend on the filter: the chip picks a level by
+	 * how small the texture is drawn, and filters within it or does not.
+	 * (A texture of palette indices is never one with mipmaps.) As the
+	 * texture cache decides it, IsMipmapped(). */
+	const bool mipmapped = !palette && gp->tcw.MipMapped != 0 && !settings.rend.ForceTextureLOD0
+			&& (gp->tcw.ScanOrder == 0 || gp->tcw.PixelFmt == PixelPal4 || gp->tcw.PixelFmt == PixelPal8);
+#ifdef GL_TEXTURE_LOD_BIAS
+	if (!gl.is_gles && gl.gl_major >= 3 && mipmapped)
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, D_Adjust_LoD_Bias[gp->tsp.MipMapD]);
+#endif
 	if (gp->tsp.FilterMode == 0 || palette)
 	{
-		//disable filtering, mipmaps
-		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		/* No filtering - the level is still picked. This was the largest
+		 * level always, where Vulkan and the console use the one that
+		 * fits. And no anisotropy: a texture drawn filtered before keeps
+		 * that setting, and with it would be filtered here all the same. */
+		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mipmapped ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		if (gl.max_anisotropy > 1.f)
+			glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.f);
 	}
 	else
 	{
 		//bilinear filtering
 		//PowerVR supports also trilinear via two passes, but we ignore that for now
-		bool mipmapped = gp->tcw.MipMapped != 0 && gp->tcw.ScanOrder == 0 && !settings.rend.ForceTextureLOD0;
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mipmapped ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR);
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-#ifdef GL_TEXTURE_LOD_BIAS
-		if (!gl.is_gles && gl.gl_major >= 3 && mipmapped)
-			glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, D_Adjust_LoD_Bias[gp->tsp.MipMapD]);
-#endif
 		if (gl.max_anisotropy > 1.f)
 		{
 			if (settings.rend.AnisotropicFiltering > 1)
 			{
 				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
 						std::min((f32)settings.rend.AnisotropicFiltering, gl.max_anisotropy));
-				// Set the recommended minification filter for best results
-				if (mipmapped)
+				/* Set the recommended minification filter for best results.
+				 * Not for a punch-through polygon: blending two levels
+				 * blends their alpha, and what is cut out by alpha is then
+				 * cut out wrong (upstream: the "Press Start" of Trizeal's
+				 * title screen, Virtua Tennis's). */
+				if (mipmapped && Type != ListType_Punch_Through)
 					glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 			}
 			else

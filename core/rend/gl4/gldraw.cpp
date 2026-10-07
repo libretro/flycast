@@ -204,29 +204,41 @@ static void SetGPState(const PolyParam* gp)
 				SetTextureRepeatMode(i, GL_TEXTURE_WRAP_T, tsp.ClampV, tsp.FlipV);
 
 				//set texture filter mode
+				/* Mipmapping does not depend on the filter: see the
+				 * per-triangle renderer. This went by the first texture's
+				 * word for the second texture too. */
+				const TCW tcw = i == 0 ? gp->tcw : gp->tcw1;
+				const bool index_texture = i == 0 && palette;
+				const bool mipmapped = !index_texture && tcw.MipMapped != 0 && !settings.rend.ForceTextureLOD0
+						&& (tcw.ScanOrder == 0 || tcw.PixelFmt == PixelPal4 || tcw.PixelFmt == PixelPal8);
+				// the two samplers are shared by every texture: what one polygon set, the next has unless it is set again
+				glSamplerParameterf(texSamplers[i], GL_TEXTURE_LOD_BIAS, mipmapped ? D_Adjust_LoD_Bias[tsp.MipMapD] : 0.f);
 				if (tsp.FilterMode == 0)
 				{
-					//disable filtering, mipmaps
-					glSamplerParameteri(texSamplers[i], GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+					/* No filtering - the level is still picked. And no
+					 * anisotropy: left on from a filtered polygon, it had
+					 * these filtered all the same, a texture of palette
+					 * indices included. */
+					glSamplerParameteri(texSamplers[i], GL_TEXTURE_MIN_FILTER, mipmapped ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
 					glSamplerParameteri(texSamplers[i], GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+					if (gl.max_anisotropy > 1.f)
+						glSamplerParameterf(texSamplers[i], GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.f);
 				}
 				else
 				{
 					//bilinear filtering
 					//PowerVR supports also trilinear via two passes, but we ignore that for now
-					bool mipmapped = gp->tcw.MipMapped != 0 && gp->tcw.ScanOrder == 0 && !settings.rend.ForceTextureLOD0;
 					glSamplerParameteri(texSamplers[i], GL_TEXTURE_MIN_FILTER, mipmapped ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR);
 					glSamplerParameteri(texSamplers[i], GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-					if (mipmapped)
-						glSamplerParameterf(texSamplers[i], GL_TEXTURE_LOD_BIAS, D_Adjust_LoD_Bias[tsp.MipMapD]);
 					if (gl.max_anisotropy > 1.f)
 					{
 						if (settings.rend.AnisotropicFiltering > 1)
 						{
 							glSamplerParameterf(texSamplers[i], GL_TEXTURE_MAX_ANISOTROPY_EXT,
 									std::min((f32)settings.rend.AnisotropicFiltering, gl.max_anisotropy));
-							// Set the recommended minification filter for best results
-							if (mipmapped)
+							// Set the recommended minification filter for best results - not for
+							// a punch-through polygon, whose alpha two levels blended would spoil
+							if (mipmapped && Type != ListType_Punch_Through)
 								glSamplerParameteri(texSamplers[i], GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 						}
 						else

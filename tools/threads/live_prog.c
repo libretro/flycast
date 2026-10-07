@@ -486,6 +486,13 @@ static void ta_scene(void)
       ta_send(TA_VERTEX | TA_TEXTURED, mx0, my1, z, 0, far, 0xFFFFFFFF, 0);
       ta_send(TA_VERTEX | TA_TEXTURED, mx1, my0, z, far, 0, 0xFFFFFFFF, 0);
       ta_send(TA_VERTEX | TA_TEXTURED | TA_LAST, mx1, my1, z, far, far, 0xFFFFFFFF, 0);
+      /* N, next to it: the same without filtering. The level is picked all
+       * the same - that is not the filter's doing - and N is white too. */
+      ta_send(TA_POLYGON | TA_TEXTURED, ISP_GEQUAL, tsp & ~(3u << 13), tcw, 0, 0, 0, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED, F(164.0f), my0, z, 0, 0, 0xFFFFFFFF, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED, F(164.0f), my1, z, 0, far, 0xFFFFFFFF, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED, F(192.0f), my0, z, far, 0, 0xFFFFFFFF, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED | TA_LAST, F(192.0f), my1, z, far, far, 0xFFFFFFFF, 0);
    }
    /* Bottom, left of the middle: E, white, taking shadows, under a volume
     * that covers its whole width - but the volume is sent under a clipping

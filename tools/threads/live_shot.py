@@ -152,6 +152,7 @@ def main():
         # a mipmapped texture drawn very small: its smallest level, or with
         # Force Texture LOD0 its largest
         ('M, the mipmapped texture', 140, 40, (255, 0, 0) if lod0 else (255, 255, 255)),
+        ('N, the mipmapped texture unfiltered', 178, 40, (255, 0, 0) if lod0 else (255, 255, 255)),
         # two textures of palette indices, of different banks
         ('F, outside its volume: the first texture', 208, 225, (0, 0, 255)),
         ('F, in its volume: the second texture', 232, 225, (255, 0, 255)),
