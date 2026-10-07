@@ -528,6 +528,17 @@ __asm__(".text\n.align 2\n"
         "  mov #1, r0\n  rts\n"
         "  .word 0x4F07\n"                             /* ldc.l @r15+,sr */
         "  mov #0, r0\n  rts\n  nop\n"
+        /* t_illegal(): an instruction that is none, with VBR pointing at
+         * a handler that notes the exception's code in t_expevt_seen and
+         * returns to the instruction after. The handler is 0x100 past the
+         * address in VBR, where a general exception's is. */
+        ".align 2\n.global t_vbr_base\nt_vbr_base:\n  .fill 0x100, 1, 0\n"
+        "  mov.l 1f, r1\n  mov.l 2f, r0\n  mov.l @r0, r0\n  mov.l r0, @r1\n"
+        "  stc spc, r0\n  add #2, r0\n  ldc r0, spc\n  rte\n  nop\n"
+        "  .align 2\n1: .long t_expevt_seen\n2: .long 0xFF000024\n"
+        ".global t_illegal\nt_illegal:\n  stc vbr, r2\n  mov.l 3f, r1\n  ldc r1, vbr\n"
+        "  .word 0xFFFD\n"
+        "  ldc r2, vbr\n  rts\n  nop\n  .align 2\n3: .long t_vbr_base\n"
         /* t_pr_neg(bits): bits into FR2 by way of FPUL, FNEG, and back */
         ".global t_pr_neg\nt_pr_neg:\n"
         "  .word 0x445A\n  .word 0xF20D\n"            /* lds r4,fpul; fsts fpul,fr2 */
@@ -547,6 +558,8 @@ extern u32 t_getsr(void);
 extern void t_setsr(u32 sr);
 extern u32 t_fpscr(u32 v);
 extern u32 t_sr_slot(void);
+extern void t_illegal(void);
+volatile u32 t_expevt_seen;
 extern u32 t_sr_slot_mem(void);
 extern u32 t_pr_neg(u32 bits);
 extern void t_pr_mov(u32 *from, u32 *to);
@@ -677,6 +690,13 @@ static int cpu_test(void)
    if (x != a)
       return 12;
    t_fpscr(fpscr);
+   /* An instruction that is none raises the general illegal instruction
+    * exception, code 0x180, and the program goes on after its handler. (An
+    * emulator has been known to end the whole process here.) */
+   t_expevt_seen = 0;
+   t_illegal();
+   if (t_expevt_seen != 0x180)
+      return 13;
    return 0;
 }
 

@@ -2090,6 +2090,17 @@ sh4op(iNotImplemented)
 {
 #ifndef NO_MMU
 	INFO_LOG(INTERPRETER, "iNimp %04X @ pc %08x", op, next_pc - 2);
+	if (settings.dynarec.Enable && !mmu_enabled())
+	{
+		/* Called from recompiled code, which without the MMU has nothing
+		 * round it to catch an exception: thrown, it went straight through
+		 * and ended the process, frontend and all. The SH4's exception is
+		 * taken here instead. The recompiler ends its block after an
+		 * instruction it does not know and goes on from the PC it finds,
+		 * which is now the exception handler's. */
+		Do_Exception(next_pc - 2, 0x180, 0x100);
+		return;
+	}
 	SH4ThrownException ex = { next_pc - 2, 0x180, 0x100 };
 	throw ex;
 #else
