@@ -382,6 +382,77 @@ static __forceinline void tw_put4(u32 *row, u32 a, u32 b, u32 c, u32 d)
 	tw_put2(row + 2, c, d);
 }
 
+/* Four YUV pixels at a time. They come as U Y V Y U Y V Y, two pixels
+ * sharing a U and a V, and go through the same arithmetic as YUV422()
+ * above - the divisions rounding towards zero as C's do, the results held
+ * to 0..255 by the saturating pack - sixteen bits a lane. The four pixels
+ * come out in order. */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define YUV4_SSE2
+// a lane divided by 8, 32 or 64 (@shift 3, 5, 6), towards zero
+#define YUV4_DIV(t, shift) _mm_srai_epi16(_mm_add_epi16(t, _mm_and_si128(_mm_srai_epi16(t, 15), _mm_set1_epi16((1 << (shift)) - 1))), shift)
+static __forceinline void yuv_convert(const __m128i in, __m128i *rg, __m128i *ba)
+{
+	const __m128i y = _mm_srli_epi16(in, 8);
+	const __m128i uv = _mm_and_si128(in, _mm_set1_epi16(0x00FF));
+	__m128i u = _mm_and_si128(uv, _mm_set1_epi32(0x0000FFFF));
+	__m128i v = _mm_srli_epi32(uv, 16);
+	__m128i t, r, g, b, rb, ga;
+
+	// each U and V under both of its pixels, less 128
+	u = _mm_sub_epi16(_mm_or_si128(u, _mm_slli_epi32(u, 16)), _mm_set1_epi16(128));
+	v = _mm_sub_epi16(_mm_or_si128(v, _mm_slli_epi32(v, 16)), _mm_set1_epi16(128));
+	t = _mm_mullo_epi16(v, _mm_set1_epi16(11));
+	r = _mm_add_epi16(y, YUV4_DIV(t, 3));
+	t = _mm_add_epi16(_mm_mullo_epi16(u, _mm_set1_epi16(11)), _mm_slli_epi16(t, 1));
+	g = _mm_sub_epi16(y, YUV4_DIV(t, 5));
+	t = _mm_mullo_epi16(u, _mm_set1_epi16(110));
+	b = _mm_add_epi16(y, YUV4_DIV(t, 6));
+	rb = _mm_packus_epi16(r, b);
+	ga = _mm_packus_epi16(g, _mm_set1_epi16(255));
+	*rg = _mm_unpacklo_epi8(rb, ga);
+	*ba = _mm_unpackhi_epi8(rb, ga);
+}
+
+// four pixels, from eight bytes in the low half of @in
+static __forceinline __m128i yuv4_convert(const __m128i in)
+{
+	__m128i rg, ba;
+	yuv_convert(in, &rg, &ba);
+	return _mm_unpacklo_epi16(rg, ba);
+}
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(_M_ARM64)
+#define YUV4_NEON
+#define YUV4_DIV(t, shift) vshr_n_s16(vadd_s16(t, vand_s16(vshr_n_s16(t, 15), vdup_n_s16((1 << (shift)) - 1))), shift)
+static __forceinline void yuv4_convert(const uint8x8_t in, uint8x8_t *first, uint8x8_t *second)
+{
+	const uint16x4_t w = vreinterpret_u16_u8(in);
+	const int16x4_t y = vreinterpret_s16_u16(vshr_n_u16(w, 8));
+	const uint32x2_t uv = vreinterpret_u32_u16(vand_u16(w, vdup_n_u16(0x00FF)));
+	uint32x2_t u32v = vand_u32(uv, vdup_n_u32(0x0000FFFF));
+	uint32x2_t v32v = vshr_n_u32(uv, 16);
+	int16x4_t u, v, t, r, g, b;
+	uint8x8_t rb, ga;
+	uint8x8x2_t bytes;
+	uint16x4x2_t words;
+
+	u = vsub_s16(vreinterpret_s16_u32(vorr_u32(u32v, vshl_n_u32(u32v, 16))), vdup_n_s16(128));
+	v = vsub_s16(vreinterpret_s16_u32(vorr_u32(v32v, vshl_n_u32(v32v, 16))), vdup_n_s16(128));
+	t = vmul_n_s16(v, 11);
+	r = vadd_s16(y, YUV4_DIV(t, 3));
+	t = vadd_s16(vmul_n_s16(u, 11), vshl_n_s16(t, 1));
+	g = vsub_s16(y, YUV4_DIV(t, 5));
+	t = vmul_n_s16(u, 110);
+	b = vadd_s16(y, YUV4_DIV(t, 6));
+	rb = vqmovun_s16(vcombine_s16(r, b));
+	ga = vqmovun_s16(vcombine_s16(g, vdup_n_s16(255)));
+	bytes = vzip_u8(rb, ga);
+	words = vzip_u16(vreinterpret_u16_u8(bytes.val[0]), vreinterpret_u16_u8(bytes.val[1]));
+	*first = vreinterpret_u8_u16(words.val[0]);
+	*second = vreinterpret_u8_u16(words.val[1]);
+}
+#endif
+
 //pixel convertors !
 #define pixelcvt_start_base(name,x,y,type) \
 		struct name \
@@ -497,6 +568,14 @@ pixelcvt_end;
 
 pixelcvt32_start(convYUV_PL,4,1)
 {
+#if defined(YUV4_SSE2)
+	_mm_storeu_si128((__m128i *)pb->p, yuv4_convert(_mm_loadl_epi64((const __m128i *)data)));
+#elif defined(YUV4_NEON)
+	uint8x8_t first, second;
+	yuv4_convert(vld1_u8(data), &first, &second);
+	vst1_u8((u8 *)pb->p, first);
+	vst1_u8((u8 *)(pb->p + 2), second);
+#else
    //convert 4x1 4444 to 4x1 8888
 	u32* p_in=(u32*)data;
 
@@ -523,6 +602,26 @@ pixelcvt32_start(convYUV_PL,4,1)
 	pb->prel(2,YUV422(Y0,Yu,Yv));
 	//1,0
 	pb->prel(3,YUV422(Y1,Yu,Yv));
+#endif
+}
+pixelcvt_end;
+
+/* The same, eight pixels at a time, for a planar texture's rows - a video's,
+ * usually. (The four-pixel one stays for compressed planar textures, whose
+ * codebook entries are four pixels.) */
+pixelcvt32_start(convYUV_PL8,8,1)
+{
+#if defined(YUV4_SSE2)
+	__m128i rg, ba;
+	yuv_convert(_mm_loadu_si128((const __m128i *)data), &rg, &ba);
+	_mm_storeu_si128((__m128i *)pb->p, _mm_unpacklo_epi16(rg, ba));
+	_mm_storeu_si128((__m128i *)(pb->p + 4), _mm_unpackhi_epi16(rg, ba));
+#else
+	Out next = *pb;
+	next.p += 4;
+	convYUV_PL::Convert(pb, data);
+	convYUV_PL::Convert(&next, data + 8);
+#endif
 }
 pixelcvt_end;
 
@@ -564,6 +663,18 @@ pixelcvt_end;
 
 pixelcvt32_start(convYUV_TW,2,2)
 {
+#if defined(YUV4_SSE2)
+	// the block's second and third words change places: then it is two pixels of the upper row and two of the lower
+	const __m128i px = yuv4_convert(_mm_shufflelo_epi16(_mm_loadl_epi64((const __m128i *)data), _MM_SHUFFLE(3, 1, 2, 0)));
+	_mm_storel_epi64((__m128i *)pb->p, px);
+	_mm_storel_epi64((__m128i *)(pb->p + pb->pitch), _mm_unpackhi_epi64(px, px));
+#elif defined(YUV4_NEON)
+	static const u8 order[8] = { 0, 1, 4, 5, 2, 3, 6, 7 };
+	uint8x8_t upper, lower;
+	yuv4_convert(vtbl1_u8(vld1_u8(data), vld1_u8(order)), &upper, &lower);
+	vst1_u8((u8 *)pb->p, upper);
+	vst1_u8((u8 *)(pb->p + pb->pitch), lower);
+#else
    //convert 4x1 4444 to 4x1 8888
 	u16* p_in=(u16*)data;
 
@@ -590,6 +701,7 @@ pixelcvt32_start(convYUV_TW,2,2)
 	pb->prel(0,1,YUV422(Y0,Yu,Yv));
 	//1,1
 	pb->prel(1,1,YUV422(Y1,Yu,Yv));
+#endif
 }
 pixelcvt_end;
 
@@ -720,7 +832,7 @@ void texture_PL(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 		{
 			PixelCursor<pixel_type> out = { line + x * PixelConvertor::xpp, pitch, pal };
 			PixelConvertor::Convert(&out, p_in);
-			p_in+=8;
+			p_in += 2 * PixelConvertor::xpp;	// two bytes a pixel
 		}
 		line += pitch * PixelConvertor::ypp;
 	}
@@ -779,7 +891,7 @@ void texture_VQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 #define tex565_PL texture_PL<conv565_PL, u16>
 #define tex1555_PL texture_PL<conv1555_PL, u16>
 #define tex4444_PL texture_PL<conv4444_PL, u16>
-#define texYUV422_PL texture_PL<convYUV_PL, u32>
+#define texYUV422_PL texture_PL<convYUV_PL8, u32>
 #define texBMP_PL tex4444_PL
 
 #define tex565_PL32 texture_PL<conv565_PL32, u32>
