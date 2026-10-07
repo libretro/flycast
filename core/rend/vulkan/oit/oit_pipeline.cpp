@@ -158,7 +158,12 @@ void OITPipelineManager::CreatePipeline(u32 listType, bool autosort, const PolyP
 	OITShaderManager::FragmentShaderParams params = {};
 	params.alphaTest = listType == ListType_Punch_Through;
 	params.bumpmap = pp.tcw.PixelFmt == PixelBumpMap;
-	params.clamping = pp.tsp.ColorClamp && (pvrrc.fog_clamp_min != 0 || pvrrc.fog_clamp_max != 0xffffffff);
+	/* By the polygon alone. The clamping limits were looked at too, to leave
+	 * the clamp out of the shader while they clamp nothing - but a pipeline
+	 * is made once and kept under a key that has only the polygon's bit in
+	 * it, and the limits change: a polygon first drawn while they clamped
+	 * nothing was never clamped after. (Upstream: Red Dog.) */
+	params.clamping = pp.tsp.ColorClamp;
 	params.insideClipTest = (pp.tileclip >> 28) == 3;
 	params.fog = pp.tsp.FogCtrl;
 	params.gouraud = pp.pcw.Gouraud;
