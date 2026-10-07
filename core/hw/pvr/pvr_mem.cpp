@@ -129,26 +129,31 @@ static INLINE void YUV_ConvertMacroBlock(u8* datap)
 		}
 	}
 
+	// TA_YUV_TEX_CNT stays at the count it reached: it starts again when more data comes
 	if (YUV_blockcount==TA_YUV_TEX_CNT)
-	{
-		YUV_init();
-		
 		asic_RaiseInterrupt(holly_YUV_DMA);
-	}
 }
 
 void YUV_data(u32* data , u32 count)
 {
 	if (YUV_blockcount==0)
 	{
-		die("YUV_data : YUV decoder not inited , *WATCH*\n");
-		//wtf ? not inited
-		YUV_init();
+		// not set up: nothing to convert to, and not a reason to stop
+		WARN_LOG(PVR, "YUV_data: YUV decoder not inited");
+		return;
 	}
+	// the picture before this one is complete: this is the start of the next
+	if (YUV_blockcount == TA_YUV_TEX_CNT)
+		YUV_init();
 
    u32 block_size = TA_YUV_TEX_CTRL.yuv_form == 0 ? 384 : 512;
 
-	verify(block_size==384); //no support for 512
+	if (block_size != 384)
+	{
+		// no support for 512
+		WARN_LOG(PVR, "YUV_data: block size 512 not supported");
+		return;
+	}
 
 	
 	count*=32;
@@ -189,7 +194,8 @@ void YUV_data(u32* data , u32 count)
 template<typename T>
 T DYNACALL pvr_read_area1(u32 addr)
 {
-	return *(T *)&vram[pvr_map32(addr)];
+	// aligned to its size: the last bytes of video memory are not a way out of it
+	return *(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)];
 }
 template u8 pvr_read_area1<u8>(u32 addr);
 template u16 pvr_read_area1<u16>(u32 addr);
@@ -208,7 +214,7 @@ void DYNACALL pvr_write_area1(u32 addr, T data)
 	if (vaddr >= fb_watch_addr_start && vaddr < fb_watch_addr_end)
 		fb_dirty = true;
 
-	*(T *)&vram[pvr_map32(addr)] = data;
+	*(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)] = data;
 }
 template void pvr_write_area1<u8>(u32 addr, u8 data);
 template void pvr_write_area1<u16>(u32 addr, u16 data);

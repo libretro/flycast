@@ -387,6 +387,15 @@ strip_end:
 						u32 pdid=(u8)(uid);
 						u32 ppid=(u8)(uid>>8);
 
+						if (uid == 0xFFFFFFFF)
+						{
+							/* A polygon of a type there is no such thing as.
+							 * Its numbers would index past the ends of the
+							 * tables below: it is passed over. */
+							WARN_LOG(PVR, "Invalid TA type %08x", data->pcw.full);
+							data+=SZ32;
+							continue;
+						}
 						VertexDataFP=ta_poly_data_lut[pdid];
 							
 
@@ -1389,6 +1398,12 @@ TaTypeLut::TaTypeLut()
 		u32 rv = FifoSplitter::poly_data_type_id(pcw);
 		u32 type = FifoSplitter::poly_header_type_size(pcw);
 
+		if (rv == 0xFFFFFFFF || type == 0xFFDDEEAA)
+		{
+			// no such type: see where the table is read
+			table[i] = 0xFFFFFFFF;
+			continue;
+		}
 		if (type & 0x80)
 			rv |= SZ64 << 30;
 		else

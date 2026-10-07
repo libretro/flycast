@@ -22,6 +22,8 @@ void pvr_WriteReg(u32 paddr,u32 data)
 	case STARTRENDER_addr:
       //start render
       rend_start_render();
+      // the YUV converter starts over, as the chip's does
+      YUV_init();
       return;
 
 	case TA_LIST_INIT_addr:

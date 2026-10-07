@@ -333,9 +333,18 @@ void spg_Reset(bool hard)
 
 void SetREP(TA_context* cntx)
 {
+	/* How long the chip takes to draw depends on how much there is to draw.
+	 * This was 1500000 cycles, 7.5 ms, whatever the scene. Upstream goes by
+	 * the size of what the game sent, and so does this: its figures, arrived
+	 * at over games - the video of some Windows CE games (Resident Evil 2,
+	 * The Next Tetris, Nightmare Creatures 2) wants the interrupt sooner
+	 * than that for a scene with little in it, and Marvel vs. Capcom 2 wants
+	 * no less than these. */
 	if (cntx)
-		// TODO depend on TA data size?
-		sh4_sched_request(render_end_schid, 1500000);
+	{
+		const int size = (int)(cntx->tad.thd_data - cntx->tad.thd_root);
+		sh4_sched_request(render_end_schid, std::min(450000 + size * 100, 1500000));
+	}
 	else
 		sh4_sched_request(render_end_schid, 4096);
 }
