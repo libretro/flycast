@@ -454,6 +454,16 @@ static void reios_setup_state(u32 boot_addr)
 		}
 	}
 
+	// The DMA controller on, as the BIOS leaves it: KallistiOS expects that
+	DMAC_DMAOR.full = 0x8201;
+
+	/* The video cable and standard, on the SH4's port as the BIOS leaves
+	 * them: Windows CE reads them there, and took a PAL console for an
+	 * NTSC one (Caesars Palace 2000, The Next Tetris, KISS Psycho Circus). */
+	if (settings.dreamcast.broadcast == 1)
+		BSC_PDTRA.full = 4;
+	BSC_PCTRA.full = 0x000A03F0;
+
 	// Set up AICA interrupt masks
 	libAICA_WriteReg(SCIEB_addr, 0x48, 2);
 	libAICA_WriteReg(SCILV0_addr, 0x18, 1);
