@@ -13,8 +13,16 @@
 #   make platform=arm64 CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ \
 #        AS=aarch64-linux-gnu-gcc
 #   CC=aarch64-linux-gnu-gcc NM=aarch64-linux-gnu-nm GLES=1 \
-#   RUN="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
+#   RUN="qemu-aarch64 -cpu cortex-a72 -L /usr/aarch64-linux-gnu" \
 #      tools/threads/headless.sh flycast_libretro.so
+#
+# (-cpu cortex-a72: the processor qemu emulates by default has the newest
+# instructions for copying memory, the C library uses them, and qemu 8.2
+# gives up - "QEMU internal SIGSEGV" - when a copy made with them runs into
+# a page that is protected. The core protects pages on purpose and answers
+# the fault; a state being saved or loaded copies all of video memory
+# across such pages. A processor without those instructions gets the fault
+# delivered as a real one does.)
 #
 # That is the only way the ARM recompilers get run on an x86-64 machine.
 # (A core for OpenGL ES wants a libGLESv2 to link against; an empty one in
