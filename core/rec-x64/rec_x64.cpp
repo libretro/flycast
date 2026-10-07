@@ -170,7 +170,7 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
 
 #ifndef _WIN32
 /* Calls the function whose address is in rax, with the arguments as they
- * are, and keeps xmm8 to xmm11 across it: the floating-point registers
+ * are, and keeps xmm8 to xmm15 across it: the floating-point registers
  * recompiled code is handed, which no function has to keep on these hosts.
  *
  * For a fast memory access that faulted and was written over with a call
@@ -184,16 +184,24 @@ __asm__ (
 		".p2align 4                             \n\t"
 		".globl " _U "ngen_call_keep_xmm        \n"
 	_U "ngen_call_keep_xmm:                     \n\t"
-		"subq $40, %rsp                         \n\t"   // 16 for the four, and the stack back to a multiple of 16
+		"subq $40, %rsp                         \n\t"   // 32 for the eight, and the stack back to a multiple of 16
 		"movd %xmm8, 0(%rsp)                    \n\t"
 		"movd %xmm9, 4(%rsp)                    \n\t"
 		"movd %xmm10, 8(%rsp)                   \n\t"
 		"movd %xmm11, 12(%rsp)                  \n\t"
+		"movd %xmm12, 16(%rsp)                  \n\t"
+		"movd %xmm13, 20(%rsp)                  \n\t"
+		"movd %xmm14, 24(%rsp)                  \n\t"
+		"movd %xmm15, 28(%rsp)                  \n\t"
 		"call *%rax                             \n\t"
 		"movd 0(%rsp), %xmm8                    \n\t"
 		"movd 4(%rsp), %xmm9                    \n\t"
 		"movd 8(%rsp), %xmm10                   \n\t"
 		"movd 12(%rsp), %xmm11                  \n\t"
+		"movd 16(%rsp), %xmm12                  \n\t"
+		"movd 20(%rsp), %xmm13                  \n\t"
+		"movd 24(%rsp), %xmm14                  \n\t"
+		"movd 28(%rsp), %xmm15                  \n\t"
 		"addq $40, %rsp                         \n\t"
 		"ret                                    \n"
 );
@@ -2039,72 +2047,37 @@ public:
 			/* Written over a fast memory access that faulted. Which of the
 			 * floating-point registers are in use here is not known any
 			 * more, and with the MMU off they are not written back before
-			 * a memory access as they are with it on: all four are kept. */
+			 * a memory access as they are with it on: all eight are kept. */
 			mov(rax, (uintptr_t)function);
 			call((const void*)ngen_call_keep_xmm);
 			return;
 		}
-		bool xmm8_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm8, current_opid);
-		bool xmm9_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm9, current_opid);
-		bool xmm10_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm10, current_opid);
-		bool xmm11_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm11, current_opid);
-
-		// Need to save xmm registers as they are not preserved in linux/mach
-		int offset = 0;
+		/* The floating-point registers handed out are xmm8 to xmm15, and
+		 * none of them is kept by a function on these hosts: the ones in
+		 * use at this point are saved round the call. */
+		int saved[8];
+		int saved_count = 0;
 		u32 stack_size = 0;
-		if (xmm8_mapped || xmm9_mapped || xmm10_mapped || xmm11_mapped)
+		if (!skip_floats && current_opid != (size_t)-1)
+			for (int i = 8; i < 16; i++)
+				if (regalloc.IsMapped(Xbyak::Xmm(i), current_opid))
+					saved[saved_count++] = i;
+		if (saved_count != 0)
 		{
-			stack_size = 4 * (xmm8_mapped + xmm9_mapped + xmm10_mapped + xmm11_mapped);
-			stack_size = (((stack_size + 15) >> 4) << 4); // Stack needs to be 16-byte aligned before the call
+			stack_size = (((4 * saved_count + 15) >> 4) << 4); // Stack needs to be 16-byte aligned before the call
 			sub(rsp, stack_size);
-			if (xmm8_mapped)
-			{
-				movd(ptr[rsp + offset], xmm8);
-				offset += 4;
-			}
-			if (xmm9_mapped)
-			{
-				movd(ptr[rsp + offset], xmm9);
-				offset += 4;
-			}
-			if (xmm10_mapped)
-			{
-				movd(ptr[rsp + offset], xmm10);
-				offset += 4;
-			}
-			if (xmm11_mapped)
-			{
-				movd(ptr[rsp + offset], xmm11);
-				offset += 4;
-			}
+			for (int i = 0; i < saved_count; i++)
+				movd(ptr[rsp + i * 4], Xbyak::Xmm(saved[i]));
 		}
 #endif
 
 		call(CC_RX2RW(function));
 
 #ifndef _WIN32
-		if (xmm8_mapped || xmm9_mapped || xmm10_mapped || xmm11_mapped)
+		if (saved_count != 0)
 		{
-			if (xmm11_mapped)
-			{
-				offset -= 4;
-				movd(xmm11, ptr[rsp + offset]);
-			}
-			if (xmm10_mapped)
-			{
-				offset -= 4;
-				movd(xmm10, ptr[rsp + offset]);
-			}
-			if (xmm9_mapped)
-			{
-				offset -= 4;
-				movd(xmm9, ptr[rsp + offset]);
-			}
-			if (xmm8_mapped)
-			{
-				offset -= 4;
-				movd(xmm8, ptr[rsp + offset]);
-			}
+			for (int i = 0; i < saved_count; i++)
+				movd(Xbyak::Xmm(saved[i]), ptr[rsp + i * 4]);
 			add(rsp, stack_size);
 		}
 #endif

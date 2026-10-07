@@ -38,7 +38,9 @@ static s8 alloc_fregs[] = { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, -1 };          /
 #else
 static Xbyak::Operand::Code alloc_regs[] = { Xbyak::Operand::RBX, Xbyak::Operand::RBP, Xbyak::Operand::R12, Xbyak::Operand::R13,
 		Xbyak::Operand::R14, (Xbyak::Operand::Code)-1 };
-static s8 alloc_fregs[] = { 8, 9, 10, 11, -1 };		// XMM8-11
+// XMM8 to XMM15. No function has to keep any of them on these hosts: the
+// ones in use are saved round every call recompiled code makes (GenCall).
+static s8 alloc_fregs[] = { 8, 9, 10, 11, 12, 13, 14, 15, -1 };
 #endif
 
 class BlockCompiler;
