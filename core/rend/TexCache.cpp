@@ -13,6 +13,8 @@
 #include "hw/sh4/modules/mmu.h"
 
 #include <algorithm>
+// for a hash state that can be a local: ComputeHash() allocates nothing
+#define XXH_STATIC_LINKING_ONLY
 #include <deps/xxhash/xxhash.h>
 
 #if defined(HAVE_TEXUPSCALE) && !defined(TARGET_NO_OPENMP)
@@ -603,7 +605,7 @@ void BaseTextureCacheData::ComputeHash()
 		 * hash of the codebook and then of the whole texture, as upstream
 		 * names them; the old name is kept, and custom textures saved
 		 * under it are still found. */
-		XXH32_state_t *state = XXH32_createState();
+		XXH32_state_t state;
 
 		old_vqtexture_hash = XXH32(&vram[sa], w * h / 8, 7);
 		if (IsPaletted())
@@ -611,11 +613,10 @@ void BaseTextureCacheData::ComputeHash()
 		old_texture_hash = old_vqtexture_hash;
 		old_vqtexture_hash ^= tcw.full & 0xFC000000;
 
-		XXH32_reset(state, 7);
-		XXH32_update(state, &vram[sa_tex], 256 * 4 * 2);
-		XXH32_update(state, &vram[sa + 256 * 4 * 2], w * h / 4);
-		texture_hash = XXH32_digest(state);
-		XXH32_freeState(state);
+		XXH32_reset(&state, 7);
+		XXH32_update(&state, &vram[sa_tex], 256 * 4 * 2);
+		XXH32_update(&state, &vram[sa + 256 * 4 * 2], w * h / 4);
+		texture_hash = XXH32_digest(&state);
 		if (IsPaletted())
 			texture_hash ^= palette_hash;
 		texture_hash ^= tcw.full & 0xFC000000;
