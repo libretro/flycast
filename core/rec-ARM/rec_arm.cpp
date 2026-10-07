@@ -52,6 +52,9 @@ struct DynaRBI: RuntimeBlockInfo
 	{
 	}
 	ARM::eReg T_reg;
+	// The block's tail cannot go by the flags its last instruction left:
+	// something that changes them is emitted in between (the wait check)
+	bool tail_flags_lost = false;
 };
 
 #ifdef _ANDROID
@@ -300,7 +303,7 @@ u32 DynaRBI::Relink()
 		//quick opt here:
 		//peek into reg alloc, store actuall sr_T register to relink_data
 #ifndef CANONICALTEST
-		bool last_op_sets_flags=!has_jcond && oplist.size() > 0 && 
+		bool last_op_sets_flags=!has_jcond && !tail_flags_lost && oplist.size() > 0 && 
 			oplist[oplist.size()-1].rd._reg==reg_sr_T && ccmap.count(oplist[oplist.size()-1].op);
 #else
 		bool last_op_sets_flags = false;
@@ -2337,6 +2340,7 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 	*/
 
 	
+	((DynaRBI *)block)->tail_flags_lost = false;
 	if (accurate && block->BranchBlock <= block->vaddr
 			&& (block->BlockType == BET_StaticJump || block->BlockType == BET_StaticCall
 				|| block->BlockType == BET_Cond_0 || block->BlockType == BET_Cond_1))
@@ -2351,6 +2355,12 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 		WaitSite *site = sh4_wait_site();
 		if (site != nullptr)
 		{
+			/* This changes the flags, and a conditional block's tail goes
+			 * by the flags of its last instruction when it can: it has to
+			 * be told to take T from where it is kept instead. (The
+			 * registers that can hold T, and r4 with a delayed branch's
+			 * condition in it, are ones a call leaves alone.) */
+			((DynaRBI *)block)->tail_flags_lost = true;
 			MOV32(r0, (u32)&site->skip);
 			LDR(r1, r0, 0);
 			SUB(r1, r1, 1, true);
