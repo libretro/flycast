@@ -551,6 +551,33 @@ void gd_process_ata_cmd()
 	};
 }
 
+/* The Q channel's own checksum: CRC-16 with the CCITT polynomial, sent
+ * inverted. */
+static u16 subq_crc(const u8 *data, int len)
+{
+	u16 crc = 0;
+
+	while (len-- > 0)
+	{
+		crc ^= (u16)(*data++ << 8);
+		for (int bit = 0; bit < 8; bit++)
+			crc = (crc & 0x8000) ? (u16)((crc << 1) ^ 0x1021) : (u16)(crc << 1);
+	}
+	return (u16)~crc;
+}
+
+static u8 bin2bcd(u32 v)
+{
+	return (u8)((v % 10) | ((v / 10) << 4));
+}
+
+/* Where the drive is: the sector being played, while it plays or is paused
+ * in the middle of playing, and otherwise where it last read. */
+static u32 gd_current_fad(u32 read_fad)
+{
+	return cdda.status == cdda_t::Playing || cdda.status == cdda_t::Paused ? cdda.CurrAddr.FAD : read_fad;
+}
+
 u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info)
 {
 	subc_info[0] = 0;
@@ -576,12 +603,42 @@ u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info)
 	case 0:	// Raw subcode
 		subc_info[2] = 0;
 		subc_info[3] = 100;
-		libGDR_ReadSubChannel(subc_info + 4, 0, 100 - 4);
+		/* Images seldom carry the subcode, and what was read here was that
+		 * of the last sector read, not of where the drive is. It is made
+		 * instead: the twelve bytes of a Q frame - kind of track, track,
+		 * index, time into the track, time into the disc, checksum - one
+		 * bit to a byte, in the Q channel's bit, as the drive gives them. */
+		{
+			const u32 cur_fad = gd_current_fad(fad);
+			u32 elapsed;
+			const u32 tracknum = libGDR_GetTrackNumber(cur_fad, elapsed);
+			u8 adr, ctrl, q[12];
+
+			libGDR_GetTrackAdrAndControl(tracknum, adr, ctrl);
+			q[0] = (u8)((ctrl << 4) | adr);
+			q[1] = bin2bcd(tracknum);
+			q[2] = bin2bcd(1);						// index
+			q[3] = bin2bcd(elapsed / 60 / 75);		// minutes,
+			q[4] = bin2bcd((elapsed / 75) % 60);	// seconds
+			q[5] = bin2bcd(elapsed % 75);			// and frames into the track
+			q[6] = 0;
+			q[7] = bin2bcd(cur_fad / 60 / 75);		// and into the disc
+			q[8] = bin2bcd((cur_fad / 75) % 60);
+			q[9] = bin2bcd(cur_fad % 75);
+			const u16 crc = subq_crc(q, 10);
+			q[10] = (u8)(crc >> 8);
+			q[11] = (u8)crc;
+			for (int i = 0; i < 12; i++)
+				for (int bit = 0; bit < 8; bit++)
+					subc_info[4 + i * 8 + bit] = (q[i] & (0x80 >> bit)) ? 0x40 : 0;
+		}
 		break;
 
 	case 1:	// Q data only
 	default:
 		{
+			// where the drive is, not where it last read, while music plays
+			fad = gd_current_fad(fad);
 			u32 elapsed;
 			u32 tracknum = libGDR_GetTrackNumber(fad, elapsed);
 
@@ -589,8 +646,10 @@ u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info)
 			subc_info[2] = 0;
 			//3 DATA Length LSB (14 = Eh)
 			subc_info[3] = 0xE;
-			//4 Control ADR
-			subc_info[4] = (SecNumber.DiscFormat == 0 ? 0 : 0x40) | 1; // Control = 4 for data track
+			//4 Control ADR: of the track the drive is on, not of the disc
+			u8 adr, ctrl;
+			libGDR_GetTrackAdrAndControl(tracknum, adr, ctrl);
+			subc_info[4] = (u8)((ctrl << 4) | adr);
 			//5-13	DATA-Q
 			u8* data_q = &subc_info[5 - 1];
 			//-When ADR = 1
@@ -776,8 +835,10 @@ void gd_process_spi_cmd()
 	case SPI_REQ_STAT:
 		{
 			printf_spicmd("SPI_REQ_STAT");
+			// where the drive is: see gd_current_fad()
+			const u32 cur_fad = gd_current_fad(read_params.start_sector - 1);
 			u32 elapsed;
-			u32 tracknum = libGDR_GetTrackNumber(cdda.CurrAddr.FAD, elapsed);
+			u32 tracknum = libGDR_GetTrackNumber(cur_fad, elapsed);
 			u8 stat[10];
 
 			//0  0   0   0   0   STATUS
@@ -785,17 +846,22 @@ void gd_process_spi_cmd()
 			//1 Disc Format Repeat Count
 			stat[1]=(u8)(SecNumber.DiscFormat<<4) | (cdda.repeats);
 			//2 Address Control
-			stat[2] = (SecNumber.DiscFormat == 0 ? 0 : 0x40) | 1; // Control = 4 for data track
+			{
+				// of the track the drive is on: an audio track on a disc with data is still audio
+				u8 adr, ctrl;
+				libGDR_GetTrackAdrAndControl(tracknum, adr, ctrl);
+				stat[2] = (u8)((ctrl << 4) | adr);
+			}
 			//3 TNO
 			stat[3] = tracknum;
 			//4 X
 			stat[4] = 1;
 			//5 FAD
-			stat[5]=cdda.CurrAddr.B0;
+			stat[5] = (u8)(cur_fad >> 16);
 			//6 FAD
-			stat[6]=cdda.CurrAddr.B1;
+			stat[6] = (u8)(cur_fad >> 8);
 			//7 FAD
-			stat[7]=cdda.CurrAddr.B2;
+			stat[7] = (u8)cur_fad;
 			//8 Max Read Error Retry Times
 			stat[8]=0;
 			//9 0   0   0   0   0   0   0   0

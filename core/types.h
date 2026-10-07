@@ -681,6 +681,7 @@ void libCore_gdrom_disc_change(void);
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz);
 u32 libGDR_LeadOutFAD();
 bool libGDR_DiscPresent();
+void libGDR_GetTrackAdrAndControl(u32 track_num, u8& adr, u8& ctrl);
 // A disc put in while the game runs: see gdromv3.cpp
 void gd_disc_inserted();
 bool gd_swap_pending();

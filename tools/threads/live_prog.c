@@ -580,6 +580,97 @@ static u32 gd_sense(void)
    return ((word[1] & 0x0F) << 8) | (word[4] & 0xFF);
 }
 
+/* A packet command whose answer is read back a word at a time: @bytes of
+ * it into @out. 0 if the drive never asked for the packet or never had
+ * the answer. */
+static int gd_pio(const u16 *packet, unsigned char *out, u32 bytes)
+{
+   u32 i;
+
+   GD8(0x84) = 0;                                      /* features: not by DMA */
+   GD8(0x90) = bytes & 0xFF;                           /* at most so many bytes */
+   GD8(0x94) = bytes >> 8;
+   GD8(0x9C) = 0xA0;
+   for (i = 0; i < 100000 && !(GD8(0x18) & 0x08); i++)
+      ;
+   if (!(GD8(0x18) & 0x08))
+      return 0;
+   for (i = 0; i < 6; i++)
+      GD16(0x80) = packet[i];
+   for (i = 0; i < 100000 && !(GD8(0x18) & 0x08); i++)
+      ;
+   if (!(GD8(0x18) & 0x08))
+      return 0;
+   for (i = 0; i < bytes; i += 2)
+   {
+      u16 word = GD16(0x80);
+      out[i] = word & 0xFF;
+      if (i + 1 < bytes)
+         out[i + 1] = word >> 8;
+   }
+   (void)GD8(0x9C);
+   return 1;
+}
+
+/* What the drive says of itself while the audio track plays (sectors 600
+ * to 899, track 2). Its status and its subcode are those of the sector
+ * being played - an audio track, though the disc has data on it - and move
+ * on with the music; and the Q frame it makes up has a checksum that
+ * holds. Not zero if not. */
+static u32 gdq_fad;
+
+/* In two goes, some frames apart, from the frame loop: the music has to
+ * have moved on in between, and what follows the start of the music is
+ * timed to the sample by live_audio.py and cannot wait. */
+static u32 gdq_test(u32 second)
+{
+   static const u16 stat_cmd[6] = { 0x0010, 0, 10, 0, 0, 0 };     /* REQ_STAT, ten bytes */
+   static const u16 q_cmd[6]    = { 0x0140, 0, 14, 0, 0, 0 };     /* GET_SCD, Q only */
+   static const u16 raw_cmd[6]  = { 0x0040, 0, 100, 0, 0, 0 };    /* GET_SCD, as on the disc */
+   unsigned char b[100], q[12];
+   u32 i, bit, fad, crc;
+
+   if (!gd_pio(stat_cmd, b, 10))
+      return 9;
+   fad = (b[5] << 16) | (b[6] << 8) | b[7];
+   if ((b[0] & 0x0F) != 3 || b[2] != 0x01 || b[3] != 2 || fad < 600 || fad > 899)
+      return 1;
+   if (!second)
+   {
+      gdq_fad = fad;
+      return 0;
+   }
+   if (fad == gdq_fad)
+      return 2;
+
+   if (!gd_pio(q_cmd, b, 14))
+      return 9;
+   fad = (b[11] << 16) | (b[12] << 8) | b[13];
+   if (b[1] != 0x11 || b[4] != 0x01 || b[5] != 2 || fad < 600 || fad > 899)
+      return 3;
+
+   if (!gd_pio(raw_cmd, b, 100))
+      return 9;
+   for (i = 0; i < 12; i++)
+   {
+      q[i] = 0;
+      for (bit = 0; bit < 8; bit++)
+         if (b[4 + i * 8 + bit] & 0x40)
+            q[i] |= 0x80 >> bit;
+   }
+   crc = 0;
+   for (i = 0; i < 10; i++)
+   {
+      crc ^= q[i] << 8;
+      for (bit = 0; bit < 8; bit++)
+         crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+   }
+   crc ^= 0xFFFF;
+   if (q[0] != 0x01 || q[1] != 0x02 || q[10] != (crc >> 8) || q[11] != (crc & 0xFF))
+      return 4;
+   return 0;
+}
+
 /* The drive, looked at once a frame, for the run in which the lid is opened
  * and shut again (headless.sh's last). A drive that has just been given a
  * disc is busy for a second before it has one, and then says, when asked,
@@ -1093,6 +1184,7 @@ void cmain(void)
    u32 maple_bad;
    u32 dmac_bad;
    u32 p4_bad;
+   u32 gdq_bad = 0;
    int mmu_state;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
@@ -1321,6 +1413,10 @@ void cmain(void)
       }
       poll_controller();
       drive_watch();
+      if (frame == 60)
+         gdq_bad = gdq_test(0);
+      else if (frame == 66 && !gdq_bad)
+         gdq_bad = gdq_test(1);
       wait_vblank();
       wait_line(16);
 #ifdef HALF_RATE
@@ -1368,6 +1464,7 @@ void cmain(void)
                : maple_bad ? 0xBAD00900 + maple_bad
                : dmac_bad ? 0xBAD00A00 + dmac_bad
                : p4_bad ? 0xBAD00B00 + p4_bad
+               : gdq_bad ? 0xBAD00D00 + gdq_bad
                : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;

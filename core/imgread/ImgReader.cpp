@@ -80,6 +80,21 @@ u32 libGDR_LeadOutFAD()
 	return disc ? disc->LeadOut.StartFAD : 0;
 }
 
+/* What kind of track it is, as the Q channel says it: its control bits (4
+ * for data, 0 for audio) and the Q mode, which is 1 - position - for every
+ * track there is. Both 0 for a track there is not. */
+void libGDR_GetTrackAdrAndControl(u32 track_num, u8& adr, u8& ctrl)
+{
+	if (disc == NULL || track_num == 0 || track_num > disc->tracks.size())
+	{
+		adr = 0;
+		ctrl = 0;
+		return;
+	}
+	adr = 1;
+	ctrl = disc->tracks[track_num - 1].CTRL;
+}
+
 bool libGDR_DiscPresent()
 {
 	return disc != NULL;
