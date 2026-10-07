@@ -162,7 +162,15 @@ CSYM(intc_sched):        @ next_pc _MUST_ be on ram
     bl CSYM(UpdateSystem)
 	mov lr,r4
 	cmp r0,#0
-	bxeq lr			@faster than bxeq r4 (as it should, call stack cache)
+	bne do_iter		@ an interrupt to take
+	@ None. But the frontend's frame may be over: the video code says so by
+	@ clearing CpuRunning, and the only place that was looked at is
+	@ no_update, which a block reached only through here, with an interrupt
+	@ pending. A program running with its interrupts masked therefore never
+	@ gave the frontend its frame back: retro_run() did not return.
+	ldr r0,[r8,#-156]	@ CpuRunning
+	cmp r0,#0
+	bxne lr			@ still running: back into the block
 
 do_iter:
 	mov r0,r4
