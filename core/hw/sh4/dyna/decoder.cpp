@@ -761,8 +761,19 @@ static bool dec_generic(u32 op)
 	{
 		state.info.has_fpu=true;
 		//return false;//FPU off for now
-		if (state.cpu.FPR64 /*|| state.cpu.FSZ64*/)
-			return false;
+		if (state.cpu.FPR64)
+		{
+			/* Double precision: the arithmetic is left to the interpreter.
+			 * But FMOV in all its forms, FLDS, FSTS and FNEG do the same
+			 * with FPSCR.PR set as without - the moves go by SZ, the
+			 * transfers through FPUL are 32 bits, and a double's sign is
+			 * in the register FNEG turns it over in - so those are
+			 * recompiled as they would be. As upstream has it. */
+			if (((op & 0xf) < 6 || (op & 0xf) > 0xc)	// FMOV
+					&& (op & 0xef) != 0x0d				// FLDS, FSTS
+					&& (op & 0xff) != 0x4d)				// FNEG
+				return false;
+		}
 
 		if (state.cpu.FSZ64 && (d==PRM_FRN_SZ || d==PRM_FRM_SZ || s==PRM_FRN_SZ || s==PRM_FRM_SZ))
 			transfer_64=true;
