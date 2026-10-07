@@ -307,7 +307,7 @@ for DRV in $PIXEL_DRIVERS; do
       echo "FAIL: the per-pixel renderer gave way to the per-triangle one ($DRV-pixel.log)" >&2
       exit 1
    fi
-   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-pixel.png" || {
+   python3 "$ROOT/tools/threads/live_shot.py" --per-pixel "$WORK/$DRV-pixel.png" || {
       echo "FAIL: wrong picture from the per-pixel renderer" >&2
       exit 1
    }

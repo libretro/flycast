@@ -347,6 +347,26 @@ static void ta_quad(u32 pcw, u32 tsp, u32 tcw, u32 white, u32 z, u32 x0, u32 y0,
    ta_send(TA_VERTEX | pcw | TA_LAST, x1, y1, z, F(1.0f), F(1.0f), white, 0);
 }
 
+/* A screen-aligned rectangle with two textures: the first is what it is
+ * drawn with, the second what it is drawn with inside a modifier volume
+ * ("two volumes"). Its parameter has a second pair of texture words, and
+ * each vertex, 64 bytes, a second set of texture coordinates and colours. */
+static void ta_quad_two(u32 tsp0, u32 tcw0, u32 tsp1, u32 tcw1, u32 z, u32 x0, u32 y0, u32 x1, u32 y1)
+{
+   const u32 pcw = TA_SHADOW | 0x40 | TA_TEXTURED;
+   u32 i;
+
+   ta_send(TA_POLYGON | pcw, ISP_GEQUAL, tsp0, tcw0, tsp1, tcw1, 0, 0);
+   for (i = 0; i < 4; i++)
+   {
+      const u32 x = (i & 2) ? x1 : x0, y = (i & 1) ? y1 : y0, last = i == 3 ? TA_LAST : 0;
+      const u32 u = (i & 2) ? F(1.0f) : 0, v = (i & 1) ? F(1.0f) : 0;
+
+      ta_send(TA_VERTEX | pcw | last, x, y, z, u, v, 0xFFFFFFFF, 0);
+      ta_send(u, v, 0xFFFFFFFF, 0, 0, 0, 0, 0);
+   }
+}
+
 /* One triangle of a modifier volume: 64 bytes. */
 static void ta_volume_triangle(u32 x0, u32 y0, u32 x1, u32 y1, u32 x2, u32 y2, u32 z)
 {
@@ -456,9 +476,19 @@ static void ta_scene(void)
     * rectangle, the tile of E's left half, and asks to be kept inside it.
     * E is grey on the left and white on the right. */
    ta_quad(TA_SHADOW, TSP_PLAIN, 0, 0xFFFFFFFF, F(0.5f), F(64.0f), F(192.0f), F(128.0f), F(224.0f));
+   /* Bottom, right of the middle: F, with two textures, both of palette
+    * indices. Outside a volume it is the blue one, of the first palette
+    * bank. In the volume over its right half it is the other, of the
+    * fourth bank, which is magenta by the time the picture is taken - where
+    * the renderer does two volumes at all, which the per-pixel ones do. A
+    * renderer that looks the second texture's indices up in the first
+    * one's bank has it green. */
+   ta_quad_two(TSP_PLAIN, (6u << 27) | (0x1000 >> 3), TSP_PLAIN, (6u << 27) | (0x30u << 21) | (0x60000 >> 3),
+         F(0.5f), F(200.0f), F(214.0f), F(240.0f), F(236.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
 
    ta_volume_part(0, x0, y0, x1, y1, F(0.75f));
+   ta_volume_part(0, F(220.0f), F(210.0f), F(244.0f), F(239.0f), F(0.75f));
    ta_send(1u << 29, 0, 0, 0, 2, 6, 2, 6);             /* the clipping rectangle: tile column 2, row 6 */
    ta_volume_part(2u << 16, F(64.0f), F(196.0f), F(128.0f), F(220.0f), F(0.75f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */

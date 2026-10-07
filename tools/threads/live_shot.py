@@ -105,8 +105,10 @@ def main():
     # finds it cannot read its boot sector and says so with a blue
     # background, which is then the right one; everything it draws that
     # does not let the background through is as ever.
-    no_disc = sys.argv[1:2] == ['--no-disc']
-    if len(sys.argv) != 2 + no_disc:
+    no_disc = '--no-disc' in sys.argv[1:-1]
+    # --per-pixel: drawn by a renderer that does two volumes
+    per_pixel = '--per-pixel' in sys.argv[1:-1]
+    if len(sys.argv) != 2 + no_disc + per_pixel:
         sys.stderr.write(__doc__)
         return 2
     width, height, bpp, rows = png_rows(sys.argv[-1])
@@ -145,6 +147,9 @@ def main():
         ('B, in the volume',       216,  90, (0, 0, 255)),
         ('B, lit',                 270,  90, (0, 0, 255)),
         # a volume sent under a clipping rectangle: its shadow stops at the rectangle's edge
+        # two textures of palette indices, of different banks
+        ('F, outside its volume: the first texture', 208, 225, (0, 0, 255)),
+        ('F, in its volume: the second texture', 232, 225, (255, 0, 255)),
         ('E, in the volume and its rectangle',  80, 208, (127, 127, 127)),
         ('E, in the volume, outside its rectangle', 112, 208, (255, 255, 255)),
         # the translucent pair: blended twice, so a little more rounding
@@ -176,6 +181,8 @@ def main():
     )
     for entry in scene:
         name, sx, sy, want = entry[:4]
+        if name.startswith('F, in its volume') and not per_pixel:
+            continue
         # what shows the background, or is blended over it
         if no_disc and ('background' in name or name.startswith(('blue over', 'unsorted'))
                         or name == 'the transparent cut-out'):
