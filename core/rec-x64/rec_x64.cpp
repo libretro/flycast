@@ -19,6 +19,7 @@
 #include "hw/sh4/sh4_rom.h"
 #include "hw/mem/vmem32.h"
 #include "x64_regalloc.h"
+#include "x64_vector.h"
 
 struct DynaRBI : RuntimeBlockInfo
 {
@@ -1030,84 +1031,25 @@ public:
 #endif
                break;
 
-/*
             case shop_fipr:
-					{
-						// Using doubles for better precision
-						const Xbyak::Xmm &rd = regalloc.MapXRegister(op.rd);
-						mov(rax, (size_t)op.rs1.reg_ptr());
-						mov(rcx, (size_t)op.rs2.reg_ptr());
-						pxor(xmm1, xmm1);
-						pxor(xmm0, xmm0);
-						pxor(xmm2, xmm2);
-						cvtss2sd(xmm1, dword[rax]);
-						cvtss2sd(xmm0, dword[rcx]);
-						mulsd(xmm0, xmm1);
-						pxor(xmm1, xmm1);
-						cvtss2sd(xmm2, dword[rax + 4]);
-						cvtss2sd(xmm1, dword[rcx + 4]);
-						mulsd(xmm1, xmm2);
-						pxor(xmm2, xmm2);
-						cvtss2sd(xmm2, dword[rax + 8]);
-						addsd(xmm1, xmm0);
-						pxor(xmm0, xmm0);
-						cvtss2sd(xmm0, dword[rcx + 8]);
-						mulsd(xmm0, xmm2);
-						pxor(xmm2, xmm2);
-						cvtss2sd(xmm2, dword[rax + 12]);
-						addsd(xmm1, xmm0);
-						pxor(xmm0, xmm0);
-						cvtss2sd(xmm0, dword[rcx + 12]);
-						mulsd(xmm0, xmm2);
-						addsd(xmm0, xmm1);
-						cvtsd2ss(rd, xmm0);
-					}
+					/* In line, in doubles: see x64_vector.h. The code for this was
+					 * commented out, and every inner product called the reference
+					 * function. */
+					mov(rax, (uintptr_t)op.rs1.reg_ptr());
+					mov(rcx, (uintptr_t)op.rs2.reg_ptr());
+					x64_emit_fipr(*this, regalloc.MapXRegister(op.rd));
 					break;
 
             case shop_ftrv:
-            	mov(rax, (uintptr_t)op.rs1.reg_ptr());
-#if 0	// vfmadd231ps and vmulps cause rounding problems
-            	if (cpu.has(Xbyak::util::Cpu::tFMA))
-            	{
-            		movaps(xmm0, xword[rax]);					// fn[0-4]
-            		mov(rax, (uintptr_t)op.rs2.reg_ptr());		// fm[0-15]
+					/* As above. This called the reference function for every
+					 * vertex a game transforms. */
+					mov(rax, (uintptr_t)op.rs1.reg_ptr());		// the vector
+					mov(rcx, (uintptr_t)op.rs2.reg_ptr());		// the matrix
+					x64_emit_ftrv(*this);
+					mov(rax, (uintptr_t)op.rd.reg_ptr());
+					movups(xword[rax], xmm0);
+					break;
 
-            		pshufd(xmm1, xmm0, 0x00);					// fn[0]
-            		vmulps(xmm2, xmm1, xword[rax]);				// fm[0-3]
-            		pshufd(xmm1, xmm0, 0x55);					// fn[1]
-            		vfmadd231ps(xmm2, xmm1, xword[rax + 16]);	// fm[4-7]
-            		pshufd(xmm1, xmm0, 0xaa);					// fn[2]
-            		vfmadd231ps(xmm2, xmm1, xword[rax + 32]);	// fm[8-11]
-            		pshufd(xmm1, xmm0, 0xff);					// fn[3]
-            		vfmadd231ps(xmm2, xmm1, xword[rax + 48]);	// fm[12-15]
-            		mov(rax, (uintptr_t)op.rd.reg_ptr());
-            		movaps(xword[rax], xmm2);
-            	}
-            	else
-#endif
-            	{
-            		movaps(xmm3, xword[rax]);                   //xmm0=vector
-            		pshufd(xmm0, xmm3, 0);                      //xmm0={v0}
-            		pshufd(xmm1, xmm3, 0x55);                   //xmm1={v1}
-            		pshufd(xmm2, xmm3, 0xaa);                   //xmm2={v2}
-            		pshufd(xmm3, xmm3, 0xff);                   //xmm3={v3}
-
-            		//do the matrix mult !
-            		mov(rax, (uintptr_t)op.rs2.reg_ptr());
-            		mulps(xmm0, xword[rax + 0]);   //v0*=vm0
-            		mulps(xmm1, xword[rax + 16]);  //v1*=vm1
-            		mulps(xmm2, xword[rax + 32]);  //v2*=vm2
-            		mulps(xmm3, xword[rax + 48]);  //v3*=vm3
-
-            		addps(xmm0, xmm1);	 //sum it all up
-            		addps(xmm2, xmm3);
-            		addps(xmm0, xmm2);
-
-            		mov(rax, (uintptr_t)op.rd.reg_ptr());
-            		movaps(xword[rax], xmm0);
-            	}
-               break;
-*/
             case shop_frswap:
                mov(rax, (uintptr_t)op.rs1.reg_ptr());
                mov(rcx, (uintptr_t)op.rd.reg_ptr());
