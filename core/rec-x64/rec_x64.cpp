@@ -386,14 +386,15 @@ public:
 			jmp(exit_block, T_NEAR);
 			L(fpu_enabled);
 		}
-#ifdef FEAT_NO_RWX_PAGES
-		// Use absolute addressing for this one
-		// TODO(davidgfnet) remove the ifsef using CC_RX2RW/CC_RW2RX
-		mov(rax, (uintptr_t)&cycle_counter);
-		sub(dword[rax], block->guest_cycles);
-#else
-		sub(dword[rip + &cycle_counter], block->guest_cycles);
-#endif
+		/* What the block costs is taken off the cycle counter where the
+		 * block ends, when it can be: the subtraction then also says
+		 * whether the time slice is used up, and the counter is touched
+		 * once a block instead of twice. With the MMU on a block can be
+		 * left from the middle, so it pays as it starts. */
+		block_cycles = block->guest_cycles;
+		charge_at_tail = !mmu_enabled();
+		if (!charge_at_tail)
+			GenCharge();
 		if (settings.dynarec.AccurateTiming && !mmu_enabled())
 		{
 			// a block that can change something other than a register says so: see wait_site.h
@@ -1296,6 +1297,8 @@ public:
 				mov(Ctx(&next_pc), block->NextBlock);
 			}
 
+			if (charge_at_tail)
+				GenCharge();
 			GenCall(UpdateINTC);
 			break;
 
@@ -1323,12 +1326,17 @@ public:
 	// the stack back as it was when the block was entered, for a jump on
 	void GenSliceCheck()
 	{
+		if (charge_at_tail)
+			GenCharge();		// leaves the flags of the counter against 0
+		else
+		{
 #ifdef FEAT_NO_RWX_PAGES
-		mov(rcx, (uintptr_t)&cycle_counter);
-		cmp(dword[rcx], 0);
+			mov(rcx, (uintptr_t)&cycle_counter);
+			cmp(dword[rcx], 0);
 #else
-		cmp(dword[rip + &cycle_counter], 0);
+			cmp(dword[rip + &cycle_counter], 0);
 #endif
+		}
 		jle(exit_block, T_NEAR);
 #ifdef _WIN32
 		add(rsp, 0x28);
@@ -1339,6 +1347,19 @@ public:
 
 	// A block going back: every so often, see whether it is only waiting, and
 	// give up the rest of the time slice if it is. See wait_site.h.
+	// Takes what the block costs off the cycle counter
+	void GenCharge()
+	{
+#ifdef FEAT_NO_RWX_PAGES
+		// Use absolute addressing for this one
+		// TODO(davidgfnet) remove the ifsef using CC_RX2RW/CC_RW2RX
+		mov(rcx, (uintptr_t)&cycle_counter);
+		sub(dword[rcx], block_cycles);
+#else
+		sub(dword[rip + &cycle_counter], block_cycles);
+#endif
+	}
+
 	void GenWaitCheck(const RuntimeBlockInfo *block)
 	{
 		WaitSite *site = sh4_wait_site(block);
@@ -1353,11 +1374,12 @@ public:
 		GenCall(sh4_wait_check);
 		test(eax, eax);
 		jz(over, T_NEAR);
+		// the block has yet to pay: this leaves the counter at 0 when it has
 #ifdef FEAT_NO_RWX_PAGES
 		mov(rax, (uintptr_t)&cycle_counter);
-		mov(dword[rax], 0);
+		mov(dword[rax], charge_at_tail ? block_cycles : 0);
 #else
-		mov(dword[rip + &cycle_counter], 0);
+		mov(dword[rip + &cycle_counter], charge_at_tail ? block_cycles : 0);
 #endif
 		L(over);
 	}
@@ -2332,6 +2354,8 @@ public:
 	static Xbyak::util::Cpu cpu;
 	size_t current_opid;
 	Xbyak::Label exit_block;
+	u32 block_cycles = 0;
+	bool charge_at_tail = false;
 	bool rewriting = false;	// writing a call over a fast memory access: see ngen_Rewrite()
 	static const u32 read_mem_op_size;
 	static const u32 write_mem_op_size;
