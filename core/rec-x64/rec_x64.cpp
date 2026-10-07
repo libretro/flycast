@@ -1133,12 +1133,31 @@ public:
 
 		mov(rax, (size_t)&next_pc);
 
+		/* Where the block ends by going on to another, it goes there itself:
+		 * through the next block's place in the table of blocks, which
+		 * always holds that block's code, or the stub that compiles it if
+		 * there is none (or no longer). It used to return to the main loop
+		 * after every block, which then called a function to look the next
+		 * one up and called that.
+		 *
+		 * What the main loop did in between still happens here: the next
+		 * block is only gone on to while there is time left in the slice,
+		 * and otherwise this returns as before. The stack is put back
+		 * first, so that whatever is jumped to starts as if the main loop
+		 * had called it.
+		 *
+		 * Not with the MMU on: an address then has to be translated before
+		 * it means a place in the table, and the lookup function does that. */
+		const bool go_on = !mmu_enabled();
+
 	  switch (block->BlockType) {
 
 		case BET_StaticJump:
 		case BET_StaticCall:
 			//next_pc = block->BranchBlock;
 			mov(dword[rax], block->BranchBlock);
+			if (go_on)
+				GenGoOn(block->BranchBlock);
 			break;
 
 		case BET_Cond_0:
@@ -1148,8 +1167,6 @@ public:
 				//if (*jdyn == 0)
 				//next_pc = branch_pc_value;
 
-				mov(dword[rax], block->NextBlock);
-
 				if (block->has_jcond)
 					mov(rdx, (size_t)&Sh4cntx.jdyn);
 				else
@@ -1158,9 +1175,16 @@ public:
 				cmp(dword[rdx], block->BlockType & 1);
 				Xbyak::Label branch_not_taken;
 
-				jne(branch_not_taken, T_SHORT);
+				jne(branch_not_taken, T_NEAR);
 				mov(dword[rax], block->BranchBlock);
+				if (go_on)
+					GenGoOn(block->BranchBlock);
+				else
+					jmp(exit_block, T_NEAR);
 				L(branch_not_taken);
+				mov(dword[rax], block->NextBlock);
+				if (go_on)
+					GenGoOn(block->NextBlock);
 			}
 			break;
 
@@ -1171,6 +1195,15 @@ public:
 			mov(rdx, (size_t)&Sh4cntx.jdyn);
 			mov(edx, dword[rdx]);
 			mov(dword[rax], edx);
+			if (go_on)
+			{
+				// the address is only known now: its place in the table is worked out here
+				GenSliceCheck();
+				shr(edx, 1);
+				and_(edx, FPCB_MASK);
+				mov(rcx, (uintptr_t)&p_sh4rcb->fpcb[0]);
+				jmp(qword[rcx + rdx * 8]);
+			}
 			break;
 
 		case BET_DynamicIntr:
@@ -1207,6 +1240,32 @@ public:
 		block->host_code_size = getSize();
 
 		emit_Skip(getSize());
+	}
+
+	// Returns to the main loop if the time slice is used up; otherwise puts
+	// the stack back as it was when the block was entered, for a jump on
+	void GenSliceCheck()
+	{
+#ifdef FEAT_NO_RWX_PAGES
+		mov(rcx, (uintptr_t)&cycle_counter);
+		cmp(dword[rcx], 0);
+#else
+		cmp(dword[rip + &cycle_counter], 0);
+#endif
+		jle(exit_block, T_NEAR);
+#ifdef _WIN32
+		add(rsp, 0x28);
+#else
+		add(rsp, 0x8);
+#endif
+	}
+
+	// On to the block at @target, through its place in the table
+	void GenGoOn(u32 target)
+	{
+		GenSliceCheck();
+		mov(rcx, (uintptr_t)&p_sh4rcb->fpcb[(target >> 1) & FPCB_MASK]);
+		jmp(qword[rcx]);
 	}
 
 	void GenReadMemorySlow(const shil_opcode& op, RuntimeBlockInfo* block)
