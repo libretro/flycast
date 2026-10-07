@@ -320,6 +320,62 @@ void gd_setdisc()
 	SecNumber.DiscFormat=gd_disk_type>>4;
 }
 
+/* A disc going in.
+ *
+ * The drive does not know what it has been given the moment the lid shuts:
+ * it spins the disc up and reads its table of contents, and for that long
+ * it says it is busy, becoming ready. Then it says, once, that the medium
+ * may have changed, and from then on it has a disc of whatever kind it
+ * found. Games that have the player change discs wait for exactly this,
+ * and some of them do not notice a disc that is simply there at once:
+ * upstream names Skies of Arcadia, Shenmue II, Alone in the Dark and
+ * Dancing Blade among those its one-second delay fixed.
+ *
+ * For that second libGDR_GetDiscType() goes on answering as it did before
+ * the disc went in. */
+int gd_swap_schid = -1;
+
+static int gd_swap_sched(int tag, int cycl, int jitter)
+{
+	if (libGDR_DiscPresent())
+		sns_asc = 0x28;		// not ready to ready: the medium may have changed
+	else
+		sns_asc = 0x29;		// nothing there to read
+	sns_ascq = 0;
+	sns_key = 6;				// unit attention
+	gd_setdisc();
+	return 0;
+}
+
+bool gd_swap_pending()
+{
+	return gd_swap_schid >= 0 && sh4_sched_is_scheduled(gd_swap_schid);
+}
+
+// The lid is opened again, or the disc is taken away, before the drive is done looking
+void gd_swap_cancel()
+{
+	if (gd_swap_pending())
+		sh4_sched_request(gd_swap_schid, -1);
+}
+
+void gd_disc_inserted()
+{
+	read_params = { 0 };
+	set_mode_offset = 0;
+	packet_cmd = { 0 };
+	memset(&read_buff, 0, sizeof(read_buff));
+	pio_buff = { gds_waitcmd, 0 };
+	ata_cmd = { 0 };
+	cdda = { cdda_t::NoInfo, 0 };
+
+	sns_asc = 4;				// in the process of becoming ready
+	sns_ascq = 1;
+	sns_key = 2;				// not ready
+	SecNumber.Status = GD_BUSY;
+	sh4_sched_request(gd_swap_schid, SH4_MAIN_CLOCK);	// 1 s
+}
+
 void gd_reset()
 {
 	//Reset the drive
@@ -379,9 +435,9 @@ void gd_process_ata_cmd()
 	//Any ATA command clears these bits, unless aborted/error :p
 	Error.ABRT=0;
 
+	// (unit attention is something to check for: D2 changes discs by it)
 	if (sns_key == 0x0 			// No sense
-			|| sns_key == 0xB	// Aborted
-			|| sns_key == 6) 	// Unit attention
+			|| sns_key == 0xB)	// Aborted
 		GDStatus.CHECK=0;
 	else
 		GDStatus.CHECK=1;
@@ -1269,6 +1325,7 @@ void gdrom_reg_Init()
 	sb_rio_register(SB_GDEN_addr, RIO_WF, 0, &GDROM_DmaEnable);
 
 	gdrom_sched = sh4_sched_register(0, &GDRomschd);
+	gd_swap_schid = sh4_sched_register(0, &gd_swap_sched);
 }
 
 void gdrom_reg_Term(void)
@@ -1305,6 +1362,7 @@ void gdrom_reg_Reset(bool hard)
 	GDStatus = {};
 	ByteCount = {};
 	// and looks at what disc is in it
+	gd_swap_cancel();
 	gd_setdisc();
 
 	// set default hardware information

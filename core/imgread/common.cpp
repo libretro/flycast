@@ -87,8 +87,11 @@ Disc* OpenDisc(const char* fn)
 	return rv;
 }
 
-bool InitDrive_(char* fn)
+// @swap: a disc put in while the game runs. The drive is told with
+// gd_disc_inserted(), and is not ready at once.
+bool InitDrive_(char* fn, bool swap = false)
 {
+	gd_swap_cancel();
 	TermDrive();
 
 	//try all drivers
@@ -97,6 +100,11 @@ bool InitDrive_(char* fn)
 	if (disc != NULL)
 	{
 		INFO_LOG(GDROM, "gdrom: Opened image \"%s\"", fn);
+		if (swap)
+		{
+			gd_disc_inserted();
+			return true;
+		}
 		NullDriveDiscType = Busy;
 	}
 	else
@@ -155,24 +163,19 @@ bool InitDrive(u32 fileflags)
 
 void DiscOpenLid()
 {
+	gd_swap_cancel();
 	TermDrive();
 	NullDriveDiscType = Open;
 	gd_setdisc();
-	sns_asc = 0x29;
-	sns_ascq = 0x00;
-	sns_key = 0x6;
 }
 
 bool DiscSwap(u32 fileflags)
 {
-	// These Additional Sense Codes mean "The lid was closed"
-	sns_asc = 0x28;
-	sns_ascq = 0x00;
-	sns_key = 0x6;
+	// What the game is told, and when: see gd_disc_inserted()
 	if (settings.imgread.LoadDefaultImage)
 	{
 		INFO_LOG(GDROM, "Loading default image \"%s\"", settings.imgread.DefaultImage);
-		if (!InitDrive_(settings.imgread.DefaultImage))
+		if (!InitDrive_(settings.imgread.DefaultImage, true))
 		{
 			msgboxf("Default image \"%s\" failed to load", MBX_ICONERROR, settings.imgread.DefaultImage);
 			return false;
@@ -196,7 +199,7 @@ bool DiscSwap(u32 fileflags)
 		return false;
 	}
 
-	if (!InitDrive_(fn))
+	if (!InitDrive_(fn, true))
 	{
 		//msgboxf("Selected image failed to load",MBX_ICONERROR);
 		NullDriveDiscType=Open;

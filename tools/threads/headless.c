@@ -18,6 +18,7 @@
  *   HEADLESS_GLES    set for a core built for OpenGL ES
  *   HEADLESS_STAGE   address of bench_prog.c's stage word: time its kernels
  *   HEADLESS_RESET   frame to press reset before
+ *   HEADLESS_SWAP    frame to open the drive's lid before; it is shut 20 frames on
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -121,6 +122,10 @@ static void log_line(enum retro_log_level level, const char *fmt, ...)
    va_end(ap);
 }
 
+/* The core's disc tray, for HEADLESS_SWAP */
+static struct retro_disk_control_callback disk;
+static int have_disk;
+
 static bool environment(unsigned cmd, void *data)
 {
    switch (cmd)
@@ -165,6 +170,10 @@ static bool environment(unsigned cmd, void *data)
          var->value = NULL;
          return false;
       }
+      case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:
+         disk = *(const struct retro_disk_control_callback *)data;
+         have_disk = 1;
+         return true;
       case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
          *(bool *)data = false;
          return true;
@@ -267,6 +276,7 @@ int main(int argc, char **argv)
             ? strtoul(getenv("HEADLESS_STAGE"), NULL, 0) : 0;
          uint32_t last = 0, word = 0;
          int reset_at = getenv("HEADLESS_RESET") ? atoi(getenv("HEADLESS_RESET")) : -1;
+         int swap_at = getenv("HEADLESS_SWAP") ? atoi(getenv("HEADLESS_SWAP")) : -1;
          clock_t t0 = clock();
 
          for (i = 0; i < frames; i++)
@@ -276,6 +286,11 @@ int main(int argc, char **argv)
 
             if (i == reset_at)
                retro_reset();
+            /* the lid opened, and shut again on the same disc 20 frames later */
+            if (have_disk && i == swap_at)
+               disk.set_eject_state(true);
+            if (have_disk && swap_at >= 0 && i == swap_at + 20)
+               disk.set_eject_state(false);
             retro_run();
             if (!stage_at)
                continue;

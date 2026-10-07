@@ -89,6 +89,7 @@ extern DCFlashChip sys_nvmem_flash;
 
 //./core/hw/gdrom/gdromv3.o
 extern int gdrom_sched;
+extern int gd_swap_schid;
 extern signed int sns_asc;
 extern signed int sns_ascq;
 extern signed int sns_key;
@@ -661,6 +662,10 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	 * in the game's memory until it is over. */
 	LIBRETRO_S(maple_out_used);
 	LIBRETRO_SA(maple_out, MAPLE_OUT_WORDS);
+
+	/* V19: the drive still looking at a disc that has just been put in */
+	LIBRETRO_S(sch_list[gd_swap_schid].start);
+	LIBRETRO_S(sch_list[gd_swap_schid].end);
 
 	return true ;
 }
@@ -1241,6 +1246,14 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_USA(maple_out, MAPLE_OUT_WORDS);
 		if (maple_out_used > MAPLE_OUT_WORDS)
 			maple_out_used = 0;
+	}
+
+	// Before V19 a disc put in was ready at once: there is never a look under way
+	sch_list[gd_swap_schid].end = -1;
+	if (version >= V19)
+	{
+		LIBRETRO_US(sch_list[gd_swap_schid].start);
+		LIBRETRO_US(sch_list[gd_swap_schid].end);
 	}
 
 	/* Fail the whole load if any read was rejected for running past the end

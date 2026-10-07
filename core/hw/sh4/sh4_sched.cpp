@@ -34,6 +34,12 @@ u32 sh4_sched_remaining(int id, u32 reference)
    return -1;
 }
 
+// Whether there is a request waiting for this one
+bool sh4_sched_is_scheduled(int id)
+{
+	return sch_list[id].end != -1;
+}
+
 u32 sh4_sched_remaining(int id)
 {
 	return sh4_sched_remaining(id, sh4_sched_now());

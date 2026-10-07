@@ -680,6 +680,11 @@ void libCore_gdrom_disc_change(void);
 //IO
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz);
 u32 libGDR_LeadOutFAD();
+bool libGDR_DiscPresent();
+// A disc put in while the game runs: see gdromv3.cpp
+void gd_disc_inserted();
+bool gd_swap_pending();
+void gd_swap_cancel();
 /* Read-ahead hint for a read about to be made of those sectors. */
 void libGDR_Prefetch(u32 StartSector, u32 SectorCount);
 const u8* libGDR_LendRawSector(u32 Sector);
@@ -904,5 +909,6 @@ enum serialize_version_enum {
    V16,
    V17,
    V18,
-   VCUR_LIBRETRO = V18,
+   V19,
+   VCUR_LIBRETRO = V19,
 };

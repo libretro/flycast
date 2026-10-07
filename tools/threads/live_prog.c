@@ -551,6 +551,59 @@ static int gd_read(u32 fad, u32 sectors)
    return 1;
 }
 
+/* What the drive has to say for itself: the REQ_ERROR command, its ten
+ * bytes read back a word at a time. The sense key in the high byte and the
+ * additional sense code in the low one; 0xFFFF if the drive never answered. */
+static u32 gd_sense(void)
+{
+   static const u16 packet[6] = { 0x13, 0, 10, 0, 0, 0 };
+   u16 word[5];
+   u32 i, n;
+
+   GD8(0x84) = 0;                                      /* features: not by DMA */
+   GD8(0x90) = 10;                                     /* at most ten bytes */
+   GD8(0x94) = 0;
+   GD8(0x9C) = 0xA0;
+   for (i = 0; i < 100000 && !(GD8(0x18) & 0x08); i++)
+      ;
+   if (!(GD8(0x18) & 0x08))
+      return 0xFFFF;
+   for (i = 0; i < 6; i++)
+      GD16(0x80) = packet[i];
+   for (i = 0; i < 100000 && !(GD8(0x18) & 0x08); i++)
+      ;
+   if (!(GD8(0x18) & 0x08))
+      return 0xFFFF;
+   for (n = 0; n < 5; n++)
+      word[n] = GD16(0x80);
+   (void)GD8(0x9C);                                    /* the status, read: that is the interrupt seen to */
+   return ((word[1] & 0x0F) << 8) | (word[4] & 0xFF);
+}
+
+/* The drive, looked at once a frame, for the run in which the lid is opened
+ * and shut again (headless.sh's last). A drive that has just been given a
+ * disc is busy for a second before it has one, and then says, when asked,
+ * that the medium may have changed: sense key 6, code 0x28. */
+static u32 drive_open, drive_busy, drive_ready, drive_sense;
+
+static void drive_watch(void)
+{
+   u32 status = GD8(0x8C) & 0x0F;
+
+   if (status == 6)
+      drive_open++;
+   else if (drive_open && !drive_ready)
+   {
+      if (status == 0)
+         drive_busy++;
+      else
+      {
+         drive_ready = 1;
+         drive_sense = gd_sense();
+      }
+   }
+}
+
 /* A register of the sound chip, the AICA. */
 #define AICA(reg) (*(volatile u32 *)(0xA0700000 + (reg)))
 
@@ -1258,6 +1311,7 @@ void cmain(void)
          PVR(0x14) = 0xFFFFFFFF;                       /* STARTRENDER */
       }
       poll_controller();
+      drive_watch();
       wait_vblank();
       wait_line(16);
 #ifdef HALF_RATE
@@ -1308,6 +1362,13 @@ void cmain(void)
                : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;
+         /* ...and if the lid was opened on the way, how the drive took the
+          * disc back is the verdict */
+         if (frame == 250 && drive_open && live_verdict == 0x600D600D)
+            live_verdict = (drive_busy < 55 || drive_busy > 65) ? 0xBAD00C01
+               : !drive_ready ? 0xBAD00C02
+               : drive_sense != 0x628 ? 0xBAD00C03
+               : 0x600D5A9D;
       }
 
       /* ...and shown at the next vblank, the way a game flips buffers */

@@ -81,13 +81,23 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # The fourth presses reset 120 frames in, with the audio track playing and
 # the disc's tests behind it: the program has to come up again and find
 # everything as it does from a cold start.
-for RUN_AS in legacy accurate "legacy wince" "legacy reset"; do
+# The fifth opens the drive's lid 120 frames in and shuts it on the same
+# disc 20 frames later. The program watches the drive: it has to be busy
+# for a second and then say that the medium may have changed.
+for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
    FRAMES=300
-   unset HEADLESS_RESET
-   if [ "$2" = reset ]; then
+   unset HEADLESS_RESET HEADLESS_SWAP
+   if [ "$2" = swap ]; then
+      NAME=$TIMING-swap
+      WINCE=disabled
+      GOOD=600d5a9d
+      HEADLESS_SWAP=120
+      export HEADLESS_SWAP
+      echo "== headless: $TIMING SH4 timing, with the disc taken out and put back"
+   elif [ "$2" = reset ]; then
       NAME=$TIMING-reset
       WINCE=disabled
       GOOD=600d600d
@@ -142,8 +152,8 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset"; do
       echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
       exit 1
    }
-   # (the sound of a run with a reset in it starts twice: not looked at)
-   [ -n "$HEADLESS_RESET" ] || python3 "$T/live_audio.py" "$WORK/sound.pcm" || {
+   # (the sound of a run with a reset or a disc change in it is not the plain one: not looked at)
+   [ -n "$HEADLESS_RESET$HEADLESS_SWAP" ] || python3 "$T/live_audio.py" "$WORK/sound.pcm" || {
       echo "FAIL: wrong sound" >&2
       exit 1
    }

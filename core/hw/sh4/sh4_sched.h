@@ -34,6 +34,9 @@ u64 sh4_sched_now64();
 */
 void sh4_sched_request(int id, int cycles);
 
+// Whether a request made of @id is still waiting
+bool sh4_sched_is_scheduled(int id);
+
 /*
 	Tick for *cycles*
 */

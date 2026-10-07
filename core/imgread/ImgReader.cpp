@@ -80,9 +80,15 @@ u32 libGDR_LeadOutFAD()
 	return disc ? disc->LeadOut.StartFAD : 0;
 }
 
+bool libGDR_DiscPresent()
+{
+	return disc != NULL;
+}
+
 u32 libGDR_GetDiscType()
 {
-	if (disc)
+	// a disc the drive is still looking at is not yet a disc of any kind
+	if (disc && !gd_swap_pending())
 		return disc->type;
    return NullDriveDiscType;
 }
