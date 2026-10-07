@@ -29,6 +29,7 @@
 #include "pipeline.h"
 #include "shaders.h"
 #include "texture.h"
+#include "quad.h"
 #include "rend/shadows.h"
 
 class BaseDrawer
@@ -192,6 +193,12 @@ class ScreenDrawer : public Drawer
 public:
 	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager);
 	vk::RenderPass GetRenderPass() const { return *renderPass; }
+	/* What draws the last picture back: see BeginRenderPass(). */
+	void SetQuadPipeline(QuadPipeline *pipeline)
+	{
+		quadPipeline = pipeline;
+		lastPicture.Init(pipeline);
+	}
 	virtual void EndRenderPass() override;
 	vk::CommandBuffer GetCurrentCommandBuffer() const { return currentCommandBuffer; }
 
@@ -204,6 +211,9 @@ private:
 	vk::UniqueRenderPass renderPass;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::vector<std::unique_ptr<FramebufferAttachment>> colorAttachments;
+	QuadPipeline *quadPipeline = nullptr;
+	QuadDrawer lastPicture;
+	bool havePicture = false;	/* the image before this one holds the last frame */
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
 	vk::Extent2D viewport;
 	ShaderManager *shaderManager = nullptr;

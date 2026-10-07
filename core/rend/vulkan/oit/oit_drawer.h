@@ -105,6 +105,10 @@ protected:
 	void MakeBuffers(int width, int height);
 	virtual vk::Format GetColorFormat() const = 0;
 	virtual vk::Framebuffer GetFinalFramebuffer() const = 0;
+	/* In the colour subpass of a frame's first pass, before any polygon:
+	 * the screen's drawer puts the last picture there when the render will
+	 * cover only part of it. True if it drew, and what was bound is gone. */
+	virtual bool DrawLastPicture(vk::CommandBuffer) { return false; }
 
 	vk::Rect2D viewport;
 	std::array<std::unique_ptr<FramebufferAttachment>, 2> colorAttachments;
@@ -162,12 +166,15 @@ public:
 		screenPipelineManager.reset();
 		framebuffers.clear();
 		finalColorAttachments.clear();
+		lastPicture = QuadDrawer();
+		havePicture = false;
 		OITDrawer::Term();
 	}
 
 	virtual vk::CommandBuffer NewFrame() override;
 	virtual void EndFrame() override
 	{
+		havePicture = true;
 		currentCommandBuffer.endRenderPass();
 		currentCommandBuffer.end();
 		currentCommandBuffer = nullptr;
@@ -182,11 +189,35 @@ public:
 protected:
 	virtual vk::Framebuffer GetFinalFramebuffer() const override { return *framebuffers[GetCurrentImage()]; }
 	virtual vk::Format GetColorFormat() const override { return GetContext()->GetColorFormat(); }
+	virtual bool DrawLastPicture(vk::CommandBuffer cmdBuffer) override
+	{
+		if (!havePicture || lastPicturePipeline == nullptr || pvrrc.clearFramebuffer || !matrices.IsClipped())
+			return false;
+		const int count = (int)finalColorAttachments.size();
+		const std::array<float, 4> opaque = { 1.f, 1.f, 1.f, 1.f };
+
+		SetScissor(cmdBuffer, viewport);
+		cmdBuffer.setBlendConstants(opaque.data());
+		lastPicturePipeline->BindPipeline(cmdBuffer);
+		lastPicture.Draw(cmdBuffer, finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+		return true;
+	}
+public:
+	/* A quad pipeline made for the colour subpass of this drawer's render pass. */
+	void SetLastPicturePipeline(QuadPipeline *pipeline)
+	{
+		lastPicturePipeline = pipeline;
+		lastPicture.Init(pipeline);
+	}
+protected:
 
 private:
 	void MakeFramebuffers();
 
 	std::vector<std::unique_ptr<FramebufferAttachment>> finalColorAttachments;
+	QuadPipeline *lastPicturePipeline = nullptr;
+	QuadDrawer lastPicture;
+	bool havePicture = false;	/* the image before this one holds the last frame */
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<OITPipelineManager> screenPipelineManager;
 };

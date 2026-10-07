@@ -39,6 +39,9 @@ public:
 		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		BaseInit(screenDrawer.GetRenderPass(), 2);
+		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
+		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1);
+		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
 
 		return true;
 	}
@@ -50,6 +53,9 @@ public:
 		texCommandPool.WaitAll();
 		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers);
 		BaseInit(screenDrawer.GetRenderPass(), 2);
+		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
+		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1);
+		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
 	}
 
 	void Term() override
@@ -60,6 +66,7 @@ public:
 		oitShaderManager.Term();
 		samplerManager.Term();
 		screenDrawer.Term();
+		lastPicturePipeline.Term();
 		textureDrawer.Term();
 		oitBuffers.Term();
 		BaseVulkanRenderer::Term();
@@ -91,6 +98,7 @@ private:
 	SamplerManager samplerManager;
 	OITShaderManager oitShaderManager;
 	OITScreenDrawer screenDrawer;
+	QuadPipeline lastPicturePipeline;
 	OITTextureDrawer textureDrawer;
 };
 

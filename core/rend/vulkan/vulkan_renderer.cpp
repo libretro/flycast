@@ -39,6 +39,7 @@ public:
 		screenDrawer.Init(&samplerManager, &shaderManager);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		BaseInit(screenDrawer.GetRenderPass());
+		screenDrawer.SetQuadPipeline(&quadPipeline);
 
 		return true;
 	}
@@ -49,6 +50,7 @@ public:
 		texCommandPool.WaitAll();
 		screenDrawer.Init(&samplerManager, &shaderManager);
 		BaseInit(screenDrawer.GetRenderPass());
+		screenDrawer.SetQuadPipeline(&quadPipeline);
 	}
 
 	void Term() override

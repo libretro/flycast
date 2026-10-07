@@ -587,6 +587,7 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 		framebuffers.clear();
 		colorAttachments.clear();
 		depthAttachment.reset();
+		havePicture = false;
 	}
 	viewport = GetContext()->GetViewPort();
 	if (!depthAttachment)
@@ -676,6 +677,23 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	matrices.CalcMatrices(&pvrrc);
 
 	SetBaseScissor();
+	/* A render that covers only part of the screen leaves the rest of the
+	 * framebuffer as it was. Every frame here goes to a fresh image,
+	 * cleared, so the part that is not drawn was black: the last frame is
+	 * drawn into it first, whole, and the render goes over it. Only for
+	 * such a render - one that covers the screen pays nothing - and not
+	 * into a framebuffer the game has not drawn to lately, which starts
+	 * empty. */
+	if (havePicture && quadPipeline != nullptr && !pvrrc.clearFramebuffer && matrices.IsClipped())
+	{
+		const int count = (int)colorAttachments.size();
+		const std::array<float, 4> opaque = { 1.f, 1.f, 1.f, 1.f };
+
+		commandBuffer.setScissor(0, vk::Rect2D( { 0, 0 }, viewport));
+		commandBuffer.setBlendConstants(opaque.data());
+		quadPipeline->BindPipeline(commandBuffer);
+		lastPicture.Draw(commandBuffer, colorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+	}
 	commandBuffer.setScissor(0, baseScissor);
 	currentCommandBuffer = commandBuffer;
 
@@ -684,6 +702,7 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 
 void ScreenDrawer::EndRenderPass()
 {
+	havePicture = true;
 	currentCommandBuffer.endRenderPass();
 	currentCommandBuffer.end();
 	currentCommandBuffer = nullptr;

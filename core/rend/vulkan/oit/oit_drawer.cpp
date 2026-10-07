@@ -372,6 +372,19 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		// Color subpass
 		cmdBuffer.nextSubpass(vk::SubpassContents::eInline);
 
+		/* A render that covers only part of the screen leaves the rest as
+		 * it was: the last picture goes in first, under everything, and
+		 * what this frame binds is bound again after it. */
+		if (render_pass == 0 && DrawLastPicture(cmdBuffer))
+		{
+			GetCurrentDescSet().BindPerFrameDescriptorSets(cmdBuffer);
+			oitBuffers->BindDescriptorSet(cmdBuffer, pipelineManager->GetPipelineLayout(), 3);
+			cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, zeroOffset);
+			cmdBuffer.bindIndexBuffer(mainBuffer, offsets.indexOffset, vk::IndexType::eUint32);
+			cmdBuffer.pushConstants<OITDescriptorSets::PushConstants>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
+			SetScissor(cmdBuffer, baseScissor);
+		}
+
 		// OP + PT
 		DrawList(cmdBuffer, ListType_Opaque, false, Pass::Color, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count);
 		DrawList(cmdBuffer, ListType_Punch_Through, false, Pass::Color, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count);
@@ -501,6 +514,7 @@ void OITScreenDrawer::MakeFramebuffers()
 	MakeBuffers(viewport.extent.width, viewport.extent.height);
 	framebuffers.clear();
 	finalColorAttachments.clear();
+	havePicture = false;
 	while (finalColorAttachments.size() < GetContext()->GetSwapChainSize())
 	{
 		finalColorAttachments.push_back(std::unique_ptr<FramebufferAttachment>(
