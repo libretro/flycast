@@ -258,7 +258,9 @@ struct Disc
 			}
 			else
 			{
+				// nothing there: a blank sector, not whatever was in the buffer
 				INFO_LOG(GDROM, "Sector Read miss FAD: %d", FAD);
+				memset(dst, 0, fmt);
 			}
 			dst+=fmt;
 			FAD++;

@@ -386,6 +386,8 @@ void gd_process_ata_cmd()
 		Error.Sense = sns_key;
 		GDStatus.BSY = 0;
 		GDStatus.CHECK = 1;
+		// no data is on offer after this: Sentimental Graffiti 2 waits on it when the disc is changed
+		GDStatus.DRQ = 0;
 
 		asic_RaiseInterrupt(holly_GDROM_CMD);
 		gd_set_state(gds_waitcmd);
@@ -612,6 +614,8 @@ void gd_process_spi_cmd()
 			u32 sector_type=2048;
 			if (readcmd.head ==1 && readcmd.subh==1 && readcmd.data==1 && readcmd.expdtype==3 && readcmd.other==0)
 				sector_type=2340;
+			else if (readcmd.other == 1 || readcmd.expdtype == 1)
+				sector_type = 2352;		// an audio sector, whole: NBA Hoopz reads its voices this way
 			else if(readcmd.head ||readcmd.subh || readcmd.other || (!readcmd.data)) // assert
 				WARN_LOG(GDROM, "GDROM: *FIXME* ADD MORE CD READ SETTINGS %d %d %d %d 0x%01X",readcmd.head,readcmd.subh,readcmd.other,readcmd.data,readcmd.expdtype);
 
@@ -1053,10 +1057,19 @@ static int getGDROMTicks()
 	  if (GDROM_TICK < 1500000)
 		 return GDROM_TICK;
      u32 len = SB_GDLEN == 0 ? 0x02000000 : SB_GDLEN;
+     /* A large transfer comes off the disc as it turns: 10240 bytes at the
+      * drive's 1.8 MB/s. This was a round 1000000 cycles, which is 2 MB/s,
+      * faster than the drive goes; upstream found Sakura Taisen 3's music
+      * breaking at that rate.
+      *
+      * A small one is already in the drive's buffer and goes at the speed
+      * of the bus. That is 100 MB/s on paper; upstream counts 25 MB/s,
+      * the rate at which World Series Baseball 2K2 stops freezing, and so
+      * does this. */
      if (len - SB_GDLEND > 10240)
-		 return 1000000;										// Large transfers: GD-ROM transfer rate 1.8 MB/s
+		 return (int)((u64)SH4_MAIN_CLOCK * 10240 / 1800000);
 	  else
-        return   std::min((u32)10240, len - SB_GDLEND) * 2;	// Small transfers: Max G1 bus rate: 50 MHz x 16 bits
+        return (int)((u64)SH4_MAIN_CLOCK * std::min((u32)10240, len - SB_GDLEND) / 25000000);
    }
    else
 	  return 0;
