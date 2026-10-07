@@ -59,8 +59,15 @@ void* _vmem_read_const(u32 addr,bool& ismem,u32 sz)
 	else
 	{
 		ismem=true;
-		addr<<=iirf;
-		addr>>=iirf;
+		/* By the shift alone, the table entry's low bits. Shifting by the
+		 * whole entry, pointer and all, left it to the processor to throw
+		 * the rest away: x86 and ARM64 do, but it is not C, and GCC 13 for
+		 * 32-bit ARM takes a count that cannot be under 32 as its leave to
+		 * make the address 0 - every read and write then went to the first
+		 * byte of its block, and nothing ran. */
+		const u32 shift = (u32)iirf & HANDLER_MAX;
+		addr<<=shift;
+		addr>>=shift;
 
 		return &(((u8*)ptr)[addr]);
 	}
@@ -99,8 +106,9 @@ void* _vmem_write_const(u32 addr,bool& ismem,u32 sz)
 	else
 	{
 		ismem=true;
-		addr<<=iirf;
-		addr>>=iirf;
+		const u32 shift = (u32)iirf & HANDLER_MAX;	// not the whole entry: see the first of these
+		addr<<=shift;
+		addr>>=shift;
 
 		return &(((u8*)ptr)[addr]);
 	}
@@ -119,8 +127,9 @@ INLINE Trv DYNACALL _vmem_readt(u32 addr)
 
 	if (likely(ptr!=0))
 	{
-		addr<<=iirf;
-		addr>>=iirf;
+		const u32 shift = (u32)iirf & HANDLER_MAX;	// not the whole entry: see the first of these
+		addr<<=shift;
+		addr>>=shift;
 
 		T data=(*((T*)&(((u8*)ptr)[addr])));
 		return data;
@@ -170,8 +179,9 @@ INLINE void DYNACALL _vmem_writet(u32 addr,T data)
 
 	if (likely(ptr!=0))
 	{
-		addr<<=iirf;
-		addr>>=iirf;
+		const u32 shift = (u32)iirf & HANDLER_MAX;	// not the whole entry: see the first of these
+		addr<<=shift;
+		addr>>=shift;
 
 		*((T*)&(((u8*)ptr)[addr]))=data;
 	}
