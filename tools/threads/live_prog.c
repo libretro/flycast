@@ -555,11 +555,41 @@ static void render_to_texture(void)
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
    PVR(0x14) = 0xFFFFFFFF;                             /* STARTRENDER */
 
+   /* A second one, 64 by 64 and all green, further up in video memory, that
+    * the program never looks at again and nothing is drawn with. It is in
+    * video memory all the same: a state saved at any moment has to have it
+    * there, and has it the same however the core is run. */
+   PVR(0x4C) = 64 * 2 / 8;
+   PVR(0x60) = 0x01000000 | (RTT_ADDRESS + 0x40000);
+   PVR(0x68) = 63 << 16;
+   PVR(0x6C) = 63 << 16;
+   PVR(0x144) = 0x80000000;                            /* TA_LIST_INIT */
+   ta_quad(0, TSP_PLAIN, 0, 0xFF00FF00, F(0.5f), F(0.0f), F(0.0f), F(64.0f), F(64.0f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);
+   PVR(0x14) = 0xFFFFFFFF;                             /* STARTRENDER */
+
    PVR(0x48) = fb_w_ctrl;
    PVR(0x4C) = linestride;
    PVR(0x60) = fb_w_sof1;
    PVR(0x68) = 639 << 16;
    PVR(0x6C) = 479 << 16;
+
+   /* On the console what was rendered is in video memory now, for the
+    * program to read and to write. Read: a pixel of the blue quarter and
+    * one of the orange. Write: the bottom right quarter, green if both were
+    * read as they were drawn and red if not. The polygon that shows the
+    * texture then has to show all of it - the three quarters that were
+    * rendered and the one that was written. */
+   {
+      volatile u16 *tex = (volatile u16 *)(0xA4000000 + RTT_ADDRESS);
+      const u16 blue = tex[10 * 128 + 10], orange = tex[10 * 128 + 100];
+      const u16 mark = (blue == 0x001F && orange == 0xFC00) ? 0x07E0 : 0xF800;
+      u32 x, y;
+
+      for (y = 64; y < 128; y++)
+         for (x = 64; x < 128; x++)
+            tex[y * 128 + x] = mark;
+   }
 }
 
 /* A second render pass, drawn over the first: the lists are opened again

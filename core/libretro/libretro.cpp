@@ -39,6 +39,7 @@ char* strdup(const char *str)
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
 #endif
+#include "rend/rtt_watch.h"
 #include <retro_atomic.h>
 #include <retro_timers.h>
 #include "emulator.h"
@@ -229,6 +230,7 @@ u64 pixel_buffer_size = 512 * 1024 * 1024;	// Initial size 512 MB
  * retro_run when rendering is not threaded. */
 static void *emu_thread_func(void *)
 {
+   rtt_watch_emu_thread();
    while (emu_baton.WaitForFrame())
    {
       if (retro_atomic_load_acquire_int(&reset_requested))
@@ -1238,9 +1240,20 @@ void retro_run (void)
          glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
 
       emu_baton.StartFrame();
-      while (emu_baton.WaitWork() != NULL)
+      for (;;)
       {
-         rend_single_frame();
+         void *work = emu_baton.WaitWork();
+         if (work == NULL)
+            break;
+         if (work == (void *)&rtt_watch_request)
+         {
+            /* the game touched video memory that a render to a texture has
+             * not reached yet: it sleeps until this has put it there */
+            rtt_watch_serve();
+            emu_baton.AckWork();
+         }
+         else
+            rend_single_frame();
          emu_baton.WorkDone();
       }
       /* The frame is made and the emulation thread is asleep again; is_dupe
@@ -2236,6 +2249,8 @@ bool retro_unserialize(const void * data, size_t size)
 #if !defined(TARGET_NO_THREADS)
    emu_hold();
 #endif
+   /* video memory is replaced whole: nothing still on its way to it is wanted */
+   rtt_watch_forget();
 
 #if FEAT_AREC == DYNAREC_JIT
     FlushCache();

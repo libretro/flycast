@@ -1,4 +1,5 @@
 #include "types.h"
+#include "rend/rtt_watch.h"
 
 #include <errno.h>
 
@@ -63,7 +64,7 @@ static LONG ExceptionHandler(EXCEPTION_POINTERS *ExceptionInfo)
 	{
 		return EXCEPTION_CONTINUE_EXECUTION;
 	}
-	else if (VramLockedWrite(address))
+	else if (rtt_watch_fault(address) || VramLockedWrite(address))
       return EXCEPTION_CONTINUE_EXECUTION;
 #ifndef TARGET_NO_NVMEM
    if (BM_LockedWrite(address))
@@ -343,7 +344,7 @@ static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
 #endif
 	if (bm_RamWriteAccess(si->si_addr))
 		return;
-	if (VramLockedWrite((u8*)si->si_addr))
+	if (rtt_watch_fault(si->si_addr) || VramLockedWrite((u8*)si->si_addr))
       return;
 #if !defined(TARGET_NO_NVMEM) && FEAT_SHREC != DYNAREC_NONE
    if (BM_LockedWrite((u8*)si->si_addr))

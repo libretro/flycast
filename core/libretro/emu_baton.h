@@ -159,6 +159,12 @@ struct EmuBaton
 		}
 	}
 
+	/* Any thread: a frame is being made, and the holder is in WaitWork(). */
+	bool FrameRunning()
+	{
+		return retro_atomic_load_acquire_int(&state) == FRAME;
+	}
+
 	/* Emulation thread: the frame is made; the machine goes back to the
 	 * holder that asked for it. */
 	void EndFrame()

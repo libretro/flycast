@@ -1,5 +1,6 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include <math.h>
+#include "rend/rtt_watch.h"
 #include <algorithm>
 
 #include <libretro.h>
@@ -177,12 +178,84 @@ bool TextureCacheData::Delete()
 	if (!BaseTextureCacheData::Delete())
 		return false;
 
-	if (texID) {
+	/* (a render to a texture that video memory has not got yet is kept: see rend/rtt_watch.h) */
+	if (texID && !rtt_watch_take(texID)) {
 		glcache.DeleteTextures(1, &texID);
 	}
 	
 	return true;
 }
+
+/* rend/rtt_watch.h asks for a picture it left on the graphics card: w by h
+ * pixels, whatever the card has it at. Called wherever the game first
+ * touched the memory, the middle of a frame's set-up included, so what it
+ * changes it puts back. */
+static void rtt_gl_read(const RttWatch *watch, u8 *rgba)
+{
+	GLint was_fbo = 0, was_pack = 4;
+	GLuint fbo = 0;
+	const u32 w = watch->w, h = watch->h, scale = watch->scale;
+
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &was_fbo);
+	glGetIntegerv(GL_PACK_ALIGNMENT, &was_pack);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, fbo);
+	glFramebufferTexture2D(RARCH_GL_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, watch->tex, 0);
+
+	if (scale <= 1)
+		glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER) && defined(GL_RGBA8)
+	else if (gl.gl_major >= 3)
+	{
+		/* made the console's size on the card, filtered, and read at that */
+		GLuint small_fbo = 0, small = 0;
+		const GLboolean was_scissor = glIsEnabled(GL_SCISSOR_TEST);
+
+		glGenRenderbuffers(1, &small);
+		glBindRenderbuffer(RARCH_GL_RENDERBUFFER, small);
+		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, GL_RGBA8, w, h);
+		glGenFramebuffers(1, &small_fbo);
+		glBindFramebuffer(RARCH_GL_FRAMEBUFFER, small_fbo);
+		glFramebufferRenderbuffer(RARCH_GL_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0, RARCH_GL_RENDERBUFFER, small);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, small_fbo);
+		if (was_scissor)
+			glDisable(GL_SCISSOR_TEST);
+		glBlitFramebuffer(0, 0, w * scale, h * scale, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+		if (was_scissor)
+			glEnable(GL_SCISSOR_TEST);
+		glBindFramebuffer(RARCH_GL_FRAMEBUFFER, small_fbo);
+		glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+		glDeleteFramebuffers(1, &small_fbo);
+		glDeleteRenderbuffers(1, &small);
+	}
+#endif
+	else
+	{
+		/* no way to make it smaller on the card: the middle pixel of each */
+		u8 line[1024 * 8 * 4];
+
+		for (u32 y = 0; y < h; y++)
+		{
+			glReadPixels(0, y * scale + scale / 2, w * scale, 1, GL_RGBA, GL_UNSIGNED_BYTE, line);
+			for (u32 x = 0; x < w; x++)
+				memcpy(rgba + (y * w + x) * 4, line + (x * scale + scale / 2) * 4, 4);
+		}
+	}
+
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, was_fbo);
+	glDeleteFramebuffers(1, &fbo);
+	glPixelStorei(GL_PACK_ALIGNMENT, was_pack);
+}
+
+static void rtt_gl_release(u32 tex)
+{
+	GLuint id = tex;
+	glcache.DeleteTextures(1, &id);
+}
+
+static const RttWatchBackend rtt_gl_backend = { rtt_gl_read, rtt_gl_release };
 
 void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 {
@@ -314,8 +387,29 @@ void ReadRTTBuffer() {
 
     //dumpRtTexture(fb_rtt.TexAddr, w, h);
     
-    if (w > 1024 || h > 1024 || settings.rend.RenderToTextureBuffer) {
+    /* The picture stays on the graphics card, and video memory gets it when
+     * something first touches it there: see rend/rtt_watch.h. */
+    RttWatch watch = {};
+    watch.addr = gl.rtt.TexAddr << 3;
+    watch.w = w;
+    watch.h = h;
+    watch.stride = stride;
+    watch.bytes = h == 0 || w == 0 ? 0 : stride * (h - 1) + w * 2;
+    watch.packmode = fb_packmode;
+    watch.kval_bit = (FB_W_CTRL.fb_kval & 0x80) << 8;
+    watch.alpha_threshold = FB_W_CTRL.fb_alpha_threshold;
+    watch.tex = gl.rtt.tex;
+    watch.scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
+    if (!settings.rend.RenderToTextureBuffer && watch.bytes != 0)
+       rtt_watch_supersede(watch.addr, watch.bytes);
+
+    if (settings.rend.RenderToTextureBuffer) {
     	glcache.DeleteTextures(1, &gl.rtt.tex);
+    }
+    else if (w > 1024 || h > 1024) {
+    	/* too large to be drawn with from here: kept for video memory alone */
+    	watch.owned = true;
+    	rtt_watch_add(&watch, &rtt_gl_backend);
     }
     else
     {
@@ -345,6 +439,7 @@ void ReadRTTBuffer() {
     	texture_data->texID = gl.rtt.tex;
     	texture_data->dirty = 0;
       libCore_vramlock_Lock(texture_data->sa_tex, texture_data->sa + texture_data->size - 1, texture_data);
+      rtt_watch_add(&watch, &rtt_gl_backend);
     }
     gl.rtt.tex = 0;
 

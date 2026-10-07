@@ -116,4 +116,9 @@ void _vmem_protect_vram(u32 addr, u32 size);
 void _vmem_unprotect_vram(u32 addr, u32 size);
 // True if _vmem_protect_vram() has covered this page of vram and nothing has unprotected it since
 bool _vmem_vram_page_protected(u32 page);
+// No access at all to these pages, reads included, until they are unwatched: see rend/rtt_watch.h
+void _vmem_watch_vram(u32 addr, u32 size);
+void _vmem_unwatch_vram(u32 addr, u32 size);
+void _vmem_open_watched_vram(u32 addr, u32 size);
+bool _vmem_vram_page_watched(u32 page);
 u32 _vmem_get_vram_offset(void *addr);

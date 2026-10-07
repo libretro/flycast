@@ -126,6 +126,27 @@ bool mem_region_unlock(void *start, size_t len)
 	return true;
 }
 
+/* No access at all: a read faults as a write does. */
+bool mem_region_noaccess(void *start, size_t len)
+{
+	size_t inpage = (uintptr_t)start & PAGE_MASK;
+
+#ifdef HAVE_LIBNX
+	uintptr_t start_addr = ((uintptr_t)start - inpage);
+
+	len += inpage;
+	if (len & PAGE_MASK)
+		len = (len + PAGE_SIZE) & (~(PAGE_SIZE-1));
+	for (uintptr_t addr = start_addr; addr < (start_addr + len); addr += PAGE_SIZE)
+		svcSetMemoryPermission((void*)addr, PAGE_SIZE, Perm_None);
+#else
+	if (mprotect((u8*)start - inpage, len + inpage, PROT_NONE))
+		die("mprotect failed...");
+#endif
+
+	return true;
+}
+
 bool mem_region_set_exec(void *start, size_t len)
 {
 	size_t inpage = (uintptr_t)start & PAGE_MASK;
@@ -478,6 +499,15 @@ bool mem_region_unlock(void *start, size_t len)
 {
 	DWORD old;
 	if (!VirtualProtect(start, len, PAGE_READWRITE, &old))
+		die("VirtualProtect failed ..\n");
+	return true;
+}
+
+/* No access at all: a read faults as a write does. */
+bool mem_region_noaccess(void *start, size_t len)
+{
+	DWORD old;
+	if (!VirtualProtect(start, len, PAGE_NOACCESS, &old))
 		die("VirtualProtect failed ..\n");
 	return true;
 }

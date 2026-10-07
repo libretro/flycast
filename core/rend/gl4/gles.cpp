@@ -1,5 +1,6 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include <math.h>
+#include "rend/rtt_watch.h"
 
 #include "gl4.h"
 
@@ -960,6 +961,7 @@ struct gl4rend : Renderer
 			depth_fbo = 0;
 		}
 		TexCache.Clear();
+		rtt_watch_term();
 
 		gl_term();
 	}

@@ -110,7 +110,10 @@ def main():
     per_pixel = '--per-pixel' in sys.argv[1:-1]
     # --lod0: run with Force Texture LOD0 on
     lod0 = '--lod0' in sys.argv[1:-1]
-    if len(sys.argv) != 2 + no_disc + per_pixel + lod0:
+    # --rtt-on-card: a renderer that does not yet bring a render to a texture
+    # back to video memory when the game touches it there (Vulkan: next)
+    rtt_on_card = '--rtt-on-card' in sys.argv[1:-1]
+    if len(sys.argv) != 2 + no_disc + per_pixel + lod0 + rtt_on_card:
         sys.stderr.write(__doc__)
         return 2
     width, height, bpp, rows = png_rows(sys.argv[-1])
@@ -168,11 +171,13 @@ def main():
         # palette banks changed while running: the third, then the fourth
         ('the third palette bank',  20, 225, (0, 255, 0)),
         ('the fourth palette bank', 45, 225, (255, 0, 255)),
-        # the texture rendered to: orange, its top left quarter blue
+        # the texture rendered to: orange, its top left quarter blue - and its
+        # bottom right quarter written by the program afterwards, green once
+        # it had read the other two colours back out of video memory
         ('the render target, top left',     262, 137, (0, 0, 255)),
         ('the render target, top right',    288, 137, (255, 128, 0)),
         ('the render target, bottom left',  262, 163, (255, 128, 0)),
-        ('the render target, bottom right', 288, 163, (255, 128, 0)),
+        ('the render target, written over, after reading it', 288, 163, (0, 255, 0)),
         # a face colour of 1 at an intensity of 1: exactly white
         ('full intensity',         185, 225, (255, 255, 255), 0),
         # the second render pass
@@ -187,6 +192,8 @@ def main():
     )
     for entry in scene:
         name, sx, sy, want = entry[:4]
+        if name.startswith('the render target') and rtt_on_card:
+            continue
         if name.startswith('F, in its volume') and not per_pixel:
             continue
         # what shows the background, or is blended over it

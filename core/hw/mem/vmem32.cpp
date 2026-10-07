@@ -45,6 +45,7 @@
 #include "hw/sh4/modules/mmu.h"
 
 extern bool VramLockedWriteOffset(size_t offset);
+#include "rend/rtt_watch.h"
 
 #ifdef _WIN32
 extern HANDLE mem_handle;
@@ -228,6 +229,8 @@ static u32 vmem32_map_mmu(u32 address, bool write)
 		{
 			// Check vram protected regions
 			u32 start = offset - MAP_VRAM_START_OFFSET;
+			// (and nothing rendered to a texture is still to arrive in it: rend/rtt_watch.h)
+			rtt_watch_touch(start, page_size);
 			if (!vram_mapped_pages.insert(vpn).second)
 			{
 				// page has been mapped already: vram locked write

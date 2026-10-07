@@ -1,5 +1,6 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include <math.h>
+#include "rend/rtt_watch.h"
 #include <string.h>
 
 #include <libretro.h>
@@ -1203,6 +1204,7 @@ struct glesrend : Renderer
    {
 		postProcessor.Term();
 	   TexCache.Clear();
+		rtt_watch_term();
 
 	   gl_term();
    }

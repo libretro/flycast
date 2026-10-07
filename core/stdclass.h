@@ -319,6 +319,7 @@ std::string get_writable_vmu_path(const char *logical_port);
 
 bool mem_region_lock(void *start, std::size_t len);
 bool mem_region_unlock(void *start, std::size_t len);
+bool mem_region_noaccess(void *start, std::size_t len);
 bool mem_region_set_exec(void *start, std::size_t len);
 void *mem_region_reserve(void *start, std::size_t len);
 bool mem_region_release(void *start, std::size_t len);

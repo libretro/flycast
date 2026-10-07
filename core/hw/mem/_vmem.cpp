@@ -650,86 +650,118 @@ static void vram_pages_set_protected(u32 addr, u32 size, bool on)
 	}
 }
 
-void _vmem_protect_vram(u32 addr, u32 size)
+/* Pages of video memory the game must not touch unnoticed at all, reads
+ * included: what was rendered to a texture there is still on the graphics
+ * card. See rend/rtt_watch.h. A watched page has no access whatever its
+ * write protection says; that is kept, and is what the page goes back to. */
+static retro_atomic_int_t vram_page_watched[VRAM_SIZE_MAX / PAGE_SIZE / 32];
+
+bool _vmem_vram_page_watched(u32 page)
 {
-	addr &= VRAM_MASK;
-	vram_pages_set_protected(addr, size, true);
+	return (retro_atomic_load_acquire_int(&vram_page_watched[page >> 5]) >> (page & 31)) & 1;
+}
+
+enum { VRAM_OPEN, VRAM_READ_ONLY, VRAM_NO_ACCESS };
+
+/* Every mapping the game or the core reaches these pages through. */
+static void vram_set_access(u32 addr, u32 size, int access)
+{
+	bool (* const set)(void *, std::size_t) = access == VRAM_OPEN ? mem_region_unlock
+		: access == VRAM_READ_ONLY ? mem_region_lock : mem_region_noaccess;
+
 	if (_nvmem_enabled())
 	{
 		if (!mmu_enabled() || !_nvmem_4gb_space())
 		{
-			mem_region_lock(virt_ram_base + 0x04000000 + addr, size);	// P0
-			//mem_region_lock(virt_ram_base + 0x06000000 + addr, size);	// P0 - mirror
+			set(virt_ram_base + 0x04000000 + addr, size);	// P0
 			if (VRAM_SIZE == 0x800000)
-			{
 				// wraps when only 8MB VRAM
-				mem_region_lock(virt_ram_base + 0x04000000 + addr + VRAM_SIZE, size);
-				//mem_region_lock(virt_ram_base + 0x06000000 + addr + VRAM_SIZE, size);
-			}
+				set(virt_ram_base + 0x04000000 + addr + VRAM_SIZE, size);
 		}
 		if (_nvmem_4gb_space())
 		{
-			mem_region_lock(virt_ram_base + 0x84000000 + addr, size);	// P1
-			//mem_region_lock(virt_ram_base + 0x86000000 + addr, size);	// P1 - mirror
-			mem_region_lock(virt_ram_base + 0xA4000000 + addr, size);	// P2
-			//mem_region_lock(virt_ram_base + 0xA6000000 + addr, size);	// P2 - mirror
+			set(virt_ram_base + 0x84000000 + addr, size);	// P1
+			set(virt_ram_base + 0xA4000000 + addr, size);	// P2
 			// We should also lock P3, and the mirrors, but they don't seem to be used...
-			//mem_region_lock(virt_ram_base + 0xC4000000 + addr, size);	// P3
-			//mem_region_lock(virt_ram_base + 0xC6000000 + addr, size);	// P3 - mirror
 			if (VRAM_SIZE == 0x800000)
 			{
-				mem_region_lock(virt_ram_base + 0x84000000 + addr + VRAM_SIZE, size);
-				//mem_region_lock(virt_ram_base + 0x86000000 + addr + VRAM_SIZE, size);
-				mem_region_lock(virt_ram_base + 0xA4000000 + addr + VRAM_SIZE, size);
-				//mem_region_lock(virt_ram_base + 0xC4000000 + addr + VRAM_SIZE, size);
+				set(virt_ram_base + 0x84000000 + addr + VRAM_SIZE, size);
+				set(virt_ram_base + 0xA4000000 + addr + VRAM_SIZE, size);
 			}
 		}
 	}
 	else
+		set(&vram[addr], size);
+}
+
+/* What each page of the range is to have, from the two sets of marks. */
+static void vram_apply_access(u32 addr, u32 size)
+{
+	const u32 first = addr / PAGE_SIZE, last = (addr + size - 1) / PAGE_SIZE;
+
+	for (u32 page = first; page <= last; )
 	{
-		mem_region_lock(&vram[addr], size);
+		const int access = _vmem_vram_page_watched(page) ? VRAM_NO_ACCESS
+			: _vmem_vram_page_protected(page) ? VRAM_READ_ONLY : VRAM_OPEN;
+		u32 end = page + 1;
+
+		/* runs of pages that get the same, in one call each */
+		while (end <= last && access == (_vmem_vram_page_watched(end) ? VRAM_NO_ACCESS
+				: _vmem_vram_page_protected(end) ? VRAM_READ_ONLY : VRAM_OPEN))
+			end++;
+		vram_set_access(page * PAGE_SIZE, (end - page) * PAGE_SIZE, access);
+		page = end;
 	}
+}
+
+static bool vram_any_watched(u32 addr, u32 size)
+{
+	for (u32 page = addr / PAGE_SIZE; page <= (addr + size - 1) / PAGE_SIZE; page++)
+		if (_vmem_vram_page_watched(page))
+			return true;
+	return false;
+}
+
+void _vmem_protect_vram(u32 addr, u32 size)
+{
+	addr &= VRAM_MASK;
+	vram_pages_set_protected(addr, size, true);
+	if (vram_any_watched(addr, size))
+		vram_apply_access(addr, size);
+	else
+		vram_set_access(addr, size, VRAM_READ_ONLY);
 }
 
 void _vmem_unprotect_vram(u32 addr, u32 size)
 {
 	addr &= VRAM_MASK;
 	vram_pages_set_protected(addr, size, false);
-	if (_nvmem_enabled())
-	{
-		if (!mmu_enabled() || !_nvmem_4gb_space())
-		{
-			mem_region_unlock(virt_ram_base + 0x04000000 + addr, size);		// P0
-			//mem_region_unlock(virt_ram_base + 0x06000000 + addr, size);	// P0 - mirror
-			if (VRAM_SIZE == 0x800000)
-			{
-				// wraps when only 8MB VRAM
-				mem_region_unlock(virt_ram_base + 0x04000000 + addr + VRAM_SIZE, size);
-				//mem_region_unlock(virt_ram_base + 0x06000000 + addr + VRAM_SIZE, size);
-			}
-		}
-		if (_nvmem_4gb_space())
-		{
-			mem_region_unlock(virt_ram_base + 0x84000000 + addr, size);		// P1
-			//mem_region_unlock(virt_ram_base + 0x86000000 + addr, size);	// P1 - mirror
-			mem_region_unlock(virt_ram_base + 0xA4000000 + addr, size);	// P2
-			//mem_region_unlock(virt_ram_base + 0xA6000000 + addr, size);	// P2 - mirror
-			// We should also lock P3, and the mirrors, but they don't seem to be used...
-			//mem_region_unlock(virt_ram_base + 0xC4000000 + addr, size);	// P3
-			//mem_region_unlock(virt_ram_base + 0xC6000000 + addr, size);	// P3 - mirror
-			if (VRAM_SIZE == 0x800000)
-			{
-				mem_region_unlock(virt_ram_base + 0x84000000 + addr + VRAM_SIZE, size);
-				//mem_region_unlock(virt_ram_base + 0x86000000 + addr + VRAM_SIZE, size);
-				mem_region_unlock(virt_ram_base + 0xA4000000 + addr + VRAM_SIZE, size);
-				//mem_region_unlock(virt_ram_base + 0xC4000000 + addr + VRAM_SIZE, size);
-			}
-		}
-	}
+	if (vram_any_watched(addr, size))
+		vram_apply_access(addr, size);
 	else
-	{
-		mem_region_unlock(&vram[addr], size);
-	}
+		vram_set_access(addr, size, VRAM_OPEN);
+}
+
+void _vmem_watch_vram(u32 addr, u32 size)
+{
+	addr &= VRAM_MASK;
+	for (u32 page = addr / PAGE_SIZE; page <= (addr + size - 1) / PAGE_SIZE; page++)
+		retro_atomic_fetch_or_int(&vram_page_watched[page >> 5], (int)(1u << (page & 31)));
+	vram_set_access(addr, size, VRAM_NO_ACCESS);
+}
+
+/* For whoever is about to fill watched pages in: writable, still marked. */
+void _vmem_open_watched_vram(u32 addr, u32 size)
+{
+	vram_set_access(addr & VRAM_MASK, size, VRAM_OPEN);
+}
+
+void _vmem_unwatch_vram(u32 addr, u32 size)
+{
+	addr &= VRAM_MASK;
+	for (u32 page = addr / PAGE_SIZE; page <= (addr + size - 1) / PAGE_SIZE; page++)
+		retro_atomic_fetch_and_int(&vram_page_watched[page >> 5], ~(int)(1u << (page & 31)));
+	vram_apply_access(addr, size);
 }
 
 u32 _vmem_get_vram_offset(void *addr)
