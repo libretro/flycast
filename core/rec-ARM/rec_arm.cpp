@@ -2695,7 +2695,7 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 		 * pass that finds the registers as they were is one that goes round
 		 * again. The cycle counter is a register: at 0, the next block's
 		 * own subtraction ends the slice. */
-		WaitSite *site = sh4_wait_site();
+		WaitSite *site = sh4_wait_site(block);
 		if (site != nullptr)
 		{
 			/* This changes the flags, and a conditional block's tail goes

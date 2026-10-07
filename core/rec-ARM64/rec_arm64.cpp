@@ -1026,7 +1026,7 @@ public:
 			 * nothing, since a pass that finds the registers as they were
 			 * is one that goes round again. The cycle counter is w27: at 0,
 			 * the next block's own subtraction ends the slice. */
-			WaitSite *site = sh4_wait_site();
+			WaitSite *site = sh4_wait_site(block);
 			if (site != nullptr)
 			{
 				Label over;

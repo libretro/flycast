@@ -1237,7 +1237,7 @@ public:
 			//next_pc = block->BranchBlock;
 			mov(Ctx(&next_pc), block->BranchBlock);
 			if (watch)
-				GenWaitCheck();
+				GenWaitCheck(block);
 			if (go_on)
 				GenGoOn(block->BranchBlock);
 			break;
@@ -1255,7 +1255,7 @@ public:
 				jne(branch_not_taken, T_NEAR);
 				mov(Ctx(&next_pc), block->BranchBlock);
 				if (watch)
-					GenWaitCheck();
+					GenWaitCheck(block);
 				if (go_on)
 					GenGoOn(block->BranchBlock);
 				else
@@ -1339,9 +1339,9 @@ public:
 
 	// A block going back: every so often, see whether it is only waiting, and
 	// give up the rest of the time slice if it is. See wait_site.h.
-	void GenWaitCheck()
+	void GenWaitCheck(const RuntimeBlockInfo *block)
 	{
-		WaitSite *site = sh4_wait_site();
+		WaitSite *site = sh4_wait_site(block);
 		if (site == nullptr)
 			return;
 		Xbyak::Label over;

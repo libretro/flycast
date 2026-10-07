@@ -48,9 +48,10 @@ struct WaitSite
 // Moved on by every block that can change something other than a register
 extern u32 sh4_write_gen;
 
-// A site for a block being compiled, or NULL when there are no more: the
-// block then goes unwatched
-WaitSite *sh4_wait_site();
+// A site for a block being compiled. NULL when there are no more, and for
+// a block whose site could never find the processor waiting: the block then
+// goes unwatched, and pays nothing.
+WaitSite *sh4_wait_site(const RuntimeBlockInfo *block);
 
 // Every block is gone, and with them whatever had a site's address
 void sh4_wait_sites_reset();
