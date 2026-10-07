@@ -709,65 +709,31 @@ sh4op(i1111_nn01_1111_1101)
 
 	if (fpscr.PR==0)
 	{
+		// In doubles on every host, as the recompilers' reference does it
+		double v1 = (double)xf[0]  * fr[n + 0] +
+					(double)xf[4]  * fr[n + 1] +
+					(double)xf[8]  * fr[n + 2] +
+					(double)xf[12] * fr[n + 3];
 
-#if HOST_CPU == CPU_X86 || HOST_CPU == CPU_X64
-		double v1 = reduce_precision<25>((double)xf[0]  * fr[n + 0]) +
-					reduce_precision<25>((double)xf[4]  * fr[n + 1]) +
-					reduce_precision<25>((double)xf[8]  * fr[n + 2]) +
-					reduce_precision<25>((double)xf[12] * fr[n + 3]);
+		double v2 = (double)xf[1]  * fr[n + 0] +
+					(double)xf[5]  * fr[n + 1] +
+					(double)xf[9]  * fr[n + 2] +
+					(double)xf[13] * fr[n + 3];
 
-		double v2 = reduce_precision<25>((double)xf[1]  * fr[n + 0]) +
-					reduce_precision<25>((double)xf[5]  * fr[n + 1]) +
-					reduce_precision<25>((double)xf[9]  * fr[n + 2]) +
-					reduce_precision<25>((double)xf[13] * fr[n + 3]);
+		double v3 = (double)xf[2]  * fr[n + 0] +
+					(double)xf[6]  * fr[n + 1] +
+					(double)xf[10] * fr[n + 2] +
+					(double)xf[14] * fr[n + 3];
 
-		double v3 = reduce_precision<25>((double)xf[2]  * fr[n + 0]) +
-					reduce_precision<25>((double)xf[6]  * fr[n + 1]) +
-					reduce_precision<25>((double)xf[10] * fr[n + 2]) +
-					reduce_precision<25>((double)xf[14] * fr[n + 3]);
+		double v4 = (double)xf[3]  * fr[n + 0] +
+					(double)xf[7]  * fr[n + 1] +
+					(double)xf[11] * fr[n + 2] +
+					(double)xf[15] * fr[n + 3];
 
-		double v4 = reduce_precision<25>((double)xf[3]  * fr[n + 0]) +
-					reduce_precision<25>((double)xf[7]  * fr[n + 1]) +
-					reduce_precision<25>((double)xf[11] * fr[n + 2]) +
-					reduce_precision<25>((double)xf[15] * fr[n + 3]);
-
-		fr[n + 0] = (float)fixNaN64(v1);
-		fr[n + 1] = (float)fixNaN64(v2);
-		fr[n + 2] = (float)fixNaN64(v3);
-		fr[n + 3] = (float)fixNaN64(v4);
-#else
-		float v1, v2, v3, v4;
-
-		v1 = xf[0]  * fr[n + 0] +
-			 xf[4]  * fr[n + 1] +
-			 xf[8]  * fr[n + 2] +
-			 xf[12] * fr[n + 3];
-
-		v2 = xf[1]  * fr[n + 0] +
-			 xf[5]  * fr[n + 1] +
-			 xf[9]  * fr[n + 2] +
-			 xf[13] * fr[n + 3];
-
-		v3 = xf[2]  * fr[n + 0] +
-			 xf[6]  * fr[n + 1] +
-			 xf[10] * fr[n + 2] +
-			 xf[14] * fr[n + 3];
-
-		v4 = xf[3]  * fr[n + 0] +
-			 xf[7]  * fr[n + 1] +
-			 xf[11] * fr[n + 2] +
-			 xf[15] * fr[n + 3];
-
-		CHECK_FPU_32(v1);
-		CHECK_FPU_32(v2);
-		CHECK_FPU_32(v3);
-		CHECK_FPU_32(v4);
-
-		fr[n + 0] = v1;
-		fr[n + 1] = v2;
-		fr[n + 2] = v3;
-		fr[n + 3] = v4;
-#endif
+		fr[n + 0] = fixNaN((float)v1);
+		fr[n + 1] = fixNaN((float)v2);
+		fr[n + 2] = fixNaN((float)v3);
+		fr[n + 3] = fixNaN((float)v4);
 	}
 	else
 	{
