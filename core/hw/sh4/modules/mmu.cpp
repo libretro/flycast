@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "mmu.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_interrupts.h"
@@ -448,7 +449,13 @@ template u32 mmu_full_SQ<MMU_TT_DWRITE>(u32 va, u32& rv);
 template<u32 translation_type, typename T>
 u32 mmu_data_translation(u32 va, u32& rv)
 {
-	if (va & (sizeof(T) - 1))
+	/* A 64-bit access is two of 32 bits to the SH4 and has to sit on a
+	 * 4-byte boundary, not an 8-byte one. This asked for 8, so that under
+	 * the interpreter a double moved to or from an address 4 past a
+	 * multiple of 8 was an address error. The recompilers translate a
+	 * 64-bit access as a 32-bit one and never raised it, and upstream
+	 * tests for 4. */
+	if (va & (std::min((u32)sizeof(T), 4u) - 1))
 		return MMU_ERROR_BADADDR;
 
 	if (translation_type == MMU_TT_DWRITE)
