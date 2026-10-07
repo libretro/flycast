@@ -328,6 +328,8 @@ void DYNACALL WriteMem_P4(u32 addr,T data)
 			else
 			{
 				u32 entry=(addr>>8)&63;
+				// whatever page the entry was for before goes with it
+				mmu_lut_flush();
 				UTLB[entry].Address.reg_data=data & 0xFFFFFCFF;
 				UTLB[entry].Data.D=(data>>9)&1;
 				UTLB[entry].Data.V=(data>>8)&1;

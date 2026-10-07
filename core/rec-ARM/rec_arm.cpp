@@ -336,14 +336,17 @@ __attribute__((used)) void *rec_arm_code_mmu(u32 pc)
 template<typename T>
 static T arm_mmu_read(u32 addr, u32 pc)
 {
-	u32 ex;
-	T rv = mmu_ReadMemNoEx<T>(addr, &ex);
-	if (ex)
+	u32 paddr;
+	u32 rv = mmu_data_translation<MMU_TT_DREAD, T>(addr, paddr);
+	if (rv != MMU_ERROR_NONE)
 	{
+		DoMMUException(addr, rv, MMU_TT_DREAD);
 		spc = pc;
 		longjmp(arm_jmp_env, 1);
 	}
-	return rv;
+	// the next read of the page need not come here: see mmu.h
+	mmu_lut_fill(addr, paddr, false);
+	return _vmem_readt<T, T>(paddr);
 }
 
 // what a load of 8 or 16 bits gives is sign-extended
@@ -355,11 +358,16 @@ static u64 arm_mmu_read64(u32 addr, u32 pc) { return arm_mmu_read<u64>(addr, pc)
 template<typename T>
 static void arm_mmu_write(u32 addr, T data, u32 pc)
 {
-	if (mmu_WriteMemNoEx<T>(addr, data))
+	u32 paddr;
+	u32 rv = mmu_data_translation<MMU_TT_DWRITE, T>(addr, paddr);
+	if (rv != MMU_ERROR_NONE)
 	{
+		DoMMUException(addr, rv, MMU_TT_DWRITE);
 		spc = pc;
 		longjmp(arm_jmp_env, 1);
 	}
+	mmu_lut_fill(addr, paddr, true);
+	_vmem_writet<T>(paddr, data);
 }
 
 static void arm_mmu_write8(u32 addr, u32 data, u32 pc)  { arm_mmu_write<u8>(addr, (u8)data, pc); }
@@ -990,6 +998,46 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 {
 	const u32 pc = mmu_op_pc(block, op);
 
+	/* First the table of translations kept by (mmu.h): on a hit, straight
+	 * to the page on the host. The call below is for a miss, and fills
+	 * the table in. Not for 64 bits, which can run over the end of a
+	 * page. r1 to r3 are free here but for the data of a store, which can
+	 * be in r2. */
+	u32 *miss = nullptr, *hit = nullptr;
+	if (optp != SZ_64F)
+	{
+		MOV32(r3, (u32)(read ? mmu_read_lut : mmu_write_lut));
+		LSR(r1, raddr, 12);
+		LDR(r1, r3, r1, Offset, true, S_LSL, 2);
+		CMP(r1, 0);
+		miss = (u32 *)EMIT_GET_PTR();
+		MOV(r0, r0);				// "beq" to the call, once it is known where that is
+		UBFX(r3, raddr, 0, 12);
+		if (read)
+		{
+			switch (optp)
+			{
+			case SZ_8:   LDRSB(rt, r1, r3, true); break;
+			case SZ_16:  LDRSH(rt, r1, r3, true); break;
+			case SZ_32I: LDR(rt, r1, r3, Offset, true); break;
+			default:     ADD(r1, r1, r3); VLDR(ft, r1, 0); break;
+			}
+		}
+		else
+		{
+			switch (optp)
+			{
+			case SZ_8:   STRB(rt, r1, r3, Offset, true); break;
+			case SZ_16:  STRH(rt, r1, r3, true); break;
+			case SZ_32I: STR(rt, r1, r3, Offset, true); break;
+			default:     ADD(r1, r1, r3); VSTR(ft, r1, 0); break;
+			}
+		}
+		hit = (u32 *)EMIT_GET_PTR();
+		MOV(r0, r0);				// "b" over the call
+		*miss = 0x0A000000 | ((u32)((u32 *)EMIT_GET_PTR() - miss - 2) & 0x00FFFFFF);
+	}
+
 	if (raddr != r0)
 		MOV(r0, (eReg)raddr);
 
@@ -1029,6 +1077,8 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 			}
 		}
 	}
+	if (hit != nullptr)
+		*hit = 0xEA000000 | ((u32)((u32 *)EMIT_GET_PTR() - hit - 2) & 0x00FFFFFF);
 }
 #endif
 

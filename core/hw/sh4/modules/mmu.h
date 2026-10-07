@@ -59,6 +59,42 @@ static INLINE bool mmu_enabled()
 
 template<bool internal = false>
 u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
+
+/* Translations kept by, for a recompiler that has to translate every
+ * address itself (a 32-bit host has no room to lay out a translated address
+ * space and let its own MMU do it, as the 64-bit ones do).
+ *
+ * Two tables, one for reads and one for writes, each with an entry for
+ * every 4K page of the SH4's address space: where on the host the page is,
+ * or 0. Recompiled code looks an address up in the one for what it is
+ * doing, and on a hit goes straight to memory; on a miss it calls the
+ * translation, which fills the entry in if the page is one of main memory -
+ * the only kind for which a host address is all an access needs.
+ *
+ * A write's entry is only filled by a write that was allowed, so a page
+ * that may not be written, or has not been written yet and has its first
+ * write to report, still gets its exception however often it has been read.
+ * (Upstream's table, which this is after, has one entry for both.)
+ *
+ * What it does not know is who is asking: an entry made in privileged mode
+ * is found in user mode too. The 64-bit hosts' mapping is the same.
+ *
+ * It is emptied whenever what an address means can have changed: the TLB
+ * flushed, another address space, the MMU or its single-space mode switched,
+ * a TLB entry written through its memory-mapped array, a state loaded. A
+ * page whose TLB entry is loaded or invalidated is forgotten on its own. */
+#if !defined(NO_MMU) && HOST_CPU == CPU_ARM
+#define MMU_HOST_PAGE_LUT 1
+extern u32 mmu_read_lut[0x100000];
+extern u32 mmu_write_lut[0x100000];
+void mmu_lut_flush();
+void mmu_lut_forget(u32 va, u32 size);
+// @va has just been translated to @pa, for a write if @write
+void mmu_lut_fill(u32 va, u32 pa, bool write);
+#else
+static INLINE void mmu_lut_flush() {}
+static INLINE void mmu_lut_forget(u32 va, u32 size) {}
+#endif
 u32 mmu_instruction_lookup(u32 va, const TLB_Entry **entry, u32& rv);
 template<u32 translation_type>
 u32 mmu_full_SQ(u32 va, u32& rv);

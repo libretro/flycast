@@ -189,6 +189,8 @@ bool UTLB_Sync(u32 entry)
 
 	tlb_entry.Address.VPN = lru_address >> 10;
 	cache_entry(tlb_entry);
+	// the page it is for means what this entry says from now on, or nothing
+	mmu_lut_forget(lru_address, ~lru_mask + 1);
 
 	if (!mmu_enabled() && (tlb_entry.Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
 	{
@@ -355,5 +357,6 @@ void mmu_flush_table()
 {
 	lru_entry = NULL;
 	flush_cache();
+	mmu_lut_flush();
 }
 #endif 	// FAST_MMU

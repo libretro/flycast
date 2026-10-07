@@ -72,8 +72,12 @@ void CCN_PTEH_write(u32 addr, u32 value)
 {
 	CCN_PTEH_type temp;
 	temp.reg_data = value;
-	if (temp.ASID != CCN_PTEH.ASID && vmem32_enabled())
-		vmem32_flush_mmu();
+	if (temp.ASID != CCN_PTEH.ASID)
+	{
+		if (vmem32_enabled())
+			vmem32_flush_mmu();
+		mmu_lut_flush();
+	}
 
 	CCN_PTEH = temp;
 }
@@ -84,6 +88,8 @@ void CCN_MMUCR_write(u32 addr, u32 value)
 	temp.reg_data=value;
 
 	bool mmu_changed_state = temp.AT != CCN_MMUCR.AT;
+	if (temp.SV != CCN_MMUCR.SV)
+		mmu_lut_flush();
 	
 	if (temp.TI != 0)
 	{

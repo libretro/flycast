@@ -631,8 +631,73 @@ retry_ITLB_Match:
 	return MMU_ERROR_NONE;
 }
 
+#ifdef MMU_HOST_PAGE_LUT
+#include <sys/mman.h>
+
+u32 mmu_read_lut[0x100000] __attribute__((aligned(4096)));
+u32 mmu_write_lut[0x100000] __attribute__((aligned(4096)));
+// nothing in either: emptying them again is then nothing to do
+static bool mmu_lut_empty = true;
+
+void mmu_lut_flush()
+{
+	if (mmu_lut_empty)
+		return;
+	mmu_lut_empty = true;
+#ifdef MADV_DONTNEED
+	/* The pages are given back and come back as zeroes when next touched:
+	 * the cost goes by how much of the 8 MB was used, which is little. */
+	if (madvise(mmu_read_lut, sizeof(mmu_read_lut), MADV_DONTNEED) == 0
+			&& madvise(mmu_write_lut, sizeof(mmu_write_lut), MADV_DONTNEED) == 0)
+		return;
+#endif
+	memset(mmu_read_lut, 0, sizeof(mmu_read_lut));
+	memset(mmu_write_lut, 0, sizeof(mmu_write_lut));
+}
+
+void mmu_lut_forget(u32 va, u32 size)
+{
+	if (mmu_lut_empty)
+		return;
+	if (size > 0x100000)
+		size = 0x100000;
+	va &= ~(size - 1);
+	for (u32 page = va >> 12; page <= (va + size - 1) >> 12; page++)
+	{
+		mmu_read_lut[page] = 0;
+		mmu_write_lut[page] = 0;
+	}
+}
+
+void mmu_lut_fill(u32 va, u32 pa, bool write)
+{
+	// main memory only
+	if ((pa & 0x1C000000) != 0x0C000000)
+		return;
+	if (va < 0x7C000000)
+	{
+		// translated: a 1K page is finer than the tables
+		const TLB_Entry *entry;
+		u32 rv;
+		if (mmu_full_lookup<false>(va, &entry, rv) != MMU_ERROR_NONE
+				|| (entry->Data.SZ1 == 0 && entry->Data.SZ0 == 0))
+			return;
+	}
+	else if ((va >> 29) != 4 && (va >> 29) != 5)
+		// neither translated nor one of the two regions that are not
+		return;
+
+	const u32 host = (u32)(size_t)&mem_b[pa & RAM_MASK & ~0xFFFu];
+	mmu_read_lut[va >> 12] = host;
+	if (write)
+		mmu_write_lut[va >> 12] = host;
+	mmu_lut_empty = false;
+}
+#endif
+
 void mmu_set_state()
 {
+	mmu_lut_flush();
 	if (CCN_MMUCR.AT == 1 && settings.dreamcast.FullMMU)
 	{
 		NOTICE_LOG(SH4, "Enabling Full MMU support");
@@ -666,6 +731,7 @@ void MMU_init()
 
 void MMU_reset()
 {
+	mmu_lut_flush();
 	memset(UTLB, 0, sizeof(UTLB));
 	memset(ITLB, 0, sizeof(ITLB));
 	mmu_set_state();
