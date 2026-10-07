@@ -52,6 +52,14 @@ extern "C" {
 #define _S(x) STRINGIFY(x)
 #define CPU_RUNNING 135266148
 #define PC 135266120
+/* Recompiled code keeps r15 pointing into the SH4's context, so that a
+ * register in it is reached with one short instruction where it took a
+ * 64-bit address in rax and then the access. It points 160 bytes in: a
+ * signed byte then reaches the general registers, the floating-point ones
+ * but the first eight of the second bank, and pc, pr, T and FPSCR.
+ * CTX_BASE is that place from the start of the block holding the context. */
+#define CTX_BIAS 160
+#define CTX_BASE 135266016
 
 jmp_buf jmp_env;
 
@@ -94,7 +102,9 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
 #else
                         "subq $8, %rsp                                  \n\t"   // 8 for stack 16-byte alignment
 #endif
-                        "movl $" _S(SH4_TIMESLICE) "," _U "cycle_counter(%rip)  \n"
+                        "movl $" _S(SH4_TIMESLICE) "," _U "cycle_counter(%rip)  \n\t"
+                        "movq " _U "p_sh4rcb(%rip), %r15                 \n\t"   // the context, for all recompiled code
+                        "addq $" _S(CTX_BASE) ", %r15                    \n"
 
 #ifdef _WIN32
                			"leaq " _U "jmp_env(%rip), %rcx			\n\t"	// SETJMP
@@ -438,9 +448,9 @@ public:
 				  movss(regalloc.MapXRegister(op.rd, 0), regalloc.MapXRegister(op.rs1, 0));
 				  movss(regalloc.MapXRegister(op.rd, 1), regalloc.MapXRegister(op.rs1, 1));
 #else
-				  mov(rax, (uintptr_t)op.rs1.reg_ptr());
+				  lea(rax, Ctx(op.rs1.reg_ptr()));
 				  mov(rax, qword[rax]);
-				  mov(rcx, (uintptr_t)op.rd.reg_ptr());
+				  lea(rcx, Ctx(op.rd.reg_ptr()));
 				  mov(qword[rcx], rax);
 #endif
                }
@@ -459,7 +469,7 @@ public:
 								add(call_regs[0], regalloc.MapRegister(op.rs3));
 							else
 							{
-								mov(rax, (uintptr_t)op.rs3.reg_ptr());
+								lea(rax, Ctx(op.rs3.reg_ptr()));
 								add(call_regs[0], dword[rax]);
 							}
 						}
@@ -480,7 +490,7 @@ public:
 							else
 #endif
 							{
-								mov(rcx, (uintptr_t)op.rd.reg_ptr());
+								lea(rcx, Ctx(op.rd.reg_ptr()));
 								mov(qword[rcx], rax);
 							}
 						}
@@ -500,7 +510,7 @@ public:
 									add(call_regs[0], regalloc.MapRegister(op.rs3));
 								else
 								{
-									mov(rax, (uintptr_t)op.rs3.reg_ptr());
+									lea(rax, Ctx(op.rs3.reg_ptr()));
 									add(call_regs[0], dword[rax]);
 								}
 							}
@@ -520,7 +530,7 @@ public:
 								else
 #endif
 								{
-									mov(rax, (uintptr_t)op.rs2.reg_ptr());
+									lea(rax, Ctx(op.rs2.reg_ptr()));
 									mov(call_regs64[1], qword[rax]);
 								}
 							}
@@ -879,7 +889,7 @@ public:
 					}
 					else
 					{
-						mov(rax, (uintptr_t)op.rs1.reg_ptr());
+						lea(rax, Ctx(op.rs1.reg_ptr()));
 						mov(eax, dword[rax]);
 						rn = eax;
 					}
@@ -1057,7 +1067,7 @@ public:
                movss(regalloc.MapXRegister(op.rd, 1), dword[rcx + (rax * 8) + 4]);
 #else
                mov(rcx, qword[rcx + rax * 8]);
-               mov(rdx, (uintptr_t)op.rd.reg_ptr());
+               lea(rdx, Ctx(op.rd.reg_ptr()));
                mov(qword[rdx], rcx);
 #endif
                break;
@@ -1066,24 +1076,24 @@ public:
 					/* In line, in doubles: see x64_vector.h. The code for this was
 					 * commented out, and every inner product called the reference
 					 * function. */
-					mov(rax, (uintptr_t)op.rs1.reg_ptr());
-					mov(rcx, (uintptr_t)op.rs2.reg_ptr());
+					lea(rax, Ctx(op.rs1.reg_ptr()));
+					lea(rcx, Ctx(op.rs2.reg_ptr()));
 					x64_emit_fipr(*this, regalloc.MapXRegister(op.rd));
 					break;
 
             case shop_ftrv:
 					/* As above. This called the reference function for every
 					 * vertex a game transforms. */
-					mov(rax, (uintptr_t)op.rs1.reg_ptr());		// the vector
-					mov(rcx, (uintptr_t)op.rs2.reg_ptr());		// the matrix
+					lea(rax, Ctx(op.rs1.reg_ptr()));		// the vector
+					lea(rcx, Ctx(op.rs2.reg_ptr()));		// the matrix
 					x64_emit_ftrv(*this);
-					mov(rax, (uintptr_t)op.rd.reg_ptr());
+					lea(rax, Ctx(op.rd.reg_ptr()));
 					movups(xword[rax], xmm0);
 					break;
 
             case shop_frswap:
-               mov(rax, (uintptr_t)op.rs1.reg_ptr());
-               mov(rcx, (uintptr_t)op.rd.reg_ptr());
+               lea(rax, Ctx(op.rs1.reg_ptr()));
+               lea(rcx, Ctx(op.rd.reg_ptr()));
 					if (cpu.has(Xbyak::util::Cpu::tAVX512F))
 					{
 						vmovaps(zmm0, zword[rax]);
@@ -1162,8 +1172,6 @@ public:
 		regalloc.Cleanup();
 		current_opid = -1;
 
-		mov(rax, (size_t)&next_pc);
-
 		/* Where the block ends by going on to another, it goes there itself:
 		 * through the next block's place in the table of blocks, which
 		 * always holds that block's code, or the stub that compiles it if
@@ -1186,7 +1194,7 @@ public:
 		case BET_StaticJump:
 		case BET_StaticCall:
 			//next_pc = block->BranchBlock;
-			mov(dword[rax], block->BranchBlock);
+			mov(Ctx(&next_pc), block->BranchBlock);
 			if (go_on)
 				GenGoOn(block->BranchBlock);
 			break;
@@ -1198,22 +1206,17 @@ public:
 				//if (*jdyn == 0)
 				//next_pc = branch_pc_value;
 
-				if (block->has_jcond)
-					mov(rdx, (size_t)&Sh4cntx.jdyn);
-				else
-					mov(rdx, (size_t)&sr.T);
-
-				cmp(dword[rdx], block->BlockType & 1);
+				cmp(block->has_jcond ? Ctx(&Sh4cntx.jdyn) : Ctx(&sr.T), block->BlockType & 1);
 				Xbyak::Label branch_not_taken;
 
 				jne(branch_not_taken, T_NEAR);
-				mov(dword[rax], block->BranchBlock);
+				mov(Ctx(&next_pc), block->BranchBlock);
 				if (go_on)
 					GenGoOn(block->BranchBlock);
 				else
 					jmp(exit_block, T_NEAR);
 				L(branch_not_taken);
-				mov(dword[rax], block->NextBlock);
+				mov(Ctx(&next_pc), block->NextBlock);
 				if (go_on)
 					GenGoOn(block->NextBlock);
 			}
@@ -1223,9 +1226,8 @@ public:
 		case BET_DynamicCall:
 		case BET_DynamicRet:
 			//next_pc = *jdyn;
-			mov(rdx, (size_t)&Sh4cntx.jdyn);
-			mov(edx, dword[rdx]);
-			mov(dword[rax], edx);
+			mov(edx, Ctx(&Sh4cntx.jdyn));
+			mov(Ctx(&next_pc), edx);
 			if (go_on)
 			{
 				// the address is only known now: its place in the table is worked out here
@@ -1241,13 +1243,12 @@ public:
 		case BET_StaticIntr:
 			if (block->BlockType == BET_DynamicIntr) {
 				//next_pc = *jdyn;
-				mov(rdx, (size_t)&Sh4cntx.jdyn);
-				mov(edx, dword[rdx]);
-				mov(dword[rax], edx);
+				mov(edx, Ctx(&Sh4cntx.jdyn));
+				mov(Ctx(&next_pc), edx);
 			}
 			else {
 				//next_pc = next_pc_value;
-				mov(dword[rax], block->NextBlock);
+				mov(Ctx(&next_pc), block->NextBlock);
 			}
 
 			GenCall(UpdateINTC);
@@ -1446,7 +1447,7 @@ public:
 			host_reg_to_shil_param(prm, xmm0);
 #ifdef EXPLODE_SPANS
 			// The x86 dynarec saves to mem as well
-			//mov(rax, (uintptr_t)prm.reg_ptr());
+			//lea(rax, Ctx(prm.reg_ptr()));
 			//movd(dword[rax], xmm0);
 #endif
 			break;
@@ -1488,25 +1489,29 @@ public:
 		GenCall((void (*)())function);
 	}
 
+	// Something in the SH4's context, from r15
+	Xbyak::Address Ctx(const void *p)
+	{
+		const ptrdiff_t at = (const u8*)p - (const u8*)&p_sh4rcb->cntx;
+		verify(at >= 0 && at < (ptrdiff_t)sizeof(Sh4Context));
+		return dword[r15 + ((int)at - CTX_BIAS)];
+	}
+
 	void RegPreload(u32 reg, Xbyak::Operand::Code nreg)
 	{
-	   mov(rax, (size_t)GetRegPtr(reg));
-	   mov(Xbyak::Reg32(nreg), dword[rax]);
+	   mov(Xbyak::Reg32(nreg), Ctx(GetRegPtr(reg)));
 	}
 	void RegWriteback(u32 reg, Xbyak::Operand::Code nreg)
 	{
-	   mov(rax, (size_t)GetRegPtr(reg));
-	   mov(dword[rax], Xbyak::Reg32(nreg));
+	   mov(Ctx(GetRegPtr(reg)), Xbyak::Reg32(nreg));
 	}
 	void RegPreload_FPU(u32 reg, s8 nreg)
 	{
-	   mov(rax, (size_t)GetRegPtr(reg));
-	   movss(Xbyak::Xmm(nreg), dword[rax]);
+	   movss(Xbyak::Xmm(nreg), Ctx(GetRegPtr(reg)));
 	}
 	void RegWriteback_FPU(u32 reg, s8 nreg)
 	{
-	   mov(rax, (size_t)GetRegPtr(reg));
-	   movss(dword[rax], Xbyak::Xmm(nreg));
+	   movss(Ctx(GetRegPtr(reg)), Xbyak::Xmm(nreg));
 	}
 
 private:
@@ -1563,7 +1568,7 @@ private:
 				else
 				{
 					movsx(eax, byte[rax]);
-					mov(rcx, (uintptr_t)op.rd.reg_ptr());
+					lea(rcx, Ctx(op.rd.reg_ptr()));
 					mov(dword[rcx], eax);
 				}
 				break;
@@ -1574,7 +1579,7 @@ private:
 				else
 				{
 					movsx(eax, word[rax]);
-					mov(rcx, (uintptr_t)op.rd.reg_ptr());
+					lea(rcx, Ctx(op.rd.reg_ptr()));
 					mov(dword[rcx], eax);
 				}
 				break;
@@ -1587,7 +1592,7 @@ private:
 				else
 				{
 					mov(eax, dword[rax]);
-					mov(rcx, (uintptr_t)op.rd.reg_ptr());
+					lea(rcx, Ctx(op.rd.reg_ptr()));
 					mov(dword[rcx], eax);
 				}
 				break;
@@ -1604,7 +1609,7 @@ private:
 				else
 #endif
 				{
-					mov(rax, (uintptr_t)op.rd.reg_ptr());
+					lea(rax, Ctx(op.rd.reg_ptr()));
 					mov(qword[rax], rcx);
 				}
 				break;
@@ -1624,7 +1629,7 @@ private:
 				// Need to call the handler twice
 			mov(call_regs[0], addr);
 				GenCall((void (*)())ptr);
-				mov(rcx, (size_t)op.rd.reg_ptr());
+				lea(rcx, Ctx(op.rd.reg_ptr()));
 				mov(dword[rcx], eax);
 
 				mov(call_regs[0], addr + 4);
@@ -1714,7 +1719,7 @@ private:
 					mov(byte[rax], (u8)op.rs2._imm);
 				else
 				{
-					mov(rcx, (uintptr_t)op.rs2.reg_ptr());
+					lea(rcx, Ctx(op.rs2.reg_ptr()));
 					mov(cl, byte[rcx]);
 					mov(byte[rax], cl);
 				}
@@ -1727,7 +1732,7 @@ private:
 					mov(word[rax], (u16)op.rs2._imm);
 				else
 				{
-					mov(rcx, (uintptr_t)op.rs2.reg_ptr());
+					lea(rcx, Ctx(op.rs2.reg_ptr()));
 					mov(cx, word[rcx]);
 					mov(word[rax], cx);
 				}
@@ -1742,7 +1747,7 @@ private:
 					mov(dword[rax], op.rs2._imm);
 				else
 				{
-					mov(rcx, (uintptr_t)op.rs2.reg_ptr());
+					lea(rcx, Ctx(op.rs2.reg_ptr()));
 					mov(ecx, dword[rcx]);
 					mov(dword[rax], ecx);
 				}
@@ -1760,7 +1765,7 @@ private:
 				else
 #endif
 				{
-					mov(rcx, (uintptr_t)op.rs2.reg_ptr());
+					lea(rcx, Ctx(op.rs2.reg_ptr()));
 					mov(rcx, qword[rcx]);
 					mov(qword[rax], rcx);
 				}
@@ -2132,7 +2137,7 @@ public:
 				}
 	   		else
 	   		{
-	   			mov(rax, (size_t)param.reg_ptr());
+	   			lea(rax, Ctx(param.reg_ptr()));
 					verify(!reg.isXMM());
 					mov((const Xbyak::Reg32 &)reg, dword[rax]);
 				}
@@ -2149,7 +2154,7 @@ public:
 				}
 				else
 				{
-					mov(rax, (size_t)param.reg_ptr());
+					lea(rax, Ctx(param.reg_ptr()));
 					if (!reg.isXMM())
 						mov((const Xbyak::Reg32 &)reg, dword[rax]);
 					else
@@ -2184,7 +2189,7 @@ public:
 	   }
 		else
 		{
-			mov(rax, (size_t)param.reg_ptr());
+			lea(rax, Ctx(param.reg_ptr()));
 			if (!reg.isXMM())
 				mov(dword[rax], (const Xbyak::Reg32 &)reg);
 			else
@@ -2248,6 +2253,7 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 {
 	verify(CPU_RUNNING == offsetof(Sh4RCB, cntx.CpuRunning));
 	verify(PC == offsetof(Sh4RCB, cntx.pc));
+	verify(CTX_BASE == offsetof(Sh4RCB, cntx) + CTX_BIAS);
 	verify(emit_FreeSpace() >= 16 * 1024);
 
 	compiler = new BlockCompiler();
