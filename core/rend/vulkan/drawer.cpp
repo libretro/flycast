@@ -358,16 +358,21 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 
 bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 {
+	SortTriangles();
+	currentScissor = vk::Rect2D();
+
+	vk::CommandBuffer cmdBuffer = BeginRenderPass();
+
+	/* After BeginRenderPass(), which works the matrices out for this
+	 * render. Taken before it, they were the last render's: the same from
+	 * one frame to the next for the screen, so it did not show - but of two
+	 * renders to textures of different sizes in one frame, each was drawn
+	 * with the other's, at the wrong scale. */
 	VertexShaderUniforms vtxUniforms;
 	xform_to_mat4(&matrices.GetNormalMatrix(), vtxUniforms.normal_matrix);
 
 	FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<FragmentShaderUniforms>();
 	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
-
-	SortTriangles();
-	currentScissor = vk::Rect2D();
-
-	vk::CommandBuffer cmdBuffer = BeginRenderPass();
 
 	SetProvokingVertices();
 
