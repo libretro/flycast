@@ -360,6 +360,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "auto",
    },
+   {
+      CORE_OPTION_NAME "_sh4_timing",
+      "SH4 Timing (Restart)",
+      NULL,
+      "How long each instruction of the main processor is taken to last. 'Legacy' is the rule of thumb this core has always used: every integer instruction 8 cycles and every floating-point one none, with some kinds of loop hurried along. 'Accurate' counts them as the processor issues them, which makes the processor about three times as fast as 'Legacy' has it, and is what upstream Flycast does. Try 'Accurate' for a game whose speed or timing is off; it takes more of the host.",
+      NULL,
+      NULL,
+      {
+         { "legacy",   "Legacy" },
+         { "accurate", "Accurate" },
+         { NULL, NULL },
+      },
+      "legacy",
+   },
 #ifdef FEAT_AREC_SELECTABLE
    {
       CORE_OPTION_NAME "_arm7_recompiler",

@@ -3,6 +3,8 @@
 */
 
 #include "types.h"
+#include "hw/sh4/sh4_cycles.h"
+#include "hw/sh4/modules/mmu.h"
 
 #include "../sh4_interpreter.h"
 #include "../sh4_opcode_list.h"
@@ -20,12 +22,18 @@ sh4_ocache ocache;
 
 static s32 l;
 
+// The cycles of what is being run, for the accurate setting
+static Sh4Cycles timing;
+
 static void ExecuteOpcode(u16 op)
 {
 	if (sr.FD == 1 && OpDesc[op]->IsFloatingPoint())
 		RaiseFPUDisableException();
 	OpPtr[op](op);
-	l -= CPU_RATIO;
+	if (settings.dynarec.AccurateTiming)
+		l -= timing.count(op, mmu_enabled() ? 5 : 2);
+	else
+		l -= CPU_RATIO;
 }
 
 static u16 ReadNexOp()
@@ -55,6 +63,7 @@ void Sh4_int_Run()
             ExecuteOpcode(op);
          } while (l > 0);
          l += SH4_TIMESLICE;
+         timing.reset();
          UpdateSystem_INTC();
 #if !defined(NO_MMU)
       }

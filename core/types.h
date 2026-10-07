@@ -588,6 +588,7 @@ struct settings_t
 		bool ForceDisableDivMatching;
 		bool PrecompileFpcb;	// eagerly commit the whole block-dispatch table
 		bool Arm7Interpreter;	// the sound chip's ARM7 interpreted, where there is the choice
+		bool AccurateTiming;	// SH4 instructions cost what hw/sh4/sh4_cycles.h says, not the old flat 8 or 0
 	} dynarec;
 	
 	struct

@@ -679,6 +679,14 @@ static void update_variables(bool first_startup)
 
    if (first_startup)
    {
+      /* Only when content starts: recompiled blocks have their cycles
+       * built in, and everything timed is laid out for one or the other. */
+      var.key = CORE_OPTION_NAME "_sh4_timing";
+      var.value = NULL;
+      settings.dynarec.AccurateTiming = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("accurate", var.value);
+      NOTICE_LOG(COMMON, "SH4 timing: %s", settings.dynarec.AccurateTiming ? "accurate" : "legacy");
+
       var.key = CORE_OPTION_NAME "_system";
 
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

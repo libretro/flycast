@@ -8,6 +8,7 @@
 #if FEAT_SHREC != DYNAREC_NONE
 
 #include "decoder.h"
+#include "hw/sh4/sh4_cycles.h"
 #include "shil.h"
 #include "ngen.h"
 #include "hw/sh4/sh4_opcode_list.h"
@@ -1026,9 +1027,74 @@ static void state_Setup(u32 rpc,fpscr_t fpu_cfg)
    state.info.has_fpu=false;
 }
 
+/* Whether the block is a loop back to its own start that nothing it does
+ * can end: it writes no memory, and no register it reads on the way in is
+ * one it changes, so every pass reads the same places and comes to the same
+ * answer. What it is waiting for can then only come from outside - an
+ * interrupt, a device - and in this emulator that only happens between time
+ * slices: within one, nothing a program can read changes but by its own
+ * doing, the clock and the timers included. So such a loop can as well go
+ * round once in a slice as two hundred times.
+ *
+ * A loop that counts, or walks through memory, changes a register it reads
+ * and is not one of these. */
+static bool dec_IsIdleLoop(const RuntimeBlockInfo *block)
+{
+	if (block->BranchBlock != block->vaddr)
+		return false;
+	if (block->BlockType != BET_Cond_0 && block->BlockType != BET_Cond_1 && block->BlockType != BET_StaticJump)
+		return false;
+
+	bool written[sh4_reg_count] = {};
+	bool needed[sh4_reg_count] = {};	// read before the block has written it
+
+	for (const shil_opcode& op : block->oplist)
+	{
+		switch (op.op)
+		{
+		// these write memory, or read and write registers that are not among their operands
+		case shop_ifb:
+		case shop_writem:
+		case shop_pref:
+		case shop_sync_sr:
+		case shop_sync_fpscr:
+		case shop_div1:
+		case shop_frswap:
+			return false;
+		default:
+			break;
+		}
+		const shil_param *sources[] = { &op.rs1, &op.rs2, &op.rs3 };
+		for (const shil_param *param : sources)
+			if (param->is_reg())
+			{
+				if (param->count() != 1 || param->_reg >= sh4_reg_count)
+					return false;
+				if (!written[param->_reg])
+					needed[param->_reg] = true;
+			}
+		const shil_param *results[] = { &op.rd, &op.rd2 };
+		for (const shil_param *param : results)
+			if (param->is_reg())
+			{
+				if (param->count() != 1 || param->_reg >= sh4_reg_count)
+					return false;
+				written[param->_reg] = true;
+			}
+	}
+	for (int i = 0; i < sh4_reg_count; i++)
+		if (needed[i] && written[i])
+			return false;
+	return true;
+}
+
+// The cycles of the block being decoded, for the accurate setting
+static Sh4Cycles block_timing;
+
 bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
 {
 	blk=rbi;
+	block_timing.reset();
 	state_Setup(blk->vaddr, blk->fpu_cfg);
 	ngen_GetFeatures(&state.ngen);
 	
@@ -1056,7 +1122,11 @@ bool dec_DecodeBlock(RuntimeBlockInfo* rbi,u32 max_cycles)
                u32 op = IReadMem16(state.cpu.rpc);
 
 					blk->guest_opcodes++;
-					if (!mmu_enabled())
+					if (settings.dynarec.AccurateTiming)
+					{
+						blk->guest_cycles += block_timing.count(op, mmu_enabled() ? 5 : 2);
+					}
+					else if (!mmu_enabled())
 					{
 						if (op>=0xF000)
 							blk->guest_cycles+=0;
@@ -1138,6 +1208,29 @@ _end:
    }
 #endif
 #endif
+
+	if (settings.dynarec.AccurateTiming)
+	{
+		/* None of the tricks below, which make whole kinds of block cost
+		 * several times their cycles. One thing in their place, which
+		 * costs nothing in accuracy: a loop that cannot end by its own
+		 * doing takes the whole time slice for a pass, since nothing it
+		 * waits for can arrive before the slice is over. See
+		 * dec_IsIdleLoop(). */
+		if (dec_IsIdleLoop(blk))
+			blk->guest_cycles = SH4_TIMESLICE;
+		/* That only sees a loop that is one block. A game's wait is often
+		 * several - Soul Calibur's calls a function that does nothing on
+		 * every pass - and those are told, as they always were, by the list
+		 * of blocks known to be in one. With the block's real cycles a game
+		 * on the list would spin its loop three times as often as before. */
+		else if (!mmu_enabled() && strstr(idle_hash, blk->hash()))
+			blk->guest_cycles = max_cycles;
+		else
+			blk->guest_cycles = std::max(1U, blk->guest_cycles);
+		blk=0;
+		return true;
+	}
 
 	//cycle tricks
 	//Experimental hash-id based idle skip
