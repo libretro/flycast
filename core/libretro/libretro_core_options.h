@@ -233,19 +233,19 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled",
 #endif
    },
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_mipmapping",
-      "Mipmapping",
+   {
+      CORE_OPTION_NAME "_force_texture_lod0",
+      "Force Texture LOD0",
       NULL,
-      "",
+      "Disable this for traditional hardware mipmapping. Enabling this will bypass mipmapping and always use texture LOD0 instead. The result is better image quality.",
       NULL,
       "video",
       {
-         { "enabled",  NULL },
          { "disabled", NULL },
+         { "enabled",  NULL },
          { NULL, NULL },
       },
-      "enabled",
+      "disabled",
    },
    {
       CORE_OPTION_NAME "_widescreen_hack",

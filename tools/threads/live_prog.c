@@ -471,6 +471,22 @@ static void ta_scene(void)
          F(10.0f), F(215.0f), F(30.0f), F(235.0f));
    ta_quad(TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x30u << 21) | (0x60000 >> 3), 0xFFFFFFFF, F(0.5f),
          F(35.0f), F(215.0f), F(55.0f), F(235.0f));
+   /* Top middle: M, the texture with mipmaps, repeated 128 times across 40
+    * pixels: far too small for any level but the smallest, the white one,
+    * at any resolution it is drawn at. That is mipmapping, which the
+    * console does. With Force Texture LOD0 the largest level is drawn
+    * whatever the size, and M is red. */
+   {
+      const u32 tsp = TSP_PLAIN | (1u << 13) | (4u << 8);          /* bilinear, mipmap D of 1 */
+      const u32 tcw = (1u << 31) | (1u << 27) | (0x64000 >> 3);    /* mipmapped, RGB565, twiddled */
+      const u32 mx0 = F(120.0f), mx1 = F(160.0f), my0 = F(28.0f), my1 = F(52.0f), z = F(0.5f), far = F(128.0f);
+
+      ta_send(TA_POLYGON | TA_TEXTURED, ISP_GEQUAL, tsp, tcw, 0, 0, 0, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED, mx0, my0, z, 0, 0, 0xFFFFFFFF, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED, mx0, my1, z, 0, far, 0xFFFFFFFF, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED, mx1, my0, z, far, 0, 0xFFFFFFFF, 0);
+      ta_send(TA_VERTEX | TA_TEXTURED | TA_LAST, mx1, my1, z, far, far, 0xFFFFFFFF, 0);
+   }
    /* Bottom, left of the middle: E, white, taking shadows, under a volume
     * that covers its whole width - but the volume is sent under a clipping
     * rectangle, the tile of E's left half, and asks to be kept inside it.
@@ -1331,6 +1347,11 @@ void cmain(void)
       (*(volatile u32 *)(0xA4060000 + i * 4)) = 0x07070707;
    set_palette(2 * 256 + 7, 0x001F);
    set_palette(3 * 256 + 7, 0x001F);
+   /* A texture with mipmaps, 8x8 RGB565: its 1x1 level white, 2x2 blue, 4x4
+    * green and the 8x8 one red. The levels come smallest first, after three
+    * unused texels. */
+   for (i = 0; i < 88; i++)
+      (*(volatile u16 *)(0xA4064000 + i * 2)) = i < 3 ? 0 : i == 3 ? 0xFFFF : i < 8 ? 0x001F : i < 24 ? 0x07E0 : 0xF800;
    PVR(0x11C) = 0x80;                                  /* PT_ALPHA_REF */
    sq_bad = sq_test();
    (*(volatile u32 *)0xFF000038) = 0x10;               /* QACR0: store queues go to the TA */

@@ -665,17 +665,19 @@ static void update_variables(bool first_startup)
    if (!first_startup && previous_renderer != settings.pvr.rend)
 	  renderer_changed = true;
 
-   var.key = CORE_OPTION_NAME "_mipmapping";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   /* Mipmapping is what the console does and is not an option. This is the
+    * way round it: every texture drawn with its largest level only. A
+    * texture already made has its smaller levels with it, or has not, so a
+    * change here has the textures made again. */
    {
-      if (!strcmp(var.value, "enabled"))
-         settings.rend.UseMipmaps      = 1;
-      else if (!strcmp(var.value, "disabled"))
-         settings.rend.UseMipmaps      = 0;
+      const bool force_lod0_before = settings.rend.ForceTextureLOD0;
+
+      var.key = CORE_OPTION_NAME "_force_texture_lod0";
+      settings.rend.ForceTextureLOD0 = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+            && !strcmp(var.value, "enabled");
+      if (!first_startup && settings.rend.ForceTextureLOD0 != force_lod0_before)
+         KillTex = true;
    }
-   else
-      settings.rend.UseMipmaps      = 1;
 
    if (first_startup)
    {

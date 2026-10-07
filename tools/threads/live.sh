@@ -136,6 +136,12 @@ reicast_hle_bios = "enabled"
 reicast_vmu1_screen_display = "enabled"
 reicast_alpha_sorting = "per-pixel (accurate)"
 CFG
+cat > "$WORK/core-options-lod0.cfg" <<CFG
+reicast_threaded_rendering = "enabled"
+reicast_hle_bios = "enabled"
+reicast_vmu1_screen_display = "enabled"
+reicast_force_texture_lod0 = "enabled"
+CFG
 cat > "$WORK/core-options-off.cfg" <<CFG
 reicast_threaded_rendering = "disabled"
 reicast_hle_bios = "enabled"
@@ -287,6 +293,21 @@ for DRV in $RING_DRIVERS; do
       }
    done
    expect $DRV-ring-302.log "Starting threaded video driver"
+done
+# Force Texture LOD0: the mipmapped texture on the disc is drawn with its
+# largest level, where every other run has its smallest.
+for DRV in $DRIVERS; do
+   echo "== $DRV: Force Texture LOD0"
+   echo "video_driver = \"$DRV\"" > "$WORK/driver.cfg"
+   echo "core_options_path = \"$WORK/core-options-lod0.cfg\"" >> "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   run $DRV-lod0.log 300 "$WORK/test.gdi" "$WORK/$DRV-lod0.png"
+   expect $DRV-lod0.log "core options file to .*core-options-lod0.cfg"
+   python3 "$ROOT/tools/threads/live_shot.py" --lod0 "$WORK/$DRV-lod0.png" || {
+      echo "FAIL: with Force Texture LOD0 the mipmapped texture is not drawn with its largest level" >&2
+      exit 1
+   }
 done
 for DRV in $PIXEL_DRIVERS; do
    case $DRV in

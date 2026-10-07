@@ -563,7 +563,7 @@ struct settings_t
 
 	struct
 	{
-		bool UseMipmaps;
+		bool ForceTextureLOD0;	// every texture drawn with its largest level only: mipmapping, which the console does, off
 		bool WideScreen;
 		bool RenderToTextureBuffer;
 		int RenderToTextureUpscale;

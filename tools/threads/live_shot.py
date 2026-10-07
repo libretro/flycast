@@ -108,7 +108,9 @@ def main():
     no_disc = '--no-disc' in sys.argv[1:-1]
     # --per-pixel: drawn by a renderer that does two volumes
     per_pixel = '--per-pixel' in sys.argv[1:-1]
-    if len(sys.argv) != 2 + no_disc + per_pixel:
+    # --lod0: run with Force Texture LOD0 on
+    lod0 = '--lod0' in sys.argv[1:-1]
+    if len(sys.argv) != 2 + no_disc + per_pixel + lod0:
         sys.stderr.write(__doc__)
         return 2
     width, height, bpp, rows = png_rows(sys.argv[-1])
@@ -147,6 +149,9 @@ def main():
         ('B, in the volume',       216,  90, (0, 0, 255)),
         ('B, lit',                 270,  90, (0, 0, 255)),
         # a volume sent under a clipping rectangle: its shadow stops at the rectangle's edge
+        # a mipmapped texture drawn very small: its smallest level, or with
+        # Force Texture LOD0 its largest
+        ('M, the mipmapped texture', 140, 40, (255, 0, 0) if lod0 else (255, 255, 255)),
         # two textures of palette indices, of different banks
         ('F, outside its volume: the first texture', 208, 225, (0, 0, 255)),
         ('F, in its volume: the second texture', 232, 225, (255, 0, 255)),

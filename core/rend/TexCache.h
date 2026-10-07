@@ -1011,7 +1011,7 @@ public:
 	{
 		// for a paletted texture that bit is not the scan order but part of
 		// the palette selection
-		return tcw.MipMapped != 0 && (IsPaletted() || tcw.ScanOrder == 0) && settings.rend.UseMipmaps;
+		return tcw.MipMapped != 0 && (IsPaletted() || tcw.ScanOrder == 0) && !settings.rend.ForceTextureLOD0;
 	}
 
 	const char* GetPixelFormatName()

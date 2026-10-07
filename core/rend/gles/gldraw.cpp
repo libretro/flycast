@@ -181,7 +181,7 @@ __forceinline
 	{
 		//bilinear filtering
 		//PowerVR supports also trilinear via two passes, but we ignore that for now
-		bool mipmapped = gp->tcw.MipMapped != 0 && gp->tcw.ScanOrder == 0 && settings.rend.UseMipmaps;
+		bool mipmapped = gp->tcw.MipMapped != 0 && gp->tcw.ScanOrder == 0 && !settings.rend.ForceTextureLOD0;
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mipmapped ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR);
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 #ifdef GL_TEXTURE_LOD_BIAS
