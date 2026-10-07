@@ -101,6 +101,14 @@ static void SetGPState(const PolyParam* gp)
 
 	if (pass == Pass::Depth)
 	{
+		/* A punch-through polygon is cut out by its texture's alpha in this
+		 * pass too. Where the texture is one of palette indices, that alpha
+		 * is in the palette: without it the cut-out was made from the
+		 * indices, and what the polygon left in the depth and stencil
+		 * buffers - shadows on it, what shows through it - was wrong.
+		 * (Upstream: shadows in Alone in the Dark.) */
+		palette = Type == ListType_Punch_Through && gp->pcw.Texture
+				&& BaseTextureCacheData::IsGpuHandledPaletted(gp->tsp, gp->tcw);
 		CurrentShader = gl4GetProgram(Type == ListType_Punch_Through ? true : false,
 				clipmode == TileClipping::Inside,
 				Type == ListType_Punch_Through ? gp->pcw.Texture : false,
@@ -113,7 +121,7 @@ static void SetGPState(const PolyParam* gp)
 				false,
 				false,
 				false,
-				false,
+				palette,
 				pass);
 	}
 	else
@@ -447,8 +455,12 @@ static GLuint CreateColorFBOTexture(int width, int height)
 	return texId;
 }
 
+/* The working buffer's colour is the screen's last picture: see gl4DrawStrips(). */
+static bool working_holds_screen;
+
 void gl4CreateTextures(int width, int height)
 {
+	working_holds_screen = false;
 	if (geom_fbo == 0)
 	{
 		glGenFramebuffers(1, &geom_fbo);
@@ -497,6 +509,23 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 		if (gl4ShaderUniforms.base_clipping.enabled)
 			glcache.Enable(GL_SCISSOR_TEST);
 	}
+	else if (!pvrrc.isRTT && !working_holds_screen)
+	{
+		/* A render that covers only part of the screen leaves the rest as
+		 * it was - which is as it is in this working buffer, and that is
+		 * the screen's last picture only if nothing else has been drawn
+		 * through it since. A render to a texture has, or the buffer is
+		 * new: the screen's picture is put back first. (Every frame would
+		 * do, as upstream has it; it is only needed then.) */
+		glcache.Disable(GL_SCISSOR_TEST);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, geom_fbo);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, output_fbo);
+		glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		glBindFramebuffer(GL_FRAMEBUFFER, geom_fbo);
+		if (gl4ShaderUniforms.base_clipping.enabled)
+			glcache.Enable(GL_SCISSOR_TEST);
+	}
+	working_holds_screen = !pvrrc.isRTT;
 	glcache.DepthMask(GL_TRUE);
 	glClearDepth(0.0);
 	glStencilMask(0xFF);
