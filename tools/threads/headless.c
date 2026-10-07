@@ -21,7 +21,11 @@
  * headless.sh does all of it.
  */
 #define _GNU_SOURCE
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -39,7 +43,7 @@ static char **options;
 static int option_count;
 static int gles;
 
-#define SYM(ret, name, args) ret (*name) args = (ret (*) args)dlsym(core, #name); \
+#define SYM(ret, name, args) ret (*name) args = (ret (*) args)core_symbol(core, #name); \
    if (!name) { fprintf(stderr, "headless: no %s in the core\n", #name); return 1; }
 
 /* ---- an OpenGL that does nothing ----
@@ -51,11 +55,55 @@ static int gles;
 
 static long gl_nothing(void) { return 0; }
 
+#ifdef _WIN32
+/* On Windows the library is an opengl32.dll put beside this program, which
+ * the core's own imports find before the system's (under wine, with
+ * WINEDLLOVERRIDES=opengl32=n). */
+static void *core_open(const char *path)
+{
+   return (void *)LoadLibraryA(path);
+}
+
+static void *core_symbol(void *lib, const char *name)
+{
+   return (void *)GetProcAddress((HMODULE)lib, name);
+}
+
+static const char *core_error(void)
+{
+   static char text[64];
+   snprintf(text, sizeof(text), "LoadLibrary failed, error %lu", (unsigned long)GetLastError());
+   return text;
+}
+
+static retro_proc_address_t gl_proc(const char *name)
+{
+   HMODULE gl = GetModuleHandleA("opengl32.dll");
+   void *fn = gl ? (void *)GetProcAddress(gl, name) : NULL;
+   return fn ? (retro_proc_address_t)fn : (retro_proc_address_t)gl_nothing;
+}
+#else
+static void *core_open(const char *path)
+{
+   return dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+}
+
+static void *core_symbol(void *lib, const char *name)
+{
+   return dlsym(lib, name);
+}
+
+static const char *core_error(void)
+{
+   return dlerror();
+}
+
 static retro_proc_address_t gl_proc(const char *name)
 {
    void *fn = dlsym(RTLD_DEFAULT, name);
    return fn ? (retro_proc_address_t)fn : (retro_proc_address_t)gl_nothing;
 }
+#endif
 
 static uintptr_t gl_framebuffer(void) { return 0; }
 
@@ -166,10 +214,10 @@ int main(int argc, char **argv)
    frames = atoi(argv[3]);
    gles = getenv("HEADLESS_GLES") != NULL;
 
-   core = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+   core = core_open(argv[1]);
    if (!core)
    {
-      fprintf(stderr, "headless: %s\n", dlerror());
+      fprintf(stderr, "headless: %s\n", core_error());
       return 1;
    }
    {

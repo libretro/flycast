@@ -21,12 +21,21 @@
 # the cross compiler's library directory will do with -Wl,--unresolved-
 # symbols=ignore-all, or the one this script builds, from a first run.)
 #
+# A core built for Windows runs the same way under wine, which is how the
+# Windows build - its calling convention, and the paths only it takes, such
+# as the MMU without the host's own mapping - gets run on Linux:
+#
+#   make platform=win CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
+#   WINDOWS=1 CC=x86_64-w64-mingw32-gcc OBJDUMP=x86_64-w64-mingw32-objdump \
+#   RUN=wine tools/threads/headless.sh flycast_libretro.dll
+#
 #   headless.sh CORE [key=value ...]     key=value are more core options
 #
 # CC    compiler for the frontend and the OpenGL, for the core's processor
 # NM    nm for the core
 # RUN   what to run the frontend with, if not directly
 # GLES  set if the core is built for OpenGL ES
+# WINDOWS  set if the core is a Windows DLL; OBJDUMP is then the objdump for it
 # WORK  where to work (default /tmp/flycast-headless)
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -39,11 +48,30 @@ T=$ROOT/tools/threads
 mkdir -p "$WORK/dir"
 
 python3 "$T/live_disc.py" "$WORK/test.gdi"
-"${CC:-cc}" -O1 -o "$WORK/headless" "$T/headless.c" -ldl
-"${NM:-nm}" -D --undefined-only "$CORE" | awk '{print $NF}' | sed 's/@.*//' \
-   | grep '^gl' | python3 "$T/headless_gl.py" > "$WORK/nogl.c" || true
-"${CC:-cc}" -O1 -shared -fPIC -Wl,-soname,libGLESv2.so.2 \
-   -o "$WORK/libGLESv2.so.2" "$WORK/nogl.c"
+if [ -n "$WINDOWS" ]; then
+   FRONTEND=headless.exe
+   "$CC" -O1 -o "$WORK/headless.exe" "$T/headless.c"
+   # what the core imports from opengl32.dll, into one of our own beside the program
+   "${OBJDUMP:-objdump}" -p "$CORE" \
+      | awk '/DLL Name: /{dll=tolower($3)} dll=="opengl32.dll" && NF>=3 && $1 ~ /^[0-9a-f]+$/ {print $3}' \
+      | python3 "$T/headless_gl.py" > "$WORK/nogl.c"
+   "$CC" -O1 -shared -o "$WORK/opengl32.dll" "$WORK/nogl.c"
+   # and the compiler's runtime libraries, if the core wants them
+   for DLL in libgomp-1.dll libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll; do
+      F=$("$CC" -print-file-name=$DLL)
+      [ -f "$F" ] && cp "$F" "$WORK/"
+   done
+   WINEDLLOVERRIDES=opengl32=n
+   WINEDEBUG=${WINEDEBUG:--all}
+   export WINEDLLOVERRIDES WINEDEBUG
+else
+   FRONTEND=headless
+   "${CC:-cc}" -O1 -o "$WORK/headless" "$T/headless.c" -ldl
+   "${NM:-nm}" -D --undefined-only "$CORE" | awk '{print $NF}' | sed 's/@.*//' \
+      | grep '^gl' | python3 "$T/headless_gl.py" > "$WORK/nogl.c" || true
+   "${CC:-cc}" -O1 -shared -fPIC -Wl,-soname,libGLESv2.so.2 \
+      -o "$WORK/libGLESv2.so.2" "$WORK/nogl.c"
+fi
 
 EXTRA=$*
 VERDICT=$(python3 "$T/live_disc.py" --verdict)
@@ -65,7 +93,9 @@ for RUN_AS in legacy accurate "legacy wince"; do
       echo "== headless: $TIMING SH4 timing"
    fi
    rm -f "$WORK/sound.pcm"
-   if [ -n "$GLES" ]; then
+   if [ -n "$WINDOWS" ]; then
+      :
+   elif [ -n "$GLES" ]; then
       # the core asks for libGLESv2.so.2 by name: let it find this one
       HEADLESS_GLES=1 LD_LIBRARY_PATH=$WORK${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
       export HEADLESS_GLES LD_LIBRARY_PATH
@@ -75,7 +105,7 @@ for RUN_AS in legacy accurate "legacy wince"; do
       export LD_PRELOAD
    fi
    HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$WORK/sound.pcm HEADLESS_PEEK=$VERDICT \
-      $RUN "$WORK/headless" "$CORE" "$WORK/test.gdi" 300 \
+      $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" 300 \
       reicast_hle_bios=enabled reicast_threaded_rendering=disabled \
       reicast_sh4_timing=$TIMING reicast_force_wince=$WINCE $EXTRA \
       > "$WORK/$NAME.out" 2> "$WORK/$NAME.log" || {
@@ -94,7 +124,8 @@ for RUN_AS in legacy accurate "legacy wince"; do
          exit 1
       }
    fi
-   grep -q "= $GOOD" "$WORK/$NAME.out" || {
+   # (a Windows program ends its lines its own way)
+   tr -d '\r' < "$WORK/$NAME.out" | grep -q "= $GOOD\$" || {
       echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
       exit 1
    }
