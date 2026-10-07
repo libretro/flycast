@@ -1280,8 +1280,7 @@ public:
 				GenSliceCheck();
 				shr(edx, 1);
 				and_(edx, FPCB_MASK);
-				mov(rcx, (uintptr_t)&p_sh4rcb->fpcb[0]);
-				jmp(qword[rcx + rdx * 8]);
+				jmp(qword[r15 + rdx * 8 + FpcbAt(0)]);
 			}
 			break;
 
@@ -1388,8 +1387,17 @@ public:
 	void GenGoOn(u32 target)
 	{
 		GenSliceCheck();
-		mov(rcx, (uintptr_t)&p_sh4rcb->fpcb[(target >> 1) & FPCB_MASK]);
-		jmp(qword[rcx]);
+		jmp(qword[r15 + FpcbAt((target >> 1) & FPCB_MASK)]);
+	}
+
+	/* Where entry @index of the table of blocks is from r15. The table is
+	 * the first thing in the block of memory the context is at the end
+	 * of, so r15, which every block has, reaches it: the table's address
+	 * does not have to be loaded - ten bytes and an instruction less at
+	 * every way out of a block. */
+	static int FpcbAt(u32 index)
+	{
+		return (int)((ptrdiff_t)(offsetof(Sh4RCB, fpcb) + (size_t)index * sizeof(void *)) - (ptrdiff_t)CTX_BASE);
 	}
 
 	/* With the MMU on and no host mapping to do the translating (vmem32),
