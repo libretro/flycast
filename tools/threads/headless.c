@@ -16,6 +16,7 @@
  *   HEADLESS_PEEK    address in main memory (0x8c......) of a 32-bit word
  *                    to print after the last frame
  *   HEADLESS_GLES    set for a core built for OpenGL ES
+ *   HEADLESS_STAGE   address of bench_prog.c's stage word: time its kernels
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -31,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "../../core/libretro-common/include/libretro.h"
@@ -254,8 +256,46 @@ int main(int argc, char **argv)
       if (have_hw && hw.context_reset)
          hw.context_reset();
 
-      for (i = 0; i < frames; i++)
-         retro_run();
+      {
+         /* HEADLESS_STAGE: a word the program counts its stages in, as
+          * bench_prog.c does. Each change is reported with the processor
+          * time used so far; at 0x600DBE4C the run is over and the words
+          * after it are printed. */
+         unsigned long stage_at = getenv("HEADLESS_STAGE")
+            ? strtoul(getenv("HEADLESS_STAGE"), NULL, 0) : 0;
+         uint32_t last = 0, word = 0;
+         clock_t t0 = clock();
+
+         for (i = 0; i < frames; i++)
+         {
+            uint8_t *ram;
+            size_t size;
+
+            retro_run();
+            if (!stage_at)
+               continue;
+            ram = (uint8_t *)retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+            size = retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+            if (!ram || size < 64)
+               continue;
+            memcpy(&word, ram + (stage_at & (size - 1)), 4);
+            if (word == last)
+               continue;
+            last = word;
+            printf("stage %08x frame %d cpu %.3f\n", (unsigned)word, i,
+                  (double)(clock() - t0) / CLOCKS_PER_SEC);
+            if (word == 0x600DBE4C)
+            {
+               int k;
+               for (k = 1; k <= 13; k++)
+               {
+                  memcpy(&word, ram + ((stage_at + 4 * k) & (size - 1)), 4);
+                  printf("result %d = %08x\n", k, (unsigned)word);
+               }
+               break;
+            }
+         }
+      }
 
       if (sound)
          fclose(sound);
