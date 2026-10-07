@@ -113,6 +113,12 @@ public:
 		return p_current_mipmap + pixels_per_line * y + x;
 	}
 
+	// pixels from one line to the next
+	__forceinline u32 pitch() const
+	{
+		return pixels_per_line;
+	}
+
    __forceinline void prel(u32 x,pixel_type value)
  	{
  		p_current_pixel[x]=value;
@@ -137,6 +143,29 @@ public:
 		//p_current_pixel=p_buffer_start;
 		p_current_line = p_current_mipmap + pixels_per_line * y_m;
 		p_current_pixel=p_current_line + x_m;
+	}
+};
+
+/* Where a converter is writing: the block it is on and how far it is to the
+ * line below. The converters used to write through the PixelBuffer itself,
+ * whose own fields a store of a 32-bit pixel might - for all the compiler
+ * can tell - have changed: they were read again from memory after every
+ * pixel, and so was everything else the loop used. A cursor is a local of
+ * the loop that nothing else can reach, and stays in registers. */
+template<class pixel_type>
+struct PixelCursor
+{
+	pixel_type *p;
+	u32 pitch;
+	const u32 *pal;	// the part of the palette the texture uses, for the converters that look colours up
+
+	__forceinline void prel(u32 x, pixel_type value)
+	{
+		p[x] = value;
+	}
+	__forceinline void prel(u32 x, u32 y, pixel_type value)
+	{
+		p[y * pitch + x] = value;
 	}
 };
 
@@ -183,10 +212,175 @@ inline static u32 YUV422(s32 Y,s32 Yu,s32 Yv)
 	s32 G = Y - (Yu*11 + Yv*22)/32; // Y - (Yu-128) * (11/8) * 0.25 - (Yv-128) * (11/8) * 0.5 ?
 	s32 B = Y + Yu*110/64;          // Y + (Yu-128) * (11/8) * 1.25 ?
 
-	return clamp(0, 255, R) | (clamp(0, 255, G) << 8) | (clamp(0, 255, B) << 16) | 0xFF000000;
+	// each held to 0..255 without a branch: what a pixel's colour is cannot be predicted
+	R = R < 0 ? 0 : R;
+	G = G < 0 ? 0 : G;
+	B = B < 0 ? 0 : B;
+	R = R > 255 ? 255 : R;
+	G = G > 255 ? 255 : G;
+	B = B > 255 ? 255 : B;
+	return R | (G << 8) | (B << 16) | 0xFF000000;
 }
 
 #define twop(x,y,bcx,bcy) (detwiddle[0][bcy][x]+detwiddle[1][bcx][y])
+
+/* The four 16-bit pixels of a twiddled 2x2 block to 32 bits, four at a time
+ * where the processor can, and into their two rows: the first and third on
+ * the upper, the second and fourth on the lower. Every channel is widened
+ * by repeating its top bits, exactly as ARGB565_32() and the others do one
+ * pixel at a time - the same bits come out. Planar textures get this from
+ * the compiler; in twiddled order it has to be asked for. */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+typedef __m128i tw4;
+#define TW4_LOAD(src)      _mm_unpacklo_epi16(_mm_loadl_epi64((const __m128i *)(src)), _mm_setzero_si128())
+#define TW4_SET(k)         _mm_set1_epi32((int)(k))
+#define TW4_SHR(v, n)      _mm_srli_epi32(v, n)
+#define TW4_SHL(v, n)      _mm_slli_epi32(v, n)
+#define TW4_AND(a, b)      _mm_and_si128(a, b)
+#define TW4_OR(a, b)       _mm_or_si128(a, b)
+#define TW4_SIGN16(v)      _mm_srai_epi32(_mm_slli_epi32(v, 16), 31)   /* all ones where bit 15 is set */
+static __forceinline void tw4_store(u32 *row0, u32 *row1, tw4 px)
+{
+	px = _mm_shuffle_epi32(px, _MM_SHUFFLE(3, 1, 2, 0));
+	_mm_storel_epi64((__m128i *)row0, px);
+	_mm_storel_epi64((__m128i *)row1, _mm_unpackhi_epi64(px, px));
+}
+#define TW4_SIMD
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(_M_ARM64)
+#include <arm_neon.h>
+typedef uint32x4_t tw4;
+#define TW4_LOAD(src)      vmovl_u16(vld1_u16((const uint16_t *)(src)))
+#define TW4_SET(k)         vdupq_n_u32(k)
+#define TW4_SHR(v, n)      vshrq_n_u32(v, n)
+#define TW4_SHL(v, n)      vshlq_n_u32(v, n)
+#define TW4_AND(a, b)      vandq_u32(a, b)
+#define TW4_OR(a, b)       vorrq_u32(a, b)
+#define TW4_SIGN16(v)      vreinterpretq_u32_s32(vshrq_n_s32(vreinterpretq_s32_u32(vshlq_n_u32(v, 16)), 31))
+static __forceinline void tw4_store(u32 *row0, u32 *row1, tw4 px)
+{
+	const uint32x2x2_t rows = vuzp_u32(vget_low_u32(px), vget_high_u32(px));
+	vst1_u32(row0, rows.val[0]);
+	vst1_u32(row1, rows.val[1]);
+}
+#define TW4_SIMD
+#endif
+
+#ifdef TW4_SIMD
+// a channel of five bits to eight, of six, of four
+#define TW4_5TO8(c)        TW4_OR(TW4_SHL(c, 3), TW4_SHR(c, 2))
+#define TW4_6TO8(c)        TW4_OR(TW4_SHL(c, 2), TW4_SHR(c, 4))
+#define TW4_4TO8(c)        TW4_OR(TW4_SHL(c, 4), c)
+
+static __forceinline void tw_block_565(u32 *row0, u32 *row1, const u8 *src)
+{
+	const tw4 v = TW4_LOAD(src);
+	const tw4 r = TW4_5TO8(TW4_SHR(v, 11));
+	const tw4 g = TW4_6TO8(TW4_AND(TW4_SHR(v, 5), TW4_SET(0x3F)));
+	const tw4 b = TW4_5TO8(TW4_AND(v, TW4_SET(0x1F)));
+	tw4_store(row0, row1, TW4_OR(TW4_OR(r, TW4_SHL(g, 8)), TW4_OR(TW4_SHL(b, 16), TW4_SET(0xFF000000))));
+}
+
+static __forceinline void tw_block_1555(u32 *row0, u32 *row1, const u8 *src)
+{
+	const tw4 v = TW4_LOAD(src);
+	const tw4 r = TW4_5TO8(TW4_AND(TW4_SHR(v, 10), TW4_SET(0x1F)));
+	const tw4 g = TW4_5TO8(TW4_AND(TW4_SHR(v, 5), TW4_SET(0x1F)));
+	const tw4 b = TW4_5TO8(TW4_AND(v, TW4_SET(0x1F)));
+	const tw4 a = TW4_AND(TW4_SIGN16(v), TW4_SET(0xFF000000));
+	tw4_store(row0, row1, TW4_OR(TW4_OR(r, TW4_SHL(g, 8)), TW4_OR(TW4_SHL(b, 16), a)));
+}
+
+static __forceinline void tw_block_4444(u32 *row0, u32 *row1, const u8 *src)
+{
+	const tw4 v = TW4_LOAD(src);
+	const tw4 a = TW4_4TO8(TW4_SHR(v, 12));
+	const tw4 r = TW4_4TO8(TW4_AND(TW4_SHR(v, 8), TW4_SET(0xF)));
+	const tw4 g = TW4_4TO8(TW4_AND(TW4_SHR(v, 4), TW4_SET(0xF)));
+	const tw4 b = TW4_4TO8(TW4_AND(v, TW4_SET(0xF)));
+	tw4_store(row0, row1, TW4_OR(TW4_OR(r, TW4_SHL(g, 8)), TW4_OR(TW4_SHL(b, 16), TW4_SHL(a, 24))));
+}
+#else
+// one at a time, where there is nothing better
+#define TW_BLOCK_SCALAR(name, unpack) \
+static __forceinline void name(u32 *row0, u32 *row1, const u8 *src) \
+{ \
+	const u16 *p_in = (const u16 *)src; \
+	row0[0] = unpack(p_in[0]); \
+	row1[0] = unpack(p_in[1]); \
+	row0[1] = unpack(p_in[2]); \
+	row1[1] = unpack(p_in[3]); \
+}
+TW_BLOCK_SCALAR(tw_block_565, ARGB565_32)
+TW_BLOCK_SCALAR(tw_block_1555, ARGB1555_32)
+TW_BLOCK_SCALAR(tw_block_4444, ARGB4444_32)
+#endif
+
+/* And to 16 bits. The three conversions there are a 16-bit turn to the left
+ * - by nothing for 565, by one bit for 1555 (the alpha bit goes from the top
+ * to the bottom), by four for 4444 (the alpha nibble likewise) - so a block's
+ * four pixels are turned at once as the 64-bit number they are in memory,
+ * and written as two 32-bit halves, one a row. Where bytes are the other
+ * way round they are done one by one. */
+#ifndef MSB_FIRST
+static __forceinline void tw16_block(u16 *row0, u16 *row1, const u8 *src, const u32 turn)
+{
+	u64 v;
+	u32 lo, hi, upper, lower;
+
+	memcpy(&v, src, sizeof(v));
+	if (turn != 0)
+	{
+		const u64 low_bits = 0x0001000100010001ull * ((1u << turn) - 1);
+		v = ((v << turn) & ~low_bits) | ((v >> (16 - turn)) & low_bits);
+	}
+	lo = (u32)v;
+	hi = (u32)(v >> 32);
+	upper = (lo & 0xFFFF) | (hi << 16);          // the first and the third
+	lower = (lo >> 16) | (hi & 0xFFFF0000);      // the second and the fourth
+	memcpy(row0, &upper, sizeof(upper));
+	memcpy(row1, &lower, sizeof(lower));
+}
+#else
+static __forceinline void tw16_block(u16 *row0, u16 *row1, const u8 *src, const u32 turn)
+{
+	const u16 *p_in = (const u16 *)src;
+	row0[0] = (u16)((p_in[0] << turn) | (p_in[0] >> ((16 - turn) & 15)));
+	row1[0] = (u16)((p_in[1] << turn) | (p_in[1] >> ((16 - turn) & 15)));
+	row0[1] = (u16)((p_in[2] << turn) | (p_in[2] >> ((16 - turn) & 15)));
+	row1[1] = (u16)((p_in[3] << turn) | (p_in[3] >> ((16 - turn) & 15)));
+}
+#endif
+
+/* Two or four pixels next to each other, written as one number where that
+ * is a store less (or three). For the palette converters, whose pixels come
+ * out of a table one by one. */
+#ifndef MSB_FIRST
+static __forceinline void tw_put2(u16 *row, u32 a, u32 b)
+{
+	const u32 v = (a & 0xFFFF) | (b << 16);
+	memcpy(row, &v, sizeof(v));
+}
+static __forceinline void tw_put2(u32 *row, u32 a, u32 b)
+{
+	const u64 v = a | ((u64)b << 32);
+	memcpy(row, &v, sizeof(v));
+}
+static __forceinline void tw_put4(u16 *row, u32 a, u32 b, u32 c, u32 d)
+{
+	const u64 v = (a & 0xFFFF) | ((u64)(b & 0xFFFF) << 16) | ((u64)(c & 0xFFFF) << 32) | ((u64)d << 48);
+	memcpy(row, &v, sizeof(v));
+}
+#else
+static __forceinline void tw_put2(u16 *row, u32 a, u32 b) { row[0] = (u16)a; row[1] = (u16)b; }
+static __forceinline void tw_put2(u32 *row, u32 a, u32 b) { row[0] = a; row[1] = b; }
+static __forceinline void tw_put4(u16 *row, u32 a, u32 b, u32 c, u32 d) { row[0] = (u16)a; row[1] = (u16)b; row[2] = (u16)c; row[3] = (u16)d; }
+#endif
+static __forceinline void tw_put4(u32 *row, u32 a, u32 b, u32 c, u32 d)
+{
+	tw_put2(row, a, b);
+	tw_put2(row + 2, c, d);
+}
 
 //pixel convertors !
 #define pixelcvt_start_base(name,x,y,type) \
@@ -194,7 +388,7 @@ inline static u32 YUV422(s32 Y,s32 Yu,s32 Yv)
 		{ \
 			static const u32 xpp=x;\
 			static const u32 ypp=y;	\
-			__forceinline static void Convert(PixelBuffer<type>* pb,u8* data) \
+			template<class Out> __forceinline static void Convert(Out* pb,u8* data) \
 		{
 
 #define pixelcvt_start(name,x,y) pixelcvt_start_base(name, x, y, u16)
@@ -205,7 +399,7 @@ struct name \
 { \
 	static const u32 xpp=x;\
 	static const u32 ypp=y;	\
-   __forceinline static void Convert(PixelBuffer<pixel_size>* pb,u8* data) \
+   template<class Out> __forceinline static void Convert(Out* pb,u8* data) \
 {
 
 #define pixelcvt_end } }
@@ -338,86 +532,32 @@ pixelcvt_end;
 // 16-bit pixel buffer
 pixelcvt_start(conv565_TW,2,2)
 {
-   //convert 4x1 565 to 4x1 8888
-	u16* p_in=(u16*)data;
-	//0,0
-	pb->prel(0,0,ARGB565(p_in[0]));
-	//0,1
-	pb->prel(0,1,ARGB565(p_in[1]));
-	//1,0
-	pb->prel(1,0,ARGB565(p_in[2]));
-	//1,1
-	pb->prel(1,1,ARGB565(p_in[3]));
+	tw16_block(pb->p, pb->p + pb->pitch, data, 0);
 }
 pixelcvt_next(conv1555_TW,2,2)
 {
-   //convert 4x1 565 to 4x1 8888
-	u16* p_in=(u16*)data;
-	//0,0
-	pb->prel(0,0,ARGB1555(p_in[0]));
-	//0,1
-	pb->prel(0,1,ARGB1555(p_in[1]));
-	//1,0
-	pb->prel(1,0,ARGB1555(p_in[2]));
-	//1,1
-	pb->prel(1,1,ARGB1555(p_in[3]));
+	tw16_block(pb->p, pb->p + pb->pitch, data, 1);
 }
 pixelcvt_next(conv4444_TW,2,2)
 {
-   //convert 4x1 565 to 4x1 8888
-	u16* p_in=(u16*)data;
-	//0,0
-	pb->prel(0,0,ARGB4444(p_in[0]));
-	//0,1
-	pb->prel(0,1,ARGB4444(p_in[1]));
-	//1,0
-	pb->prel(1,0,ARGB4444(p_in[2]));
-	//1,1
-	pb->prel(1,1,ARGB4444(p_in[3]));
+	tw16_block(pb->p, pb->p + pb->pitch, data, 4);
 }
 pixelcvt_end;
 
 // 32-bit pixel buffer
 pixelcvt32_start(conv565_TW32,2,2)
 {
-	//convert 4x1 565 to 4x1 8888
-	u16* p_in=(u16*)data;
-	//0,0
-	pb->prel(0,0,ARGB565_32(p_in[0]));
-	//0,1
-	pb->prel(0,1,ARGB565_32(p_in[1]));
-	//1,0
-	pb->prel(1,0,ARGB565_32(p_in[2]));
-	//1,1
-	pb->prel(1,1,ARGB565_32(p_in[3]));
+	tw_block_565(pb->p, pb->p + pb->pitch, data);
 }
 pixelcvt_end;
 pixelcvt32_start(conv1555_TW32,2,2)
 {
-	//convert 4x1 565 to 4x1 8888
-	u16* p_in=(u16*)data;
-	//0,0
-	pb->prel(0,0,ARGB1555_32(p_in[0]));
-	//0,1
-	pb->prel(0,1,ARGB1555_32(p_in[1]));
-	//1,0
-	pb->prel(1,0,ARGB1555_32(p_in[2]));
-	//1,1
-	pb->prel(1,1,ARGB1555_32(p_in[3]));
+	tw_block_1555(pb->p, pb->p + pb->pitch, data);
 }
 pixelcvt_end;
 pixelcvt32_start(conv4444_TW32,2,2)
 {
-	//convert 4x1 565 to 4x1 8888
-	u16* p_in=(u16*)data;
-	//0,0
-	pb->prel(0,0,ARGB4444_32(p_in[0]));
-	//0,1
-	pb->prel(0,1,ARGB4444_32(p_in[1]));
-	//1,0
-	pb->prel(1,0,ARGB4444_32(p_in[2]));
-	//1,1
-	pb->prel(1,1,ARGB4444_32(p_in[3]));
+	tw_block_4444(pb->p, pb->p + pb->pitch, data);
 }
 pixelcvt_end;
 
@@ -456,28 +596,22 @@ pixelcvt_end;
 // 16-bit && 32-bit pixel buffers
 pixelcvt_size_start(convPAL4_TW,4,4)
 {
-   	u8* p_in=(u8*)data;
-   u32* pal= sizeof(pixel_size) == 2 ? &palette16_ram[palette_index] : &palette32_ram[palette_index];
-
-	pb->prel(0,0,pal[p_in[0]&0xF]);
-	pb->prel(0,1,pal[(p_in[0]>>4)&0xF]);p_in++;
-	pb->prel(1,0,pal[p_in[0]&0xF]);
-	pb->prel(1,1,pal[(p_in[0]>>4)&0xF]);p_in++;
-
-	pb->prel(0,2,pal[p_in[0]&0xF]);
-	pb->prel(0,3,pal[(p_in[0]>>4)&0xF]);p_in++;
-	pb->prel(1,2,pal[p_in[0]&0xF]);
-	pb->prel(1,3,pal[(p_in[0]>>4)&0xF]);p_in++;
-
-	pb->prel(2,0,pal[p_in[0]&0xF]);
-	pb->prel(2,1,pal[(p_in[0]>>4)&0xF]);p_in++;
-	pb->prel(3,0,pal[p_in[0]&0xF]);
-	pb->prel(3,1,pal[(p_in[0]>>4)&0xF]);p_in++;
-
-	pb->prel(2,2,pal[p_in[0]&0xF]);
-	pb->prel(2,3,pal[(p_in[0]>>4)&0xF]);p_in++;
-	pb->prel(3,2,pal[p_in[0]&0xF]);
-	pb->prel(3,3,pal[(p_in[0]>>4)&0xF]);p_in++;
+	/* Sixteen pixels, a nibble each, in twiddled order: the first eight are
+	 * the left half of the block and the last eight the right, each half
+	 * going down its two columns two rows at a time. A row is written at
+	 * once. */
+	const u8 * const p_in = data;
+	const u32 * const pal = pb->pal;
+	pixel_size * const r0 = pb->p;
+	pixel_size * const r1 = r0 + pb->pitch;
+	pixel_size * const r2 = r1 + pb->pitch;
+	pixel_size * const r3 = r2 + pb->pitch;
+#define PAL4_N(i) pal[(p_in[(i) >> 1] >> (((i) & 1) * 4)) & 0xF]
+	tw_put4(r0, PAL4_N(0), PAL4_N(2), PAL4_N(8), PAL4_N(10));
+	tw_put4(r1, PAL4_N(1), PAL4_N(3), PAL4_N(9), PAL4_N(11));
+	tw_put4(r2, PAL4_N(4), PAL4_N(6), PAL4_N(12), PAL4_N(14));
+	tw_put4(r3, PAL4_N(5), PAL4_N(7), PAL4_N(13), PAL4_N(15));
+#undef PAL4_N
 }
 pixelcvt_end;
 
@@ -510,18 +644,17 @@ pixelcvt_end;
 
 pixelcvt_size_start(convPAL8_TW,2,4)
 {
-   u8* p_in=(u8*)data;
-   u32* pal= sizeof(pixel_size) == 2 ? &palette16_ram[palette_index] : &palette32_ram[palette_index];
-
-	pb->prel(0,0,pal[p_in[0]]);p_in++;
-	pb->prel(0,1,pal[p_in[0]]);p_in++;
-	pb->prel(1,0,pal[p_in[0]]);p_in++;
-	pb->prel(1,1,pal[p_in[0]]);p_in++;
-
-	pb->prel(0,2,pal[p_in[0]]);p_in++;
-	pb->prel(0,3,pal[p_in[0]]);p_in++;
-	pb->prel(1,2,pal[p_in[0]]);p_in++;
-	pb->prel(1,3,pal[p_in[0]]);p_in++;
+	// eight pixels, a byte each: two columns, going down two rows at a time
+	const u8 * const p_in = data;
+	const u32 * const pal = pb->pal;
+	pixel_size * const r0 = pb->p;
+	pixel_size * const r1 = r0 + pb->pitch;
+	pixel_size * const r2 = r1 + pb->pitch;
+	pixel_size * const r3 = r2 + pb->pitch;
+	tw_put2(r0, pal[p_in[0]], pal[p_in[2]]);
+	tw_put2(r1, pal[p_in[1]], pal[p_in[3]]);
+	tw_put2(r2, pal[p_in[4]], pal[p_in[6]]);
+	tw_put2(r3, pal[p_in[5]], pal[p_in[7]]);
 }
 pixelcvt_end;
 
@@ -551,9 +684,12 @@ pixelcvt_end;
 template<class PixelConvertor, class pixel_type>
 void texture_PLVQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 {
-	p_in += 256 * 4 * 2;	// Skip VQ codebook
-	pb->amove(0, 0);
+	u8 * const codebook = vq_codebook;
+	pixel_type *line = pb->data();
+	const u32 pitch = pb->pitch();
+	const u32 * const pal = (sizeof(pixel_type) == 2 ? palette16_ram : palette32_ram) + palette_index;
 
+	p_in += 256 * 4 * 2;	// Skip VQ codebook
 	Height /= PixelConvertor::ypp;
 	Width /= PixelConvertor::xpp;
 
@@ -561,19 +697,19 @@ void texture_PLVQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 	{
 		for (u32 x = 0; x < Width; x++)
 		{
-			u8 p = *p_in++;
-			PixelConvertor::Convert(pb, &vq_codebook[p * 8]);
-
-			pb->rmovex(PixelConvertor::xpp);
+			PixelCursor<pixel_type> out = { line + x * PixelConvertor::xpp, pitch, pal };
+			PixelConvertor::Convert(&out, &codebook[*p_in++ * 8]);
 		}
-		pb->rmovey(PixelConvertor::ypp);
+		line += pitch * PixelConvertor::ypp;
 	}
 }
 
 template<class PixelConvertor, class pixel_type>
 void texture_PL(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 {
-   pb->amove(0,0);
+	pixel_type *line = pb->data();
+	const u32 pitch = pb->pitch();
+	const u32 * const pal = (sizeof(pixel_type) == 2 ? palette16_ram : palette32_ram) + palette_index;
 
 	Height/=PixelConvertor::ypp;
 	Width/=PixelConvertor::xpp;
@@ -582,59 +718,60 @@ void texture_PL(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 	{
 		for (u32 x=0;x<Width;x++)
 		{
-			u8* p = p_in;
-			PixelConvertor::Convert(pb,p);
+			PixelCursor<pixel_type> out = { line + x * PixelConvertor::xpp, pitch, pal };
+			PixelConvertor::Convert(&out, p_in);
 			p_in+=8;
-
-			pb->rmovex(PixelConvertor::xpp);
 		}
-		pb->rmovey(PixelConvertor::ypp);
+		line += pitch * PixelConvertor::ypp;
 	}
 }
 
+/* Twiddled: the block for (x, y) is at the sum of two table entries, one for
+ * each. The one for y is the same along a row. */
 template<class PixelConvertor, class pixel_type>
 void texture_TW(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 {
-	pb->amove(0, 0);
-
 	const u32 divider = PixelConvertor::xpp * PixelConvertor::ypp;
-
-	const u32 bcx = bitscanrev(Width);
-	const u32 bcy = bitscanrev(Height);
+	const u32 * const of_x = detwiddle[0][bitscanrev(Height)];
+	const u32 * const of_y = detwiddle[1][bitscanrev(Width)];
+	pixel_type *line = pb->data();
+	const u32 pitch = pb->pitch();
+	const u32 * const pal = (sizeof(pixel_type) == 2 ? palette16_ram : palette32_ram) + palette_index;
 
 	for (u32 y = 0; y < Height; y += PixelConvertor::ypp)
 	{
+		const u32 row = of_y[y];
 		for (u32 x = 0; x < Width; x += PixelConvertor::xpp)
 		{
-			u8* p = &p_in[(twop(x, y, bcx, bcy) / divider) << 3];
-			PixelConvertor::Convert(pb, p);
-
-			pb->rmovex(PixelConvertor::xpp);
+			PixelCursor<pixel_type> out = { line + x, pitch, pal };
+			PixelConvertor::Convert(&out, &p_in[((of_x[x] + row) / divider) << 3]);
 		}
-		pb->rmovey(PixelConvertor::ypp);
+		line += pitch * PixelConvertor::ypp;
 	}
 }
 
 template<class PixelConvertor, class pixel_type>
 void texture_VQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 {
-	p_in += 256 * 4 * 2;	// Skip VQ codebook
-	pb->amove(0, 0);
-
 	const u32 divider = PixelConvertor::xpp * PixelConvertor::ypp;
-	const u32 bcx = bitscanrev(Width);
-	const u32 bcy = bitscanrev(Height);
+	const u32 * const of_x = detwiddle[0][bitscanrev(Height)];
+	const u32 * const of_y = detwiddle[1][bitscanrev(Width)];
+	u8 * const codebook = vq_codebook;
+	pixel_type *line = pb->data();
+	const u32 pitch = pb->pitch();
+	const u32 * const pal = (sizeof(pixel_type) == 2 ? palette16_ram : palette32_ram) + palette_index;
+
+	p_in += 256 * 4 * 2;	// Skip VQ codebook
 
 	for (u32 y = 0; y < Height; y += PixelConvertor::ypp)
 	{
+		const u32 row = of_y[y];
 		for (u32 x = 0; x < Width; x += PixelConvertor::xpp)
 		{
-			u8 p = p_in[twop(x, y, bcx, bcy) / divider];
-			PixelConvertor::Convert(pb, &vq_codebook[p * 8]);
-
-			pb->rmovex(PixelConvertor::xpp);
+			PixelCursor<pixel_type> out = { line + x, pitch, pal };
+			PixelConvertor::Convert(&out, &codebook[p_in[(of_x[x] + row) / divider] * 8]);
 		}
-		pb->rmovey(PixelConvertor::ypp);
+		line += pitch * PixelConvertor::ypp;
 	}
 }
 
