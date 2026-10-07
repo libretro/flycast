@@ -827,7 +827,8 @@ else ifneq (,$(findstring armv,$(platform)))
 	TARGET := $(TARGET_NAME)_libretro.$(EXT)
 	SHARED += -shared -Wl,--version-script=link.T -Wl,--no-undefined
 	fpic := -fPIC
-	CPUFLAGS += -DNO_ASM -DARM -D__arm__ -DARM_ASM -DNOSSE
+	# not -DARM: the recompiler's emitter is in a namespace of that name
+	CPUFLAGS += -DNO_ASM -D__arm__ -DARM_ASM -DNOSSE
 	WITH_DYNAREC=arm
 	HAVE_GENERIC_JIT = 0
 	PLATCFLAGS += -DARM
@@ -853,6 +854,13 @@ else ifneq (,$(findstring armv,$(platform)))
 	else ifneq (,$(findstring hardfloat,$(platform)))
 		CPUFLAGS += -mfloat-abi=hard
 	endif
+	# Every other ARM target hands its CPUFLAGS on like this. This one did
+	# not, so that -marm, the FPU, the float ABI and ARM_ASM never reached
+	# the compiler: it built with the toolchain's defaults, and where those
+	# are not NEON the recompiler's assembly file did not assemble at all.
+	CFLAGS += $(CPUFLAGS)
+	CXXFLAGS += $(CPUFLAGS)
+	ASFLAGS += $(CFLAGS) -c
 	DEFINES += -DTHREADED_RENDERING_DEFAULT
 
 # emscripten
@@ -1146,6 +1154,13 @@ PREFIX        ?= /usr/local
 
 ifneq (,$(findstring arm, $(ARCH)))
 	CC_AS    = ${CC_PREFIX}${CC} #The ngen_arm.S must be compiled with gcc, not as
+endif
+# The recompilers' assembly files include build.h and need what the C++ is
+# built with, HOST_CPU above all: without it the 32-bit one leaves out the
+# sound processor's entry point, and the link fails. That goes by what is
+# being built for, not by the machine doing the building, which is all
+# that was looked at - so a 32-bit ARM core could not be cross-built.
+ifneq (,$(findstring arm, $(ARCH))$(filter arm arm64,$(WITH_DYNAREC)))
 	ASFLAGS  += $(CFLAGS)
 endif
 
