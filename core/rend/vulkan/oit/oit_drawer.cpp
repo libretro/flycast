@@ -592,15 +592,18 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	}
 	textureCache->SetInFlight(texture);
 
-	if (texture->format != vk::Format::eR8G8B8A8Unorm || texture->extent.width != widthPow2 || texture->extent.height != heightPow2)
+	/* A texture the game uploaded can become one it renders to, at the
+	 * same address, the same size and in this format: its image was not
+	 * made to be rendered to, nor to be copied from, and is made again. */
+	const vk::ImageUsageFlags renderTargetUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
+			| vk::ImageUsageFlagBits::eTransferSrc;	// read back when the game touches it in video memory
+	if (texture->format != vk::Format::eR8G8B8A8Unorm || texture->extent.width != widthPow2 || texture->extent.height != heightPow2
+			|| (texture->imageUsage & renderTargetUsage) != renderTargetUsage)
 	{
 		texture->extent = vk::Extent2D(widthPow2, heightPow2);
 		texture->format = vk::Format::eR8G8B8A8Unorm;
 		texture->needsStaging = true;
-		texture->CreateImage(vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
-				| vk::ImageUsageFlagBits::eTransferSrc,	// read back when the game touches it in video memory
-				
-				vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
+		texture->CreateImage(vk::ImageTiling::eOptimal, renderTargetUsage, vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
 		colorImageCurrentLayout = vk::ImageLayout::eUndefined;
 	}
 	else

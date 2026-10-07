@@ -54,6 +54,8 @@ private:
 	void SetImage(u32 size, void *data, bool isNew, bool genMipmaps);
    void CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usage, vk::ImageLayout initialLayout,
 			const vk::ImageAspectFlags& aspectMask);
+	/* what the image was made to be used for */
+	vk::ImageUsageFlags imageUsage;
 	void GenerateMipmaps();
 
 	vk::Format format = vk::Format::eUndefined;

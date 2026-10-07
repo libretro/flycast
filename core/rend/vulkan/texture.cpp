@@ -231,6 +231,7 @@ void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool 
 void Texture::CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usage, vk::ImageLayout initialLayout,
 		const vk::ImageAspectFlags& aspectMask)
 {
+	imageUsage = usage;
 	vk::ImageCreateInfo imageCreateInfo(vk::ImageCreateFlags(), vk::ImageType::e2D, format, vk::Extent3D(extent, 1), mipmapLevels, 1,
 										vk::SampleCountFlagBits::e1, tiling, usage,
 										vk::SharingMode::eExclusive, 0, nullptr, initialLayout);
