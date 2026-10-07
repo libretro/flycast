@@ -1615,7 +1615,12 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 
 		LIBRETRO_US(Chans[i].AEG.val) ;
 		LIBRETRO_US(Chans[i].AEG.state) ;
-		Chans[i].SetAegState(Chans[i].AEG.state);
+		/* Only what the envelope steps by. SetAegState() does one thing more
+		 * for a channel that is released, which every idle one is: it clears
+		 * the channel's key-on bit. A game sets that bit on the channels it
+		 * wants and starts them all with one write later; loading a state
+		 * between the two took the bit away, and the sound never started. */
+		Chans[i].StepAEG = AEG_STEP_LUT[Chans[i].AEG.state];
 		if (ver < V8)
 		{
 			LIBRETRO_US(dum); // Chans[i].AEG.AttackRate

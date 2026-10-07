@@ -802,7 +802,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(set_mode_offset);
 	LIBRETRO_US(ata_cmd);
 	LIBRETRO_US(cdda);
-	cdda.status = (bool)cdda.status ? cdda_t::Playing : cdda_t::NoInfo;
+	/* The status used to be a flag, playing or not, with whatever followed
+	 * it in its word: a state from then has something here that is none of
+	 * the four states, and is read as the flag. This was done to every
+	 * state, and made a drive that was paused, or had played to the end,
+	 * play. */
+	if ((u32)cdda.status > (u32)cdda_t::Terminated)
+		cdda.status = ((u32)cdda.status & 0xFF) ? cdda_t::Playing : cdda_t::NoInfo;
 	LIBRETRO_US(gd_state);
 	LIBRETRO_US(gd_disk_type);
 	LIBRETRO_US(data_write_mode);

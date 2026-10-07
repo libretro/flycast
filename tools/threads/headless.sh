@@ -84,13 +84,25 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # The fifth opens the drive's lid 120 frames in and shuts it on the same
 # disc 20 frames later. The program watches the drive: it has to be busy
 # for a second and then say that the medium may have changed.
-for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap"; do
+# The sixth saves a state 100 frames in and loads it 24 frames later, while
+# the disc's sound plays: from the load on, the sound has to be the first
+# run's from where the state was saved. (A channel the program has marked
+# to start and not yet started is among what the state has to carry.)
+for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
    FRAMES=300
-   unset HEADLESS_RESET HEADLESS_SWAP
-   if [ "$2" = swap ]; then
+   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD
+   if [ "$2" = state ]; then
+      NAME=$TIMING-state
+      WINCE=disabled
+      GOOD=600d600d
+      HEADLESS_SAVE=100
+      HEADLESS_LOAD=124
+      export HEADLESS_SAVE HEADLESS_LOAD
+      echo "== headless: $TIMING SH4 timing, with a state saved and loaded"
+   elif [ "$2" = swap ]; then
       NAME=$TIMING-swap
       WINCE=disabled
       GOOD=600d5a9d
@@ -115,7 +127,9 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap"; do
       GOOD=600d600d
       echo "== headless: $TIMING SH4 timing"
    fi
-   rm -f "$WORK/sound.pcm"
+   # (the first run's sound is kept: the run with a state in it is held against it)
+   [ "$NAME" = legacy ] || rm -f "$WORK/sound.pcm"
+   [ "$NAME" != legacy ] || rm -f "$WORK/sound-plain.pcm"
    if [ -n "$WINDOWS" ]; then
       :
    elif [ -n "$GLES" ]; then
@@ -127,7 +141,9 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap"; do
       LD_PRELOAD=$WORK/libGLESv2.so.2
       export LD_PRELOAD
    fi
-   HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$WORK/sound.pcm HEADLESS_PEEK=$VERDICT \
+   SOUND=$WORK/sound.pcm
+   [ "$NAME" != legacy ] || SOUND=$WORK/sound-plain.pcm
+   HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$SOUND HEADLESS_PEEK=$VERDICT \
       $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" $FRAMES \
       reicast_hle_bios=enabled reicast_threaded_rendering=disabled \
       reicast_sh4_timing=$TIMING reicast_force_wince=$WINCE $EXTRA \
@@ -153,9 +169,16 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap"; do
       exit 1
    }
    # (the sound of a run with a reset or a disc change in it is not the plain one: not looked at)
-   [ -n "$HEADLESS_RESET$HEADLESS_SWAP" ] || python3 "$T/live_audio.py" "$WORK/sound.pcm" || {
-      echo "FAIL: wrong sound" >&2
-      exit 1
-   }
+   if [ -n "$HEADLESS_SAVE" ]; then
+      python3 "$T/live_audio.py" --reloaded "$WORK/sound-plain.pcm" "$SOUND" || {
+         echo "FAIL: the sound did not go on from a loaded state as it had from there" >&2
+         exit 1
+      }
+   elif [ -z "$HEADLESS_RESET$HEADLESS_SWAP" ]; then
+      python3 "$T/live_audio.py" "$SOUND" || {
+         echo "FAIL: wrong sound" >&2
+         exit 1
+      }
+   fi
 done
 echo "headless test passed"

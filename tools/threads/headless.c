@@ -19,6 +19,9 @@
  *   HEADLESS_STAGE   address of bench_prog.c's stage word: time its kernels
  *   HEADLESS_RESET   frame to press reset before
  *   HEADLESS_SWAP    frame to open the drive's lid before; it is shut 20 frames on
+ *   HEADLESS_SAVE    frame to save a state before
+ *   HEADLESS_LOAD    frame to load that state back before
+ *   HEADLESS_DUMP    "frame:file": a state saved before that frame, written to the file
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -243,6 +246,9 @@ int main(int argc, char **argv)
       SYM(bool, retro_load_game, (const struct retro_game_info *))
       SYM(void, retro_run, (void))
       SYM(void, retro_reset, (void))
+      SYM(size_t, retro_serialize_size, (void))
+      SYM(bool, retro_serialize, (void *, size_t))
+      SYM(bool, retro_unserialize, (const void *, size_t))
       SYM(void *, retro_get_memory_data, (unsigned))
       SYM(size_t, retro_get_memory_size, (unsigned))
 
@@ -277,6 +283,10 @@ int main(int argc, char **argv)
          uint32_t last = 0, word = 0;
          int reset_at = getenv("HEADLESS_RESET") ? atoi(getenv("HEADLESS_RESET")) : -1;
          int swap_at = getenv("HEADLESS_SWAP") ? atoi(getenv("HEADLESS_SWAP")) : -1;
+         int save_at = getenv("HEADLESS_SAVE") ? atoi(getenv("HEADLESS_SAVE")) : -1;
+         int load_at = getenv("HEADLESS_LOAD") ? atoi(getenv("HEADLESS_LOAD")) : -1;
+         void *state = NULL;
+         size_t state_size = 0;
          clock_t t0 = clock();
 
          for (i = 0; i < frames; i++)
@@ -286,6 +296,33 @@ int main(int argc, char **argv)
 
             if (i == reset_at)
                retro_reset();
+            if (i == save_at)
+            {
+               state_size = retro_serialize_size();
+               state = malloc(state_size);
+               if (!state || !retro_serialize(state, state_size))
+               {
+                  fprintf(stderr, "the state could not be saved\n");
+                  return 1;
+               }
+            }
+            if (i == load_at && state && !retro_unserialize(state, state_size))
+            {
+               fprintf(stderr, "the state could not be loaded\n");
+               return 1;
+            }
+            if (getenv("HEADLESS_DUMP") && i == atoi(getenv("HEADLESS_DUMP")) && strchr(getenv("HEADLESS_DUMP"), ':'))
+            {
+               size_t dump_size = retro_serialize_size();
+               void *dump = malloc(dump_size);
+               FILE *out = fopen(strchr(getenv("HEADLESS_DUMP"), ':') + 1, "wb");
+
+               if (dump && out && retro_serialize(dump, dump_size))
+                  fwrite(dump, 1, dump_size, out);
+               if (out)
+                  fclose(out);
+               free(dump);
+            }
             /* the lid opened, and shut again on the same disc 20 frames later */
             if (have_disk && i == swap_at)
                disk.set_eject_state(true);
