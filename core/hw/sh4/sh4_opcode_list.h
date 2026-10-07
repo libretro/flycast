@@ -48,7 +48,7 @@ struct sh4_opcodelistentry
 	u8 IssueCycles;
 	u8 LatencyCycles;
 	sh4_eu unit;
-	sh4_exept_fixup ex_fixup;
+	u8 ex_type;	// the instruction's group in the manual's exception table; sh4_cycles.h tells memory accesses by it
 	u64 decode;
 	u64 fallbacks;
 
