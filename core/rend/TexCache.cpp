@@ -968,9 +968,16 @@ void ReadFramebuffer(PixelBuffer<u32>& pb, int& width, int& height)
 			addr = SPG_STATUS.fieldnum ? FB_R_SOF2 : FB_R_SOF1;
 		}
 	}
+	else if (FB_R_CTRL.vclk_div == 0)
+	{
+		/* Not interlaced, on a television: 240 lines are all there are,
+		 * whatever the size register says. Upstream: the Echelon intro of
+		 * Confidential Mission (PAL). */
+		height = std::min(height, 240);
+	}
 
-
-	pb.init(width, height);
+	// handed to the GPU at once by whoever asked: converted where textures are, nothing allocated
+	pb.init(width, height, false, texcache_scratch(PixelBuffer<u32>::bytes(width, height, false)));
 	u8 *dst = (u8*)pb.data();
 
 	switch (FB_R_CTRL.fb_depth)
@@ -1099,7 +1106,7 @@ void WriteTextureToVRam(u32 width, u32 height, u8 *data, u16 *dst)
 			break;
 		case 3://0x3    1555 ARGB 16 bit    The alpha value is determined by comparison with the value of fb_alpha_threshold.
 			for (u32 c = 0; c < width; c++) {
-				*dst++ = (((p[0] >> 3) & 0x1F) << 10) | (((p[1] >> 3) & 0x1F) << 5) | ((p[2] >> 3) & 0x1F) | (p[3] > fb_alpha_threshold ? 0x8000 : 0);
+				*dst++ = (((p[0] >> 3) & 0x1F) << 10) | (((p[1] >> 3) & 0x1F) << 5) | ((p[2] >> 3) & 0x1F) | (p[3] >= fb_alpha_threshold ? 0x8000 : 0);	// at the threshold counts (upstream: Izumo)
 				p += 4;
 			}
 			break;
