@@ -117,6 +117,7 @@ struct rend_context
 
 	bool Overrun;
 	bool isRTT;
+	bool clearFramebuffer;	// drawn to a framebuffer the game has not drawn to lately: see rend_start_render()
 
    bool isRenderFramebuffer;
 
@@ -153,6 +154,7 @@ struct rend_context
 		fZ_min= 1000000.0f;
 		fZ_max= 1.0f;
       isRenderFramebuffer = false;
+		clearFramebuffer = false;
 	}
 };
 

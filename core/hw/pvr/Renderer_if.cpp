@@ -119,6 +119,16 @@ void rend_create_renderer()
 	}
 }
 
+/* The last two framebuffers the game rendered to. A game flips between two
+ * and draws over what it drew there two frames before. When it renders to
+ * a third - after the BIOS has handed over, or on a change of video mode -
+ * what the console has there is not what was on screen: the renderers draw
+ * into one picture, though, and whatever the game does not draw over would
+ * be left from the frame before. The picture is cleared then, to the
+ * border colour. (Upstream: the BIOS's last frame showing above and below
+ * the picture in San Francisco Rush 2049.) */
+static u32 fb_addr_history[2] = { 1, 1 };
+
 void rend_init_renderer()
 {
 	if (!renderer->Init())
@@ -137,6 +147,7 @@ void rend_init_renderer()
 
 void rend_term_renderer()
 {
+	fb_addr_history[0] = fb_addr_history[1] = 1;
 	if (renderer != NULL)
 	{
 		renderer->Term();
@@ -249,6 +260,14 @@ void rend_start_render(void)
             FillBGP(ctx);
 
          ctx->rend.isRTT      = is_rtt;
+         ctx->rend.clearFramebuffer = false;
+         if (!is_rtt && !ctx->rend.isRenderFramebuffer
+               && FB_W_SOF1 != fb_addr_history[0] && FB_W_SOF1 != fb_addr_history[1])
+         {
+            ctx->rend.clearFramebuffer = true;
+            fb_addr_history[0] = fb_addr_history[1];
+            fb_addr_history[1] = FB_W_SOF1;
+         }
 
          ctx->rend.fb_X_CLIP  = FB_X_CLIP;
          ctx->rend.fb_Y_CLIP  = FB_Y_CLIP;

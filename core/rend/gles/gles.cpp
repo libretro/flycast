@@ -1013,7 +1013,17 @@ static bool RenderFrame(void)
 	glClearDepth(0.0);
 	glcache.StencilMask(0xFF); glCheck();
 	glClearStencil(0);
-	glClear(GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); glCheck();
+	if (!is_rtt && pvrrc.clearFramebuffer)
+	{
+		// a framebuffer the game has not drawn to lately: nothing of the last picture belongs in it
+		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		glcache.ClearColor(VO_BORDER_COL.Red / 255.f, VO_BORDER_COL.Green / 255.f, VO_BORDER_COL.Blue / 255.f, 1.f);
+		glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); glCheck();
+	}
+	else
+	{
+		glClear(GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); glCheck();
+	}
 
 	//move vertex to gpu
 

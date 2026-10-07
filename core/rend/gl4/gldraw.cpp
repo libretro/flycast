@@ -475,6 +475,16 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 	if (texSamplers[0] == 0)
 		glGenSamplers(2, texSamplers);
 
+	if (!pvrrc.isRTT && pvrrc.clearFramebuffer)
+	{
+		// a framebuffer the game has not drawn to lately: nothing of the last picture belongs in it
+		glcache.Disable(GL_SCISSOR_TEST);
+		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		glcache.ClearColor(VO_BORDER_COL.Red / 255.f, VO_BORDER_COL.Green / 255.f, VO_BORDER_COL.Blue / 255.f, 1.f);
+		glClear(GL_COLOR_BUFFER_BIT);
+		if (gl4ShaderUniforms.base_clipping.enabled)
+			glcache.Enable(GL_SCISSOR_TEST);
+	}
 	glcache.DepthMask(GL_TRUE);
 	glClearDepth(0.0);
 	glStencilMask(0xFF);
