@@ -28,6 +28,7 @@ class PixelBuffer
 	pixel_type* p_current_pixel = nullptr;
 
 	u32 pixels_per_line = 0;
+	bool borrowed = false;	// the memory is the caller's: not freed here
 
 public:
 	~PixelBuffer()
@@ -35,22 +36,39 @@ public:
 		deinit();
    }
 
-	void init(u32 width, u32 height, bool mipmapped)
+	// How much memory a picture this size takes, with every smaller level if @mipmapped
+	static size_t bytes(u32 width, u32 height, bool mipmapped)
 	{
-		deinit();
-		size_t size = width * height * sizeof(pixel_type);
+		size_t size = (size_t)width * height * sizeof(pixel_type);
 		if (mipmapped)
 		{
 			do
 			{
 				width /= 2;
 				height /= 2;
-				size += width * height * sizeof(pixel_type);
+				size += (size_t)width * height * sizeof(pixel_type);
 			}
 			while (width != 0 && height != 0);
 		}
-		p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)malloc(size);
+		return size;
+	}
+
+	void init(u32 width, u32 height, bool mipmapped)
+	{
+		deinit();
+		p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)malloc(bytes(width, height, mipmapped));
 		this->pixels_per_line = 1;
+	}
+
+	/* The same on memory the caller has, bytes() of it or more: nothing is
+	 * allocated and nothing freed. For what is converted and handed on at
+	 * once, texture after texture (texcache_scratch()). */
+	void init(u32 width, u32 height, bool mipmapped, void *memory)
+	{
+		deinit();
+		p_buffer_start = p_current_line = p_current_pixel = p_current_mipmap = (pixel_type *)memory;
+		this->pixels_per_line = mipmapped ? 1 : width;
+		borrowed = true;
 	}
 
    void init(u32 width, u32 height)
@@ -64,9 +82,11 @@ public:
 	{
 		if (p_buffer_start != NULL)
 		{
-			free(p_buffer_start);
+			if (!borrowed)
+				free(p_buffer_start);
 			p_buffer_start = p_current_mipmap = p_current_line = p_current_pixel = NULL;
 		}
+		borrowed = false;
 	}
 
 	void steal_data(PixelBuffer &buffer)
@@ -74,6 +94,8 @@ public:
 		deinit();
 		p_buffer_start = p_current_mipmap = p_current_line = p_current_pixel = buffer.p_buffer_start;
 		pixels_per_line = buffer.pixels_per_line;
+		borrowed = buffer.borrowed;
+		buffer.borrowed = false;
 		buffer.p_buffer_start = buffer.p_current_mipmap = buffer.p_current_line = buffer.p_current_pixel = NULL;
 	}
 
@@ -119,6 +141,7 @@ public:
 };
 
 void palette_update();
+void texcache_scratch_free();
 
 #define clamp(minv, maxv, x) (x < minv ? minv : x > maxv ? maxv : x)
 

@@ -148,6 +148,7 @@ void rend_term_renderer()
 		delete fallback_renderer;
 		fallback_renderer = NULL;
 	}
+	texcache_scratch_free();
 }
 
 bool rend_frame(TA_context* ctx, bool draw_osd)

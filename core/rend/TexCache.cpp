@@ -594,6 +594,34 @@ void BaseTextureCacheData::Create()
 	}
 }
 
+/* Where a texture is converted before it is handed to the GPU. One piece of
+ * memory, kept from one texture to the next and only ever grown: every
+ * update used to allocate a buffer the size of its texture and free it
+ * again a moment later, sixty megabytes a second of that for a video
+ * playing as a 512x512 texture. Whatever is in it is the last texture's and
+ * of no use, so growing it copies nothing. Updates happen on the one thread
+ * that renders. At most a 1024x1024 texture with its mipmaps, 5.6 MB. */
+static void *tex_scratch;
+static size_t tex_scratch_size;
+
+static void *texcache_scratch(size_t size)
+{
+	if (size > tex_scratch_size)
+	{
+		free(tex_scratch);
+		tex_scratch = malloc(size);
+		tex_scratch_size = tex_scratch != NULL ? size : 0;
+	}
+	return tex_scratch;
+}
+
+void texcache_scratch_free()
+{
+	free(tex_scratch);
+	tex_scratch = NULL;
+	tex_scratch_size = 0;
+}
+
 void BaseTextureCacheData::ComputeHash()
 {
 	// twiddled and compressed; for a paletted texture the scan order bit is part of the palette selection
@@ -697,6 +725,14 @@ void BaseTextureCacheData::Update()
 	PixelBuffer<u32> pb32;
 	PixelBuffer<u8> pb8;
 
+	/* A planar texture is converted a row of 'stride' pixels at a time into
+	 * rows of the texture's width. With a stride wider than the texture,
+	 * every row runs on into the next, which is then written over it - and
+	 * the last runs past the end of the buffer by the difference: room is
+	 * left for that. With a narrower one the rest of each row was whatever
+	 * the memory held, and went to the GPU so; it is cleared. */
+	const u32 stride_over = stride > w ? stride - w : 0;
+
 	// Figure out if we really need to use a 32-bit pixel buffer
 	bool textureUpscaling = settings.rend.TextureUpscale > 1
 			// Don't process textures that are too big
@@ -723,7 +759,7 @@ void BaseTextureCacheData::Update()
 
 		if (mipmapped)
 		{
-			pb32.init(w, h, true);
+			pb32.init(w, h, true, texcache_scratch(PixelBuffer<u32>::bytes(w, h, true)));
 			for (u32 i = 0; i <= tsp.TexU + 3u; i++)
 			{
 				pb32.set_mipmap(i);
@@ -733,8 +769,9 @@ void BaseTextureCacheData::Update()
 					vram_addr = sa_tex + VQMipPoint[i];
 					if (i == 0)
 					{
+						u32 corner[4];
 						PixelBuffer<u32> pb0;
-						pb0.init(2, 2 ,false);
+						pb0.init(2, 2, false, corner);
 						/* The 1x1 level is the corner of a 2x2 block. For a
 						 * YUV texture that block is not a colour - it came
 						 * out magenta, behind the pitch in World Series
@@ -758,9 +795,11 @@ void BaseTextureCacheData::Update()
 		}
 		else
 		{
-			pb32.init(w, h);
-
+			pb32.init(w, h, false, texcache_scratch(PixelBuffer<u32>::bytes(w, h, false) + stride_over * sizeof(u32)));
 			texconv32(&pb32, (u8*)&vram[sa], stride, h);
+			if (stride < w)
+				for (u32 y = 0; y < h; y++)
+					memset(pb32.data(stride, y), 0, (w - stride) * sizeof(u32));
 
 #ifdef HAVE_TEXUPSCALE
 			// xBRZ scaling
@@ -785,7 +824,7 @@ void BaseTextureCacheData::Update()
 	{
 		if (mipmapped)
 		{
-			pb8.init(w, h, true);
+			pb8.init(w, h, true, texcache_scratch(PixelBuffer<u8>::bytes(w, h, true)));
 			for (u32 i = 0; i <= tsp.TexU + 3u; i++)
 			{
 				pb8.set_mipmap(i);
@@ -796,7 +835,7 @@ void BaseTextureCacheData::Update()
 		}
 		else
 		{
-			pb8.init(w, h);
+			pb8.init(w, h, false, texcache_scratch(PixelBuffer<u8>::bytes(w, h, false)));
 			texconv8(&pb8, &vram[sa], stride, h);
 		}
 		temp_tex_buffer = pb8.data();
@@ -805,7 +844,7 @@ void BaseTextureCacheData::Update()
 	{
 		if (mipmapped)
 		{
-			pb16.init(w, h, true);
+			pb16.init(w, h, true, texcache_scratch(PixelBuffer<u16>::bytes(w, h, true)));
 			for (u32 i = 0; i <= tsp.TexU + 3u; i++)
 			{
 				pb16.set_mipmap(i);
@@ -815,8 +854,9 @@ void BaseTextureCacheData::Update()
 					vram_addr = sa_tex + VQMipPoint[i];
 					if (i == 0)
 					{
+						u16 corner[4];
 						PixelBuffer<u16> pb0;
-						pb0.init(2, 2 ,false);
+						pb0.init(2, 2, false, corner);
 						texconv(&pb0, (u8*)&vram[vram_addr], 2, 2);
 						*pb16.data() = *pb0.data(1, 1);
 						continue;
@@ -830,8 +870,11 @@ void BaseTextureCacheData::Update()
 		}
 		else
 		{
-			pb16.init(w, h);
+			pb16.init(w, h, false, texcache_scratch(PixelBuffer<u16>::bytes(w, h, false) + stride_over * sizeof(u16)));
 			texconv(&pb16,(u8*)&vram[sa],stride,h);
+			if (stride < w)
+				for (u32 y = 0; y < h; y++)
+					memset(pb16.data(stride, y), 0, (w - stride) * sizeof(u16));
 		}
 		temp_tex_buffer = pb16.data();
 	}
@@ -839,7 +882,7 @@ void BaseTextureCacheData::Update()
 	{
 		//fill it in with a temp color
 		WARN_LOG(RENDERER, "UNHANDLED TEXTURE");
-		pb16.init(w, h);
+		pb16.init(w, h, false, texcache_scratch(PixelBuffer<u16>::bytes(w, h, false)));
 		memset(pb16.data(), 0x80, w * h * 2);
 		temp_tex_buffer = pb16.data();
 		mipmapped = false;
