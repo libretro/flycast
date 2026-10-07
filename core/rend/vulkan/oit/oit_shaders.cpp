@@ -684,7 +684,8 @@ vec4 resolveAlphaBlend(ivec2 coords) {
 				srcCoef = vec4(1.0);
 				break;
 			case OTHER_COLOR:
-				srcCoef = finalColor;
+				// the colour of what it is blended onto - which, when that is the second accumulation buffer, is that buffer's
+				srcCoef = dstColor;
 				break;
 			case INVERSE_OTHER_COLOR:
 				srcCoef = vec4(1.0) - dstColor;
