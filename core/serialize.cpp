@@ -125,6 +125,7 @@ extern bool EEPROM_loaded;
 //needs special handler
 extern maple_device* MapleDevices[4][6];
 extern int maple_sched;
+#include "hw/maple/maple_if.h"
 extern bool maple_ddt_pending_reset;
 
 #ifdef ENABLE_MODEM
@@ -655,6 +656,11 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	 * rollbacks diverged whenever a game read the clock. Carry it in the state
 	 * so it is synced along with everything else. */
 	LIBRETRO_S(RealTimeClock);
+
+	/* V18: the answers of a Maple transfer that is under way, which are not
+	 * in the game's memory until it is over. */
+	LIBRETRO_S(maple_out_used);
+	LIBRETRO_SA(maple_out, MAPLE_OUT_WORDS);
 
 	return true ;
 }
@@ -1225,6 +1231,17 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 
 	if (version >= V14)
 		LIBRETRO_US(RealTimeClock);
+
+	/* Before V18 a transfer's answers were in memory from its start, and
+	 * so they are in such a state: there is nothing waiting. */
+	maple_out_used = 0;
+	if (version >= V18)
+	{
+		LIBRETRO_US(maple_out_used);
+		LIBRETRO_USA(maple_out, MAPLE_OUT_WORDS);
+		if (maple_out_used > MAPLE_OUT_WORDS)
+			maple_out_used = 0;
+	}
 
 	/* Fail the whole load if any read was rejected for running past the end
 	 * of the input buffer. Callers (retro_unserialize) then bail cleanly

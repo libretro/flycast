@@ -152,6 +152,29 @@ static u32 spg_test(void)
    return at < 100 || at > 102 ? 2 : 0;
 }
 
+/* A Maple transfer takes time. The controller's answer is not in memory
+ * when the transfer has only just been started, and is there when the
+ * transfer is over. Not zero if not so. (With nothing in port A the bus
+ * says that nobody answered, and there is nothing to tell by.) */
+static u32 maple_test(void)
+{
+   volatile u32 *reply = (volatile u32 *)0xAC00E100;
+   u32 guard, early;
+
+   reply[0] = 0x12345678;
+   poll_controller();
+   early = reply[0];
+   for (guard = 0; guard < 2000000 && (SB(0xC18) & 1); guard++)
+      ;
+   if (SB(0xC18) & 1)
+      return 2;                                        /* never over */
+   if (reply[0] == 0x12345678)
+      return 3;                                        /* over, and no answer */
+   if (reply[0] != 0xFFFFFFFF && early != 0x12345678)
+      return 1;                                        /* the answer was there at once */
+   return 0;
+}
+
 /* The two store queues each have a register saying which area their 32
  * bytes go to. Nearly every game sets the two alike, and so does this
  * program for its rendering; here, once, they differ: the second queue is
@@ -929,6 +952,7 @@ void cmain(void)
    int gd_bad;
    int sq_bad;
    u32 spg_bad;
+   u32 maple_bad;
    int mmu_state;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
@@ -1021,6 +1045,7 @@ void cmain(void)
    gd_bad = gd_test();
    cpu_bad = cpu_test();
    spg_bad = spg_test();
+   maple_bad = maple_test();
    /* and the audio track playing underneath everything that follows:
     * the sector the sound chip mixes from is lent out of the image, and
     * the save, load, reset and unload below all happen while it is */
@@ -1197,6 +1222,7 @@ void cmain(void)
                : gd_bad ? 0xBAD00005
                : sq_bad ? 0xBAD00006
                : spg_bad ? 0xBAD00800 + spg_bad
+               : maple_bad ? 0xBAD00900 + maple_bad
                : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;

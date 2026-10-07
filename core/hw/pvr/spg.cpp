@@ -4,6 +4,7 @@
 #include "pvr_regs.h"
 #include "hw/holly/holly_intc.h"
 #include "hw/holly/sb.h"
+#include "hw/maple/maple_if.h"
 #include "hw/sh4/sh4_sched.h"
 
 u32 in_vblank;
@@ -157,8 +158,7 @@ static void spg_run_lines(u32 lines)
          if (maple_int_pending)
          {
             maple_int_pending = false;
-            SB_MDST = 0;
-            asic_RaiseInterrupt(holly_MAPLE_DMA);
+            maple_dma_done();
          }
 
          asic_RaiseInterrupt(holly_SCANINT1);
@@ -208,8 +208,7 @@ static void spg_run_lines(u32 lines)
 		{
          maple_int_pending = false;
 			SPG_TRIGGER_POS = ((lightgun_line & 0x3FF) << 16) | (lightgun_hpos & 0x3FF);
-         SB_MDST = 0;
-			asic_RaiseInterrupt(holly_MAPLE_DMA);
+			maple_dma_done();
 			lightgun_line = 0xffff;
 		}
 	}
