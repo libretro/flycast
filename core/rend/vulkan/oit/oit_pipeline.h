@@ -302,11 +302,15 @@ public:
 			CreateFinalPipeline();
 		return *finalPipeline;
 	}
-	vk::Pipeline GetClearPipeline()
+	/* The pipeline that empties the per-pixel lists, for the subpass it is
+	 * used in: the last (2) every frame, the colour one (1) in the first
+	 * frame after the lists are made. */
+	vk::Pipeline GetClearPipeline(int subpass = 2)
 	{
-		if (!clearPipeline)
-			CreateClearPipeline();
-		return *clearPipeline;
+		vk::UniquePipeline& pipeline = subpass == 2 ? clearPipeline : clearPipelineColor;
+		if (!pipeline)
+			pipeline = CreateClearPipeline(subpass);
+		return *pipeline;
 	}
 	vk::PipelineLayout GetPipelineLayout() const { return *pipelineLayout; }
 	vk::DescriptorSetLayout GetPerFrameDSLayout() const { return *perFrameLayout; }
@@ -377,13 +381,14 @@ private:
 
 	void CreatePipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass);
 	void CreateFinalPipeline();
-	void CreateClearPipeline();
+	vk::UniquePipeline CreateClearPipeline(int subpass);
 
 	std::map<u32, vk::UniquePipeline> pipelines;
 	std::map<u32, vk::UniquePipeline> modVolPipelines;
 	std::map<u32, vk::UniquePipeline> trModVolPipelines;
 	vk::UniquePipeline finalPipeline;
 	vk::UniquePipeline clearPipeline;
+	vk::UniquePipeline clearPipelineColor;
 
 	vk::UniquePipelineLayout pipelineLayout;
 	vk::UniqueDescriptorSetLayout perFrameLayout;

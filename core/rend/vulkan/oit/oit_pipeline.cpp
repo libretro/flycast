@@ -291,7 +291,7 @@ void OITPipelineManager::CreateFinalPipeline()
 
 }
 
-void OITPipelineManager::CreateClearPipeline()
+vk::UniquePipeline OITPipelineManager::CreateClearPipeline(int subpass)
 {
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetQuadInputStateCreateInfo(false);
 
@@ -360,10 +360,10 @@ void OITPipelineManager::CreateClearPipeline()
 	  &pipelineDynamicStateCreateInfo,            // pDynamicState
 	  *pipelineLayout,                            // layout
 	  renderPasses->GetRenderPass(true, true),    // renderPass
-	  2                                           // subpass
+	  subpass                                     // subpass
 	);
 
-	clearPipeline = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo);
+	return GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo);
 }
 
 void OITPipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
