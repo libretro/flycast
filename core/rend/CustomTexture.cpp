@@ -58,6 +58,9 @@ void CustomTexture::Load(BaseTextureCacheData *texture)
 		{
 			int width, height;
 			u8 *image_data = LoadCustomTexture(texture->texture_hash, width, height);
+			// under the names it has had before
+			if (image_data == NULL && texture->old_vqtexture_hash != 0)
+				image_data = LoadCustomTexture(texture->old_vqtexture_hash, width, height);
 			if (image_data == NULL)
 			{
 				image_data = LoadCustomTexture(texture->old_texture_hash, width, height);

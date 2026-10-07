@@ -351,15 +351,17 @@ struct PvrTexInfo
 	TexConvFP32 *VQ32;
 	// Conversion to 8 bpp (palette)
 	TexConvFP8 *TW8;
+	// Planar and compressed, to 32 bpp
+	TexConvFP32 *PLVQ32;
 };
 
 static const PvrTexInfo format[8] =
 {	// name     bpp Final format			   Planar		Twiddled	 VQ				Planar(32b)    Twiddled(32b)  VQ (32b)      Palette (8b)
-	{"1555", 	16,	TextureType::_5551,        tex1555_PL,  tex1555_TW,  tex1555_VQ,    tex1555_PL32,  tex1555_TW32,  tex1555_VQ32, nullptr },	    //1555
-	{"565", 	16, TextureType::_565,         tex565_PL,   tex565_TW,   tex565_VQ,     tex565_PL32,   tex565_TW32,   tex565_VQ32,  nullptr },	    //565
-	{"4444", 	16, TextureType::_4444,        tex4444_PL,  tex4444_TW,  tex4444_VQ,    tex4444_PL32,  tex4444_TW32,  tex4444_VQ32, nullptr },	    //4444
-	{"yuv", 	16, TextureType::_8888,        nullptr,     nullptr,     nullptr,       texYUV422_PL,  texYUV422_TW,  texYUV422_VQ, nullptr },	    //yuv
-	{"bumpmap", 16, TextureType::_4444,        texBMP_PL,   texBMP_TW,	 texBMP_VQ,     tex4444_PL32,  tex4444_TW32,  tex4444_VQ32, nullptr },      //bump map
+	{"1555", 	16,	TextureType::_5551,        tex1555_PL,  tex1555_TW,  tex1555_VQ,    tex1555_PL32,  tex1555_TW32,  tex1555_VQ32, nullptr, tex1555_PLVQ32 },	    //1555
+	{"565", 	16, TextureType::_565,         tex565_PL,   tex565_TW,   tex565_VQ,     tex565_PL32,   tex565_TW32,   tex565_VQ32,  nullptr, tex565_PLVQ32 },	    //565
+	{"4444", 	16, TextureType::_4444,        tex4444_PL,  tex4444_TW,  tex4444_VQ,    tex4444_PL32,  tex4444_TW32,  tex4444_VQ32, nullptr, tex4444_PLVQ32 },	    //4444
+	{"yuv", 	16, TextureType::_8888,        nullptr,     nullptr,     nullptr,       texYUV422_PL,  texYUV422_TW,  texYUV422_VQ, nullptr, texYUV422_PLVQ },	    //yuv
+	{"bumpmap", 16, TextureType::_4444,        texBMP_PL,   texBMP_TW,	 texBMP_VQ,     tex4444_PL32,  tex4444_TW32,  tex4444_VQ32, nullptr, tex4444_PLVQ32 },      //bump map
 	{"pal4", 	4,	TextureType::_5551,		   nullptr,     texPAL4_TW,  texPAL4_VQ,    nullptr,       texPAL4_TW32,  texPAL4_VQ32, texPAL4PT_TW },	//pal4
 	{"pal8", 	8,	TextureType::_5551,		   nullptr,     texPAL8_TW,  texPAL8_VQ,    nullptr,       texPAL8_TW32,  texPAL8_VQ32, texPAL8PT_TW },	//pal8
 	{"ns/1555", 0},	                                                                                                                                // Not supported (1555)
@@ -497,15 +499,16 @@ void BaseTextureCacheData::Create()
 
 	texconv8 = nullptr;
 
+	/* Compressed and mipmapped, a texture is twiddled whatever this bit
+	 * says: Star Wars Demolition sets it, and its textures came out
+	 * corrupted (upstream: or took the emulator down). Not for a paletted
+	 * texture, where the bit is part of the palette selection. */
+	if (tcw.VQ_Comp == 1 && tcw.MipMapped == 1 && !IsPaletted())
+		tcw.ScanOrder = 0;
+
 	if (tcw.ScanOrder && (tex->PL || tex->PL32))
 	{
 		//Texture is stored 'planar' in memory, no deswizzle is needed
-		//verify(tcw.VQ_Comp==0);
-		if (tcw.VQ_Comp != 0)
-		{
-			WARN_LOG(RENDERER, "Warning: planar texture with VQ set (invalid)");
-			tcw.VQ_Comp = 0;
-		}
 		if (tcw.MipMapped != 0)
 		{
 			WARN_LOG(RENDERER, "Warning: planar texture with mipmaps (invalid)");
@@ -515,13 +518,33 @@ void BaseTextureCacheData::Create()
 		//Planar textures support stride selection, mostly used for non power of 2 textures (videos)
 		int stride = w;
 		if (tcw.StrideSel)
+		{
 			stride = (TEXT_CONTROL & 31) * 32;
+			// a stride of nothing is no stride: the texture's own width
+			if (stride == 0)
+				stride = w;
+		}
 
-		//Call the format specific conversion code
-		texconv = tex->PL;
-		texconv32 = tex->PL32;
-		//calculate the size, in bytes, for the locking
-		size = stride * h * tex->bpp / 8;
+		if (tcw.VQ_Comp != 0 && tex->PLVQ32 != nullptr)
+		{
+			/* Compressed as well. This was taken for a mistake and the
+			 * compression ignored; it is a texture like any other (the
+			 * Genesis emulator in the Teenage Mutant Ninja Turtles
+			 * collection draws its screen with one). */
+			vq_codebook = sa;
+			texconv = nullptr;
+			texconv32 = tex->PLVQ32;
+			size = 256 * 4 * 2 + stride * h / 4;
+		}
+		else
+		{
+			tcw.VQ_Comp = 0;
+			//Call the format specific conversion code
+			texconv = tex->PL;
+			texconv32 = tex->PL32;
+			//calculate the size, in bytes, for the locking
+			size = stride * h * tex->bpp / 8;
+		}
 	}
 	else
 	{
@@ -550,7 +573,11 @@ void BaseTextureCacheData::Create()
 				sa += VQMipPoint[tsp.TexU + 3];
 			texconv = tex->VQ;
 			texconv32 = tex->VQ32;
-			size = w * h / 8;
+			/* From sa: the codebook the converters skip, and a byte for
+			 * every four pixels. This was half the pixels' share and no
+			 * codebook, so a write to the rest of the texture was not
+			 * watched for, and the texture stayed as it was. */
+			size = 256 * 4 * 2 + w * h / 4;
 		}
 		else
 		{
@@ -567,6 +594,34 @@ void BaseTextureCacheData::Create()
 
 void BaseTextureCacheData::ComputeHash()
 {
+	// twiddled and compressed; for a paletted texture the scan order bit is part of the palette selection
+	if (tcw.VQ_Comp && !(tcw.ScanOrder && (tex->PL || tex->PL32)))
+	{
+		/* A compressed texture's name used to come from the first w*h/8
+		 * bytes at sa - part of the codebook and none or some of the
+		 * texture, so that two textures could share one. It is now the
+		 * hash of the codebook and then of the whole texture, as upstream
+		 * names them; the old name is kept, and custom textures saved
+		 * under it are still found. */
+		XXH32_state_t *state = XXH32_createState();
+
+		old_vqtexture_hash = XXH32(&vram[sa], w * h / 8, 7);
+		if (IsPaletted())
+			old_vqtexture_hash ^= palette_hash;
+		old_texture_hash = old_vqtexture_hash;
+		old_vqtexture_hash ^= tcw.full & 0xFC000000;
+
+		XXH32_reset(state, 7);
+		XXH32_update(state, &vram[sa_tex], 256 * 4 * 2);
+		XXH32_update(state, &vram[sa + 256 * 4 * 2], w * h / 4);
+		texture_hash = XXH32_digest(state);
+		XXH32_freeState(state);
+		if (IsPaletted())
+			texture_hash ^= palette_hash;
+		texture_hash ^= tcw.full & 0xFC000000;
+		return;
+	}
+	old_vqtexture_hash = 0;
 	texture_hash = XXH32(&vram[sa], size, 7);
 	if (IsPaletted())
 		texture_hash ^= palette_hash;
@@ -608,12 +663,16 @@ void BaseTextureCacheData::Update()
 	u32 stride = w;
 
 	if (tcw.StrideSel && tcw.ScanOrder && (tex->PL || tex->PL32))
+	{
 		stride = (TEXT_CONTROL & 31) * 32;
+		if (stride == 0)
+			stride = w;
+	}
 
 	u32 original_h = h;
 	if (sa_tex > VRAM_SIZE || size == 0 || sa + size > VRAM_SIZE)
 	{
-		if (sa < VRAM_SIZE && sa + size > VRAM_SIZE && tcw.ScanOrder && stride > 0)
+		if (sa < VRAM_SIZE && sa + size > VRAM_SIZE && tcw.ScanOrder && stride > 0 && !tcw.VQ_Comp)
 		{
 			// Shenmue Space Harrier mini-arcade loads a texture that goes beyond the end of VRAM
 			// but only uses the top portion of it
@@ -675,6 +734,12 @@ void BaseTextureCacheData::Update()
 					{
 						PixelBuffer<u32> pb0;
 						pb0.init(2, 2 ,false);
+						/* The 1x1 level is the corner of a 2x2 block. For a
+						 * YUV texture that block is not a colour - it came
+						 * out magenta, behind the pitch in World Series
+						 * Baseball 2K2 - and the 2x2 level's is used. */
+						if (tcw.PixelFmt == PixelYUV)
+							vram_addr = sa_tex + VQMipPoint[1];
 						texconv32(&pb0, (u8*)&vram[vram_addr], 2, 2);
 						*pb32.data() = *pb0.data(1, 1);
 						continue;

@@ -521,6 +521,32 @@ pixelcvt_end;
 
 
 //handler functions
+
+/* Compressed and not twiddled: each byte names a codebook entry, as for
+ * any compressed texture, and an entry is four pixels in a row, left to
+ * right. */
+template<class PixelConvertor, class pixel_type>
+void texture_PLVQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
+{
+	p_in += 256 * 4 * 2;	// Skip VQ codebook
+	pb->amove(0, 0);
+
+	Height /= PixelConvertor::ypp;
+	Width /= PixelConvertor::xpp;
+
+	for (u32 y = 0; y < Height; y++)
+	{
+		for (u32 x = 0; x < Width; x++)
+		{
+			u8 p = *p_in++;
+			PixelConvertor::Convert(pb, &vq_codebook[p * 8]);
+
+			pb->rmovex(PixelConvertor::xpp);
+		}
+		pb->rmovey(PixelConvertor::ypp);
+	}
+}
+
 template<class PixelConvertor, class pixel_type>
 void texture_PL(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 {
@@ -599,6 +625,12 @@ void texture_VQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 #define tex565_PL32 texture_PL<conv565_PL32, u32>
 #define tex1555_PL32 texture_PL<conv1555_PL32, u32>
 #define tex4444_PL32 texture_PL<conv4444_PL32, u32>
+
+//Planar and compressed
+#define tex565_PLVQ32 texture_PLVQ<conv565_PL32, u32>
+#define tex1555_PLVQ32 texture_PLVQ<conv1555_PL32, u32>
+#define tex4444_PLVQ32 texture_PLVQ<conv4444_PL32, u32>
+#define texYUV422_PLVQ texture_PLVQ<convYUV_PL, u32>
 
 //Twiddle
 #define tex565_TW texture_TW<conv565_TW, u16>
@@ -688,6 +720,7 @@ public:
 	u32 vq_codebook;            // VQ quantizers table for compressed textures
 	u32 texture_hash;			// xxhash of texture data, used for custom textures
 	u32 old_texture_hash;		// legacy hash
+	u32 old_vqtexture_hash;		// the name a compressed texture had while only part of it was hashed; 0 if not compressed
 	u8* custom_image_data;		// loaded custom image data
 	u32 custom_width;
 	u32 custom_height;
