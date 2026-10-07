@@ -845,16 +845,21 @@ static void update_variables(bool first_startup)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      if (!strcmp("off", var.value))
-         settings.rend.TextureUpscale = 1;
-      else if (!strcmp("2x", var.value))
+      /* Off is 1, and has to be said: the option's off is "disabled", this
+       * looked for "off", and the setting stayed at the 0 it starts as -
+       * which is not more than 1, so nothing was upscaled, and not 1
+       * either, which is what everything that asks "is upscaling off?"
+       * asks. Palettes were never left to the GPU because of it. */
+      if (!strcmp("2x", var.value))
          settings.rend.TextureUpscale = 2;
       else if (!strcmp("4x", var.value))
          settings.rend.TextureUpscale = 4;
       else if (!strcmp("6x", var.value))
          settings.rend.TextureUpscale = 6;
+      else
+         settings.rend.TextureUpscale = 1;
    }
-   else if (first_startup)
+   else
       settings.rend.TextureUpscale = 1;
 
    var.key = CORE_OPTION_NAME "_texupscale_max_filtered_texture_size";
