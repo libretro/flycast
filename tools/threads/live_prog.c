@@ -538,28 +538,30 @@ __asm__(".text\n.align 2\n"
         "  stc spc, r0\n  add #2, r0\n  ldc r0, spc\n  rte\n  nop\n"
         "  .align 2\n1: .long t_expevt_seen\n2: .long 0xFF000024\n"
         /* 0x400 past the address in VBR, the handler for a TLB miss. It
-         * maps the page that was wanted and returns to try again:
-         *   0x10000000              to the page mmu_test() has chosen
+         * maps the page that was wanted and returns to try again. The
+         * pages of t_mmu_map[] (address, then the whole of PTEL) come
+         * first, each in a TLB entry of its own; then
          *   0xE0000000              to the Tile Accelerator, which is where
          *                           the program's store queue writes go
-         *   the rest of 0xE0000000- to main memory at the same offset, for
-         *                           sq_test()
-         * each in a TLB entry of its own, and counts in t_tlb_misses. */
+         *   the rest of 0xE0000000- to main memory at the same offset
+         * and it counts in t_tlb_misses. */
         "  .fill 0x400 - (. - t_vbr_base), 1, 0\n"
         "  mov.l 10f, r0\n  mov.l @r0, r1\n  mov.l 11f, r2\n  and r2, r1\n"   /* the page, from PTEH */
-        "  mov.l 12f, r3\n  cmp/eq r3, r1\n  bt 4f\n"
+        "  mov.l 16f, r2\n  mov #8, r5\n"
+        "7: mov.l @r2, r3\n  cmp/eq r3, r1\n  bt 8f\n  add #8, r2\n  dt r5\n  bf 7b\n"
         "  mov.l 13f, r3\n  cmp/eq r3, r1\n  bt 5f\n"
-        "  mov.l 14f, r3\n  and r3, r1\n  mov.l 15f, r3\n  or r3, r1\n  mov #3, r4\n  bra 6f\n  nop\n"
-        "4: mov.l 16f, r1\n  mov.l @r1, r1\n  mov #1, r4\n  bra 6f\n  nop\n"
-        "5: mov.l 12f, r1\n  mov #2, r4\n"
-        "6: mov.l 17f, r3\n  or r3, r1\n  mov.l r1, @(4,r0)\n"                 /* PTEL */
+        "  mov.l 14f, r3\n  and r3, r1\n  mov.l 15f, r3\n  or r3, r1\n  mov #11, r4\n  bra 6f\n  nop\n"
+        "5: mov.l 12f, r1\n  mov #10, r4\n"
+        "6: mov.l 17f, r3\n  or r3, r1\n  bra 9f\n  nop\n"
+        "8: mov.l @(4,r2), r1\n  mov #9, r4\n  sub r5, r4\n"                  /* PTEL as given; entry 1 to 8 */
+        "9: mov.l r1, @(4,r0)\n"                                               /* PTEL */
         "  mov.l @(16,r0), r1\n  mov.l 18f, r3\n  and r3, r1\n"                /* MMUCR.URC: which entry */
         "  shll8 r4\n  shll2 r4\n  or r4, r1\n  mov.l r1, @(16,r0)\n"
         "  mov.l 19f, r2\n  mov.l @r2, r3\n  add #1, r3\n  mov.l r3, @r2\n"
         "  .word 0x0038\n  rte\n  nop\n"                                       /* ldtlb */
         "  .align 2\n10: .long 0xFF000000\n11: .long 0xFFFFF000\n12: .long 0x10000000\n"
         "13: .long 0xE0000000\n14: .long 0x00FFF000\n15: .long 0x0C000000\n"
-        "16: .long t_mmu_test_pa\n"
+        "16: .long t_mmu_map\n"
         /* valid, 4K, read and write in any mode, dirty, shared */
         "17: .long 0x00000176\n18: .long 0xFFFF03FF\n19: .long t_tlb_misses\n"
         ".global t_illegal\nt_illegal:\n  stc vbr, r2\n  mov.l 3f, r1\n  ldc r1, vbr\n"
@@ -588,7 +590,8 @@ extern void t_illegal(void);
 volatile u32 t_expevt_seen;
 extern char t_vbr_base[];
 volatile u32 t_tlb_misses;
-u32 t_mmu_test_pa;
+/* what the TLB miss handler maps: a page's address, and the PTEL for it */
+u32 t_mmu_map[8][2];
 extern u32 t_sr_slot_mem(void);
 extern u32 t_pr_neg(u32 bits);
 extern void t_pr_mov(u32 *from, u32 *to);
@@ -737,32 +740,98 @@ static int cpu_test(void)
  * 0 if the address is not translated: the emulator's MMU is only on for
  * Windows CE games (the core option "Force Windows CE Mode" makes this
  * disc one), and without it the test has nothing to say and puts things
- * back. 2 if it is translated wrongly. */
-static u32 mmu_page[1024] __attribute__((aligned(4096)));
+ * back. Otherwise the step of mmu_probe() that went wrong. */
+static u32 mmu_page[3][1024] __attribute__((aligned(4096)));
 
-static int __attribute__((noinline)) mmu_probe(volatile u32 *va)
+/* PTEL for a 4K page at @page: valid and shared, with the given protection
+ * (0x00 read only, 0x20 read and write, both for privileged mode, which is
+ * what the program runs in) and dirty bit (0x04) */
+#define PTEL(page, bits) (((u32)(page) & 0x1FFFF000) | 0x112 | (bits))
+
+static void mmu_map(u32 slot, u32 va, u32 ptel)
 {
+   t_mmu_map[slot][0] = va;
+   t_mmu_map[slot][1] = ptel;
+}
+
+/* Not zero, and which, if a page is not reached the way its mapping says */
+static int __attribute__((noinline)) mmu_probe(void)
+{
+   volatile u32 *va = (volatile u32 *)0x10000000;
+   u32 *a = mmu_page[0], *b = mmu_page[1], *c = mmu_page[2];
+
    if (va[0] != 0x11223344)
    {
       (*(volatile u32 *)0xFF000010) = 0;
       return 0;
    }
    va[1] = 0x55667788;
-   if (mmu_page[1] != 0x55667788 || t_tlb_misses != 1)
-      return 2;
+   if (a[1] != 0x55667788 || t_tlb_misses != 1)
+      return 0x11;
+
+   /* A page that may only be read: reading it works, writing it is a
+    * protection violation (0x0C0) and leaves it as it was - also once it
+    * has been read, which is when an emulator that keeps translations by
+    * has one for it. (The first write to a page whose dirty bit is clear
+    * is an exception too, on the SH4. This emulator does not raise it,
+    * nor does the one it descends from, so it is not asked for here.) */
+   b[0] = 0xAAAA5555;
+   mmu_map(1, 0x10001000, PTEL(b, 0x04));
+   va = (volatile u32 *)0x10001000;
+   if (va[0] != 0xAAAA5555)
+      return 0x12;
+   t_expevt_seen = 0;
+   va[0] = 1;
+   if (t_expevt_seen != 0x0C0 || b[0] != 0xAAAA5555)
+      return 0x13;
+
+   c[0] = 0x0BADF00D;
+
+   /* The same address mapped somewhere else, after the TLB is emptied */
+   b[2] = 0xB0B0B0B0;
+   c[2] = 0xC0C0C0C0;
+   mmu_map(3, 0x10003000, PTEL(b, 0x24));
+   va = (volatile u32 *)0x10003000;
+   if (va[2] != 0xB0B0B0B0)
+      return 0x16;
+   mmu_map(3, 0x10003000, PTEL(c, 0x24));
+   (*(volatile u32 *)0xFF000010) = 0x00000005;
+   if (va[2] != 0xC0C0C0C0)
+      return 0x17;
+   va[2] = 0xC1C1C1C1;
+   if (c[2] != 0xC1C1C1C1 || b[2] != 0xB0B0B0B0)
+      return 0x18;
+
+   /* And for another address space: a page that is not shared belongs to
+    * the space it was mapped in, and changing space is all it takes for
+    * the address to mean another page. */
+   mmu_map(4, 0x10004000, PTEL(b, 0x24) & ~2);
+   (*(volatile u32 *)0xFF000000) = 1;
+   va = (volatile u32 *)0x10004000;
+   if (va[2] != 0xB0B0B0B0)
+      return 0x19;
+   mmu_map(4, 0x10004000, PTEL(c, 0x24) & ~2);
+   (*(volatile u32 *)0xFF000000) = 2;
+   if (va[2] != 0xC1C1C1C1)
+      return 0x1A;
+   (*(volatile u32 *)0xFF000000) = 0;
    return 1;
 }
 
 static int mmu_test(void)
 {
+   u32 i;
+
    __asm__ volatile ("ldc %0, vbr" : : "r" (t_vbr_base));
-   t_mmu_test_pa = (u32)mmu_page & 0x1FFFF000;
-   mmu_page[0] = 0x11223344;
-   mmu_page[1] = 0;
+   for (i = 0; i < 8; i++)
+      mmu_map(i, 0xFFFFFFFF, 0);
+   mmu_map(0, 0x10000000, PTEL(mmu_page[0], 0x24));
+   mmu_page[0][0] = 0x11223344;
+   mmu_page[0][1] = 0;
    t_tlb_misses = 0;
    (*(volatile u32 *)0xFF000000) = 0;                  /* PTEH: address space 0 */
    (*(volatile u32 *)0xFF000010) = 0x00000005;         /* MMUCR: on, and the TLB emptied */
-   return mmu_probe((volatile u32 *)0x10000000);
+   return mmu_probe();
 }
 
 static int gd_test(void)
@@ -1091,7 +1160,7 @@ void cmain(void)
                : stale ? 0xBAD00004
                : gd_bad ? 0xBAD00005
                : sq_bad ? 0xBAD00006
-               : mmu_state == 2 ? 0xBAD00007
+               : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;
       }
