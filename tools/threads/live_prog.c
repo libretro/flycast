@@ -385,14 +385,19 @@ static void ta_float_quad(int intensity, u32 colour, u32 scale, u32 x0, u32 y0, 
  * screen, from depth 0.25 up to @near. Its near face and its far face, two
  * triangles each; the last triangle of a volume comes under a parameter of
  * its own that says so ("inside last polygon"). */
-static void ta_volume(u32 x0, u32 y0, u32 x1, u32 y1, u32 near)
+static void ta_volume_part(u32 pcw, u32 x0, u32 y0, u32 x1, u32 y1, u32 near)
 {
-   ta_send(TA_POLYGON | TA_MODIFIER, 0, 0, 0, 0, 0, 0, 0);
+   ta_send(TA_POLYGON | TA_MODIFIER | pcw, 0, 0, 0, 0, 0, 0, 0);
    ta_volume_triangle(x0, y0, x0, y1, x1, y0, near);
    ta_volume_triangle(x1, y0, x0, y1, x1, y1, near);
    ta_volume_triangle(x0, y0, x0, y1, x1, y0, F(0.25f));
-   ta_send(TA_POLYGON | TA_MODIFIER, (1u << 29) | (1u << 26), 0, 0, 0, 0, 0, 0);
+   ta_send(TA_POLYGON | TA_MODIFIER | pcw, (1u << 29) | (1u << 26), 0, 0, 0, 0, 0, 0);
    ta_volume_triangle(x1, y0, x0, y1, x1, y1, F(0.25f));
+}
+
+static void ta_volume(u32 x0, u32 y0, u32 x1, u32 y1, u32 near)
+{
+   ta_volume_part(0, x0, y0, x1, y1, near);
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */
 }
 
@@ -446,9 +451,17 @@ static void ta_scene(void)
          F(10.0f), F(215.0f), F(30.0f), F(235.0f));
    ta_quad(TA_TEXTURED, TSP_PLAIN, (6u << 27) | (0x30u << 21) | (0x60000 >> 3), 0xFFFFFFFF, F(0.5f),
          F(35.0f), F(215.0f), F(55.0f), F(235.0f));
+   /* Bottom, left of the middle: E, white, taking shadows, under a volume
+    * that covers its whole width - but the volume is sent under a clipping
+    * rectangle, the tile of E's left half, and asks to be kept inside it.
+    * E is grey on the left and white on the right. */
+   ta_quad(TA_SHADOW, TSP_PLAIN, 0, 0xFFFFFFFF, F(0.5f), F(64.0f), F(192.0f), F(128.0f), F(224.0f));
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the opaque list */
 
-   ta_volume(x0, y0, x1, y1, F(0.75f));
+   ta_volume_part(0, x0, y0, x1, y1, F(0.75f));
+   ta_send(1u << 29, 0, 0, 0, 2, 6, 2, 6);             /* the clipping rectangle: tile column 2, row 6 */
+   ta_volume_part(2u << 16, F(64.0f), F(196.0f), F(128.0f), F(220.0f), F(0.75f));
+   ta_send(0, 0, 0, 0, 0, 0, 0, 0);                    /* end of the volume list */
 
    /* Above them, on the right: two punch-through polygons, which are drawn
     * or not texel by texel, by the texture's alpha. One has a texture that

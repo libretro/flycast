@@ -50,6 +50,7 @@ struct ModifierVolumeParam
 	u32 first;
 	u32 count;
    ISP_Modvol isp;
+	u32 tileclip;	// the clipping rectangle and mode it was sent under, as a polygon's
 };
 
 struct ModTriangle

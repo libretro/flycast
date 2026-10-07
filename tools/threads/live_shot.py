@@ -144,6 +144,9 @@ def main():
         ('C, in the volume',       160,  90, (127, 127, 127)),
         ('B, in the volume',       216,  90, (0, 0, 255)),
         ('B, lit',                 270,  90, (0, 0, 255)),
+        # a volume sent under a clipping rectangle: its shadow stops at the rectangle's edge
+        ('E, in the volume and its rectangle',  80, 208, (127, 127, 127)),
+        ('E, in the volume, outside its rectangle', 112, 208, (255, 255, 255)),
         # the translucent pair: blended twice, so a little more rounding
         ('red over the background', 130, 150, (254, 127, 0)),
         ('blue over red',          160, 150, (127, 63, 127)),

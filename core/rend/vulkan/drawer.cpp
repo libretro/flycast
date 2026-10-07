@@ -247,6 +247,15 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 
 		u32 mv_mode = param.isp.DepthMode;
 
+		// clipped like a polygon, to the rectangle it was sent under if it asked to be
+		{
+			vk::Rect2D clipRect;
+			if (SetTileClip(param.tileclip, clipRect) == TileClipping::Outside)
+				SetScissor(cmdBuffer, clipRect);
+			else
+				SetScissor(cmdBuffer, baseScissor);
+		}
+
 		if (mod_base == -1)
 			mod_base = param.first;
 
@@ -266,6 +275,7 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 			mod_base = -1;
 		}
 	}
+	SetScissor(cmdBuffer, baseScissor);
 	const vk::DeviceSize offset = 0;
 	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offset);
 

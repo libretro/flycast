@@ -1361,6 +1361,7 @@ private:
       p->isp.full = param->isp.full;
       p->isp.VolumeLast = param->pcw.Volume != 0;
       p->first = vdrc.modtrig.used();
+      p->tileclip = tileclip_val;
 	}
 	__forceinline
 		static void AppendModVolVertexA(TA_ModVolA* mvv)

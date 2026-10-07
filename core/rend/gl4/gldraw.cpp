@@ -366,6 +366,7 @@ static void DrawModVols(int first, int count)
 	ModifierVolumeParam* params = &pvrrc.global_param_mvo.head()[first];
 
 	int mod_base = -1;
+	u32 clip = 0;	// what the scissor is set for: so far nothing, the whole picture
 
 	for (int cmv = 0; cmv < count; cmv++)
 	{
@@ -375,6 +376,22 @@ static void DrawModVols(int first, int count)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
+
+		/* A volume is clipped like a polygon, to the rectangle it was sent
+		 * under if it asked to be: its shadow fell outside it. (Kept in:
+		 * the scissor. Kept out is not done, as it is not for upstream.) */
+		if (param.tileclip != clip)
+		{
+			int clip_rect[4];
+			clip = param.tileclip;
+			if (GetTileClip(clip, ViewportMatrix, clip_rect) == TileClipping::Outside)
+			{
+				glcache.Enable(GL_SCISSOR_TEST);
+				glcache.Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
+			}
+			else
+				SetBaseClipping();
+		}
 
 		if (mod_base == -1)
 			mod_base = param.first;
@@ -394,7 +411,7 @@ static void DrawModVols(int first, int count)
 			mod_base = -1;
 		}
 	}
-
+	SetBaseClipping();
 	//restore states
 	glBindVertexArray(gl4.vbo.main_vao);
 	glcache.Enable(GL_DEPTH_TEST);

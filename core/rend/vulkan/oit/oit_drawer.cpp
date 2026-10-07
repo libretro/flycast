@@ -129,6 +129,15 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 
 		u32 mv_mode = param.isp.DepthMode;
 
+		// clipped like a polygon, to the rectangle it was sent under if it asked to be
+		{
+			vk::Rect2D clipRect;
+			if (SetTileClip(param.tileclip, clipRect) == TileClipping::Outside)
+				SetScissor(cmdBuffer, clipRect);
+			else
+				SetScissor(cmdBuffer, baseScissor);
+		}
+
 		verify(param.first >= 0 && param.first + param.count <= (u32)pvrrc.modtrig.used());
 
 		if (mod_base == -1)
@@ -171,6 +180,7 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 			mod_base = -1;
 		}
 	}
+	SetScissor(cmdBuffer, baseScissor);
 	const vk::DeviceSize offset = 0;
 	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offset);
 }
