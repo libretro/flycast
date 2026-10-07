@@ -56,6 +56,14 @@ void pvr_WriteReg(u32 paddr,u32 data)
       }
 		return;
 
+	case SPG_HBLANK_INT_addr:
+	case SPG_VBLANK_INT_addr:
+	case SPG_VBLANK_addr:
+		// when the next thing happens depends on these
+		if (PvrReg(addr, u32) != data)
+			spg_write_timing(addr, data);
+		return;
+
 	case FB_R_CTRL_addr:
 	{
 		bool vclk_div_changed = (PvrReg(addr, u32) ^ data) & (1 << 23);

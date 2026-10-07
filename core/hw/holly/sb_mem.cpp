@@ -4,6 +4,7 @@
 #include "sb_mem.h"
 #include "sb.h"
 #include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/spg.h"
 #include "hw/pvr/pvr_mem.h"
 #include "hw/gdrom/gdrom_if.h"
 #include "hw/aica/aica_if.h"
@@ -390,6 +391,8 @@ T DYNACALL ReadMem_area0(u32 addr)
       else if (likely(addr >= 0x005F8000 && addr <= 0x005F9FFF)) // :TA / PVR Core Reg.
 		{
 			if (sz != 4) return 0;		// House of the Dead 2
+			if ((addr & pvr_RegMask) == SPG_STATUS_addr)
+				spg_sync();		// the scanline counts every line, not only those with an interrupt
 			return (T)PvrReg(addr, u32);
 		}
 	}

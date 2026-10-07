@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "spg.h"
 #include "Renderer_if.h"
 #include "pvr_regs.h"
@@ -32,12 +33,16 @@ static inline u64 line_start(u32 line)
 {
 	return (u64)line * Line_Num / Line_Den;
 }
+u32 sh4_sched_remaining(int id);
+
 int render_end_schid;
 int vblank_schid;
 
 static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
 static bool maple_int_pending;
+
+static u32 spg_next_line();
 
 void CalculateSync(bool reschedule)
 {
@@ -79,7 +84,7 @@ void CalculateSync(bool reschedule)
 	if (reschedule)
 	{
 		pvr_cur_scanline = 0;
-		sh4_sched_request(vblank_schid, (int)line_start(1));
+		sh4_sched_request(vblank_schid, (int)line_start(spg_next_line()));
 	}
 }
 
@@ -104,28 +109,41 @@ double spg_get_refresh_rate(void)
 }
 
 
-//called from sh4 context , should update pvr/ta state and everything else
-int spg_line_sched(int tag, int cycl, int jit)
+/* The first scanline after the beam's at which there is something to do:
+ * what the pending event is aimed at. pvr_numscanlines stands for line 0 of
+ * the frame after this one.
+ *
+ * Every register this reads has spg_write_timing() for its writes, so
+ * between one event and the next the answer only changes by the beam
+ * moving on - and spg_beam() never moves it past a line with something to
+ * do. */
+static u32 spg_next_line()
 {
-	/* This asks the scheduler for a whole number of scanlines each time,
-	 * and the scheduler takes how late it called (jit) off the next
-	 * request. So the time since the last call, cycl + jit, is that number
-	 * of lines give or take the lateness of two calls, which is far less
-	 * than half a line: round to it.
-	 *
-	 * Adding up cycl alone, as this used to, counted every request short by
-	 * the lateness of the call before, some 220 cycles on average. The
-	 * shortfall built up until a call came out one line short of where it
-	 * was aimed, and that line was never made up: about every sixteenth
-	 * frame was a scanline longer than the game had set, and the machine
-	 * ran that much slower than the refresh rate reported for it.
-	 *
-	 * Lines differ by a cycle from one to the next (see Line_Num), which
-	 * is nothing next to half a line: the time is divided by the line's
-	 * length as a fraction and rounded. */
-	u32 lines = (u32)(((u64)(u32)(cycl + jit) * Line_Den + Line_Num / 2) / Line_Num);
+	const u32 next = pvr_cur_scanline + 1;
 
-	clc_pvr_scanline = 0;
+	if (SPG_HBLANK_INT.hblank_int_mode == 2)
+		return next;		// an interrupt on every line
+
+	u32 line = pvr_numscanlines;
+	if (next <= SPG_VBLANK_INT.vblank_in_interrupt_line_number)
+		line = std::min(line, (u32)SPG_VBLANK_INT.vblank_in_interrupt_line_number);
+	if (next <= SPG_VBLANK_INT.vblank_out_interrupt_line_number)
+		line = std::min(line, (u32)SPG_VBLANK_INT.vblank_out_interrupt_line_number);
+	if (next <= SPG_VBLANK.vstart)
+		line = std::min(line, (u32)SPG_VBLANK.vstart);
+	if (next <= SPG_VBLANK.vbend)
+		line = std::min(line, (u32)SPG_VBLANK.vbend);
+	if (lightgun_line != 0xffff && next <= lightgun_line)
+		line = std::min(line, lightgun_line);
+	// the line the horizontal blank interrupt is asked for on
+	if (SPG_HBLANK_INT.hblank_int_mode == 0 && next <= SPG_HBLANK_INT.line_comp_val)
+		line = std::min(line, (u32)SPG_HBLANK_INT.line_comp_val);
+	return std::max(line, next);
+}
+
+// The beam goes down @lines scanlines, and what is due on each is done
+static void spg_run_lines(u32 lines)
+{
 	for (; lines != 0; lines--)//60 ~hertz = 200 mhz / 60=3333333.333 cycles per screen refresh
 	{
 		//ok .. here , after much effort , we did one line
@@ -169,7 +187,7 @@ int spg_line_sched(int tag, int cycl, int jit)
 			asic_RaiseInterrupt(holly_HBLank);
 			break;
 		default:
-			die("Unimplemented HBLANK INT mode");
+			// mode 1 is not emulated, and 3 is not a mode; neither is a reason to stop
 			break;
 		}
 
@@ -196,38 +214,77 @@ int spg_line_sched(int tag, int cycl, int jit)
 		}
 	}
 
-	//interrupts
-	//0
-	//vblank_in_interrupt_line_number
-	//vblank_out_interrupt_line_number
-	//vstart
-	//vbend
-	//pvr_numscanlines
-	u32 min_scanline=pvr_cur_scanline+1;
-	u32 min_active = pvr_numscanlines;
+}
 
-	if (min_scanline < SPG_VBLANK_INT.vblank_in_interrupt_line_number)
-		min_active = std::min(min_active, SPG_VBLANK_INT.vblank_in_interrupt_line_number);
+/* Where the beam is in the frame, in cycles, from how long the pending
+ * event still has; and pvr_cur_scanline and SPG_STATUS are brought up to
+ * the line that is. The lines in between have nothing due on them, or the
+ * event would have been aimed at one of them. */
+static u64 spg_beam()
+{
+	const u32 target = spg_next_line();
+	const u64 target_at = line_start(target);
+	const u64 line_at = line_start(pvr_cur_scanline);
+	const u32 remaining = sh4_sched_remaining(vblank_schid);
 
-	if (min_scanline < SPG_VBLANK_INT.vblank_out_interrupt_line_number)
-		min_active = std::min(min_active, SPG_VBLANK_INT.vblank_out_interrupt_line_number);
+	// nothing pending, or the event is due: the beam is where it was put last
+	if (remaining == (u32)-1 || (u64)remaining >= target_at - line_at)
+		return line_at;
 
-	if (min_scanline < SPG_VBLANK.vstart)
-		min_active = std::min(min_active, SPG_VBLANK.vstart);
+	const u64 beam = target_at - remaining;
+	u32 line = (u32)(beam * Line_Den / Line_Num);
+	while (line_start(line + 1) <= beam)
+		line++;
+	while (line > pvr_cur_scanline && line_start(line) > beam)
+		line--;
+	if (line >= target)
+		line = target - 1;
+	if (line > pvr_cur_scanline)
+		spg_run_lines(line - pvr_cur_scanline);
+	return beam;
+}
 
-	if (min_scanline < SPG_VBLANK.vbend)
-		min_active = std::min(min_active, SPG_VBLANK.vbend);
+// SPG_STATUS is about to be read: its scanline is the one the beam is on
+void spg_sync()
+{
+	spg_beam();
+}
 
-	if (min_scanline < pvr_numscanlines)
-		min_active = std::min(min_active, pvr_numscanlines);
+/* A write to a register that says on which lines things happen. The event
+ * that is pending was aimed by the old value: it is aimed again, from where
+ * the beam is now, so that a line asked for is not found out about only
+ * when the beam gets to whatever was asked for before. */
+void spg_write_timing(u32 addr, u32 data)
+{
+	if (sh4_sched_remaining(vblank_schid) == (u32)-1)
+	{
+		// the beam is not running yet
+		PvrReg(addr, u32) = data;
+		return;
+	}
+	const u64 beam = spg_beam();
 
-	if (lightgun_line != 0xffff && min_scanline < lightgun_line)
-		min_active = std::min(min_active, lightgun_line);
+	PvrReg(addr, u32) = data;
+	sh4_sched_request(vblank_schid, (int)(line_start(spg_next_line()) - beam));
+}
 
-	min_active = std::max(min_active,min_scanline);
+//called from sh4 context , should update pvr/ta state and everything else
+int spg_line_sched(int tag, int cycl, int jit)
+{
+	/* The event was aimed at the start of a line, spg_next_line(), and the
+	 * scheduler takes how late it called (jit) off the next request: so
+	 * this is that line, however much of the way there a read of SPG_STATUS
+	 * has already taken pvr_cur_scanline. Counting lines by the time since
+	 * the last call would count those twice.
+	 *
+	 * Lines differ by a cycle from one to the next (see Line_Num), and the
+	 * requests are differences of line_start(), so nothing is lost or
+	 * carried from one frame to the next. */
+	clc_pvr_scanline = 0;
+	spg_run_lines(spg_next_line() - pvr_cur_scanline);
 
-	// from the start of the line the beam is on to the start of that one
-	return (int)(line_start(min_active) - line_start(pvr_cur_scanline));
+	// from the start of the line the beam is on to the start of the next one with something to do
+	return (int)(line_start(spg_next_line()) - line_start(pvr_cur_scanline));
 }
 
 void read_lightgun_position(int x, int y)

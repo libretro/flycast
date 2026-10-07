@@ -118,6 +118,40 @@ static void __attribute__((noinline)) wait_line(u32 line)
       ;
 }
 
+/* The beam. The scanline in SPG_STATUS counts every line of the frame, not
+ * only the ones something happens on; and the interrupt asked for on a line
+ * (SPG_HBLANK_INT, mode 0) is there when the beam is on that line, not when
+ * it gets to the next vertical blank. Not zero if either is not so. */
+static u32 spg_test(void)
+{
+   u32 guard, seen = 0, last, now, at, old;
+
+   wait_vblank();
+   last = scanline();
+   for (guard = 0; guard < 2000000; guard++)
+   {
+      now = scanline();
+      if (now < last)
+         break;
+      if (now != last)
+         seen++;
+      last = now;
+   }
+   if (seen < 100)
+      return 1;
+
+   old = PVR(0xC8);
+   wait_vblank();
+   PVR(0xC8) = 100;                                    /* SPG_HBLANK_INT: on line 100 */
+   SB(0x900) = 1 << 5;                                 /* SB_ISTNRM: not yet */
+   for (guard = 0; guard < 2000000 && !(SB(0x900) & (1 << 5)); guard++)
+      ;
+   at = scanline();
+   PVR(0xC8) = old;
+   SB(0x900) = 1 << 5;
+   return at < 100 || at > 102 ? 2 : 0;
+}
+
 /* The two store queues each have a register saying which area their 32
  * bytes go to. Nearly every game sets the two alike, and so does this
  * program for its rendering; here, once, they differ: the second queue is
@@ -894,6 +928,7 @@ void cmain(void)
    u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0; u32 total = 0;
    int gd_bad;
    int sq_bad;
+   u32 spg_bad;
    int mmu_state;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
@@ -985,6 +1020,7 @@ void cmain(void)
    mmu_state = mmu_test();
    gd_bad = gd_test();
    cpu_bad = cpu_test();
+   spg_bad = spg_test();
    /* and the audio track playing underneath everything that follows:
     * the sector the sound chip mixes from is lent out of the image, and
     * the save, load, reset and unload below all happen while it is */
@@ -1160,6 +1196,7 @@ void cmain(void)
                : stale ? 0xBAD00004
                : gd_bad ? 0xBAD00005
                : sq_bad ? 0xBAD00006
+               : spg_bad ? 0xBAD00800 + spg_bad
                : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;
