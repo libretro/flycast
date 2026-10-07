@@ -41,9 +41,9 @@ public:
 		framebufferTextures.clear();
 	}
 
-	virtual u64 GetTexture(TSP tsp, TCW tcw) override
+	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override
 	{
-		Texture* tf = textureCache.getTextureCacheData(tsp, tcw);
+		Texture* tf = textureCache.getTextureCacheData(tsp, tcw, area);
 
 		if (tf->IsNew())
 		{

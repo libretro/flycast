@@ -53,7 +53,8 @@ struct Renderer
 
 	virtual void DrawOSD() { }
 
-	virtual u64 GetTexture(TSP tsp, TCW tcw) { return 0; }
+	// @area: 1 for the texture of a polygon's second volume
+	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) { return 0; }
 };
 
 extern Renderer* renderer;

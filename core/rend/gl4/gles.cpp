@@ -247,8 +247,9 @@ void main()
          else
             texcol = texture(tex0, uv);
       #else
+         // only the first volume's texture is ever one of palette indices
          if (area1)
-            texcol = palettePixel(tex1, uv);
+            texcol = texture(tex1, uv);
          else
             texcol = palettePixel(tex0, uv);
       #endif
@@ -981,9 +982,9 @@ struct gl4rend : Renderer
 		return ret;
 	}
 
-	virtual u64 GetTexture(TSP tsp, TCW tcw) override
+	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override
 	{
-		return gl_GetTexture(tsp, tcw);
+		return gl_GetTexture(tsp, tcw, area);
 	}
 };
 

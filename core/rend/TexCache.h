@@ -987,6 +987,7 @@ public:
 								// write-protection for frequently-updated textures
 
 	u32 palette_index;
+	u8 area = 0;				// 1 if it was first asked for as a second volume's texture: see IsGpuHandledPaletted()
 	//used for palette updates
 	u32 palette_hash;			// Palette hash at time of last update
 	u32 vq_codebook;            // VQ quantizers table for compressed textures
@@ -1045,17 +1046,23 @@ public:
 	bool NeedsUpdate();
 	virtual bool Delete();
 	virtual ~BaseTextureCacheData() {}
-	static bool IsGpuHandledPaletted(TSP tsp, TCW tcw)
+	static bool IsGpuHandledPaletted(TSP tsp, TCW tcw, int area = 0)
 	{
 		// Some palette textures are handled on the GPU
 		// This is currently limited to textures using nearest filtering and not mipmapped.
 		// Enabling texture upscaling or dumping also disables this mode.
+		/* And to a polygon's first texture. The shaders have one palette
+		 * position to look colours up from, the first texture's: a second
+		 * volume's texture left as indices was looked up with that, or, with
+		 * a first texture that has no palette, shown as its indices. It is
+		 * made colours here, like any texture. */
 		return (tcw.PixelFmt == PixelPal4 || tcw.PixelFmt == PixelPal8)
 				&& settings.rend.TextureUpscale == 1
 				&& !settings.rend.DumpTextures
 				&& tsp.FilterMode == 0
 				&& !tcw.MipMapped
-				&& !tcw.VQ_Comp;
+				&& !tcw.VQ_Comp
+				&& area == 0;
 	}
 };
 
@@ -1064,16 +1071,17 @@ class BaseTextureCache
 {
 	using TexCacheIter = typename std::unordered_map<u64, Texture>::iterator;
 public:
-	Texture *getTextureCacheData(TSP tsp, TCW tcw)
+	Texture *getTextureCacheData(TSP tsp, TCW tcw, int area = 0)
 	{
 		u64 key = tsp.full & TSPTextureCacheMask.full;
 		if ((tcw.PixelFmt == PixelPal4 || tcw.PixelFmt == PixelPal8)
-				&& !BaseTextureCacheData::IsGpuHandledPaletted(tsp, tcw))
+				&& !BaseTextureCacheData::IsGpuHandledPaletted(tsp, tcw, area))
 			// Paletted textures have a palette selection that must be part of the key
 			// We also add the palette type to the key to avoid thrashing the cache
 			// when the palette type is changed. If the palette type is changed back in the future,
 			// this texture will stil be available.
-			key |= ((u64)tcw.full << 32) | ((PAL_RAM_CTRL & 3) << 6) | ((tsp.FilterMode != 0) << 8);
+			// (bit 9: made colours here, which a texture of the same address left as indices is not)
+			key |= ((u64)tcw.full << 32) | ((PAL_RAM_CTRL & 3) << 6) | ((tsp.FilterMode != 0) << 8) | (1 << 9);
 		else
 			key |= (u64)(tcw.full & TCWTextureCacheMask.full) << 32;
 
@@ -1092,6 +1100,7 @@ public:
 
 			texture->tsp = tsp;
 			texture->tcw = tcw;
+			texture->area = (u8)area;
 		}
 
 		return texture;

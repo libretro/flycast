@@ -802,7 +802,7 @@ private:
 		CurrentPP->tsp1.full = pp->tsp1.full;
 		CurrentPP->tcw1.full = pp->tcw1.full;
 		if (pp->pcw.Texture)
-		   CurrentPP->texid1 = renderer->GetTexture(pp->tsp1, pp->tcw1);
+		   CurrentPP->texid1 = renderer->GetTexture(pp->tsp1, pp->tcw1, 1);
 	}
 
 	// Intensity, with Two Volumes
@@ -816,7 +816,7 @@ private:
 		CurrentPP->tsp1.full = pp->tsp1.full;
 		CurrentPP->tcw1.full = pp->tcw1.full;
 		if (pp->pcw.Texture)
-		   CurrentPP->texid1 = renderer->GetTexture(pp->tsp1, pp->tcw1);
+		   CurrentPP->texid1 = renderer->GetTexture(pp->tsp1, pp->tcw1, 1);
 	}
 	__forceinline
 		static void TACALL AppendPolyParam4B(void* vpp)

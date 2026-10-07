@@ -359,12 +359,12 @@ static int TexCacheHits;
 static float LastTexCacheStats;
 
 
-u64 gl_GetTexture(TSP tsp, TCW tcw)
+u64 gl_GetTexture(TSP tsp, TCW tcw, int area)
 {
    TexCacheLookups++;
 
 	//lookup texture
-   TextureCacheData* tf = TexCache.getTextureCacheData(tsp, tcw);
+   TextureCacheData* tf = TexCache.getTextureCacheData(tsp, tcw, area);
 
    if (tf->texID == 0)
    {

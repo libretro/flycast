@@ -669,7 +669,7 @@ void BaseTextureCacheData::Update()
 	bool has_alpha = false;
 	if (IsPaletted())
 	{
-		if (IsGpuHandledPaletted(tsp, tcw))
+		if (IsGpuHandledPaletted(tsp, tcw, area))
 			tex_type = TextureType::_8;
 		else
 		{

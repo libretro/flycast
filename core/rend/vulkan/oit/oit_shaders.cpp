@@ -426,12 +426,9 @@ void main()
 	{
 		highp vec4 texcol;
 		#if pp_TwoVolumes == 1
+			// only the first volume's texture is ever one of palette indices
 			if (area1)
-				#if pp_Palette == 0
-					texcol = texture(tex1, uv);
-				#else
-					texcol = palettePixel(tex1, uv);
-				#endif
+				texcol = texture(tex1, uv);
 			else
 		#endif
 		#if pp_Palette == 0

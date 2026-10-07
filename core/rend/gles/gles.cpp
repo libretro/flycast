@@ -1225,8 +1225,8 @@ struct glesrend : Renderer
       return ret;
    }
 
-	virtual u64 GetTexture(TSP tsp, TCW tcw) override {
-		return gl_GetTexture(tsp, tcw);
+	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override {
+		return gl_GetTexture(tsp, tcw, area);
 	}
 };
 
