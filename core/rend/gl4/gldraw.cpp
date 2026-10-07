@@ -125,7 +125,6 @@ static void SetGPState(const PolyParam* gp)
 		int fog_ctrl = gp->tsp.FogCtrl;
 
 		palette = BaseTextureCacheData::IsGpuHandledPaletted(gp->tsp, gp->tcw);
-		if (two_volumes_mode) { static int n; if (n++ < 6) { FILE *f = fopen("/tmp/texd/dbg.txt", "a"); if (f) { fprintf(f, "2vol poly: palette %d tcw %08x tcw1 %08x texid %llu texid1 %llu pass %d\n", (int)palette, gp->tcw.full, gp->tcw1.full, (unsigned long long)gp->texid, (unsigned long long)gp->texid1, (int)pass); fclose(f); } } }
 
 		CurrentShader = gl4GetProgram(Type == ListType_Punch_Through ? true : false,
 				clipmode == TileClipping::Inside,
