@@ -110,10 +110,7 @@ def main():
     per_pixel = '--per-pixel' in sys.argv[1:-1]
     # --lod0: run with Force Texture LOD0 on
     lod0 = '--lod0' in sys.argv[1:-1]
-    # --rtt-on-card: a renderer that does not yet bring a render to a texture
-    # back to video memory when the game touches it there (Vulkan: next)
-    rtt_on_card = '--rtt-on-card' in sys.argv[1:-1]
-    if len(sys.argv) != 2 + no_disc + per_pixel + lod0 + rtt_on_card:
+    if len(sys.argv) != 2 + no_disc + per_pixel + lod0:
         sys.stderr.write(__doc__)
         return 2
     width, height, bpp, rows = png_rows(sys.argv[-1])
@@ -192,8 +189,6 @@ def main():
     )
     for entry in scene:
         name, sx, sy, want = entry[:4]
-        if name.startswith('the render target') and rtt_on_card:
-            continue
         if name.startswith('F, in its volume') and not per_pixel:
             continue
         # what shows the background, or is blended over it

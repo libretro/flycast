@@ -77,13 +77,6 @@
 # a GL and a Vulkan driver; Mesa's software ones will do. Fails rather
 # than skips when one is missing. Uses UDP port 55355.
 set -e
-
-# The Vulkan renderers do not yet bring a render to a texture back to video
-# memory when the game touches it there: the picture check leaves that out
-# for them.
-rtt_flag() {
-   [ "$1" != vulkan ] || echo --rtt-on-card
-}
 # The checkers import one another; Python is not to leave compiled copies of
 # them in the tree
 PYTHONDONTWRITEBYTECODE=1
@@ -213,7 +206,7 @@ for DRV in $DRIVERS; do
    run $DRV-first.log 300 "$WORK/test.gdi" "$WORK/$DRV.png"
    expect $DRV-first.log "Auto save state to .* succeeded"
    expect $DRV-first.log "$CONTEXT"
-   python3 "$ROOT/tools/threads/live_shot.py" $(rtt_flag "$DRV") "$WORK/$DRV.png" || {
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV.png" || {
       echo "FAIL: the screen does not show the last texture written" >&2
       exit 1
    }
@@ -266,7 +259,7 @@ PY
    run $DRV-off.log 300 "$WORK/test.gdi" "$WORK/$DRV-off.png"
    expect $DRV-off.log "$CONTEXT"
    expect $DRV-off.log "core options file to .*core-options-off.cfg"
-   python3 "$ROOT/tools/threads/live_shot.py" $(rtt_flag "$DRV") "$WORK/$DRV-off.png" || {
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-off.png" || {
       echo "FAIL: the screen does not show the last texture written" >&2
       exit 1
    }
@@ -294,7 +287,7 @@ for DRV in $RING_DRIVERS; do
       rm -rf "$WORK/states" "$WORK/saves"
       mkdir -p "$WORK/states" "$WORK/saves"
       run $DRV-ring-$FRAMES.log $FRAMES "$WORK/test.gdi" "$WORK/$DRV-ring-$FRAMES.png"
-      python3 "$ROOT/tools/threads/live_shot.py" $(rtt_flag "$DRV") "$WORK/$DRV-ring-$FRAMES.png" || {
+      python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-ring-$FRAMES.png" || {
          echo "FAIL: wrong picture after $FRAMES frames with threaded video" >&2
          exit 1
       }
@@ -311,7 +304,7 @@ for DRV in $DRIVERS; do
    mkdir -p "$WORK/states" "$WORK/saves"
    run $DRV-lod0.log 300 "$WORK/test.gdi" "$WORK/$DRV-lod0.png"
    expect $DRV-lod0.log "core options file to .*core-options-lod0.cfg"
-   python3 "$ROOT/tools/threads/live_shot.py" $(rtt_flag "$DRV") --lod0 "$WORK/$DRV-lod0.png" || {
+   python3 "$ROOT/tools/threads/live_shot.py" --lod0 "$WORK/$DRV-lod0.png" || {
       echo "FAIL: with Force Texture LOD0 the mipmapped texture is not drawn with its largest level" >&2
       exit 1
    }
@@ -335,7 +328,7 @@ for DRV in $PIXEL_DRIVERS; do
       echo "FAIL: the per-pixel renderer gave way to the per-triangle one ($DRV-pixel.log)" >&2
       exit 1
    fi
-   python3 "$ROOT/tools/threads/live_shot.py" $(rtt_flag "$DRV") --per-pixel "$WORK/$DRV-pixel.png" || {
+   python3 "$ROOT/tools/threads/live_shot.py" --per-pixel "$WORK/$DRV-pixel.png" || {
       echo "FAIL: wrong picture from the per-pixel renderer" >&2
       exit 1
    }

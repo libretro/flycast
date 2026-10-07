@@ -583,7 +583,9 @@ static void render_to_texture(void)
    {
       volatile u16 *tex = (volatile u16 *)(0xA4000000 + RTT_ADDRESS);
       const u16 blue = tex[10 * 128 + 10], orange = tex[10 * 128 + 100];
-      const u16 mark = (blue == 0x001F && orange == 0xFC00) ? 0x07E0 : 0xF800;
+      /* (the orange's green is a half: 32 of 63, or 31 from a renderer that
+       * rounds its colours the other way) */
+      const u16 mark = (blue == 0x001F && (orange == 0xFC00 || orange == 0xFBE0)) ? 0x07E0 : 0xF800;
       u32 x, y;
 
       for (y = 64; y < 128; y++)

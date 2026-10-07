@@ -20,6 +20,7 @@
  * renders; the emulation thread only looks at the page marks, and hands
  * what it touched over. */
 #include "types.h"
+#include <cstdint>
 
 struct RttWatch
 {
@@ -30,7 +31,7 @@ struct RttWatch
 	u32 packmode;        /* FB_W_CTRL: 0 0555, 1 565, 2 4444, 3 1555 */
 	u32 kval_bit;        /* the top bit of a 0555 pixel */
 	u32 alpha_threshold; /* what makes the top bit of a 1555 one */
-	u32 tex;             /* the renderer's name for the picture */
+	uintptr_t tex;       /* the renderer's name for the picture */
 	u32 scale;           /* how many times finer than w by h it is */
 	bool owned;          /* nothing else will delete tex */
 	bool used;
@@ -40,7 +41,7 @@ struct RttWatchBackend
 {
 	/* The picture as w by h pixels of R, G, B, A bytes, first line first. */
 	void (*read)(const RttWatch *watch, u8 *rgba);
-	void (*release)(u32 tex);
+	void (*release)(uintptr_t tex);
 };
 
 /* Render thread, the machine standing still. A new render covers this
@@ -51,11 +52,14 @@ void rtt_watch_supersede(u32 addr, u32 bytes);
 void rtt_watch_add(const RttWatch *watch, const RttWatchBackend *backend);
 /* The texture cache is deleting @tex: true if it is wanted here still,
  * and then it is this module's to delete. */
-bool rtt_watch_take(u32 tex);
+bool rtt_watch_take(uintptr_t tex);
 /* Fault handler, any thread: true if the fault was one of these pages. */
 bool rtt_watch_fault(void *address);
 /* The same for code that knows it is about to touch video memory. */
 void rtt_watch_touch(u32 offset, u32 size);
+/* Render thread, the machine standing still: everything that is waiting
+ * goes to video memory now (the pictures are about to be destroyed). */
+void rtt_watch_flush(void);
 /* Render thread: do what the emulation thread handed over. */
 void rtt_watch_serve(void);
 /* What the emulation thread hands over: its address. */

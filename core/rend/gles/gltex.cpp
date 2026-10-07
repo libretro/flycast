@@ -249,9 +249,9 @@ static void rtt_gl_read(const RttWatch *watch, u8 *rgba)
 	glPixelStorei(GL_PACK_ALIGNMENT, was_pack);
 }
 
-static void rtt_gl_release(u32 tex)
+static void rtt_gl_release(uintptr_t tex)
 {
-	GLuint id = tex;
+	GLuint id = (GLuint)tex;
 	glcache.DeleteTextures(1, &id);
 }
 

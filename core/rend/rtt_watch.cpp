@@ -17,7 +17,7 @@ static RttWatch slots[RTT_WATCH_SLOTS];
 static RttWatchBackend backend;
 static u8 *pixels;               /* kept: the fault handler does not allocate */
 static size_t pixels_size;
-static u32 garbage[RTT_WATCH_SLOTS];
+static uintptr_t garbage[RTT_WATCH_SLOTS];
 static unsigned garbage_count;
 int rtt_watch_request;
 static u32 request_offset, request_size;
@@ -216,7 +216,7 @@ void rtt_watch_add(const RttWatch *watch, const RttWatchBackend *b)
 	_vmem_watch_vram(first_page(*slot) * PAGE_SIZE, (last_page(*slot) - first_page(*slot) + 1) * PAGE_SIZE);
 }
 
-bool rtt_watch_take(u32 tex)
+bool rtt_watch_take(uintptr_t tex)
 {
 	for (RttWatch& s : slots)
 		if (s.used && s.tex == tex && !s.owned)
@@ -277,6 +277,15 @@ void rtt_watch_serve(void)
 {
 	release_garbage();
 	fill_range(request_offset, request_size);
+}
+
+void rtt_watch_flush(void)
+{
+	if (backend.read == NULL)
+		return;
+	for (RttWatch& s : slots)
+		if (s.used)
+			fill(s);
 }
 
 void rtt_watch_forget(void)

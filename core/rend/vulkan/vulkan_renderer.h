@@ -23,6 +23,8 @@
 #include "pipeline.h"
 #include "vmu.h"
 
+#include "rtt_read.h"
+#include "rend/rtt_watch.h"
 #include <memory>
 #include <vector>
 
@@ -34,6 +36,7 @@ public:
 		shaderManager.Term();
 		vmus.reset();
 		quadPipeline.Term();
+		vk_rtt_term();
 		textureCache.Clear();
 		fogTexture = nullptr;
 		paletteTexture = nullptr;
@@ -85,7 +88,11 @@ public:
 			return RenderFramebuffer();
 
 		if (KillTex)
+		{
+			/* what was rendered to a texture and is not in video memory yet goes there before its picture does */
+			rtt_watch_flush();
 			textureCache.ClearLater();
+		}
 
 		bool result = ta_parse_vdrc(ctx);
 

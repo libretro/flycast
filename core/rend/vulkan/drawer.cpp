@@ -20,6 +20,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include <math.h>
+#include "rtt_read.h"
 #include "drawer.h"
 #include "hw/pvr/pvr_mem.h"
 
@@ -487,6 +488,8 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 
 	if (!settings.rend.RenderToTextureBuffer)
 	{
+		/* what an earlier render left waiting in this memory, while its picture is still what it was: see rtt_read.h */
+		vk_rtt_supersede(textureAddr, origWidth, origHeight);
 		// TexAddr : fb_rtt.TexAddr, Reserved : 0, StrideSel : 0, ScanOrder : 1
 		TCW tcw = { { textureAddr >> 3, 0, 0, 1 } };
 		switch (FB_W_CTRL.fb_packmode) {
@@ -525,7 +528,9 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 			texture->extent = vk::Extent2D(widthPow2, heightPow2);
 			texture->format = vk::Format::eR8G8B8A8Unorm;
 			texture->needsStaging = true;
-			texture->CreateImage(vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+			texture->CreateImage(vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
+					| vk::ImageUsageFlagBits::eTransferSrc,	// read back when the game touches it in video memory
+					
 					vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
 			colorImageCurrentLayout = vk::ImageLayout::eUndefined;
 		}
@@ -629,6 +634,8 @@ void TextureDrawer::EndRenderPass()
 
 	texture->dirty = 0;
    libCore_vramlock_Lock(texture->sa_tex, texture->sa + texture->size - 1, texture);
+	/* video memory gets it when something first touches it there */
+	vk_rtt_watch(texture, textureAddr, pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
 }
 
 void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderManager)
