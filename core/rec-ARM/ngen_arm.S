@@ -144,8 +144,19 @@ push { r4-r12,lr }
 #endif
 
     mov r8, r0			@Load context
+#ifndef NO_MMU
+	@ With the MMU on, an exception raised under a block comes back to
+	@ here by longjmp(), with the registers as they are now and the SH4's
+	@ PC at the handler. Once a call of this loop: it costs nothing to run.
+	bl CSYM(rec_arm_jmp_env)
+	bl CSYM(_setjmp)
 	ldr r4, [r8,#-184]	@load pc
-	
+	bl CSYM(rec_arm_mmu_on)
+	cmp r0,#0
+	bne CSYM(no_update_mmu)
+#else
+	ldr r4, [r8,#-184]	@load pc
+#endif
 	b CSYM(no_update)			@Go to mainloop !
 
 
@@ -191,6 +202,45 @@ CSYM(no_update):              @ next_pc _MUST_ be on r4 *R4 NOT R0 anymore*
 
 	@bic r1,r4,#0xFF000000
 	@ldr pc,[r2,r1,lsl #1]
+
+#ifndef NO_MMU
+@ The same two entry points for blocks compiled with the MMU on. Their
+@ next block is not found through the table, which goes by address alone
+@ and knows nothing of address spaces, but looked up, and the looking up
+@ can itself raise an exception: the PC is put where both find it.
+.global CSYM(intc_sched_mmu)
+HIDDEN(intc_sched_mmu)
+CSYM(intc_sched_mmu):
+#ifdef __MACH__
+    add r11,r11,#SH4_TIMESLICE
+#else
+    add r9,r9,#SH4_TIMESLICE
+#endif
+	mov r4,lr
+    bl CSYM(UpdateSystem)
+	mov lr,r4
+	cmp r0,#0
+	bne 1f
+	ldr r0,[r8,#-156]	@ CpuRunning
+	cmp r0,#0
+	bxne lr
+1:
+	mov r0,r4
+	bl CSYM(rdv_DoInterrupts)
+	mov r4,r0
+
+.global CSYM(no_update_mmu)
+HIDDEN(no_update_mmu)
+CSYM(no_update_mmu):          @ next_pc on r4
+	ldr r0,[r8,#-156]         @load CpuRunning
+	cmp r0,#0
+	beq CSYM(cleanup)
+	str r4,[r8,#-184]         @ pc
+	mov r0,r4
+	bl CSYM(rec_arm_code_mmu)
+	ldr r4,[r8,#-184]         @ the handler's, if getting there raised an exception
+	bx r0
+#endif
 
 HIDDEN(cleanup)
 CSYM(cleanup):

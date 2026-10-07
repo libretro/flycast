@@ -289,6 +289,116 @@ extern "C" void ngen_FailedToFindBlock_();
 std::map<shilop,ConditionCode> ccmap;
 std::map<shilop,ConditionCode> ccnmap;
 
+/* ---- With the MMU on ----
+ *
+ * A block compiled with the SH4's MMU on does three things another way.
+ *
+ * Every access to memory is a call (arm_mmu_read8 and the rest below):
+ * the address is translated, and where that fails the SH4's exception is
+ * taken there and then - registers saved, PC at the handler - and
+ * longjmp() goes back to the main loop (ngen_arm.S), which carries on
+ * from the handler. So do instructions the interpreter runs and store
+ * queue flushes, which can raise exceptions too. There is no reading and
+ * writing through the host's own mapping, since a 32-bit host has no room
+ * to lay out a translated address space the way the 64-bit ones do.
+ *
+ * It ends by handing its next PC to no_update_mmu, never by jumping to
+ * another block: which block a virtual address means depends on the
+ * mapping in force.
+ *
+ * And it begins by checking that the PC is its own, for the same reason,
+ * and that the FPU is on if it uses it. */
+#ifndef NO_MMU
+#include <setjmp.h>
+
+static jmp_buf arm_jmp_env;
+
+extern "C" {
+void no_update_mmu();
+void intc_sched_mmu();
+
+__attribute__((used)) void *rec_arm_jmp_env()
+{
+	return arm_jmp_env;
+}
+
+__attribute__((used)) u32 rec_arm_mmu_on()
+{
+	return mmu_enabled();
+}
+
+__attribute__((used)) void *rec_arm_code_mmu(u32 pc)
+{
+	return (void *)bm_GetCodeByVAddr(pc);
+}
+}
+
+template<typename T>
+static T arm_mmu_read(u32 addr, u32 pc)
+{
+	u32 ex;
+	T rv = mmu_ReadMemNoEx<T>(addr, &ex);
+	if (ex)
+	{
+		spc = pc;
+		longjmp(arm_jmp_env, 1);
+	}
+	return rv;
+}
+
+// what a load of 8 or 16 bits gives is sign-extended
+static u32 arm_mmu_read8(u32 addr, u32 pc)  { return (u32)(s32)(s8)arm_mmu_read<u8>(addr, pc); }
+static u32 arm_mmu_read16(u32 addr, u32 pc) { return (u32)(s32)(s16)arm_mmu_read<u16>(addr, pc); }
+static u32 arm_mmu_read32(u32 addr, u32 pc) { return arm_mmu_read<u32>(addr, pc); }
+static u64 arm_mmu_read64(u32 addr, u32 pc) { return arm_mmu_read<u64>(addr, pc); }
+
+template<typename T>
+static void arm_mmu_write(u32 addr, T data, u32 pc)
+{
+	if (mmu_WriteMemNoEx<T>(addr, data))
+	{
+		spc = pc;
+		longjmp(arm_jmp_env, 1);
+	}
+}
+
+static void arm_mmu_write8(u32 addr, u32 data, u32 pc)  { arm_mmu_write<u8>(addr, (u8)data, pc); }
+static void arm_mmu_write16(u32 addr, u32 data, u32 pc) { arm_mmu_write<u16>(addr, (u16)data, pc); }
+static void arm_mmu_write32(u32 addr, u32 data, u32 pc) { arm_mmu_write<u32>(addr, data, pc); }
+// the PC ahead of the data: a 64-bit argument goes in r2 and r3 either way
+static void arm_mmu_write64(u32 addr, u32 pc, u64 data) { arm_mmu_write<u64>(addr, data, pc); }
+
+// @pc is odd in a delay slot, where it is the address before the instruction's
+static void arm_mmu_exception(SH4ThrownException& ex, u32 pc)
+{
+	if (pc & 1)
+	{
+		AdjustDelaySlotException(ex);
+		pc--;
+	}
+	Do_Exception(pc, ex.expEvn, ex.callVect);
+	longjmp(arm_jmp_env, 1);
+}
+
+static void arm_mmu_fallback(u32 op, OpCallFP *oph, u32 pc)
+{
+	try {
+		oph(op);
+	} catch (SH4ThrownException& ex) {
+		arm_mmu_exception(ex, pc);
+	}
+}
+
+static void arm_mmu_sqw(u32 addr, u32 pc)
+{
+	try {
+		do_sqw_mmu(addr);
+	} catch (SH4ThrownException& ex) {
+		arm_mmu_exception(ex, pc);
+	}
+}
+#endif
+
 u32 DynaRBI::Relink()
 {
 	verify(emit_ptr==0);
@@ -340,6 +450,17 @@ u32 DynaRBI::Relink()
 			CMP(r4,(BlockType&1));
 		}
 
+#ifndef NO_MMU
+		if (mmu_enabled())
+		{
+			// the next PC to the main loop, either way: see "With the MMU on"
+			MOV32(r4, BranchBlock, CC);
+			JUMP((u32)no_update_mmu, CC);
+			MOV32(r4, NextBlock);
+			JUMP((u32)no_update_mmu);
+			break;
+		}
+#endif
 		if (pBranchBlock)
 			JUMP((u32)pBranchBlock->code,CC);
 		else
@@ -357,6 +478,14 @@ u32 DynaRBI::Relink()
 	case BET_DynamicCall:
 	case BET_DynamicJump:
     {
+#ifndef NO_MMU
+		if (mmu_enabled())
+		{
+			// r4 has it
+			JUMP((u32)no_update_mmu);
+			break;
+		}
+#endif
 #ifdef CALLSTACK
 #error offset broken
 		SUB(r2, r8, -FPCB_OFFSET);
@@ -435,6 +564,14 @@ u32 DynaRBI::Relink()
 	case BET_StaticCall:
 	case BET_StaticJump:
 	{
+#ifndef NO_MMU
+		if (mmu_enabled())
+		{
+			MOV32(r4, BranchBlock);
+			JUMP((u32)no_update_mmu);
+			break;
+		}
+#endif
 		if (pBranchBlock==0)
 			CALL((u32)ngen_LinkBlock_Generic_stub);
 		else
@@ -462,6 +599,11 @@ u32 DynaRBI::Relink()
 
 			CALL((u32)UpdateINTC);
 			LoadSh4Reg_mem(r4,reg_nextpc);
+#ifndef NO_MMU
+			if (mmu_enabled())
+				JUMP((u32)no_update_mmu);
+			else
+#endif
 			JUMP((u32)no_update);
 			break;
 		}
@@ -834,6 +976,62 @@ union arm_mem_op
 	u32 full;
 };
 
+#ifndef NO_MMU
+// The address of the instruction @op is for, as an exception has to have it:
+// in a delay slot, the branch's
+static u32 mmu_op_pc(RuntimeBlockInfo *block, shil_opcode *op)
+{
+	return block->vaddr + op->guest_offs - (op->delay_slot ? 2 : 0);
+}
+
+// A load or store with the MMU on: a call, with the instruction's address
+// for the exception it may raise. Otherwise as vmem_slowpath().
+static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, eReg rt, eFSReg ft, eFDReg fd, mem_op_type optp, bool read)
+{
+	const u32 pc = mmu_op_pc(block, op);
+
+	if (raddr != r0)
+		MOV(r0, (eReg)raddr);
+
+	if (read)
+	{
+		MOV32(r1, pc);
+		switch (optp)
+		{
+		case SZ_8:  CALL((u32)arm_mmu_read8); break;
+		case SZ_16: CALL((u32)arm_mmu_read16); break;
+		case SZ_32I:
+		case SZ_32F: CALL((u32)arm_mmu_read32); break;
+		default:    CALL((u32)arm_mmu_read64); break;
+		}
+		if (optp <= SZ_32I) MOV(rt, r0);
+		else if (optp == SZ_32F) VMOV(ft, r0);
+		else VMOV(fd, r0, r1);
+	}
+	else
+	{
+		if (optp == SZ_64F)
+		{
+			VMOV(r2, r3, fd);
+			MOV32(r1, pc);
+			CALL((u32)arm_mmu_write64);
+		}
+		else
+		{
+			if (optp == SZ_32F) VMOV(r1, ft);
+			else MOV(r1, rt);
+			MOV32(r2, pc);
+			switch (optp)
+			{
+			case SZ_8:  CALL((u32)arm_mmu_write8); break;
+			case SZ_16: CALL((u32)arm_mmu_write16); break;
+			default:    CALL((u32)arm_mmu_write32); break;
+			}
+		}
+	}
+}
+#endif
+
 void vmem_slowpath(eReg raddr, eReg rt, eFSReg ft, eFDReg fd, mem_op_type optp, bool read)
 {
 	if (raddr != r0)
@@ -1049,6 +1247,11 @@ bool ngen_readm_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool staging
 		return false;
 
 	mem_op_type optp = memop_type(op);
+#ifndef NO_MMU
+	// an address the MMU translates is not known to be anywhere until it is used
+	if (mmu_enabled() && mmu_is_translated<MMU_TT_DREAD>(op->rs1._imm, memop_bytes(optp)))
+		return false;
+#endif
 	bool isram = false;
 	void* ptr = _vmem_read_const(op->rs1._imm, isram, std::min(4u, memop_bytes(optp)));
 	eReg rd = (optp != SZ_32F && optp != SZ_64F) ? reg.mapg(op->rd) : r0;
@@ -1137,6 +1340,10 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 		return false;
 
 	mem_op_type optp = memop_type(op);
+#ifndef NO_MMU
+	if (mmu_enabled() && mmu_is_translated<MMU_TT_DWRITE>(op->rs1._imm, memop_bytes(optp)))
+		return false;
+#endif
 	bool isram = false;
 	void* ptr = _vmem_write_const(op->rs1._imm, isram, std::max(4u, memop_bytes(optp)));
 
@@ -1206,6 +1413,29 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 				mem_op_type optp = memop_type(op);
 				eReg raddr=GenMemAddr(op);
 
+#ifndef NO_MMU
+				if (mmu_enabled())
+				{
+					switch(optp)
+					{
+					case SZ_8:
+					case SZ_16:
+					case SZ_32I:
+						mmu_slowpath(block, op, raddr, reg.mapg(op->rd), f0, d0, optp, true);
+						break;
+
+					case SZ_32F:
+						mmu_slowpath(block, op, raddr, r0, reg.mapf(op->rd), d0, optp, true);
+						break;
+
+					case SZ_64F:
+						mmu_slowpath(block, op, raddr, r0, f0, d0, optp, true);
+						VSTR(d0,r8,op->rd.reg_nofs()/4);
+						break;
+					}
+				}
+				else
+#endif
 				if (_nvmem_enabled()) {
 					BIC(r1,raddr,0xE0000000);
 
@@ -1292,6 +1522,16 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 					else
 						rs2 = reg.mapg(op->rs2);
 				}
+#ifndef NO_MMU
+				if (mmu_enabled())
+				{
+					if (optp == SZ_32F)
+						mmu_slowpath(block, op, raddr, r0, rs2f, d0, optp, false);
+					else
+						mmu_slowpath(block, op, raddr, rs2, f0, d0, optp, false);
+				}
+				else
+#endif
 				if (_nvmem_enabled()) {
 					BIC(r1,raddr,0xE0000000);
 					//UBFX(r1,raddr,0,29);
@@ -1473,6 +1713,16 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 			}
 
 			MOV32(r0, op->rs3._imm);
+#ifndef NO_MMU
+			if (mmu_enabled())
+			{
+				// it may raise an exception: see "With the MMU on"
+				MOV32(r1, (u32)OpPtr[op->rs3._imm]);
+				MOV32(r2, block->vaddr + op->guest_offs - (op->delay_slot ? 1 : 0));
+				CALL((u32)arm_mmu_fallback);
+				break;
+			}
+#endif
 			CALL((u32)(OpPtr[op->rs3._imm]));
 			break;
 		}
@@ -1810,6 +2060,15 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 					cc = CC_AL;
 				}
 
+#ifndef NO_MMU
+				if (mmu_enabled())
+				{
+					// neither instruction of the move touches the flags
+					MOV32(r1, block->vaddr + op->guest_offs - (op->delay_slot ? 1 : 0));
+					CALL((unat)&arm_mmu_sqw, cc);
+				}
+				else
+#endif
 				if (CCN_MMUCR.AT)
 				{
 					CALL((unat)&do_sqw_mmu, cc);
@@ -2211,6 +2470,35 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 	if (!block->oplist.empty())
 		reg.OpBegin(&block->oplist[0],0);
 
+#ifndef NO_MMU
+	if (mmu_enabled())
+	{
+		// is this the block for the PC? The table it was found through goes by address alone
+		LoadSh4Reg_mem(r1, reg_nextpc);
+		MOV32(r2, block->vaddr);
+		CMP(r1, r2);
+		MOV32(r0, block->addr);
+		JUMP((u32)ngen_blockcheckfail, CC_NE);
+
+		if (block->has_fpu_op)
+		{
+			// with the FPU off (SR.FD), using it is an exception
+			LoadSh4Reg_mem(r1, reg_sr_status);
+			TST(r1, 1 << 15);
+			u32 *fpu_on = (u32 *)EMIT_GET_PTR();
+			MOV(r0, r0);		// "beq" over what follows, once its length is known
+			MOV32(r0, block->vaddr);
+			MOV32(r1, 0x800);
+			MOV32(r2, 0x100);
+			CALL((u32)Do_Exception);
+			LoadSh4Reg_mem(r4, reg_nextpc);
+			JUMP((u32)no_update_mmu);
+			u32 *over = (u32 *)EMIT_GET_PTR();
+			*fpu_on = 0x0A000000 | ((u32)(over - fpu_on - 2) & 0x00FFFFFF);
+		}
+	}
+#endif
+
 	//scheduler
 	if (force_checks)
 	{
@@ -2263,6 +2551,11 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 	SUB(r11,r11,cyc,true,CC_AL);
 #else
 	SUB(rfp_r9,rfp_r9,cyc,true,CC_AL);
+#endif
+#ifndef NO_MMU
+	if (mmu_enabled())
+		CALL((u32)intc_sched_mmu, CC_LE);
+	else
 #endif
 	CALL((u32)intc_sched, CC_LE);
 
