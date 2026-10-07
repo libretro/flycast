@@ -2134,8 +2134,19 @@ public:
 		}
 	   if (op.rs2.is_imm())
 	   {
-	   	mov(ecx, op.rs2._imm);
-			(this->*natop)(rd, ecx);
+			/* The constant goes in the instruction, not through a register */
+			switch (op.op)
+			{
+			case shop_and: and_(rd, op.rs2._imm); break;
+			case shop_or:  or_(rd, op.rs2._imm);  break;
+			case shop_xor: xor_(rd, op.rs2._imm); break;
+			case shop_add: add(rd, op.rs2._imm);  break;
+			case shop_sub: sub(rd, op.rs2._imm);  break;
+			default:
+				mov(ecx, op.rs2._imm);
+				(this->*natop)(rd, ecx);
+				break;
+			}
 	   }
 	   else
 			(this->*natop)(rd, regalloc.MapRegister(*rs2));
