@@ -594,6 +594,8 @@ static void dec_param(DecParam p,shil_param& r1,shil_param& r2, u32 op)
             u32 shft=p-PRM_RN_D4_x1;
             r1=mk_regi(reg_r0+GetN(op));
             r2=mk_imm(GetImm4(op)<<shft);
+            if (r2._imm == 0)   // no displacement: nothing for the recompilers to add
+               r2 = shil_param();
          }
          break;
 
@@ -609,6 +611,8 @@ static void dec_param(DecParam p,shil_param& r1,shil_param& r2, u32 op)
             u32 shft=p-PRM_RM_D4_x1;
             r1=mk_regi(reg_r0+GetM(op));
             r2=mk_imm(GetImm4(op)<<shft);
+            if (r2._imm == 0)   // no displacement: nothing for the recompilers to add
+               r2 = shil_param();
          }
          break;
 
@@ -624,6 +628,8 @@ static void dec_param(DecParam p,shil_param& r1,shil_param& r2, u32 op)
             u32 shft=p-PRM_GBR_D8_x1;
             r1=mk_regi(reg_gbr);
             r2=mk_imm(GetImm8(op)<<shft);
+            if (r2._imm == 0)   // no displacement: nothing for the recompilers to add
+               r2 = shil_param();
          }
          break;
 
