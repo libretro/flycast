@@ -1307,7 +1307,8 @@ public:
 			die("1..8 bytes");
 		}
 
-		if (mmu_enabled() && vmem32_enabled())
+		// as long as the fast access it may be written over: see ngen_Rewrite()
+		if (FastMemory())
 		{
 			Xbyak::Label quick_exit;
 			if (getCurr() - start_addr <= read_mem_op_size - 6)
@@ -1354,7 +1355,8 @@ public:
 		default:
 			die("1..8 bytes");
 		}
-		if (mmu_enabled() && vmem32_enabled())
+		// as long as the fast access it may be written over: see ngen_Rewrite()
+		if (FastMemory())
 		{
 			Xbyak::Label quick_exit;
 			if (getCurr() - start_addr <= write_mem_op_size - 6)
@@ -1749,23 +1751,54 @@ private:
 		return true;
 	}
 
+public:
+	/* Whether a load or store can be done as one move from or to the
+	 * guest's memory as the host has it mapped, in place of a call. With
+	 * the MMU on that is the mapping of the guest's virtual addresses,
+	 * where there is one. With it off - every game but the Windows CE ones -
+	 * it is the mapping of the whole 4 GB the SH4 can address, where the
+	 * host has room for that; this used to be for the MMU case only, and
+	 * everything else called a function for every load and store.
+	 *
+	 * What is not memory - registers, the BIOS, the store queues - is not
+	 * mapped. A move there faults, and ngen_Rewrite() turns it into the
+	 * call it would have been, once; that is what the padding after it is
+	 * for. A store to a page that is watched, because code was compiled
+	 * from it or a texture read from it, faults too, and is let through by
+	 * the handlers that watch. */
+	static bool FastMemory()
+	{
+		return mmu_enabled() ? vmem32_enabled() : _nvmem_4gb_space();
+	}
+
+	// How far into its code a fast access's move is: with the MMU on there
+	// is more in front of it
+	static u32& MemAccessOffset()
+	{
+		return mmu_enabled() ? mem_access_offset : mem_access_offset_direct;
+	}
+
 	bool GenReadMemoryFast(const shil_opcode& op, RuntimeBlockInfo* block)
 	{
-		if (!mmu_enabled() || !vmem32_enabled())
+		if (!FastMemory())
 			return false;
 		const u8 *start_addr = getCurr();
 
-		mov(rax, (uintptr_t)&p_sh4rcb->cntx.exception_pc);
-		mov(dword[rax], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));
+		if (mmu_enabled())
+		{
+			mov(rax, (uintptr_t)&p_sh4rcb->cntx.exception_pc);
+			mov(dword[rax], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));
+		}
 
 		mov(rax, (uintptr_t)virt_ram_base);
 
 		u32 size = op.flags & 0x7f;
 		//verify(getCurr() - start_addr == 26);
-		if (mem_access_offset == 0)
-			mem_access_offset = getCurr() - start_addr;
+		u32& access_offset = MemAccessOffset();
+		if (access_offset == 0)
+			access_offset = getCurr() - start_addr;
 		else
-			verify(getCurr() - start_addr == mem_access_offset);
+			verify(getCurr() - start_addr == access_offset);
 
 		block->memory_accesses[(void*)getCurr()] = (u32)current_opid;
 		switch (size)
@@ -1790,8 +1823,8 @@ private:
 			die("1..8 bytes");
 		}
 
-		while (getCurr() - start_addr < read_mem_op_size)
-			nop();
+		// room for the call this becomes if the access faults
+		nop(read_mem_op_size - (getCurr() - start_addr));
 		verify(getCurr() - start_addr == read_mem_op_size);
 
 		return true;
@@ -1799,21 +1832,25 @@ private:
 
 	bool GenWriteMemoryFast(const shil_opcode& op, RuntimeBlockInfo* block)
 	{
-		if (!mmu_enabled() || !vmem32_enabled())
+		if (!FastMemory())
 			return false;
 		const u8 *start_addr = getCurr();
 
-		mov(rax, (uintptr_t)&p_sh4rcb->cntx.exception_pc);
-		mov(dword[rax], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));
+		if (mmu_enabled())
+		{
+			mov(rax, (uintptr_t)&p_sh4rcb->cntx.exception_pc);
+			mov(dword[rax], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));
+		}
 
 		mov(rax, (uintptr_t)virt_ram_base);
 
 		u32 size = op.flags & 0x7f;
 		//verify(getCurr() - start_addr == 26);
-		if (mem_access_offset == 0)
-			mem_access_offset = getCurr() - start_addr;
+		u32& access_offset = MemAccessOffset();
+		if (access_offset == 0)
+			access_offset = getCurr() - start_addr;
 		else
-			verify(getCurr() - start_addr == mem_access_offset);
+			verify(getCurr() - start_addr == access_offset);
 
 		block->memory_accesses[(void*)getCurr()] = (u32)current_opid;
 		switch (size)
@@ -1838,8 +1875,7 @@ private:
 			die("1..8 bytes");
 		}
 
-		while (getCurr() - start_addr < write_mem_op_size)
-			nop();
+		nop(write_mem_op_size - (getCurr() - start_addr));
 		verify(getCurr() - start_addr == write_mem_op_size);
 
 		return true;
@@ -2133,11 +2169,13 @@ private:
 	static const u32 write_mem_op_size;
 public:
 	static u32 mem_access_offset;
+	static u32 mem_access_offset_direct;
 };
 
 const u32 BlockCompiler::read_mem_op_size = 30;
 const u32 BlockCompiler::write_mem_op_size = 30;
 u32 BlockCompiler::mem_access_offset = 0;
+u32 BlockCompiler::mem_access_offset_direct = 0;
 
 void X64RegAlloc::Preload(u32 reg, Xbyak::Operand::Code nreg)
 {
@@ -2197,7 +2235,7 @@ void ngen_CC_Finish(shil_opcode* op)
 
 bool ngen_Rewrite(unat& host_pc, unat, unat)
 {
-	if (!mmu_enabled() || !vmem32_enabled())
+	if (!BlockCompiler::FastMemory())
 		return false;
 
 	//printf("ngen_Rewrite pc %p\n", host_pc);
@@ -2218,7 +2256,7 @@ bool ngen_Rewrite(unat& host_pc, unat, unat)
 	verify(opid < block->oplist.size());
 	const shil_opcode& op = block->oplist[opid];
 
-	BlockCompiler *assembler = new BlockCompiler(code_ptr - BlockCompiler::mem_access_offset);
+	BlockCompiler *assembler = new BlockCompiler(code_ptr - BlockCompiler::MemAccessOffset());
 	assembler->InitializeRewrite(block.get(), opid);
 	if (op.op == shop_readm)
 		assembler->GenReadMemorySlow(op, block.get());
@@ -2228,7 +2266,7 @@ bool ngen_Rewrite(unat& host_pc, unat, unat)
 	verify(block->host_code_size >= assembler->getSize());
 	delete assembler;
 	block->memory_accesses.erase(it);
-	host_pc = (unat)(code_ptr - BlockCompiler::mem_access_offset);
+	host_pc = (unat)(code_ptr - BlockCompiler::MemAccessOffset());
 
 	return true;
 }
