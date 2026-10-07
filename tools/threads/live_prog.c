@@ -77,7 +77,8 @@ static void set_palette(u32 index, u16 colour)
  * (headless.c reads it out of the machine's memory): 0 until frame 250,
  * then 0x600D600D if every check the background colour reports came out
  * right, or 0xBAD0000n for the first that did not, in the order they are
- * tested below. */
+ * tested below - 0xBAD001nn for the instruction tests, nn being what
+ * cpu_test() returned. */
 volatile u32 live_verdict;
 
 /* Wait for the beam to start a new frame: the scanline counter in
@@ -514,6 +515,27 @@ __asm__(".text\n.align 2\n"
         /* t_fpscr_mem(p, after): LDS.L @p+,FPSCR, returns FPSCR; p to *after */
         ".global t_fpscr_mem\nt_fpscr_mem:\n  .word 0x4466\n  .word 0x006A\n  mov.l r4, @r5\n  rts\n  nop\n"
         ".global t_getfpscr\nt_getfpscr:\n  .word 0x006A\n  rts\n  nop\n"
+        /* t_sr_slot(): returns 1. SR is loaded in the delay slot of the
+         * return, with what it already holds. A recompiler that ends its
+         * block at a load of SR whatever comes before it loses the return
+         * and runs on into the three instructions after, which return 0. */
+        ".global t_sr_slot\nt_sr_slot:\n  stc sr, r1\n  mov #1, r0\n  rts\n"
+        "  .word 0x410E\n"                             /* ldc r1,sr */
+        "  mov #0, r0\n  rts\n  nop\n"
+        /* the same with SR taken off the stack, as a function that saved it does */
+        ".global t_sr_slot_mem\nt_sr_slot_mem:\n"
+        "  .word 0x4F03\n"                             /* stc.l sr,@-r15 */
+        "  mov #1, r0\n  rts\n"
+        "  .word 0x4F07\n"                             /* ldc.l @r15+,sr */
+        "  mov #0, r0\n  rts\n  nop\n"
+        /* t_pr_neg(bits): bits into FR2 by way of FPUL, FNEG, and back */
+        ".global t_pr_neg\nt_pr_neg:\n"
+        "  .word 0x445A\n  .word 0xF20D\n"            /* lds r4,fpul; fsts fpul,fr2 */
+        "  .word 0xF24D\n"                             /* fneg fr2 */
+        "  .word 0xF21D\n  .word 0x005A\n  rts\n  nop\n"   /* flds fr2,fpul; sts fpul,r0 */
+        /* t_pr_mov(from, to): a word from memory to FR4, to FR5, to memory */
+        ".global t_pr_mov\nt_pr_mov:\n"
+        "  .word 0xF448\n  .word 0xF54C\n  .word 0xF55A\n  rts\n  nop\n"
         /* FR0 from and to memory, to see which bank FPSCR.FR has chosen */
         ".global t_fr0_load\nt_fr0_load:\n  .word 0xF048\n  rts\n  nop\n"
         ".global t_fr0_store\nt_fr0_store:\n  .word 0xF40A\n  rts\n  nop\n");
@@ -524,6 +546,10 @@ extern void t_sr(u32 *end, u32 flip, u32 *out);
 extern u32 t_getsr(void);
 extern void t_setsr(u32 sr);
 extern u32 t_fpscr(u32 v);
+extern u32 t_sr_slot(void);
+extern u32 t_sr_slot_mem(void);
+extern u32 t_pr_neg(u32 bits);
+extern void t_pr_mov(u32 *from, u32 *to);
 extern u32 t_fpscr_mem(u32 *p, u32 **after);
 extern u32 t_getfpscr(void);
 extern void t_fr0_load(u32 *p);
@@ -633,6 +659,23 @@ static int cpu_test(void)
    t_fr0_store(&x);
    if (x != b)
       return 8;
+   /* A load of SR in the delay slot of a return: the return still happens */
+   if (t_sr_slot() != 1)
+      return 9;
+   if (t_sr_slot_mem() != 1)
+      return 10;
+   /* With FPSCR.PR set the arithmetic is on doubles, but the moves, the
+    * transfers through FPUL and FNEG are what they are without it: a
+    * recompiler may do them itself in either mode, and has to get the same
+    * as one that leaves the whole mode to the interpreter. */
+   t_fpscr(0x000C0001);
+   if (t_pr_neg(0x3F800000) != 0xBF800000 || t_pr_neg(0x80000001) != 0x00000001)
+      return 11;
+   a = 0x12345678;
+   x = 0;
+   t_pr_mov(&a, &x);
+   if (x != a)
+      return 12;
    t_fpscr(fpscr);
    return 0;
 }
@@ -955,7 +998,7 @@ void cmain(void)
          /* The same verdict where it can be read without a picture: see
           * live_verdict. */
          if (frame == 250)
-            live_verdict = cpu_bad ? 0xBAD00001
+            live_verdict = cpu_bad ? 0xBAD00100 + cpu_bad
                : longest - shortest > 200 ? 0xBAD00002
                : (total < FRAMES_150 - 100 || total > FRAMES_150 + 100) ? 0xBAD00003
                : stale ? 0xBAD00004

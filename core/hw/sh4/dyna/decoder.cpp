@@ -291,7 +291,14 @@ sh4dec(i0100_nnnn_0000_1110)
 
 	dec_write_sr((Sh4RegType)(reg_r0+n));
 	Emit(shop_sync_sr);
-	dec_End(0xFFFFFFFF,BET_StaticIntr,false);
+	/* The block ends here so that an interrupt this lets in is taken at
+	 * once - but not when this is the delay slot of a branch, whose end
+	 * of the block it would replace: the branch was then never taken, and
+	 * the program ran on into whatever came after it. "rts" with the load
+	 * of SR in its delay slot is how a function that masked interrupts
+	 * gives them back. Upstream has the same test. */
+	if (!state.cpu.is_delayslot)
+		dec_End(0xFFFFFFFF,BET_StaticIntr,false);
 }
 
 /* The five below, and DIV1 in the opcode table, were run by the interpreter
@@ -306,7 +313,9 @@ sh4dec(i0100_nnnn_0000_0111)
 	Emit(shop_add, rn, rn, mk_imm(4));
 	dec_write_sr(reg_temp);
 	Emit(shop_sync_sr);
-	dec_End(0xFFFFFFFF,BET_StaticIntr,false);
+	// not in a delay slot: see LDC Rn,SR above
+	if (!state.cpu.is_delayslot)
+		dec_End(0xFFFFFFFF,BET_StaticIntr,false);
 }
 
 //stc.l SR,@-<REG_N>
