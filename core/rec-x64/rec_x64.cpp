@@ -7,6 +7,9 @@
 #include "deps/xbyak/xbyak.h"
 #include "deps/xbyak/xbyak_util.h"
 
+#include <vector>
+#include <memory>
+#include <algorithm>
 #include "types.h"
 #include "hw/sh4/sh4_opcode_list.h"
 #include "hw/sh4/dyna/ngen.h"
@@ -18,6 +21,7 @@
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_rom.h"
 #include "hw/mem/vmem32.h"
+#include "hw/sh4/sh4_sched.h"
 #include "x64_regalloc.h"
 #include "x64_vector.h"
 
@@ -214,8 +218,98 @@ void ngen_init()
 {
 }
 
+/* Telling when a game is only waiting.
+ *
+ * Under the accurate SH4 timing a game that waits for the next frame in a
+ * loop goes round it thousands of times a frame, and a loop of several
+ * blocks - one that calls a function on every pass, as Soul Calibur's does -
+ * is not one the decoder can see for what it is. This sees it by watching.
+ *
+ * Where a block ends by going back, to a lower address or its own, there
+ * is a "site". Now and then a site takes a copy of all the SH4's registers.
+ * If the next time round, within the same time slice, they are all the same
+ * again, and no block that can change anything but registers has run in
+ * between, then the processor is exactly where it was: it will do the same
+ * again, and again, until something from outside changes what it reads. In
+ * this emulator that only happens between time slices - interrupts are
+ * taken there, devices are run there, and the clock and timers a program
+ * can read stand still within one. So the rest of the slice is given up at
+ * once. The game cannot tell: it comes out of the loop in the same slice it
+ * would have. All that differs is the slice's last few cycles, which the
+ * loop would have overrun by part of a pass and now does not.
+ *
+ * "Can change anything but registers" is a block with a store, a store
+ * queue flush or an instruction the interpreter runs in it: such a block
+ * moves sh4_write_gen on as it starts.
+ *
+ * A loop that is getting somewhere fails the comparison, or moves the
+ * generation, and its site then looks less and less often, up to once in
+ * 1024 passes, so that an ordinary loop pays two instructions a pass. */
+u32 sh4_write_gen;
+
+struct WaitSite
+{
+	s32 skip;			// passes left before the next look; counted down by the block
+	u32 backoff;		// how many to skip after a look that found the loop busy
+	u32 gen;			// sh4_write_gen when the copy was taken
+	bool valid;
+	u64 slice;			// the time slice the copy was taken in
+	u8 regs[offsetof(Sh4Context, CpuRunning)];	// everything from the first register to FPSCR and its shadow
+};
+
+// A block of sites at a time, never moved: recompiled code has their addresses
+static std::vector<std::unique_ptr<WaitSite[]>> wait_sites;
+static u32 wait_sites_used;
+#define WAIT_SITES_PER_CHUNK 1024
+
+static WaitSite *AllocWaitSite()
+{
+	if (wait_sites_used == wait_sites.size() * WAIT_SITES_PER_CHUNK)
+	{
+		if (wait_sites.size() == 64)
+			return nullptr;		// 65536 loops: the rest go unwatched
+		wait_sites.emplace_back(new WaitSite[WAIT_SITES_PER_CHUNK]);
+	}
+	WaitSite *site = &wait_sites[wait_sites_used / WAIT_SITES_PER_CHUNK][wait_sites_used % WAIT_SITES_PER_CHUNK];
+	wait_sites_used++;
+	memset(site, 0, sizeof(*site));
+	return site;
+}
+
+// Called by a block going back, when its site's count has run out. True if
+// the processor is going round in a loop that cannot end before the time
+// slice does.
+static u32 DYNACALL sh4_wait_check(WaitSite *site)
+{
+	const u64 now = sh4_sched_now64();
+
+	if (site->valid && site->slice == now)
+	{
+		if (site->gen == sh4_write_gen && !memcmp(site->regs, &Sh4cntx, sizeof(site->regs)))
+		{
+			site->backoff = 0;
+			site->skip = 0;
+			return 1;
+		}
+		// it wrote something, or its registers moved: a loop with work to do
+		site->backoff = std::min(site->backoff * 2 + 1, 1023u);
+		site->skip = site->backoff;
+		site->valid = false;
+		return 0;
+	}
+	// nothing from this time slice to compare with: take it, and look at the next pass
+	memcpy(site->regs, &Sh4cntx, sizeof(site->regs));
+	site->gen = sh4_write_gen;
+	site->slice = now;
+	site->valid = true;
+	site->skip = 0;
+	return 0;
+}
+
 void ngen_ResetBlocks()
 {
+	// every block is gone, and with them whatever had a site's address
+	wait_sites_used = 0;
 }
 
 void ngen_GetFeatures(ngen_features* dst)
@@ -376,6 +470,26 @@ public:
 #else
 		sub(dword[rip + &cycle_counter], block->guest_cycles);
 #endif
+		if (settings.dynarec.AccurateTiming && !mmu_enabled())
+		{
+			// a block that can change something other than a register says so: see WaitSite
+			bool writes = false;
+			for (const shil_opcode& op : block->oplist)
+				if (op.op == shop_writem || op.op == shop_ifb || op.op == shop_pref)
+				{
+					writes = true;
+					break;
+				}
+			if (writes)
+			{
+#ifdef FEAT_NO_RWX_PAGES
+				mov(rax, (uintptr_t)&sh4_write_gen);
+				inc(dword[rax]);
+#else
+				inc(dword[rip + &sh4_write_gen]);
+#endif
+			}
+		}
 		regalloc.DoAlloc(block);
 
 		for (current_opid = 0; current_opid < block->oplist.size(); current_opid++)
@@ -1196,6 +1310,8 @@ public:
 		 * Not with the MMU on: an address then has to be translated before
 		 * it means a place in the table, and the lookup function does that. */
 		const bool go_on = !mmu_enabled();
+		// see WaitSite
+		const bool watch = go_on && settings.dynarec.AccurateTiming && block->BranchBlock <= block->vaddr;
 
 	  switch (block->BlockType) {
 
@@ -1203,6 +1319,8 @@ public:
 		case BET_StaticCall:
 			//next_pc = block->BranchBlock;
 			mov(Ctx(&next_pc), block->BranchBlock);
+			if (watch)
+				GenWaitCheck();
 			if (go_on)
 				GenGoOn(block->BranchBlock);
 			break;
@@ -1219,6 +1337,8 @@ public:
 
 				jne(branch_not_taken, T_NEAR);
 				mov(Ctx(&next_pc), block->BranchBlock);
+				if (watch)
+					GenWaitCheck();
 				if (go_on)
 					GenGoOn(block->BranchBlock);
 				else
@@ -1298,6 +1418,31 @@ public:
 #else
 		add(rsp, 0x8);
 #endif
+	}
+
+	// A block going back: every so often, see whether it is only waiting, and
+	// give up the rest of the time slice if it is. See WaitSite.
+	void GenWaitCheck()
+	{
+		WaitSite *site = AllocWaitSite();
+		if (site == nullptr)
+			return;
+		Xbyak::Label over;
+
+		mov(rax, (uintptr_t)&site->skip);
+		dec(dword[rax]);
+		jns(over, T_NEAR);
+		mov(call_regs64[0], (uintptr_t)site);
+		GenCall(sh4_wait_check);
+		test(eax, eax);
+		jz(over, T_NEAR);
+#ifdef FEAT_NO_RWX_PAGES
+		mov(rax, (uintptr_t)&cycle_counter);
+		mov(dword[rax], 0);
+#else
+		mov(dword[rip + &cycle_counter], 0);
+#endif
+		L(over);
 	}
 
 	// On to the block at @target, through its place in the table

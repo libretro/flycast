@@ -1221,9 +1221,11 @@ _end:
 			blk->guest_cycles = SH4_TIMESLICE;
 		/* That only sees a loop that is one block. A game's wait is often
 		 * several - Soul Calibur's calls a function that does nothing on
-		 * every pass - and those are told, as they always were, by the list
-		 * of blocks known to be in one. With the block's real cycles a game
-		 * on the list would spin its loop three times as often as before. */
+		 * every pass. The x86-64 recompiler tells those by watching them
+		 * run (WaitSite in rec_x64.cpp). The others still need the list of
+		 * blocks known to be in one, which this core has always had: with
+		 * the block's real cycles a game on it would spin its loop three
+		 * times as often as before. */
 		else if (!mmu_enabled() && strstr(idle_hash, blk->hash()))
 			blk->guest_cycles = max_cycles;
 		else

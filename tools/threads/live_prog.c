@@ -89,6 +89,26 @@ static void wait_vblank(void)
    }
 }
 
+/* The scanline the beam is on. Not to be folded into its caller: see
+ * wait_line(). */
+static u32 __attribute__((noinline)) scanline(void)
+{
+   return PVR(0x10C) & 0x3FF;
+}
+
+/* Wait for the beam to get down to @line, the way many games wait: round
+ * and round a loop that calls a function, with no count kept and nothing
+ * written, until what the function reads has changed. Under the accurate
+ * SH4 timing the x86-64 recompiler tells such a loop for what it is by
+ * watching it and gives up the rest of each time slice (WaitSite, in
+ * rec_x64.cpp); this is here so that the live test runs one. wait_vblank()
+ * above keeps a count, and is rightly not taken for one. */
+static void __attribute__((noinline)) wait_line(u32 line)
+{
+   while (scanline() < line)
+      ;
+}
+
 /* A float's bits, worked out by the compiler: the program has no FPU code. */
 #define F(x) (((union { float f; u32 u; }){ x }).u)
 
@@ -856,6 +876,7 @@ void cmain(void)
       }
       poll_controller();
       wait_vblank();
+      wait_line(16);
 #ifdef HALF_RATE
       /* A 30 fps game: a render every other vblank, nothing in between. */
       wait_vblank();

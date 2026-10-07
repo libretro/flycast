@@ -384,5 +384,34 @@ PY
       echo "FAIL: the sound did not go on from a loaded state as it had from there" >&2
       exit 1
    }
+
+   # The SH4 Timing core option's other setting. The disc times its frames
+   # by the processor's own timer and keys its sound by the frame, so both
+   # checks say whether time still passes as it should; and its wait for
+   # scanline 16 is a loop of the kind the x86-64 recompiler gives up the
+   # rest of a time slice in when it sees one.
+   echo "== $SOUND_DRIVER: picture and sound under the accurate SH4 timing"
+   cat > "$WORK/core-options-accurate.cfg" <<CFG
+reicast_threaded_rendering = "enabled"
+reicast_hle_bios = "enabled"
+reicast_vmu1_screen_display = "enabled"
+reicast_sh4_timing = "accurate"
+CFG
+   echo "core_options_path = \"$WORK/core-options-accurate.cfg\"" >> "$WORK/driver.cfg"
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   AUDIO_TAP_OUT=$WORK/sound-accurate.pcm
+   CORE=$WORK/audio_tap.so
+   run sound-accurate.log 300 "$WORK/test.gdi" "$WORK/accurate.png"
+   CORE=$AUDIO_TAP_CORE
+   expect sound-accurate.log "SH4 timing: accurate"
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/accurate.png" || {
+      echo "FAIL: wrong picture under the accurate SH4 timing" >&2
+      exit 1
+   }
+   python3 "$ROOT/tools/threads/live_audio.py" "$WORK/sound-accurate.pcm" || {
+      echo "FAIL: wrong sound under the accurate SH4 timing" >&2
+      exit 1
+   }
 fi
 echo "live threads test passed"
