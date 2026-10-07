@@ -40,6 +40,7 @@ char* strdup(const char *str)
 #include "rend/vulkan/vulkan_context.h"
 #endif
 #include "rend/rtt_watch.h"
+#include "rend/last_picture.h"
 #include <retro_atomic.h>
 #include <retro_timers.h>
 #include "emulator.h"
@@ -380,6 +381,7 @@ void retro_init(void)
 void retro_deinit(void)
 {
    first_run = true;
+   last_picture_drop();
 
    //When auto-save states are enabled this is needed to prevent the core from shutting down before
    //any save state actions are still running - which results in partial saves
@@ -1307,6 +1309,8 @@ static void context_destroy(void)
    /* The context is still there, and with it what the game rendered to
     * textures and video memory has not got yet: it gets it now. */
    rtt_watch_flush();
+   /* ...and the screen's last picture is kept for the context that comes after */
+   rend_keep_picture();
    gl_ctx_resetting = true;
    renderer_changed = true;
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_DESTROY, NULL);
@@ -1759,6 +1763,7 @@ static void retro_vk_context_destroy()
 {
 	/* what was rendered to textures and video memory has not got yet, while it can still be fetched */
 	rtt_watch_flush();
+	rend_keep_picture();
 	rend_term_renderer();
 	renderer_changed = true;
 	theVulkanContext.Term();
@@ -2161,6 +2166,7 @@ void retro_unload_game(void)
    /* The machine is going, video memory with it: nothing is to be written
     * there after this (the context is destroyed later than this). */
    rtt_watch_forget();
+   last_picture_drop();
    if (game_data)
       free(game_data);
    game_data = NULL;

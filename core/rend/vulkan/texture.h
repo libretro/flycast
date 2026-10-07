@@ -120,7 +120,8 @@ public:
 	FramebufferAttachment(vk::PhysicalDevice physicalDevice, vk::Device device)
 		: format(vk::Format::eUndefined), physicalDevice(physicalDevice), device(device)
 		{}
-   void Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage);
+   /* @readable: with memory this side can read, to copy the image into (it is as large as the image) */
+   void Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage, bool readable = true);
 	void Reset() { image.reset(); imageView.reset(); }
 
 	vk::ImageView GetImageView() const { return *imageView; }

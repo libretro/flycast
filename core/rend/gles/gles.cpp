@@ -1001,6 +1001,8 @@ static bool RenderFrame(void)
 		if (settings.rend.PowerVR2Filter && !pvrrc.isRenderFramebuffer)
 			postProcessor.SelectFramebuffer();
 		glViewport(0, 0, screen_width, screen_height);
+		/* in a new context, the picture kept from the old one (rend/last_picture.h) */
+		gl_restore_picture();
 	}
 
 	bool wide_screen_on = !is_rtt && settings.rend.WideScreen && !matrices.IsClipped();
@@ -1199,6 +1201,11 @@ struct glesrend : Renderer
       return true;
    }
 	void Resize(int w, int h) override { screen_width=w; screen_height=h; }
+	void KeepPicture() override
+	{
+		gl_keep_picture();
+	}
+
 	void Term() override
    {
 		postProcessor.Term();

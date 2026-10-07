@@ -58,6 +58,9 @@ public:
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
 	}
 
+	void KeepPicture() override { screenDrawer.KeepPicture(); }
+	void SetRestoredPicture(vk::ImageView view) override { screenDrawer.SetRestoredPicture(view); }
+
 	void Term() override
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");

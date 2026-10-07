@@ -1,4 +1,5 @@
 #include "Renderer_if.h"
+#include "rend/last_picture.h"
 #include "ta.h"
 #include "hw/pvr/pvr_mem.h"
 #include "rend/TexCache.h"
@@ -145,9 +146,24 @@ void rend_init_renderer()
     }
 }
 
+/* The context is going (libretro thread, the machine standing still). */
+void rend_keep_picture()
+{
+	if (renderer != NULL)
+		renderer->KeepPicture();
+	int w, h;
+	if (last_picture(&w, &h) != NULL)
+		NOTICE_LOG(RENDERER, "%d x %d picture kept for the next context", w, h);
+}
+
 void rend_term_renderer()
 {
-	fb_addr_history[0] = fb_addr_history[1] = 1;
+	/* A new renderer has no picture, and the first render to each
+	 * framebuffer starts from an empty one - unless the last picture was
+	 * kept for it: then the game goes on where it was. */
+	int w, h;
+	if (last_picture(&w, &h) == NULL)
+		fb_addr_history[0] = fb_addr_history[1] = 1;
 	if (renderer != NULL)
 	{
 		renderer->Term();
@@ -197,6 +213,10 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
 #endif
 
    bool do_swp = proc && renderer->Render();
+   /* a picture kept across a context is for the first render to the screen
+    * after it, and that has now been made */
+   if (!ctx->rend.isRTT)
+      last_picture_drop();
 
 #if !defined(TARGET_NO_THREADS)
    if (settings.rend.ThreadedRendering && hold)

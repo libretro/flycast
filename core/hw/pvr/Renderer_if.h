@@ -53,6 +53,11 @@ struct Renderer
 
 	virtual void DrawOSD() { }
 
+	/* The context is about to be destroyed: put the screen's last picture
+	 * in rend/last_picture.h. The renderer's first render to the screen
+	 * after that starts from what is there. */
+	virtual void KeepPicture() { }
+
 	// @area: 1 for the texture of a polygon's second volume
 	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) { return 0; }
 };
@@ -77,3 +82,4 @@ bool rend_frame_produced(void);
 void rend_create_renderer();
 void rend_init_renderer();
 void rend_term_renderer();
+void rend_keep_picture();

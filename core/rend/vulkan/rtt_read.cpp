@@ -64,6 +64,40 @@ static void vk_rtt_read(const RttWatch *watch, u8 *rgba)
 	staging->GetBufferData()->download(w * h * 4, rgba);
 }
 
+void vk_read_picture(vk::Image image, vk::Format format, u32 width, u32 height, u8 *rgba)
+{
+	VulkanContext *context = VulkanContext::Instance();
+	const vk::ImageSubresourceLayers layers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+	BufferData buffer((vk::DeviceSize)width * height * 4, vk::BufferUsageFlagBits::eTransferDst);
+
+	read_pool.Init();
+	read_pool_ready = true;
+	read_pool.BeginFrame();
+	vk::CommandBuffer cmd = read_pool.Allocate();
+	cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	setImageLayout(cmd, image, format, 1, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal);
+	cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, *buffer.buffer,
+			vk::BufferImageCopy(0, width, height, layers, vk::Offset3D(0, 0, 0), vk::Extent3D(width, height, 1)));
+	vk::BufferMemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *buffer.buffer, 0, VK_WHOLE_SIZE);
+	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, nullptr, barrier, nullptr);
+	setImageLayout(cmd, image, format, 1, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+	cmd.end();
+	read_pool.EndFrame();
+
+	vk::Fence fence = read_pool.GetCurrentFence();
+	context->GetDevice().waitForFences(1, &fence, true, UINT64_MAX);
+	buffer.download(width * height * 4, rgba);
+
+	if (format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb)
+		for (u32 i = 0; i < width * height; i++)
+		{
+			const u8 blue = rgba[i * 4];
+			rgba[i * 4] = rgba[i * 4 + 2];
+			rgba[i * 4 + 2] = blue;
+		}
+}
+
 /* The texture cache's, never this module's to delete. */
 static void vk_rtt_release(uintptr_t)
 {

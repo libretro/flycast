@@ -144,6 +144,8 @@ void SetMVS_Mode(ModifierVolumeMode mv_mode, ISP_Modvol ispc);
 
 void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt);
 void ReadRTTBuffer();
+void gl_keep_picture(void);
+void gl_restore_picture(void);
 void RenderFramebuffer();
 void DrawFramebuffer();
 

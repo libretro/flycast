@@ -395,13 +395,13 @@ void Texture::GenerateMipmaps()
 	commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr, barrier);
 }
 
-void FramebufferAttachment::Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage)
+void FramebufferAttachment::Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage, bool readable)
 {
 	this->format = format;
 	this->extent = vk::Extent2D { width, height };
 	bool depth = format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint || format == vk::Format::eD16UnormS8Uint;
 
-	if (usage & vk::ImageUsageFlagBits::eTransferSrc)
+	if (readable && (usage & vk::ImageUsageFlagBits::eTransferSrc))
 	{
 		stagingBufferData = std::unique_ptr<BufferData>(new BufferData(width * height * 4,
 				vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst));

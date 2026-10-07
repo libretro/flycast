@@ -21,6 +21,7 @@
 */
 #include <math.h>
 #include "rtt_read.h"
+#include "rend/last_picture.h"
 #include "drawer.h"
 #include "hw/pvr/pvr_mem.h"
 
@@ -648,8 +649,9 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 		{
 			colorAttachments.push_back(std::unique_ptr<FramebufferAttachment>(
 					new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice())));
+			// (copied from when the context goes, to keep the picture: rend/last_picture.h)
 			colorAttachments.back()->Init(viewport.width, viewport.height, GetContext()->GetColorFormat(),
-					vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled);
+					vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc, false);
 			attachments[0] = colorAttachments.back()->GetImageView();
 			vk::FramebufferCreateInfo createInfo(vk::FramebufferCreateFlags(), *renderPass,
 					ARRAY_SIZE(attachments), attachments, viewport.width, viewport.height, 1);
@@ -684,7 +686,7 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	 * such a render - one that covers the screen pays nothing - and not
 	 * into a framebuffer the game has not drawn to lately, which starts
 	 * empty. */
-	if (havePicture && quadPipeline != nullptr && !pvrrc.clearFramebuffer && matrices.IsClipped())
+	if ((havePicture || restoredPicture) && quadPipeline != nullptr && !pvrrc.clearFramebuffer && matrices.IsClipped())
 	{
 		const int count = (int)colorAttachments.size();
 		const std::array<float, 4> opaque = { 1.f, 1.f, 1.f, 1.f };
@@ -692,7 +694,11 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 		commandBuffer.setScissor(0, vk::Rect2D( { 0, 0 }, viewport));
 		commandBuffer.setBlendConstants(opaque.data());
 		quadPipeline->BindPipeline(commandBuffer);
-		lastPicture.Draw(commandBuffer, colorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+		/* (the picture kept from another context can be of another size) */
+		if (havePicture)
+			lastPicture.Draw(commandBuffer, colorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+		else
+			lastPicture.Draw(commandBuffer, restoredPicture, nullptr, false);
 	}
 	commandBuffer.setScissor(0, baseScissor);
 	currentCommandBuffer = commandBuffer;
@@ -700,9 +706,20 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	return commandBuffer;
 }
 
+void ScreenDrawer::KeepPicture()
+{
+	if (!havePicture)
+		return;
+	u8 *pixels = last_picture_keep(viewport.width, viewport.height);
+	if (pixels != NULL)
+		vk_read_picture(colorAttachments[GetCurrentImage()]->GetImage(), GetContext()->GetColorFormat(),
+				viewport.width, viewport.height, pixels);
+}
+
 void ScreenDrawer::EndRenderPass()
 {
 	havePicture = true;
+	restoredPicture = nullptr;
 	currentCommandBuffer.endRenderPass();
 	currentCommandBuffer.end();
 	currentCommandBuffer = nullptr;

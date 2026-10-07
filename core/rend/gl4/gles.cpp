@@ -822,6 +822,12 @@ static bool RenderFrame()
 			gl4ShaderUniforms.base_clipping.enabled = false;
 		}
 
+		if (!is_rtt)
+		{
+			/* in a new context, the picture kept from the old one (rend/last_picture.h) */
+			glBindFramebuffer(GL_FRAMEBUFFER, settings.rend.PowerVR2Filter ? postProcessor.GetFramebuffer() : output_fbo);
+			gl_restore_picture();
+		}
 		if (settings.rend.PowerVR2Filter && !is_rtt)
 		{
 			gl4DrawStrips(postProcessor.GetFramebuffer(), rendering_width, rendering_height);
@@ -916,6 +922,11 @@ struct gl4rend : Renderer
 		screen_height=h;
 		resize(w, h);
 	}
+	void KeepPicture() override
+	{
+		gl_keep_picture();
+	}
+
 	void Term() override
 	{
 		postProcessor.Term();

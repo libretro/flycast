@@ -1,6 +1,7 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include <math.h>
 #include "rend/rtt_watch.h"
+#include "rend/last_picture.h"
 #include <algorithm>
 
 #include <libretro.h>
@@ -256,6 +257,77 @@ static void rtt_gl_release(uintptr_t tex)
 }
 
 static const RttWatchBackend rtt_gl_backend = { rtt_gl_read, rtt_gl_release };
+
+/* rend/last_picture.h: the context is going, and the screen's last picture
+ * is in the framebuffer the frontend gave to draw in. */
+void gl_keep_picture(void)
+{
+	const int w = screen_width, h = screen_height;
+	u8 *pixels = last_picture_keep(w, h);
+	GLint was_fbo = 0, was_pack = 4;
+
+	if (pixels == NULL)
+		return;
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &was_fbo);
+	glGetIntegerv(GL_PACK_ALIGNMENT, &was_pack);
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, hw_render.get_current_framebuffer());
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, was_fbo);
+	glPixelStorei(GL_PACK_ALIGNMENT, was_pack);
+
+	/* read bottom line first; kept top line first */
+	u8 *line = (u8 *)malloc((size_t)w * 4);
+	if (line != NULL)
+	{
+		for (int y = 0; y < h / 2; y++)
+		{
+			u8 *a = pixels + (size_t)y * w * 4, *b = pixels + (size_t)(h - 1 - y) * w * 4;
+			memcpy(line, a, (size_t)w * 4);
+			memcpy(a, b, (size_t)w * 4);
+			memcpy(b, line, (size_t)w * 4);
+		}
+		free(line);
+	}
+}
+
+/* The first render to the screen in a new context starts from the picture
+ * kept from the old one: it goes into the framebuffer that is bound, the
+ * one the render is about to draw in, at that one's size. */
+void gl_restore_picture(void)
+{
+	int w, h;
+	const u8 *pixels = last_picture(&w, &h);
+
+	if (pixels == NULL)
+		return;
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
+	if (gl.gl_major < 3)
+		return;
+
+	GLint target = 0;
+	GLuint fbo = 0;
+	const GLboolean was_scissor = glIsEnabled(GL_SCISSOR_TEST);
+
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &target);
+	GLuint tex = glcache.GenTexture();
+	glcache.BindTexture(GL_TEXTURE_2D, tex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+	glFramebufferTexture2D(GL_READ_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
+	if (was_scissor)
+		glDisable(GL_SCISSOR_TEST);
+	/* the texture's first line is the picture's top one: upside down on the way */
+	glBlitFramebuffer(0, 0, w, h, 0, screen_height, screen_width, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+	if (was_scissor)
+		glEnable(GL_SCISSOR_TEST);
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, target);
+	glDeleteFramebuffers(1, &fbo);
+	glcache.DeleteTextures(1, &tex);
+#endif
+}
 
 void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 {

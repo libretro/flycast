@@ -25,6 +25,7 @@
 
 #include "rtt_read.h"
 #include "rend/rtt_watch.h"
+#include "rend/last_picture.h"
 #include <memory>
 #include <vector>
 
@@ -38,6 +39,7 @@ public:
 		quadPipeline.Term();
 		vk_rtt_term();
 		textureCache.Clear();
+		keptPicture = nullptr;
 		fogTexture = nullptr;
 		paletteTexture = nullptr;
 		texCommandPool.Term();
@@ -83,6 +85,8 @@ public:
 
       if (!ctx->rend.isRTT)
          vmus->PrepareOSD(&texCommandPool);
+      if (!ctx->rend.isRTT && !ctx->rend.isRenderFramebuffer)
+         CheckKeptPicture();
 
 		if (ctx->rend.isRenderFramebuffer)
 			return RenderFramebuffer();
@@ -120,6 +124,28 @@ protected:
 		vmus->Init(&quadPipeline);
 
 		return true;
+	}
+
+	/* In a new context, the picture kept from the old one (rend/last_picture.h)
+	 * is made a texture, and the screen's drawer starts its first frame from it. */
+	virtual void SetRestoredPicture(vk::ImageView view) = 0;
+
+	void CheckKeptPicture()
+	{
+		int width, height;
+		const u8 *pixels = last_picture(&width, &height);
+		if (pixels == nullptr)
+			return;
+		keptPicture = std::unique_ptr<Texture>(new Texture());
+		keptPicture->tex_type = TextureType::_8888;
+		keptPicture->tcw.full = 0;
+		keptPicture->tsp.full = 0;
+		keptPicture->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
+		keptPicture->SetDevice(GetContext()->GetDevice());
+		keptPicture->SetCommandBuffer(texCommandPool.Allocate());
+		keptPicture->UploadToGPU(width, height, (u8 *)pixels, false);
+		keptPicture->SetCommandBuffer(nullptr);
+		SetRestoredPicture(keptPicture->GetImageView());
 	}
 
 	bool RenderFramebuffer()
@@ -214,6 +240,7 @@ protected:
 	CommandPool texCommandPool;
 	std::vector<std::unique_ptr<Texture>> framebufferTextures;
 	TextureCache textureCache;
+	std::unique_ptr<Texture> keptPicture;
 	QuadPipeline quadPipeline;
 	std::unique_ptr<VulkanOSD> vmus;
 };

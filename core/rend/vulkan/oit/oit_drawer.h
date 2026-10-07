@@ -175,6 +175,7 @@ public:
 	virtual void EndFrame() override
 	{
 		havePicture = true;
+		restoredPicture = nullptr;
 		currentCommandBuffer.endRenderPass();
 		currentCommandBuffer.end();
 		currentCommandBuffer = nullptr;
@@ -191,7 +192,7 @@ protected:
 	virtual vk::Format GetColorFormat() const override { return GetContext()->GetColorFormat(); }
 	virtual bool DrawLastPicture(vk::CommandBuffer cmdBuffer) override
 	{
-		if (!havePicture || lastPicturePipeline == nullptr || pvrrc.clearFramebuffer || !matrices.IsClipped())
+		if ((!havePicture && !restoredPicture) || lastPicturePipeline == nullptr || pvrrc.clearFramebuffer || !matrices.IsClipped())
 			return false;
 		const int count = (int)finalColorAttachments.size();
 		const std::array<float, 4> opaque = { 1.f, 1.f, 1.f, 1.f };
@@ -199,10 +200,18 @@ protected:
 		SetScissor(cmdBuffer, viewport);
 		cmdBuffer.setBlendConstants(opaque.data());
 		lastPicturePipeline->BindPipeline(cmdBuffer);
-		lastPicture.Draw(cmdBuffer, finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+		/* (the picture kept from another context can be of another size) */
+		if (havePicture)
+			lastPicture.Draw(cmdBuffer, finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+		else
+			lastPicture.Draw(cmdBuffer, restoredPicture, nullptr, false);
 		return true;
 	}
 public:
+	/* rend/last_picture.h: the context is going */
+	void KeepPicture();
+	/* ...and in the new one, the picture that was kept is this image */
+	void SetRestoredPicture(vk::ImageView view) { restoredPicture = view; }
 	/* A quad pipeline made for the colour subpass of this drawer's render pass. */
 	void SetLastPicturePipeline(QuadPipeline *pipeline)
 	{
@@ -218,6 +227,7 @@ private:
 	QuadPipeline *lastPicturePipeline = nullptr;
 	QuadDrawer lastPicture;
 	bool havePicture = false;	/* the image before this one holds the last frame */
+	vk::ImageView restoredPicture;	/* ...or this does: the picture kept from the context before */
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<OITPipelineManager> screenPipelineManager;
 };

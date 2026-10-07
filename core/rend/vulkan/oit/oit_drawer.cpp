@@ -21,6 +21,7 @@
 */
 #include "oit_drawer.h"
 #include "../rtt_read.h"
+#include "rend/last_picture.h"
 #include "hw/pvr/pvr_mem.h"
 
 #include <algorithm>
@@ -505,6 +506,16 @@ void OITDrawer::MakeBuffers(int width, int height)
 	tempFramebuffers[1] = GetContext()->GetDevice().createFramebufferUnique(createInfo);
 }
 
+void OITScreenDrawer::KeepPicture()
+{
+	if (!havePicture)
+		return;
+	u8 *pixels = last_picture_keep(viewport.extent.width, viewport.extent.height);
+	if (pixels != NULL)
+		vk_read_picture(finalColorAttachments[GetCurrentImage()]->GetImage(), GetContext()->GetColorFormat(),
+				viewport.extent.width, viewport.extent.height, pixels);
+}
+
 void OITScreenDrawer::MakeFramebuffers()
 {
 	viewport.offset.x = 0;
@@ -519,8 +530,9 @@ void OITScreenDrawer::MakeFramebuffers()
 	{
 		finalColorAttachments.push_back(std::unique_ptr<FramebufferAttachment>(
 				new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice())));
+		// (copied from when the context goes, to keep the picture: rend/last_picture.h)
 		finalColorAttachments.back()->Init(viewport.extent.width, viewport.extent.height, GetContext()->GetColorFormat(),
-				vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled);
+				vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc, false);
 		vk::ImageView attachments[] = {
 				finalColorAttachments.back()->GetImageView(),
 				colorAttachments[0]->GetImageView(),

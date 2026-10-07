@@ -55,6 +55,7 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/rend/sorter.cpp \
 					$(CORE_DIR)/core/rend/TexCache.cpp \
 					$(CORE_DIR)/core/rend/rtt_watch.cpp \
+					$(CORE_DIR)/core/rend/last_picture.cpp \
 					\
 					$(CORE_DIR)/core/hw/sh4/sh4_mmr.cpp \
 					$(CORE_DIR)/core/hw/sh4/sh4_mem.cpp \

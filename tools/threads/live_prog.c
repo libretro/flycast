@@ -439,9 +439,8 @@ static void ta_volume(u32 x0, u32 y0, u32 x1, u32 y1, u32 near)
  * grey there. B is not changed: a decal texture replaces the base colour,
  * and the texture is not scaled. Nor is the background: it does not take
  * shadows. */
-/* From frame 260 to frame 320 - past the end of the runs that look at the
- * picture - the screen is rendered in part: only its left 200 pixels
- * (FB_X_CLIP), frame after frame. The console leaves the rest of the
+/* From frame 260 on the screen is rendered in part: only its left 200
+ * pixels (FB_X_CLIP), frame after frame. The console leaves the rest of the
  * framebuffer as it was, so everything to the right of that stays on the
  * screen as the last whole frame drew it - and the white polygon below,
  * which is drawn nearest of all over most of the right, never appears. */
@@ -1574,7 +1573,7 @@ void cmain(void)
          {
             PVR(0x60) = (frame & 1) ? 0x400000 : 0x200000;   /* FB_W_SOF1 */
             render_to_texture();
-            scene_in_part = frame >= 260 && frame < 320;
+            scene_in_part = frame >= 260;
             if (scene_in_part)
                PVR(0x68) = 199 << 16;                  /* FB_X_CLIP: 0..199 */
          }

@@ -193,6 +193,10 @@ class ScreenDrawer : public Drawer
 public:
 	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager);
 	vk::RenderPass GetRenderPass() const { return *renderPass; }
+	/* rend/last_picture.h: the context is going */
+	void KeepPicture();
+	/* ...and in the new one, the picture that was kept is this image */
+	void SetRestoredPicture(vk::ImageView view) { restoredPicture = view; }
 	/* What draws the last picture back: see BeginRenderPass(). */
 	void SetQuadPipeline(QuadPipeline *pipeline)
 	{
@@ -214,6 +218,7 @@ private:
 	QuadPipeline *quadPipeline = nullptr;
 	QuadDrawer lastPicture;
 	bool havePicture = false;	/* the image before this one holds the last frame */
+	vk::ImageView restoredPicture;	/* ...or this does: the picture kept from the context before */
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
 	vk::Extent2D viewport;
 	ShaderManager *shaderManager = nullptr;
