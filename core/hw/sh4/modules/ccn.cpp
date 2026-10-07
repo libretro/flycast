@@ -17,19 +17,31 @@
 
 u32 CCN_QACR_TR[2];
 
-template<u32 idx>
-void CCN_QACR_write(u32 addr, u32 value)
+/* Which routine flushes a store queue while the MMU is off.
+ *
+ * Each of the two queues has its own QACR, naming the area its 32 bytes go
+ * to. Games nearly always set the two alike, and then the area decides:
+ * one routine for main memory, one for the Tile Accelerator, the general
+ * one for anywhere else. When they differ it is the general one, which
+ * goes by the register of the queue being flushed.
+ *
+ * It used to be whichever register was written last that decided, for both
+ * queues - so that with one queue aimed at the TA and the other at main
+ * memory, both went where the second one written said. (Upstream goes by
+ * QACR0 for both, which is wrong for the other queue in the same case.)
+ *
+ * From the translated values, so that it can be done again after a save
+ * state is loaded. */
+void CCN_QACR_select()
 {
-	SH4IO_REGN(CCN,CCN_QACR0_addr+idx*4,32)=value;
-	//CCN_QACR[idx].reg_data=value;
-
-	u32 area=((CCN_QACR_type&)value).Area;
-
-	CCN_QACR_TR[idx]=(area<<26)-0xE0000000; //-0xE0000000 because 0xE0000000 is added on the translation again ...
-
-	switch(area)
+	if (CCN_QACR_TR[0] != CCN_QACR_TR[1])
 	{
-		case 3: 
+		do_sqw_nommu = &do_sqw_nommu_full;
+		return;
+	}
+	switch (((CCN_QACR_TR[0] + 0xE0000000) >> 26) & 7)
+	{
+		case 3:
 			if (_nvmem_enabled())
 				do_sqw_nommu=&do_sqw_nommu_area_3;
 			else
@@ -41,6 +53,19 @@ void CCN_QACR_write(u32 addr, u32 value)
 			break;
 		default: do_sqw_nommu=&do_sqw_nommu_full;
 	}
+}
+
+template<u32 idx>
+void CCN_QACR_write(u32 addr, u32 value)
+{
+	// only the area is there to be read back
+	SH4IO_REGN(CCN,CCN_QACR0_addr+idx*4,32)=value & 0x1c;
+
+	u32 area=((CCN_QACR_type&)value).Area;
+
+	CCN_QACR_TR[idx]=(area<<26)-0xE0000000; //-0xE0000000 because 0xE0000000 is added on the translation again ...
+
+	CCN_QACR_select();
 }
 
 void CCN_PTEH_write(u32 addr, u32 value)

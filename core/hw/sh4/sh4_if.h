@@ -360,6 +360,7 @@ void DYNACALL do_sqw_mmu(u32 dst);
 extern "C" void DYNACALL do_sqw_nommu_area_3(u32 dst, u8* sqb);
 extern "C" void DYNACALL do_sqw_nommu_area_3_nonvmem(u32 dst, u8* sqb);
 void DYNACALL do_sqw_nommu_full(u32 dst, u8* sqb);
+void CCN_QACR_select();
 
 typedef void DYNACALL sqw_fp(u32 dst,u8* sqb);
 typedef void DYNACALL TaListVoidFP(void* data);

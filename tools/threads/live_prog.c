@@ -116,6 +116,40 @@ static void __attribute__((noinline)) wait_line(u32 line)
       ;
 }
 
+/* The two store queues each have a register saying which area their 32
+ * bytes go to. Nearly every game sets the two alike, and so does this
+ * program for its rendering; here, once, they differ: the second queue is
+ * aimed at main memory and then the first at the Tile Accelerator, and 32
+ * bytes are sent through the second. They have to arrive in memory. An
+ * emulator that lets the register written last decide for both queues sends
+ * them to the TA instead. (Which queue is used is bit 5 of the address, so
+ * the second queue's bytes always land on an odd 32-byte block.) Not zero
+ * if they did not arrive. */
+static u32 sq_test(void)
+{
+   static u32 block[24] __attribute__((aligned(64)));
+   u32 *target = block + 8;                            /* the odd block */
+   volatile u32 *sq = (volatile u32 *)(0xE0000000 | ((u32)target & 0x03FFFFE0));
+   u32 i, bad = 0;
+
+   for (i = 0; i < 24; i++)
+      block[i] = 0x11111111;
+   (*(volatile u32 *)0xFF00003C) = 0x0C;               /* QACR1: main memory */
+   (*(volatile u32 *)0xFF000038) = 0x10;               /* QACR0: the TA */
+   /* The top three bits of the first word are 0, so that where this does
+    * go to the TA it is taken for the end of a list and nothing else. */
+   for (i = 0; i < 8; i++)
+      sq[i] = 0x00C0FFE0 + i;
+   __asm__ volatile ("pref @%0" : : "r" (sq));
+   for (i = 0; i < 8; i++)
+      if (target[i] != 0x00C0FFE0 + i)
+         bad = 1;
+   /* and nothing either side of it */
+   if (block[7] != 0x11111111 || block[16] != 0x11111111)
+      bad = 1;
+   return bad;
+}
+
 /* A float's bits, worked out by the compiler: the program has no FPU code. */
 #define F(x) (((union { float f; u32 u; }){ x }).u)
 
@@ -662,6 +696,7 @@ void cmain(void)
    u32 frame = 0, i;
    u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0; u32 total = 0;
    int gd_bad;
+   int sq_bad;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
     * status and its address counters, and the AICA DMA counters. They
@@ -726,6 +761,7 @@ void cmain(void)
    set_palette(2 * 256 + 7, 0x001F);
    set_palette(3 * 256 + 7, 0x001F);
    PVR(0x11C) = 0x80;                                  /* PT_ALPHA_REF */
+   sq_bad = sq_test();
    (*(volatile u32 *)0xFF000038) = 0x10;               /* QACR0: store queues go to the TA */
    (*(volatile u32 *)0xFF00003C) = 0x10;               /* QACR1 */
 #ifdef NO_REGION_ARRAY
@@ -914,6 +950,8 @@ void cmain(void)
             set_palette(4, 0x7C1F);                    /* magenta: a register with junk in it */
          else if (frame == 250 && gd_bad)
             set_palette(4, 0x001F | (gd_bad << 7));     /* blue: the disc read back wrong */
+         else if (frame == 250 && sq_bad)
+            set_palette(4, 0x7E00);                    /* orange: a store queue went where the other one's register says */
          /* The same verdict where it can be read without a picture: see
           * live_verdict. */
          if (frame == 250)
@@ -922,6 +960,7 @@ void cmain(void)
                : (total < FRAMES_150 - 100 || total > FRAMES_150 + 100) ? 0xBAD00003
                : stale ? 0xBAD00004
                : gd_bad ? 0xBAD00005
+               : sq_bad ? 0xBAD00006
                : 0x600D600D;
       }
 

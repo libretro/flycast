@@ -1082,6 +1082,8 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_USA(tmu_ch_base64,3);
 
 	LIBRETRO_USA(CCN_QACR_TR,2);
+	// not the routine the state names, which may be from before each queue went by its own register
+	CCN_QACR_select();
 
 	if (version < V6)
 	{

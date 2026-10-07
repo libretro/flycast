@@ -1200,18 +1200,8 @@ INLINE void DYNACALL do_sqw(u32 Dest)
 	else
 	{
 
-#if HOST_CPU ==CPU_X86
-		//sanity/optimisation check
-		verify(CCN_QACR_TR[0]==CCN_QACR_TR[1]);
-#endif
-
-		u32 QACR = CCN_QACR_TR[0];
-		/*
-		//sq1 ? if so use QACR1
-		//(QACR1==QACR0 in all stuff i've tested)
-		if (Dest& 0x20)
-			QACR = CCN_QACR_TR[1];
-		*/
+		// each queue has its own: see CCN_QACR_select()
+		u32 QACR = CCN_QACR_TR[(Dest >> 5) & 1];
 		//QACR has already 0xE000_0000
 		Address= QACR+(Dest&~0x1f);
 	}
