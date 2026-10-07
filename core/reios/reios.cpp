@@ -9,6 +9,7 @@
 */
 
 #include "reios.h"
+#include <algorithm>
 #include <streams/file_stream.h>
 
 #include "reios_elf.h"
@@ -135,6 +136,15 @@ static bool reios_locate_bootfile(const char* bootfile)
 			INFO_LOG(REIOS, "file LBA: %d", lba);
 			INFO_LOG(REIOS, "file LEN: %d", len);
 
+			/* The program goes to 8c010000, and has to fit between there
+			 * and the end of main memory: a length off a bad disc is not
+			 * read past it. */
+			if (len == 0 || (len + 2047) / 2048 * 2048 > RAM_SIZE - 0x10000)
+			{
+				ERROR_LOG(REIOS, "Boot file too large: %d", len);
+				delete[] temp;
+				return false;
+			}
 			if (descrambl)
 				descrambl_file(lba + 150, len, GetMemPtr(0x8c010000, 0));
 			else
@@ -152,9 +162,12 @@ static bool reios_locate_bootfile(const char* bootfile)
 				data[8 + j] = _vmem_ReadMem8(0x0021a000 + j);
 
 			// system settings
-			flash_syscfg_block syscfg;
-			verify(static_cast<DCFlashChip*>(flashrom)->ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg));
-			memcpy(&data[16], &syscfg.time_lo, 8);
+			// if the flash has them: a damaged one is not a reason to put junk there
+			flash_syscfg_block syscfg = {};
+			if (static_cast<DCFlashChip*>(flashrom)->ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg))
+				memcpy(&data[16], &syscfg.time_lo, 8);
+			else
+				WARN_LOG(REIOS, "Can't read system settings from flash");
 
 			memcpy(GetMemPtr(0x8c000068, sizeof(data)), data, sizeof(data));
 
@@ -211,10 +224,7 @@ static void reios_sys_system() {
 			for (int i  = 0; i < 5; i++)
 				data[8 + i] = flashrom->Read8(0x1a000 + i);
 
-			// system settings
-			flash_syscfg_block syscfg;
-			verify(static_cast<DCFlashChip*>(flashrom)->ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg));
-			memcpy(&data[16], &syscfg.time_lo, 8);
+			// 0x0d-0x17: padding (zeroed out)
 
 			memcpy(GetMemPtr(0x8c000068, sizeof(data)), data, sizeof(data));
 
@@ -308,7 +318,7 @@ static void reios_sys_flashrom() {
 					r5 = pointer to destination buffer
 					r6 = number of bytes to read
 					Returns:
-					r0 = number of read bytes if successful, -1 if read failed
+					r0 = 0 if successful, -1 if read failed
 				*/
 				u32 offset = r[4];
 				u32 dest = r[5];
@@ -318,7 +328,8 @@ static void reios_sys_flashrom() {
 				for (int i = 0; i < size; i++)
 					WriteMem8(dest++, flashrom->Read8(offset + i));
 
-				r[0] = size;
+				// 0 for success, not the number of bytes: Slave Zero (PAL) goes by it
+				r[0] = 0;
 			}
 			break;
 
@@ -420,6 +431,29 @@ static void setup_syscall(u32 hook_addr, u32 syscall_addr) {
 
 static void reios_setup_state(u32 boot_addr)
 {
+	/* San Francisco Rush adds up parts of the BIOS's area of memory as a
+	 * protection and wants a certain sum. Words it adds up and nothing
+	 * uses are set so that it gets it. (From upstream, as it is there.) */
+	{
+		short *p = (short *)GetMemPtr(0x8c0010f0, 2);
+		int chksum = (int)0xFFF937D1;
+		for (int i = 0; i < 10; i++)
+			chksum -= *p++;
+		p += 0xee - 1;
+		for (int i = 0; i < 3; i++)
+			chksum += *p++;
+		p += 0x347 - 1;
+		for (int i = 0; i < 11; i++)
+			chksum -= *p++;
+		p += 0xbf8 - 1;
+		for (int i = 0; i < 98; i++)
+		{
+			short v = chksum < 0 ? std::min(-chksum, 32767) : std::max(-chksum, -32768);
+			*p = v;
+			chksum += *p++;
+		}
+	}
+
 	// Set up AICA interrupt masks
 	libAICA_WriteReg(SCIEB_addr, 0x48, 2);
 	libAICA_WriteReg(SCILV0_addr, 0x18, 1);
@@ -766,6 +800,13 @@ void reios_reset(u8* rom, MemChip* flash)
 	u16* rom16 = (u16*)rom;
 
 	rom16[0] = REIOS_OPCODE;
+
+	/* Three games read the BIOS's ROM through a pointer they never set,
+	 * and only work because of what the real one has at these places.
+	 * (From upstream.) */
+	*(u32 *)&rom[0x44c] = 0xe303d463;	// The Grinch
+	*(u32 *)&rom[0x1c] = 0x71294118;	// Jeremy McGrath Supercross 2000
+	*(u32 *)&rom[0x8] = 0x44094409;		// Rent a Hero No. 1
 
 	u8 *pFont = rom + (FONT_TABLE_ADDR % BIOS_SIZE);
 
