@@ -202,13 +202,17 @@ static u32 vmem32_map_mmu(u32 address, bool write)
 		//if ((entry->Data.PR >> 1) == 0 && p_sh4rcb->cntx.sr.MD == 0)
 		//	return MMU_ERROR_PROTECTED;
 
-		//if (write)
-		//{
-		//	if ((entry->Data.PR & 1) == 0)
-		//		return MMU_ERROR_PROTECTED;
-		//	if (entry->Data.D == 0)
-		//		return MMU_ERROR_FIRSTWRITE;
-		//}
+		/* A write to a page that may not be written is an exception. The
+		 * test was commented out, and the page was mapped read-only all the
+		 * same: so the write faulted, was "handled" by mapping the page
+		 * read-only again, and faulted again, for ever.
+		 *
+		 * The other test that was here, for the first write to a page whose
+		 * dirty bit is clear, stays out: no path of this MMU raises that
+		 * exception, upstream's neither, and the Windows CE games have only
+		 * ever been run without it. */
+		if (write && (entry->Data.PR & 1) == 0)
+			return MMU_ERROR_PROTECTED;
 		u32 page_size = page_sizes[entry->Data.SZ1 * 2 + entry->Data.SZ0];
 		if (page_size == 1024)
 			return VMEM32_ERROR_NOT_MAPPED;

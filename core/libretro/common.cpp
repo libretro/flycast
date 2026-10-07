@@ -326,7 +326,16 @@ static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
 	bool write = (op & 0x00400000) == 0;
 	u32 exception_pc = ctx.x2;
 #elif HOST_CPU == CPU_X64
-	bool write = false;	// TODO?
+	/* Whether it was a write: bit 1 of the page fault's error code. Without
+	 * it a write to a page the SH4's MMU protects could not be told from a
+	 * read, and its exception was never raised. */
+#if defined(__linux__)
+	bool write = (((ucontext_t *)segfault_ctx)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+#elif defined(__APPLE__)
+	bool write = (((ucontext_t *)segfault_ctx)->uc_mcontext->__es.__err & 2) != 0;
+#else
+	bool write = false;
+#endif
 	u32 exception_pc = 0;
 #endif
 	if (vmem32_handle_signal(si->si_addr, write, exception_pc))

@@ -16,6 +16,7 @@
     You should have received a copy of the GNU General Public License
     along with reicast.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <algorithm>
 #include "mmu.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_interrupts.h"
@@ -283,7 +284,11 @@ template u32 mmu_full_SQ<MMU_TT_DWRITE>(u32 va, u32& rv);
 template<u32 translation_type, typename T>
 u32 mmu_data_translation(u32 va, u32& rv)
 {
-	if (va & (sizeof(T) - 1))
+	/* A 64-bit access is two of 32 bits to the SH4: a 4-byte boundary will
+	 * do. ("mmu: a 64-bit access has to sit on a 4-byte boundary" changed
+	 * this test in the copy of this function in mmu.cpp, which is not the
+	 * one that is built; this is.) */
+	if (va & (std::min((u32)sizeof(T), 4u) - 1))
 	{
 		return MMU_ERROR_BADADDR;
 	}
@@ -312,6 +317,14 @@ u32 mmu_data_translation(u32 va, u32& rv)
 
 	const TLB_Entry *entry;
 	u32 lookup = mmu_full_lookup(va, &entry, rv);
+	/* A page that may not be written. This had no test at all, and the
+	 * write was made; where the host's own mapping does the translating it
+	 * hung instead (vmem32.cpp). Either way no game can have been relying
+	 * on it. The other protections - by mode, and the first write to a
+	 * clean page - are not made here, as they never were and are not
+	 * upstream. */
+	if (lookup == MMU_ERROR_NONE && translation_type == MMU_TT_DWRITE && (entry->Data.PR & 1) == 0)
+		return MMU_ERROR_PROTECTED;
    if (lookup == MMU_ERROR_NONE && (rv & 0x1C000000) == 0x1C000000)
 		// map 1C000000-1FFFFFFF to P4 memory-mapped registers
 		rv |= 0xF0000000;
