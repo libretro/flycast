@@ -78,11 +78,24 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # The third run makes the disc a Windows CE one to the core, which is what
 # turns its MMU on; the disc's program then turns the SH4's on and leaves
 # it on, and everything is done the way a Windows CE game has it done.
-for RUN_AS in legacy accurate "legacy wince"; do
+# The fourth presses reset 120 frames in, with the audio track playing and
+# the disc's tests behind it: the program has to come up again and find
+# everything as it does from a cold start.
+for RUN_AS in legacy accurate "legacy wince" "legacy reset"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
-   if [ "$2" = wince ]; then
+   FRAMES=300
+   unset HEADLESS_RESET
+   if [ "$2" = reset ]; then
+      NAME=$TIMING-reset
+      WINCE=disabled
+      GOOD=600d600d
+      FRAMES=420
+      HEADLESS_RESET=120
+      export HEADLESS_RESET
+      echo "== headless: $TIMING SH4 timing, with a reset"
+   elif [ "$2" = wince ]; then
       NAME=$TIMING-mmu
       WINCE=enabled
       GOOD=600d4d4d
@@ -105,7 +118,7 @@ for RUN_AS in legacy accurate "legacy wince"; do
       export LD_PRELOAD
    fi
    HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$WORK/sound.pcm HEADLESS_PEEK=$VERDICT \
-      $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" 300 \
+      $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" $FRAMES \
       reicast_hle_bios=enabled reicast_threaded_rendering=disabled \
       reicast_sh4_timing=$TIMING reicast_force_wince=$WINCE $EXTRA \
       > "$WORK/$NAME.out" 2> "$WORK/$NAME.log" || {
@@ -129,7 +142,8 @@ for RUN_AS in legacy accurate "legacy wince"; do
       echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
       exit 1
    }
-   python3 "$T/live_audio.py" "$WORK/sound.pcm" || {
+   # (the sound of a run with a reset in it starts twice: not looked at)
+   [ -n "$HEADLESS_RESET" ] || python3 "$T/live_audio.py" "$WORK/sound.pcm" || {
       echo "FAIL: wrong sound" >&2
       exit 1
    }

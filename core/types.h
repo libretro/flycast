@@ -679,6 +679,7 @@ void libCore_gdrom_disc_change(void);
 
 //IO
 void libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz);
+u32 libGDR_LeadOutFAD();
 /* Read-ahead hint for a read about to be made of those sectors. */
 void libGDR_Prefetch(u32 StartSector, u32 SectorCount);
 const u8* libGDR_LendRawSector(u32 Sector);

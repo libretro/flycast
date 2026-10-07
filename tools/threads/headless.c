@@ -17,6 +17,7 @@
  *                    to print after the last frame
  *   HEADLESS_GLES    set for a core built for OpenGL ES
  *   HEADLESS_STAGE   address of bench_prog.c's stage word: time its kernels
+ *   HEADLESS_RESET   frame to press reset before
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -232,6 +233,7 @@ int main(int argc, char **argv)
       SYM(void, retro_init, (void))
       SYM(bool, retro_load_game, (const struct retro_game_info *))
       SYM(void, retro_run, (void))
+      SYM(void, retro_reset, (void))
       SYM(void *, retro_get_memory_data, (unsigned))
       SYM(size_t, retro_get_memory_size, (unsigned))
 
@@ -264,6 +266,7 @@ int main(int argc, char **argv)
          unsigned long stage_at = getenv("HEADLESS_STAGE")
             ? strtoul(getenv("HEADLESS_STAGE"), NULL, 0) : 0;
          uint32_t last = 0, word = 0;
+         int reset_at = getenv("HEADLESS_RESET") ? atoi(getenv("HEADLESS_RESET")) : -1;
          clock_t t0 = clock();
 
          for (i = 0; i < frames; i++)
@@ -271,6 +274,8 @@ int main(int argc, char **argv)
             uint8_t *ram;
             size_t size;
 
+            if (i == reset_at)
+               retro_reset();
             retro_run();
             if (!stage_at)
                continue;

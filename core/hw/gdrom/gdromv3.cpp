@@ -78,6 +78,20 @@ const s16* libCore_CDDA_Sector(s16* sector)
 	//silence ! :p
 	if (cdda.status == cdda_t::Playing)
 	{
+		/* The end of the disc. Playing stops there, whatever end the game
+		 * gave, and the drive stays on the last sector there was: a game
+		 * that waits for the music to be over would otherwise wait while
+		 * silence is played up to an end that is not on the disc. */
+		const u32 lead_out = libGDR_LeadOutFAD();
+		if (lead_out != 0 && cdda.CurrAddr.FAD >= lead_out)
+		{
+			if (cdda.CurrAddr.FAD != 0)
+				cdda.CurrAddr.FAD--;
+			cdda.status = cdda_t::Terminated;
+			SecNumber.Status = GD_PAUSE;
+			memset(sector, 0, 2352);
+			return out;
+		}
 		const u8* lent = libGDR_LendRawSector(cdda.CurrAddr.FAD);
 		if (lent)
 			out = (const s16*)lent;
@@ -450,7 +464,7 @@ void gd_process_ata_cmd()
 		printf_ata("ATA_IDENTIFY\n");
 
 		// Set Signature
-		DriveSel &= 0xf0;
+		DriveSel = 0xa0;
 
 		SecCount.full = 1;
 		SecNumber.full = 1;
@@ -469,7 +483,14 @@ void gd_process_ata_cmd()
 		break;
 
 	default:
-		die("Unknown ATA command...");
+		// not a command the drive has: it says so, as it does for NOP
+		WARN_LOG(GDROM, "Unknown ATA command %x", ata_cmd.command);
+		Error.ABRT = 1;
+		Error.Sense = 5;	// illegal request
+		GDStatus.BSY = 0;
+		GDStatus.CHECK = 1;
+		asic_RaiseInterrupt(holly_GDROM_CMD);
+		gd_set_state(gds_waitcmd);
 		break;
 	};
 }
@@ -901,6 +922,8 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 		//cancel interrupt
 	case GD_STATUS_Read :
 		asic_CancelInterrupt(holly_GDROM_CMD);	//Clear INTRQ signal
+		if (DriveSel & 0x10)
+			return 0;		// the second drive: there is none
 		printf_rm("GDROM: STATUS [cancel int](v=%X)",GDStatus.full);
 		return GDStatus.full;
 
@@ -1012,10 +1035,10 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 		break;
 
 	case GD_DRVSEL: 
-		if (data != 0) {
-			INFO_LOG(GDROM, "GDROM: Write to GD_DRVSEL, !=0. Value is: %02X", data);
-		}
-		DriveSel = data; 
+		// the top three bits are not the game's to change
+		DriveSel = (DriveSel & 0xe0) | (data & 0x1f);
+		if (DriveSel & 0x10)
+			INFO_LOG(GDROM, "GDROM: the second drive, which there is not, selected: %02X", data);
 		break;
 
 		// By writing "3" as Feature Number and issuing the Set Feature command,
@@ -1038,6 +1061,12 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 
 	case GD_COMMAND_Write:
 		//printf("\nGDROM:\tCOMMAND: %X !\n", data);
+		if (DriveSel & 0x10)
+		{
+			// for the second drive: nobody takes it
+			DEBUG_LOG(GDROM, "ATA command to slave drive ignored: %x", data);
+			break;
+		}
 		ata_cmd.command=(u8)data;
 		gd_set_state(gds_procata);
 		break;
@@ -1251,6 +1280,33 @@ void gdrom_reg_Reset(bool hard)
 {
 	SB_GDST = 0;
 	SB_GDEN = 0;
+
+	/* The drive starts over as well: whatever command, transfer or music it
+	 * was in the middle of is not carried into the game that starts next. */
+	gd_state = gds_waitcmd;
+	sns_asc = 0;
+	sns_ascq = 0;
+	sns_key = 0;
+	set_mode_offset = 0;
+	read_params = {};
+	packet_cmd = {};
+	read_buff = {};
+	pio_buff = {};
+	ata_cmd = {};
+	cdda = {};
+	gd_disk_type = NoDisk;
+	data_write_mode = 0;
+	DriveSel = 0xa0;
+	Error = {};
+	IntReason = {};
+	Features = {};
+	SecCount = {};
+	SecNumber = {};
+	GDStatus = {};
+	ByteCount = {};
+	// and looks at what disc is in it
+	gd_setdisc();
+
 	// set default hardware information
 	memset(&GD_HardwareInfo, 0, sizeof(GD_HardwareInfo));
 	GD_HardwareInfo.speed = 0x0;

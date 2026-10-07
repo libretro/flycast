@@ -74,6 +74,12 @@ bool libGDR_GetTrack(u32 track_num, u32& start_fad, u32& end_fad)
 }
 
 //TODO : fix up
+// Where the disc ends: the first sector of its lead-out. 0 with no disc.
+u32 libGDR_LeadOutFAD()
+{
+	return disc ? disc->LeadOut.StartFAD : 0;
+}
+
 u32 libGDR_GetDiscType()
 {
 	if (disc)
