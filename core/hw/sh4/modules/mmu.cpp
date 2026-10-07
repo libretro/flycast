@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "mmu.h"
+#include "hw/mem/vmem32.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_interrupts.h"
 #include "hw/sh4/sh4_core.h"
@@ -632,32 +633,32 @@ retry_ITLB_Match:
 }
 
 #ifdef MMU_HOST_PAGE_LUT
-#include <sys/mman.h>
+uintptr_t mmu_read_lut[0x100000];
+uintptr_t mmu_write_lut[0x100000];
 
-u32 mmu_read_lut[0x100000] __attribute__((aligned(4096)));
-u32 mmu_write_lut[0x100000] __attribute__((aligned(4096)));
-// nothing in either: emptying them again is then nothing to do
-static bool mmu_lut_empty = true;
+/* Which 4K stretches of the tables have had an entry made in them since
+ * they were last emptied: those are all that emptying has to clear. */
+#define LUT_ENTRIES_PER_PART (4096 / sizeof(uintptr_t))
+#define LUT_PARTS (0x100000 / LUT_ENTRIES_PER_PART)
+static u16 lut_used_parts[LUT_PARTS];
+static u32 lut_used_count;
+static bool lut_part_used[LUT_PARTS];
 
 void mmu_lut_flush()
 {
-	if (mmu_lut_empty)
-		return;
-	mmu_lut_empty = true;
-#ifdef MADV_DONTNEED
-	/* The pages are given back and come back as zeroes when next touched:
-	 * the cost goes by how much of the 8 MB was used, which is little. */
-	if (madvise(mmu_read_lut, sizeof(mmu_read_lut), MADV_DONTNEED) == 0
-			&& madvise(mmu_write_lut, sizeof(mmu_write_lut), MADV_DONTNEED) == 0)
-		return;
-#endif
-	memset(mmu_read_lut, 0, sizeof(mmu_read_lut));
-	memset(mmu_write_lut, 0, sizeof(mmu_write_lut));
+	for (u32 i = 0; i < lut_used_count; i++)
+	{
+		const u32 part = lut_used_parts[i];
+		memset(&mmu_read_lut[part * LUT_ENTRIES_PER_PART], 0, 4096);
+		memset(&mmu_write_lut[part * LUT_ENTRIES_PER_PART], 0, 4096);
+		lut_part_used[part] = false;
+	}
+	lut_used_count = 0;
 }
 
 void mmu_lut_forget(u32 va, u32 size)
 {
-	if (mmu_lut_empty)
+	if (lut_used_count == 0)
 		return;
 	if (size > 0x100000)
 		size = 0x100000;
@@ -671,6 +672,11 @@ void mmu_lut_forget(u32 va, u32 size)
 
 void mmu_lut_fill(u32 va, u32 pa, bool write)
 {
+#if HOST_CPU == CPU_X64
+	// the host's mapping does it all, and nothing reads the tables
+	if (vmem32_enabled())
+		return;
+#endif
 	// main memory only
 	if ((pa & 0x1C000000) != 0x0C000000)
 		return;
@@ -687,11 +693,17 @@ void mmu_lut_fill(u32 va, u32 pa, bool write)
 		// neither translated nor one of the two regions that are not
 		return;
 
-	const u32 host = (u32)(size_t)&mem_b[pa & RAM_MASK & ~0xFFFu];
+	const uintptr_t host = (uintptr_t)&mem_b[pa & RAM_MASK & ~0xFFFu];
 	mmu_read_lut[va >> 12] = host;
 	if (write)
 		mmu_write_lut[va >> 12] = host;
-	mmu_lut_empty = false;
+
+	const u32 part = (va >> 12) / LUT_ENTRIES_PER_PART;
+	if (!lut_part_used[part])
+	{
+		lut_part_used[part] = true;
+		lut_used_parts[lut_used_count++] = part;
+	}
 }
 #endif
 

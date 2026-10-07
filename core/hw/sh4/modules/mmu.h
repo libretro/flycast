@@ -61,8 +61,10 @@ template<bool internal = false>
 u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
 
 /* Translations kept by, for a recompiler that has to translate every
- * address itself (a 32-bit host has no room to lay out a translated address
- * space and let its own MMU do it, as the 64-bit ones do).
+ * address itself: one on a 32-bit host, which has no room to lay out a
+ * translated address space and let its own MMU do the work, and the x86-64
+ * one where that is not done either (vmem32: Windows, and games it is
+ * switched off for).
  *
  * Two tables, one for reads and one for writes, each with an entry for
  * every 4K page of the SH4's address space: where on the host the page is,
@@ -82,11 +84,13 @@ u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
  * It is emptied whenever what an address means can have changed: the TLB
  * flushed, another address space, the MMU or its single-space mode switched,
  * a TLB entry written through its memory-mapped array, a state loaded. A
- * page whose TLB entry is loaded or invalidated is forgotten on its own. */
-#if !defined(NO_MMU) && HOST_CPU == CPU_ARM
+ * page whose TLB entry is loaded or invalidated is forgotten on its own.
+ * Emptying costs by how much of the tables has been used since the last
+ * time, which is little: the parts that were are kept note of. */
+#if !defined(NO_MMU) && (HOST_CPU == CPU_ARM || HOST_CPU == CPU_X64)
 #define MMU_HOST_PAGE_LUT 1
-extern u32 mmu_read_lut[0x100000];
-extern u32 mmu_write_lut[0x100000];
+extern uintptr_t mmu_read_lut[0x100000];
+extern uintptr_t mmu_write_lut[0x100000];
 void mmu_lut_flush();
 void mmu_lut_forget(u32 va, u32 size);
 // @va has just been translated to @pa, for a write if @write

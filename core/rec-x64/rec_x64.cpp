@@ -255,11 +255,18 @@ template<typename T>
 static T ReadMemNoEx(u32 addr, u32 pc)
 {
 #ifndef NO_MMU
-	u32 exception_raised;
-	T rv = mmu_ReadMemNoEx<T>(addr, &exception_raised);
-	handle_mem_exception(exception_raised, pc);
+	u32 paddr;
+	u32 rv = mmu_data_translation<MMU_TT_DREAD, T>(addr, paddr);
+	if (rv != MMU_ERROR_NONE)
+	{
+		DoMMUException(addr, rv, MMU_TT_DREAD);
+		handle_mem_exception(1, pc);
+	}
+	// where the host's mapping does not do the translating, the next read
+	// of the page need not come here: see mmu.h
+	mmu_lut_fill(addr, paddr, false);
 
-	return rv;
+	return _vmem_readt<T, T>(paddr);
 #else
 	// not used
 	return (T)0;
@@ -270,8 +277,15 @@ template<typename T>
 static void WriteMemNoEx(u32 addr, T data, u32 pc)
 {
 #ifndef NO_MMU
-	u32 exception_raised = mmu_WriteMemNoEx<T>(addr, data);
-	handle_mem_exception(exception_raised, pc);
+	u32 paddr;
+	u32 rv = mmu_data_translation<MMU_TT_DWRITE, T>(addr, paddr);
+	if (rv != MMU_ERROR_NONE)
+	{
+		DoMMUException(addr, rv, MMU_TT_DWRITE);
+		handle_mem_exception(1, pc);
+	}
+	mmu_lut_fill(addr, paddr, true);
+	_vmem_writet<T>(paddr, data);
 #endif
 }
 
@@ -1356,13 +1370,60 @@ public:
 		jmp(qword[rcx]);
 	}
 
+	/* With the MMU on and no host mapping to do the translating (vmem32),
+	 * an access is a call. First, though, the table of translations kept
+	 * by (mmu.h): on a hit, straight to the page on the host; the call is
+	 * for a miss, and fills the table in. Not for 64 bits, which can run
+	 * over the end of a page. The address is in call_regs[0]; rax, r10 and
+	 * r11 belong to nobody here. */
+	bool GenMmuLookup(const uintptr_t *table, u32 size, Xbyak::Label& miss)
+	{
+#ifdef MMU_HOST_PAGE_LUT
+		if (!mmu_enabled() || vmem32_enabled() || size == 8)
+			return false;
+		mov(eax, call_regs[0]);
+		shr(eax, 12);
+		mov(r10, (uintptr_t)table);
+		mov(rax, qword[r10 + rax * 8]);
+		test(rax, rax);
+		jz(miss);
+		mov(r10d, call_regs[0]);
+		and_(r10d, 0xFFF);
+		return true;
+#else
+		return false;
+#endif
+	}
+
 	void GenReadMemorySlow(const shil_opcode& op, RuntimeBlockInfo* block)
 	{
 		const u8 *start_addr = getCurr();
+		u32 size = op.flags & 0x7f;
+		Xbyak::Label lut_miss, lut_done;
+#ifdef MMU_HOST_PAGE_LUT
+		const bool lut = GenMmuLookup(mmu_read_lut, size, lut_miss);
+#else
+		const bool lut = false;
+#endif
+		if (lut)
+		{
+			switch (size) {
+			case 1:
+				movsx(eax, byte[rax + r10]);
+				break;
+			case 2:
+				movsx(eax, word[rax + r10]);
+				break;
+			default:
+				mov(eax, dword[rax + r10]);
+				break;
+			}
+			jmp(lut_done);
+			L(lut_miss);
+		}
 		if (mmu_enabled())
 			mov(call_regs[1], block->vaddr + op.guest_offs - (op.delay_slot ? 1 : 0));	// pc
 
-		u32 size = op.flags & 0x7f;
 		switch (size) {
 		case 1:
 			if (!mmu_enabled())
@@ -1394,6 +1455,8 @@ public:
 		default:
 			die("1..8 bytes");
 		}
+		if (lut)
+			L(lut_done);
 
 		// as long as the fast access it may be written over: see ngen_Rewrite()
 		if (FastMemory())
@@ -1411,10 +1474,33 @@ public:
 	void GenWriteMemorySlow(const shil_opcode& op, RuntimeBlockInfo* block)
 	{
 		const u8 *start_addr = getCurr();
+		u32 size = op.flags & 0x7f;
+		Xbyak::Label lut_miss, lut_done;
+#ifdef MMU_HOST_PAGE_LUT
+		const bool lut = GenMmuLookup(mmu_write_lut, size, lut_miss);
+#else
+		const bool lut = false;
+#endif
+		if (lut)
+		{
+			// the data is in call_regs[1]
+			switch (size) {
+			case 1:
+				mov(byte[rax + r10], call_regs[1].cvt8());
+				break;
+			case 2:
+				mov(word[rax + r10], call_regs[1].cvt16());
+				break;
+			default:
+				mov(dword[rax + r10], call_regs[1]);
+				break;
+			}
+			jmp(lut_done);
+			L(lut_miss);
+		}
 		if (mmu_enabled())
 			mov(call_regs[2], block->vaddr + op.guest_offs - (op.delay_slot ? 1 : 0));	// pc
 
-		u32 size = op.flags & 0x7f;
 		switch (size) {
 		case 1:
 			if (!mmu_enabled())
@@ -1443,6 +1529,8 @@ public:
 		default:
 			die("1..8 bytes");
 		}
+		if (lut)
+			L(lut_done);
 		// as long as the fast access it may be written over: see ngen_Rewrite()
 		if (FastMemory())
 		{
