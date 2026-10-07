@@ -4,7 +4,8 @@
 # Nothing is drawn, so what is checked is the verdict the disc's program
 # reaches about itself - its instruction tests, the length and evenness of
 # its frames by the processor's timer, what it read back from the disc -
-# and the sound, sample for sample. Both SH4 timings are run.
+# and the sound, sample for sample. Both SH4 timings are run, and the
+# first of them again with the MMU on.
 #
 # It is for cores that cannot be run any other way on the machine at hand,
 # which is to say a core built for another processor, under qemu:
@@ -44,9 +45,25 @@ python3 "$T/live_disc.py" "$WORK/test.gdi"
 "${CC:-cc}" -O1 -shared -fPIC -Wl,-soname,libGLESv2.so.2 \
    -o "$WORK/libGLESv2.so.2" "$WORK/nogl.c"
 
+EXTRA=$*
 VERDICT=$(python3 "$T/live_disc.py" --verdict)
-for TIMING in legacy accurate; do
-   echo "== headless: $TIMING SH4 timing"
+# The third run makes the disc a Windows CE one to the core, which is what
+# turns its MMU on; the disc's program then turns the SH4's on and leaves
+# it on, and everything is done the way a Windows CE game has it done.
+for RUN_AS in legacy accurate "legacy wince"; do
+   set -- $RUN_AS
+   TIMING=$1
+   NAME=$TIMING
+   if [ "$2" = wince ]; then
+      NAME=$TIMING-mmu
+      WINCE=enabled
+      GOOD=600d4d4d
+      echo "== headless: $TIMING SH4 timing, with the MMU on"
+   else
+      WINCE=disabled
+      GOOD=600d600d
+      echo "== headless: $TIMING SH4 timing"
+   fi
    rm -f "$WORK/sound.pcm"
    if [ -n "$GLES" ]; then
       # the core asks for libGLESv2.so.2 by name: let it find this one
@@ -60,18 +77,25 @@ for TIMING in legacy accurate; do
    HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$WORK/sound.pcm HEADLESS_PEEK=$VERDICT \
       $RUN "$WORK/headless" "$CORE" "$WORK/test.gdi" 300 \
       reicast_hle_bios=enabled reicast_threaded_rendering=disabled \
-      reicast_sh4_timing=$TIMING "$@" > "$WORK/$TIMING.out" 2> "$WORK/$TIMING.log" || {
+      reicast_sh4_timing=$TIMING reicast_force_wince=$WINCE $EXTRA \
+      > "$WORK/$NAME.out" 2> "$WORK/$NAME.log" || {
       echo "FAIL: the run ended badly" >&2
-      tail -n 20 "$WORK/$TIMING.log" >&2
+      tail -n 20 "$WORK/$NAME.log" >&2
       exit 1
    }
    unset LD_PRELOAD
-   grep -q "SH4 timing: $TIMING" "$WORK/$TIMING.log" || {
+   grep -q "SH4 timing: $TIMING" "$WORK/$NAME.log" || {
       echo "FAIL: the core did not take the timing" >&2
       exit 1
    }
-   grep -q "= 600d600d" "$WORK/$TIMING.out" || {
-      echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$TIMING.out")" >&2
+   if [ $WINCE = enabled ]; then
+      grep -q "Enabling Full MMU support" "$WORK/$NAME.log" || {
+         echo "FAIL: the MMU was not turned on" >&2
+         exit 1
+      }
+   fi
+   grep -q "= $GOOD" "$WORK/$NAME.out" || {
+      echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
       exit 1
    }
    python3 "$T/live_audio.py" "$WORK/sound.pcm" || {

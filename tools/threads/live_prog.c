@@ -78,7 +78,8 @@ static void set_palette(u32 index, u16 colour)
  * then 0x600D600D if every check the background colour reports came out
  * right, or 0xBAD0000n for the first that did not, in the order they are
  * tested below - 0xBAD001nn for the instruction tests, nn being what
- * cpu_test() returned. */
+ * cpu_test() returned. 0x600D4D4D where all of it was done with the MMU
+ * on (mmu_test()). */
 volatile u32 live_verdict;
 
 /* Wait for the beam to start a new frame: the scanline counter in
@@ -536,6 +537,31 @@ __asm__(".text\n.align 2\n"
         "  mov.l 1f, r1\n  mov.l 2f, r0\n  mov.l @r0, r0\n  mov.l r0, @r1\n"
         "  stc spc, r0\n  add #2, r0\n  ldc r0, spc\n  rte\n  nop\n"
         "  .align 2\n1: .long t_expevt_seen\n2: .long 0xFF000024\n"
+        /* 0x400 past the address in VBR, the handler for a TLB miss. It
+         * maps the page that was wanted and returns to try again:
+         *   0x10000000              to the page mmu_test() has chosen
+         *   0xE0000000              to the Tile Accelerator, which is where
+         *                           the program's store queue writes go
+         *   the rest of 0xE0000000- to main memory at the same offset, for
+         *                           sq_test()
+         * each in a TLB entry of its own, and counts in t_tlb_misses. */
+        "  .fill 0x400 - (. - t_vbr_base), 1, 0\n"
+        "  mov.l 10f, r0\n  mov.l @r0, r1\n  mov.l 11f, r2\n  and r2, r1\n"   /* the page, from PTEH */
+        "  mov.l 12f, r3\n  cmp/eq r3, r1\n  bt 4f\n"
+        "  mov.l 13f, r3\n  cmp/eq r3, r1\n  bt 5f\n"
+        "  mov.l 14f, r3\n  and r3, r1\n  mov.l 15f, r3\n  or r3, r1\n  mov #3, r4\n  bra 6f\n  nop\n"
+        "4: mov.l 16f, r1\n  mov.l @r1, r1\n  mov #1, r4\n  bra 6f\n  nop\n"
+        "5: mov.l 12f, r1\n  mov #2, r4\n"
+        "6: mov.l 17f, r3\n  or r3, r1\n  mov.l r1, @(4,r0)\n"                 /* PTEL */
+        "  mov.l @(16,r0), r1\n  mov.l 18f, r3\n  and r3, r1\n"                /* MMUCR.URC: which entry */
+        "  shll8 r4\n  shll2 r4\n  or r4, r1\n  mov.l r1, @(16,r0)\n"
+        "  mov.l 19f, r2\n  mov.l @r2, r3\n  add #1, r3\n  mov.l r3, @r2\n"
+        "  .word 0x0038\n  rte\n  nop\n"                                       /* ldtlb */
+        "  .align 2\n10: .long 0xFF000000\n11: .long 0xFFFFF000\n12: .long 0x10000000\n"
+        "13: .long 0xE0000000\n14: .long 0x00FFF000\n15: .long 0x0C000000\n"
+        "16: .long t_mmu_test_pa\n"
+        /* valid, 4K, read and write in any mode, dirty, shared */
+        "17: .long 0x00000176\n18: .long 0xFFFF03FF\n19: .long t_tlb_misses\n"
         ".global t_illegal\nt_illegal:\n  stc vbr, r2\n  mov.l 3f, r1\n  ldc r1, vbr\n"
         "  .word 0xFFFD\n"
         "  ldc r2, vbr\n  rts\n  nop\n  .align 2\n3: .long t_vbr_base\n"
@@ -560,6 +586,9 @@ extern u32 t_fpscr(u32 v);
 extern u32 t_sr_slot(void);
 extern void t_illegal(void);
 volatile u32 t_expevt_seen;
+extern char t_vbr_base[];
+volatile u32 t_tlb_misses;
+u32 t_mmu_test_pa;
 extern u32 t_sr_slot_mem(void);
 extern u32 t_pr_neg(u32 bits);
 extern void t_pr_mov(u32 *from, u32 *to);
@@ -700,6 +729,42 @@ static int cpu_test(void)
    return 0;
 }
 
+/* The MMU. A page of memory is reached through an address that means
+ * nothing without it, by way of the TLB miss handler above. Returns 1 if
+ * that works - and the MMU is then left on, so that everything after this
+ * runs with it: the recompilers have a different way of doing nearly
+ * everything when it is on, which is how the Windows CE games run. Returns
+ * 0 if the address is not translated: the emulator's MMU is only on for
+ * Windows CE games (the core option "Force Windows CE Mode" makes this
+ * disc one), and without it the test has nothing to say and puts things
+ * back. 2 if it is translated wrongly. */
+static u32 mmu_page[1024] __attribute__((aligned(4096)));
+
+static int __attribute__((noinline)) mmu_probe(volatile u32 *va)
+{
+   if (va[0] != 0x11223344)
+   {
+      (*(volatile u32 *)0xFF000010) = 0;
+      return 0;
+   }
+   va[1] = 0x55667788;
+   if (mmu_page[1] != 0x55667788 || t_tlb_misses != 1)
+      return 2;
+   return 1;
+}
+
+static int mmu_test(void)
+{
+   __asm__ volatile ("ldc %0, vbr" : : "r" (t_vbr_base));
+   t_mmu_test_pa = (u32)mmu_page & 0x1FFFF000;
+   mmu_page[0] = 0x11223344;
+   mmu_page[1] = 0;
+   t_tlb_misses = 0;
+   (*(volatile u32 *)0xFF000000) = 0;                  /* PTEH: address space 0 */
+   (*(volatile u32 *)0xFF000010) = 0x00000005;         /* MMUCR: on, and the TLB emptied */
+   return mmu_probe((volatile u32 *)0x10000000);
+}
+
 static int gd_test(void)
 {
    static const char id[16] = "SEGA SEGAKATANA ";
@@ -760,6 +825,7 @@ void cmain(void)
    u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0; u32 total = 0;
    int gd_bad;
    int sq_bad;
+   int mmu_state;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
     * status and its address counters, and the AICA DMA counters. They
@@ -847,6 +913,7 @@ void cmain(void)
 #endif
 
    /* The disc, read the way a game reads it, before anything is drawn */
+   mmu_state = mmu_test();
    gd_bad = gd_test();
    cpu_bad = cpu_test();
    /* and the audio track playing underneath everything that follows:
@@ -1024,6 +1091,8 @@ void cmain(void)
                : stale ? 0xBAD00004
                : gd_bad ? 0xBAD00005
                : sq_bad ? 0xBAD00006
+               : mmu_state == 2 ? 0xBAD00007
+               : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;
       }
 
