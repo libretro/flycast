@@ -151,9 +151,15 @@ static void LoadSpecialSettingsCPU(void)
    sh4_cpu.Reset(false);
 }
 
+/* The game is one whose renders to a texture have to be copied to video
+ * memory, whatever the core option says. */
+bool game_needs_rtt_buffer = false;
+
 static void LoadSpecialSettings(void)
 {
    unsigned i;
+
+   game_needs_rtt_buffer = false;
 
    char prod_id[sizeof(ip_meta.product_number) + 1] = {0};
    memcpy(prod_id, ip_meta.product_number, sizeof(ip_meta.product_number));
@@ -189,6 +195,7 @@ static void LoadSpecialSettings(void)
          {
          	NOTICE_LOG(BOOT, "[Hack]: Applying rendertotexture hack.");
             settings.rend.RenderToTextureBuffer = lut_games[i].rendertotexturebuffer;
+            game_needs_rtt_buffer = lut_games[i].rendertotexturebuffer != 0;
          }
 
          if (lut_games[i].disable_div != -1)
@@ -291,6 +298,7 @@ static void LoadSpecialSettingsNaomi(const char *name)
          {
          	NOTICE_LOG(BOOT, "[Hack]: Applying rendertotexture hack.");
             settings.rend.RenderToTextureBuffer = lut_games_naomi[i].rendertotexturebuffer;
+            game_needs_rtt_buffer = lut_games_naomi[i].rendertotexturebuffer != 0;
          }
 
          if (lut_games_naomi[i].disable_div != -1)

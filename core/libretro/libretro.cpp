@@ -879,15 +879,15 @@ static void update_variables(bool first_startup)
 
    var.key = CORE_OPTION_NAME "_enable_rttb";
 
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   /* A game that needs it has it whatever the option says. The option alone
+    * was written here, every time any option changed: changing one while such
+    * a game ran switched this off under it. */
    {
-      if (!strcmp("enabled", var.value))
-         settings.rend.RenderToTextureBuffer = true;
-      else
-         settings.rend.RenderToTextureBuffer = false;
+      extern bool game_needs_rtt_buffer;
+      settings.rend.RenderToTextureBuffer = game_needs_rtt_buffer
+         || (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+               && !strcmp("enabled", var.value));
    }
-   else
-      settings.rend.RenderToTextureBuffer = false;
 
    var.key = CORE_OPTION_NAME "_render_to_texture_upscaling";
 

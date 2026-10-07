@@ -59,6 +59,45 @@ static struct game_type lut_games[] =
    { "T18702M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Miss Moonlight */
    { "T40401N   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Tom Clancy's Rainbow Six (US) */
    { "T-45001D05", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Tom Clancy's Rainbow Six incl. Eagle Watch Missions (EU) */
+   /* ...and the rest of upstream's list of games that need what they render to a
+    * texture to be in video memory afterwards, as it is on the console */
+   { "T13008D 05", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Tony Hawk's Pro Skater 2 (EU) */
+   { "T40204D 50", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Tony Hawk's Skateboarding */
+   { "MK-51058  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Jet Grind Radio (US) */
+   { "HDR-0078  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* JSR (JP) */
+   { "MK-5105850", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* JSR (EU) */
+   { "T22904N   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Worms World Party (US) */
+   { "T7016D  50", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Worms World Party (EU) */
+   { "MK-51059  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Shenmue (US) */
+   { "MK-5105950", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Shenmue (EU) */
+   { "HDR-0016  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Shenmue (JP) */
+   { "T46902M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Izumo */
+   { "HDR-0115  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Cardcaptor Sakura */
+   { "T17716N   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Grandia II (US) */
+   { "T17715D   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Grandia II (EU) */
+   { "T4503M    ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Grandia II (JP) */
+   { "T20108M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Canvas: Sepia Iro no Motif */
+   { "T47101M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Kimi ga Nozomu Eien */
+   { "T16801M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Pro Mahjong Kiwame D */
+   { "T18704M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Yoshia no Oka de Nekoronde... */
+   { "T20133M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Tamakyuu (a.k.a. Tama-cue) */
+   { "HDR-0072  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Sakura Taisen 1 */
+   { "HDR-0152  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Sakura Taisen 3 */
+   { "HDR-0124  ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Hundred Swords */
+   { "T23203M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Musapey's Choco Marker */
+   { "T27802M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Sister Princess Premium Edition */
+   { "T20128M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Sentimental Graffiti */
+   { "T20104M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Sentimental Graffiti 2 */
+   { "T20105M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Kanon */
+   { "T20130M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Aikagi */
+   { "T20112M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* AIR */
+   { "T36901M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Cool Boarders Burrrn (JP) */
+   { "T46901M   ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Castle Fantasia - Seima Taisen (JP) */
+   { "T9507N    ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Silent Scope (US) */
+   { "T9505D    ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Silent Scope (EU) */
+   { "T9513M    ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Silent Scope (JP) */
+   { "T30701D 50", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Pro Pinball - Trilogy (EU) */
+   { "T9507M    ", -1, -1, -1,  1,  -1, 1, 0, 0 },           /* Jikkyo Powerful Pro Yakyu */
 
    /* Extra depth scaling */
    { "T0002M    ", -1, -1, -1,  -1, -1, 1e26, 0, 0 },        /* Samurai Shodown 6 (Dreamcast port) */
