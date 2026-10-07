@@ -1232,7 +1232,25 @@ void cmain(void)
    PVR(0x128) = 0x100000;                              /* TA_ISP_BASE */
    /* A textured background plane, so every render has something to draw
     * and the core walks the region array for its clipping. */
-   PVR(0x8C) = 0;                                      /* ISP_BACKGND_T */
+   PVR(0x8C) = 3 << 24;                                /* ISP_BACKGND_T: three more words to a vertex */
+   /* Its three vertices: three corners of the screen, and the texture once
+    * across and once down. The background is the plane through them, and
+    * with none given - all three at one point - the core has to fall back
+    * on a guess; this way what every screenshot's background shows is the
+    * plane as it is worked out. */
+   {
+      static const u32 bg_vertices[3][6] = {
+         /* x           y           z           u           v           colour */
+         { 0x00000000, 0x00000000, 0x38D1B717, 0x00000000, 0x00000000, 0xFFFFFFFF },
+         { 0x44200000, 0x00000000, 0x38D1B717, 0x3F800000, 0x00000000, 0xFFFFFFFF },   /* 640, 0 */
+         { 0x00000000, 0x43F00000, 0x38D1B717, 0x00000000, 0x3F800000, 0xFFFFFFFF },   /* 0, 480 */
+      };
+      volatile u32 *v = (volatile u32 *)0xA510000C;
+      u32 n;
+
+      for (n = 0; n < 18; n++)
+         v[n] = bg_vertices[n / 6][n % 6];
+   }
    PVR(0x88) = 0x38D1B717;                             /* ISP_BACKGND_D: 0.0001, far away */
    (*(volatile u32 *)0xA5100000) = 0x02000000;         /* ISP word: textured */
    /* TSP word: source x 1 + destination x 0. Opaque polygons are blended

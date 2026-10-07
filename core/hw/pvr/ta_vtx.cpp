@@ -4,6 +4,7 @@
 	Parsing of the TA stream and generation of vertex data !
 */
 #include "ta.h"
+#include "bg_plane.h"
 #include "ta_ctx.h"
 #include "pvr_mem.h"
 #include "Renderer_if.h"
@@ -30,11 +31,18 @@ extern int screen_height;
 static u32 tileclip_val = 0;
 
 /* A colour component given as a float, as the hardware takes it: clamped to
- * 0..1 (anything negative is 0; anything above 1, infinity and NaN are 1). */
+ * 0..1 (anything negative is 0; anything above 1, infinity and NaN are 1).
+ *
+ * NaN with either sign. The SH4's own NaN has the sign bit clear, and one
+ * a game computes there counts as above 1; computed on this host it can
+ * come out with the bit set, and was taken for negative: black where the
+ * console has full brightness (upstream: Gaiamaster Kessen!'s textures). */
 static inline float saturate01(float val)
 {
 	const s32 bits = (s32&)val;
-	return bits < 0 ? 0.f : bits > 0x3f800000 ? 1.f : val;
+	if (bits < 0)
+		return (bits & 0x7fffffff) > 0x7f800000 ? 1.f : 0.f;
+	return bits > 0x3f800000 ? 1.f : val;
 }
 
 /* ...and as eight bits. This used to go through a table of 65536 entries
@@ -647,6 +655,13 @@ public:
 		lmr = NULL;
 		CurrentPP = NULL;
 		CurrentPPlist = NULL;
+		/* Until the game gives a clipping rectangle, it is everything: 40
+		 * by 15 tiles. It was whatever the last frame left, at first the
+		 * one tile at the top left, and a polygon that asked to be clipped
+		 * before any rectangle was given was clipped to that (upstream:
+		 * Irides - Master of Blocks). */
+		SetTileClip(0, 0, 39, 14);
+		TileClipMode(0);
 	}
 		
 private:
@@ -1809,7 +1824,59 @@ void FillBGP(TA_context* ctx)
 
 	f32 bg_depth = ISP_BACKGND_D.f;
 	reinterpret_cast<u32&>(bg_depth) &= 0xFFFFFFF0;	// ISP_BACKGND_D has only 28 bits
+	/* And a little further away than it says. The chip does not tell depths
+	 * this close apart, and what a game draws at the background's own depth
+	 * shows; here it lost to the background by a rounding. Upstream's
+	 * figure, and its list: the sky in Xtreme Sports, Blue Stinger's (JP)
+	 * intro, and the videos of many Windows CE games, which were black. */
+	bg_depth = std::max(bg_depth - 1e-6f, 1e-11f);
 
+	/* The plane through the three vertices, over the whole screen: see
+	 * bg_plane.h. What is drawn is wider than the screen by 256 pixels on
+	 * either side, as before. The four corners are written over the three
+	 * vertices, so what is needed of those is taken first, and no more
+	 * than is needed: the texture coordinates, and the colours only where
+	 * they vary - without Gouraud shading the colour is the third vertex's
+	 * everywhere, and the fourth corner is all that has to be given it. */
+	{
+		bg_plane plane;
+		if (bg_plane_init(&plane, cv[0].x, cv[0].y, cv[1].x, cv[1].y, cv[2].x, cv[2].y))
+		{
+			const float u[3] = { cv[0].u, cv[1].u, cv[2].u };
+			const float v[3] = { cv[0].v, cv[1].v, cv[2].v };
+			const bool gouraud = bgpp->pcw.Gouraud != 0;
+			u8 col[3][4], spc[3][4];
+			if (gouraud)
+				for (int i = 0; i < 3; i++)
+				{
+					memcpy(col[i], cv[i].col, 4);
+					memcpy(spc[i], cv[i].vtx_spc, 4);
+				}
+			else
+			{
+				memcpy(cv[3].col, cv[2].col, 4);
+				memcpy(cv[3].vtx_spc, cv[2].vtx_spc, 4);
+			}
+			for (int i = 0; i < 4; i++)
+			{
+				const float x = (i & 1) ? 896.f : -256.f;
+				const float y = (i & 2) ? 480.f : 0.f;
+				cv[i].x = x * scale_x;
+				cv[i].y = y;
+				cv[i].z = bg_depth;
+				cv[i].u = bg_plane_at(&plane, u[0], u[1], u[2], x, y);
+				cv[i].v = bg_plane_at(&plane, v[0], v[1], v[2], x, y);
+				if (gouraud)
+					for (int c = 0; c < 4; c++)
+					{
+						cv[i].col[c] = bg_plane_colour(&plane, col[0][c], col[1][c], col[2][c], x, y);
+						cv[i].vtx_spc[c] = bg_plane_colour(&plane, spc[0][c], spc[1][c], spc[2][c], x, y);
+					}
+			}
+			return;
+		}
+	}
+	// the three are not a plane: the picture stretched over the screen, as it always was
 	f32 min_u = std::min(cv[0].u, std::min(cv[1].u, cv[2].u));
 	f32 max_u = std::max(cv[0].u, std::max(cv[1].u, cv[2].u));
 	if (max_u == 0.f)
