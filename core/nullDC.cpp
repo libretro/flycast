@@ -507,6 +507,21 @@ int dc_init()
          }
          reios_disk_id();
          LoadSpecialSettings();
+#if FEAT_SHREC != DYNAREC_NONE && HOST_CPU == CPU_ARM
+         /* The 32-bit ARM recompiler knows nothing of the MMU: it goes on
+          * reading and writing at the addresses a program gives as if
+          * they were physical ones, and a Windows CE game, which lives
+          * behind the MMU, cannot run. The interpreter does it properly.
+          * Slow, on such a machine, but it is the game. */
+         if (settings.dreamcast.FullMMU && settings.dynarec.Enable)
+         {
+            NOTICE_LOG(BOOT, "The 32-bit ARM recompiler has no MMU: using the interpreter for this game");
+            sh4_cpu.Term();
+            Get_Sh4Interpreter(&sh4_cpu);
+            sh4_cpu.Init();
+            sh4_cpu.Reset(false);
+         }
+#endif
          break;
       case DC_PLATFORM_ATOMISWAVE:
       case DC_PLATFORM_NAOMI:
