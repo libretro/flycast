@@ -395,11 +395,19 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			if (GetContext()->GetVendorID() != VENDOR_QUALCOMM)	// Adreno bug
 				DrawModifierVolumes<true>(cmdBuffer, previous_pass.mvo_tr_count, current_pass.mvo_tr_count - previous_pass.mvo_tr_count);
 
+			/* The whole picture is put together here, not the part the game
+			 * clips its drawing to: what is outside that has to be written
+			 * too, or it is left as it was in whichever of the picture's
+			 * images this frame goes to - two or three frames old, and a
+			 * different one every frame. (Upstream: the loading screen
+			 * before a fight in Soul Calibur blinking.) */
+			SetScissor(cmdBuffer, viewport);
 			vk::Pipeline pipeline = pipelineManager->GetFinalPipeline();
 			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 			quadBuffer->Bind(cmdBuffer);
 			quadBuffer->Draw(cmdBuffer);
 		}
+		SetScissor(cmdBuffer, viewport);
 
 		// Clear
 		vk::MemoryBarrier memoryBarrier(vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite);
