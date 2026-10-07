@@ -188,6 +188,17 @@ private:
 						it++;
 				}
 			}
+			else if (op.op == shop_div1)
+			{
+				// it changes the status register: what was known of it is not any more
+				for (auto it = constprop_values.begin(); it != constprop_values.end(); )
+				{
+					if (it->first.get_reg() == reg_sr_status)
+						it = constprop_values.erase(it);
+					else
+						it++;
+				}
+			}
 			else if (op.op == shop_sync_fpscr)
 			{
 				for (auto it = constprop_values.begin(); it != constprop_values.end(); )
@@ -361,6 +372,9 @@ private:
 					last_versions[i] = -1;
 				continue;
 			}
+			if (op.op == shop_div1)
+				last_versions[reg_sr_status] = -1;	// read by it: an earlier write is not dead
+
 			if (op.op == shop_sync_fpscr)
 			{
 				last_versions[reg_fpscr] = -1;

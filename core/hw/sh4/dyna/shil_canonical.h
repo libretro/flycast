@@ -346,6 +346,35 @@ shil_compile
 )
 shil_opc_end()
 
+//shop_div1 -- one step of a division: rd = the new Rn, rd2 = the new T
+/* Q and M are in the status register, which this reads and writes where it
+ * is kept: the register allocator and the optimizer write it back before
+ * this and take it as changed after (ssa_regalloc.h, ssa.h). */
+shil_opc(div1)
+shil_canonical
+(
+u64,f1,(u32 a, s32 b, u32 T),
+	bool qxm = sr.Q ^ sr.M;
+	sr.Q = (int)a < 0;
+	a = (a << 1) | T;
+
+	u32 oldA = a;
+	a += (qxm ? 1 : -1) * b;	// b if Q != M, -b otherwise
+	sr.Q ^= sr.M ^ (qxm ? a < oldA : a > oldA);
+	T = !(sr.Q ^ sr.M);
+
+	return a | ((u64)T << 32);
+)
+shil_compile
+(
+	shil_cf_arg_u32(rs3);
+	shil_cf_arg_u32(rs2);
+	shil_cf_arg_u32(rs1);
+	shil_cf(f1);
+	shil_cf_rv_u64(rd);
+)
+shil_opc_end()
+
 //shop_negc - Negate with carry
 shil_opc(negc)
 shil_canonical

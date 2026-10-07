@@ -125,7 +125,8 @@ def main():
     if bad:
         print('not yellow: ' + '; '.join(bad))
         # the disc turns its background other colours to say what it found
-        print('(the disc makes it red for frames of uneven length, cyan for '
+        print('(the disc makes it green for an SH4 instruction that came out '
+              'wrong, red for frames of uneven length, cyan for '
               'frames of the wrong length, magenta for a register read back '
               'with junk in it, blue or blue-green for its own boot sector '
               'read back wrong from the GD-ROM; white or black is a write '

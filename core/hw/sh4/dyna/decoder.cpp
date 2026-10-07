@@ -293,6 +293,65 @@ sh4dec(i0100_nnnn_0000_1110)
 	dec_End(0xFFFFFFFF,BET_StaticIntr,false);
 }
 
+/* The five below, and DIV1 in the opcode table, were run by the interpreter
+ * from recompiled code. They are as upstream flycast decodes them. */
+
+//ldc.l @<REG_N>+,SR
+sh4dec(i0100_nnnn_0000_0111)
+{
+	shil_param rn = mk_regi(reg_r0 + GetN(op));
+
+	Emit(shop_readm, reg_temp, rn, shil_param(), 4);
+	Emit(shop_add, rn, rn, mk_imm(4));
+	dec_write_sr(reg_temp);
+	Emit(shop_sync_sr);
+	dec_End(0xFFFFFFFF,BET_StaticIntr,false);
+}
+
+//stc.l SR,@-<REG_N>
+sh4dec(i0100_nnnn_0000_0011)
+{
+	shil_param rn = mk_regi(reg_r0 + GetN(op));
+
+	Emit(shop_mov32, reg_temp, reg_sr_status);
+	Emit(shop_or, reg_temp, reg_temp, reg_sr_T);
+	Emit(shop_writem, shil_param(), rn, reg_temp, 4, mk_imm(-4));
+	Emit(shop_add, rn, rn, mk_imm(-4));
+}
+
+//lds <REG_N>,FPSCR
+sh4dec(i0100_nnnn_0110_1010)
+{
+	Emit(shop_mov32, reg_fpscr, mk_regi(reg_r0 + GetN(op)));
+	Emit(shop_sync_fpscr);
+	// what follows is compiled for the new FPSCR, in a block of its own
+	if (!state.cpu.is_delayslot)
+		dec_End(state.cpu.rpc + 2, BET_StaticJump, false);
+}
+
+//lds.l @<REG_N>+,FPSCR
+sh4dec(i0100_nnnn_0110_0110)
+{
+	shil_param rn = mk_regi(reg_r0 + GetN(op));
+
+	Emit(shop_readm, reg_fpscr, rn, shil_param(), 4);
+	Emit(shop_add, rn, rn, mk_imm(4));
+	Emit(shop_sync_fpscr);
+	if (!state.cpu.is_delayslot)
+		dec_End(state.cpu.rpc + 2, BET_StaticJump, false);
+}
+
+//tas.b @<REG_N>
+sh4dec(i0100_nnnn_0001_1011)
+{
+	shil_param rn = mk_regi(reg_r0 + GetN(op));
+
+	Emit(shop_readm, reg_temp, rn, shil_param(), 1);
+	Emit(shop_seteq, reg_sr_T, reg_temp, mk_imm(0));
+	Emit(shop_or, reg_temp, reg_temp, mk_imm(0x80));
+	Emit(shop_writem, shil_param(), rn, reg_temp, 1);
+}
+
 //nop !
 sh4dec(i0000_0000_0000_1001)
 {

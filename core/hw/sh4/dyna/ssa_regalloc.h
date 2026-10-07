@@ -78,6 +78,11 @@ public:
 			for (int i = reg_fr_0; i <= reg_xf_15; i++)
 				FlushReg((Sh4RegType)i, true);
 		}
+		else if (op->op == shop_div1)
+		{
+			// reads and writes Q and M where the status register is kept
+			FlushReg(reg_sr_status, true);
+		}
 		// Flush regs used by vector ops
 		if (op->rs1.is_reg() && op->rs1.count() > 1)
 		{
@@ -407,6 +412,8 @@ private:
 					|| (reg >= reg_r0_Bank && reg <= reg_r7_Bank)))
 				return true;
 			if (op->op == shop_sync_fpscr && (reg == reg_fpscr || reg == reg_old_fpscr || (reg >= reg_fr_0 && reg <= reg_xf_15)))
+				return true;
+			if (op->op == shop_div1 && reg == reg_sr_status)
 				return true;
 			// if reg is used by a subsequent vector op that doesn't use reg allocation
 			if (UsesReg(op, reg, version, true))

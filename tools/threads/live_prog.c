@@ -412,6 +412,170 @@ static int gd_dma(u32 dest, u32 len)
  * An emulator may well move whole sectors and parts of sectors by
  * different routes, and A and B then check one against the other.
  * Non-zero, saying which, if anything is off. */
+/* Six instructions the recompilers used to hand to the interpreter and now
+ * do themselves: DIV1, TAS.B, the two that move the status register to and
+ * from memory, and the two that load FPSCR. Each is run here on values
+ * that take it down every path, and what it leaves is compared with what
+ * the SH-4 manual says it leaves, worked out in C below.
+ *
+ * They are written as .word because the assembler this is built with has
+ * the floating-point unit turned off, and for DIV1 with one register for
+ * both operands, which nothing would write by hand. */
+__asm__(".text\n.align 2\n"
+        /* t_div1(rn, rm, qmt, out): Q, M and T from qmt, then DIV1 rm,rn;
+         * rn to out[0], SR to out[1] */
+        ".global t_div1\nt_div1:\n"
+        "  stc sr, r0\n  mov.l 1f, r1\n  and r1, r0\n  or r6, r0\n  ldc r0, sr\n"
+        "  .word 0x3454\n"                             /* div1 r5,r4 */
+        "  stc sr, r0\n  mov.l r4, @r7\n  mov.l r0, @(4,r7)\n  rts\n  nop\n"
+        "  .align 2\n1: .long 0xFFFFFCFE\n"
+        /* t_div1_same(rn, qmt, out): DIV1 rn,rn */
+        ".global t_div1_same\nt_div1_same:\n"
+        "  stc sr, r0\n  mov.l 2f, r1\n  and r1, r0\n  or r5, r0\n  ldc r0, sr\n"
+        "  .word 0x3444\n"                             /* div1 r4,r4 */
+        "  stc sr, r0\n  mov.l r4, @r6\n  mov.l r0, @(4,r6)\n  rts\n  nop\n"
+        "  .align 2\n2: .long 0xFFFFFCFE\n"
+        /* t_tas(p): TAS.B @p, returns T */
+        ".global t_tas\nt_tas:\n  .word 0x441B\n  movt r0\n  rts\n  nop\n"
+        /* t_sr(end, flip, out): STC.L SR,@-end; the stored word has flip's
+         * bits turned over and is taken back with LDC.L @..+,SR. out[0]:
+         * the pointer after the store; out[1]: SR after the load; out[2]:
+         * the pointer after the load */
+        ".global t_sr\nt_sr:\n"
+        "  .word 0x4403\n"                             /* stc.l sr,@-r4 */
+        "  mov.l r4, @r6\n  mov.l @r4, r0\n  xor r5, r0\n  mov.l r0, @r4\n"
+        "  .word 0x4407\n"                             /* ldc.l @r4+,sr */
+        "  stc sr, r0\n  mov.l r0, @(4,r6)\n  mov.l r4, @(8,r6)\n  rts\n  nop\n"
+        ".global t_getsr\nt_getsr:\n  stc sr, r0\n  rts\n  nop\n"
+        ".global t_setsr\nt_setsr:\n  ldc r4, sr\n  rts\n  nop\n"
+        /* t_fpscr(v): LDS v,FPSCR, returns FPSCR */
+        ".global t_fpscr\nt_fpscr:\n  .word 0x446A\n  .word 0x006A\n  rts\n  nop\n"
+        /* t_fpscr_mem(p, after): LDS.L @p+,FPSCR, returns FPSCR; p to *after */
+        ".global t_fpscr_mem\nt_fpscr_mem:\n  .word 0x4466\n  .word 0x006A\n  mov.l r4, @r5\n  rts\n  nop\n"
+        ".global t_getfpscr\nt_getfpscr:\n  .word 0x006A\n  rts\n  nop\n"
+        /* FR0 from and to memory, to see which bank FPSCR.FR has chosen */
+        ".global t_fr0_load\nt_fr0_load:\n  .word 0xF048\n  rts\n  nop\n"
+        ".global t_fr0_store\nt_fr0_store:\n  .word 0xF40A\n  rts\n  nop\n");
+extern void t_div1(u32 rn, u32 rm, u32 qmt, u32 *out);
+extern void t_div1_same(u32 rn, u32 qmt, u32 *out);
+extern u32 t_tas(volatile unsigned char *p);
+extern void t_sr(u32 *end, u32 flip, u32 *out);
+extern u32 t_getsr(void);
+extern void t_setsr(u32 sr);
+extern u32 t_fpscr(u32 v);
+extern u32 t_fpscr_mem(u32 *p, u32 **after);
+extern u32 t_getfpscr(void);
+extern void t_fr0_load(u32 *p);
+extern void t_fr0_store(u32 *p);
+
+/* One step of DIV1 as the manual has it: rn and the flags in, both out */
+static u32 div1_model(u32 a, u32 b, u32 *qmt)
+{
+   u32 t = *qmt & 1, q = (*qmt >> 8) & 1, m = (*qmt >> 9) & 1;
+   const u32 qxm = q ^ m;
+   u32 old;
+
+   q = a >> 31;
+   a = (a << 1) | t;
+   old = a;
+   if (qxm)
+   {
+      a += b;
+      q ^= m ^ (a < old);
+   }
+   else
+   {
+      a -= b;
+      q ^= m ^ (a > old);
+   }
+   t = !(q ^ m);
+   *qmt = t | (q << 8) | (m << 9);
+   return a;
+}
+
+/* 0 if all six do what they should, or which did not */
+static int cpu_test(void)
+{
+   static const u32 vals[] = { 0, 1, 2, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFF,
+                               0x12345678, 0xDEADBEEF, 0x00010000 };
+   static const u32 flips[] = { 0x001, 0x002, 0x100, 0x200, 0x303 };
+   static const u32 modes[] = { 0x00040001, 0x00040000, 0x00040003, 0x000C0001, 0x00240001, 0x00040001 };
+   static const unsigned char bytes[] = { 0x00, 0x01, 0x7F, 0x80, 0xFF };
+   u32 out[3], buf[2], sr, fpscr, a, b, x, *after;
+   volatile unsigned char byte;
+   unsigned i, j, k;
+
+   t_setsr(t_getsr() & ~0x8000u);                     /* the floating-point unit on */
+
+   for (i = 0; i < sizeof(vals) / sizeof(vals[0]); i++)
+      for (j = 0; j < sizeof(vals) / sizeof(vals[0]); j++)
+         for (k = 0; k < 8; k++)
+         {
+            u32 qmt = (k & 1) | ((k & 2) << 7) | ((k & 4) << 7), want;
+
+            want = div1_model(vals[i], vals[j], &qmt);
+            t_div1(vals[i], vals[j], (k & 1) | ((k & 2) << 7) | ((k & 4) << 7), out);
+            if (out[0] != want || (out[1] & 0x301) != qmt)
+               return 1;
+            if (j == 0)
+            {
+               qmt = (k & 1) | ((k & 2) << 7) | ((k & 4) << 7);
+               want = div1_model(vals[i], vals[i], &qmt);
+               t_div1_same(vals[i], (k & 1) | ((k & 2) << 7) | ((k & 4) << 7), out);
+               if (out[0] != want || (out[1] & 0x301) != qmt)
+                  return 2;
+            }
+         }
+
+   for (i = 0; i < sizeof(bytes); i++)
+   {
+      byte = bytes[i];
+      x = t_tas(&byte);
+      if (x != (u32)(bytes[i] == 0) || byte != (bytes[i] | 0x80))
+         return 3;
+   }
+
+   for (i = 0; i < sizeof(flips) / sizeof(flips[0]); i++)
+   {
+      sr = t_getsr();
+      t_sr(&buf[1], flips[i], out);
+      /* T is anyone's between the two readings; the rest has to be SR,
+       * with the bits turned over, and SR afterwards has to be that word */
+      if (out[0] != (u32)&buf[0] || out[2] != (u32)&buf[1]
+            || ((buf[0] ^ sr ^ flips[i]) & 0x700083F2) || ((out[1] ^ buf[0]) & 0x700083F3))
+         return 4;
+   }
+
+   fpscr = t_getfpscr();
+   for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
+   {
+      if (t_fpscr(modes[i]) != modes[i])
+         return 5;
+      x = modes[i] ^ 2;
+      if (t_fpscr_mem(&x, &after) != (modes[i] ^ 2) || after != &x + 1)
+         return 6;
+   }
+   /* FPSCR.FR chooses between two banks of registers: FR0 of one is not
+    * FR0 of the other, and each keeps what it was given */
+   a = 0x3F800000;
+   b = 0x40000000;
+   t_fpscr(0x00040001);
+   t_fr0_load(&a);
+   t_fpscr(0x00240001);
+   t_fr0_load(&b);
+   t_fpscr(0x00040001);
+   t_fr0_store(&x);
+   if (x != a)
+      return 7;
+   x = 0x00240001;
+   t_fpscr_mem(&x, &after);
+   t_fr0_store(&x);
+   if (x != b)
+      return 8;
+   t_fpscr(fpscr);
+   return 0;
+}
+
 static int gd_test(void)
 {
    static const char id[16] = "SEGA SEGAKATANA ";
@@ -471,6 +635,7 @@ void cmain(void)
    u32 frame = 0, i;
    u32 tick = 0, shortest = 0xFFFFFFFF, longest = 0; u32 total = 0;
    int gd_bad;
+   int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
     * status and its address counters, and the AICA DMA counters. They
     * read as zero, not as whatever the emulator had lying there. */
@@ -557,6 +722,7 @@ void cmain(void)
 
    /* The disc, read the way a game reads it, before anything is drawn */
    gd_bad = gd_test();
+   cpu_bad = cpu_test();
    /* and the audio track playing underneath everything that follows:
     * the sector the sound chip mixes from is lent out of the image, and
     * the save, load, reset and unload below all happen while it is */
@@ -710,7 +876,9 @@ void cmain(void)
             total += took;
          }
          tick = now;
-         if (frame == 250 && longest - shortest > 200)
+         if (frame == 250 && cpu_bad)
+            set_palette(4, 0x03E0);                    /* green: an instruction came out wrong */
+         else if (frame == 250 && longest - shortest > 200)
             set_palette(4, 0x7C00);                    /* red: uneven frames */
          else if (frame == 250 && (total < FRAMES_150 - 100 || total > FRAMES_150 + 100))
             set_palette(4, 0x03FF);                    /* cyan: frames of the wrong length */
