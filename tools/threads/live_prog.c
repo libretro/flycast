@@ -540,6 +540,8 @@ static void ta_scene(void)
  * with its top left quarter blue. The screen's scene then has a polygon
  * with that texture, which has to show it the same way up. */
 
+static u32 rtt_static_done, rtt_static_age, rtt_static_bad;
+
 static void render_to_texture(void)
 {
    const u32 fb_w_ctrl = PVR(0x48), linestride = PVR(0x4C), fb_w_sof1 = PVR(0x60);
@@ -568,6 +570,24 @@ static void render_to_texture(void)
    ta_send(0, 0, 0, 0, 0, 0, 0, 0);
    PVR(0x14) = 0xFFFFFFFF;                             /* STARTRENDER */
 
+   /* A third, 64 by 64 and all magenta, rendered once and left alone for
+    * two seconds. A game does this with a picture it means to keep; the
+    * core must have put it in video memory by itself in the meantime, and
+    * right, for when the program does come back and read it. */
+   if (!rtt_static_done)
+   {
+      rtt_static_done = 1;
+      PVR(0x60) = 0x01000000 | (RTT_ADDRESS + 0x80000);
+      PVR(0x144) = 0x80000000;                         /* TA_LIST_INIT */
+      ta_quad(0, TSP_PLAIN, 0, 0xFFFF00FF, F(0.5f), F(0.0f), F(0.0f), F(64.0f), F(64.0f));
+      ta_send(0, 0, 0, 0, 0, 0, 0, 0);
+      PVR(0x14) = 0xFFFFFFFF;                          /* STARTRENDER */
+   }
+   else if (rtt_static_age < 120)
+      rtt_static_age++;
+   else if (*(volatile u16 *)(0xA4000000 + RTT_ADDRESS + 0x80000 + (20 * 64 + 20) * 2) != 0xF81F)
+      rtt_static_bad = 1;
+
    PVR(0x48) = fb_w_ctrl;
    PVR(0x4C) = linestride;
    PVR(0x60) = fb_w_sof1;
@@ -585,7 +605,7 @@ static void render_to_texture(void)
       const u16 blue = tex[10 * 128 + 10], orange = tex[10 * 128 + 100];
       /* (the orange's green is a half: 32 of 63, or 31 from a renderer that
        * rounds its colours the other way) */
-      const u16 mark = (blue == 0x001F && (orange == 0xFC00 || orange == 0xFBE0)) ? 0x07E0 : 0xF800;
+      const u16 mark = (blue == 0x001F && (orange == 0xFC00 || orange == 0xFBE0) && !rtt_static_bad) ? 0x07E0 : 0xF800;
       u32 x, y;
 
       for (y = 64; y < 128; y++)

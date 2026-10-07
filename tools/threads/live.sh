@@ -252,6 +252,30 @@ PY
       exit 1
    fi
 
+   echo "== $DRV: fullscreen and back while running"
+   # The frontend destroys the context and makes another, twice. What the
+   # core had on the graphics card goes with it - the textures, and what
+   # the disc rendered to textures and never looked at again - and the
+   # picture has to come out right all the same.
+   rm -rf "$WORK/states" "$WORK/saves"
+   mkdir -p "$WORK/states" "$WORK/saves"
+   python3 - <<'PY' &
+import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for wait in (4, 3):
+    time.sleep(wait)
+    s.sendto(b"FULLSCREEN_TOGGLE", ("127.0.0.1", 55355))
+PY
+   POKE=$!
+   trap 'kill $POKE 2>/dev/null || true; rm -rf "$WORK"' EXIT
+   run $DRV-fs.log 700 "$WORK/test.gdi" "$WORK/$DRV-fs.png"
+   kill $POKE 2>/dev/null || true
+   expect $DRV-fs.log "Set video size to: fullscreen"
+   python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-fs.png" || {
+      echo "FAIL: the picture is wrong after the context was destroyed and made again" >&2
+      exit 1
+   }
+
    echo "== $DRV: threaded rendering off"
    echo "core_options_path = \"$WORK/core-options-off.cfg\"" >> "$WORK/driver.cfg"
    rm -rf "$WORK/states" "$WORK/saves"

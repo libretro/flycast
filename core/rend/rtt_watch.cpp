@@ -213,6 +213,7 @@ void rtt_watch_add(const RttWatch *watch, const RttWatchBackend *b)
 	}
 	*slot = *watch;
 	slot->used = true;
+	slot->age = 0;
 	_vmem_watch_vram(first_page(*slot) * PAGE_SIZE, (last_page(*slot) - first_page(*slot) + 1) * PAGE_SIZE);
 }
 
@@ -285,6 +286,17 @@ void rtt_watch_flush(void)
 		return;
 	for (RttWatch& s : slots)
 		if (s.used)
+			fill(s);
+}
+
+#define RTT_WATCH_SETTLED 3
+
+void rtt_watch_frame(void)
+{
+	if (backend.read == NULL)
+		return;
+	for (RttWatch& s : slots)
+		if (s.used && ++s.age >= RTT_WATCH_SETTLED)
 			fill(s);
 }
 

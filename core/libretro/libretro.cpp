@@ -1216,6 +1216,7 @@ void retro_run (void)
       CaptureInput();
 
       emu_hold();
+      rtt_watch_frame();
       // On the first call, we start the emulator thread
       if (first_run)
       {
@@ -1259,6 +1260,7 @@ void retro_run (void)
    else
 #endif
    {
+	   rtt_watch_frame();
 	   dc_run();
 
 	   /* Emit exactly this frame's audio as one consecutive batch, so the
@@ -1302,6 +1304,9 @@ static void context_reset(void)
 
 static void context_destroy(void)
 {
+   /* The context is still there, and with it what the game rendered to
+    * textures and video memory has not got yet: it gets it now. */
+   rtt_watch_flush();
    gl_ctx_resetting = true;
    renderer_changed = true;
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_DESTROY, NULL);
@@ -1752,6 +1757,8 @@ static void retro_vk_context_reset()
 
 static void retro_vk_context_destroy()
 {
+	/* what was rendered to textures and video memory has not got yet, while it can still be fetched */
+	rtt_watch_flush();
 	rend_term_renderer();
 	renderer_changed = true;
 	theVulkanContext.Term();
@@ -2151,6 +2158,9 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 void retro_unload_game(void)
 {
 	INFO_LOG(COMMON, "Flycast unloading game");
+   /* The machine is going, video memory with it: nothing is to be written
+    * there after this (the context is destroyed later than this). */
+   rtt_watch_forget();
    if (game_data)
       free(game_data);
    game_data = NULL;

@@ -34,6 +34,7 @@ struct RttWatch
 	uintptr_t tex;       /* the renderer's name for the picture */
 	u32 scale;           /* how many times finer than w by h it is */
 	bool owned;          /* nothing else will delete tex */
+	u32 age;             /* frames it has waited */
 	bool used;
 };
 
@@ -60,6 +61,13 @@ void rtt_watch_touch(u32 offset, u32 size);
 /* Render thread, the machine standing still: everything that is waiting
  * goes to video memory now (the pictures are about to be destroyed). */
 void rtt_watch_flush(void);
+/* Render thread, once a frame, the machine standing still. A render that
+ * has waited a few frames is not one the game renders again every frame:
+ * it goes to video memory now, once, so that it is there for whoever
+ * cannot ask the graphics card - the frontend saving a state from a thread
+ * of its own. One that is rendered every frame never gets that old, and
+ * costs nothing here. */
+void rtt_watch_frame(void);
 /* Render thread: do what the emulation thread handed over. */
 void rtt_watch_serve(void);
 /* What the emulation thread hands over: its address. */
