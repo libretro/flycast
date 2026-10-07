@@ -746,11 +746,19 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 //***********
 //On Chip Ram
 //***********
+/* The cache used as RAM is two areas of 4 KB. Which of the two an address
+ * is in is said by its bit 13, or by bit 25 when CCR.OIX is set; bit 12 is
+ * not looked at, so each area is seen twice over. */
+static inline u32 ocr_offset(u32 addr)
+{
+	return ((addr >> (CCN_CCR.OIX == 1 ? 13 : 1)) & 0x1000) | (addr & 0xfff);
+}
+
 template <class T>
 T DYNACALL ReadMem_area7_OCR(u32 addr)
 {
    if (CCN_CCR.ORA == 1)
-		return *(T *)&OnChipRAM[addr & OnChipRAM_MASK];
+		return *(T *)&OnChipRAM[ocr_offset(addr)];
 
 	INFO_LOG(SH4, "On Chip Ram Read, but OCR is disabled. addr %x", addr);
 	return 0;
@@ -760,7 +768,7 @@ template <class T>
 void DYNACALL WriteMem_area7_OCR(u32 addr, T data)
 {
    if (CCN_CCR.ORA == 1)
-      *(T *)&OnChipRAM[addr & OnChipRAM_MASK] = data;
+      *(T *)&OnChipRAM[ocr_offset(addr)] = data;
    else
       INFO_LOG(SH4, "On Chip Ram Write, but OCR is disabled. addr %x", addr);
 }
@@ -856,10 +864,9 @@ void map_p4(void)
 	//P4 Region :
    _vmem_handler p4_handler = _vmem_register_handler_Template(ReadMem_P4, WriteMem_P4);
 
-   //register this before mmr and SQ so they overwrite it and handle em
-	//default P4 handler
-	//0xE0000000-0xFFFFFFFF
-	_vmem_map_handler(p4_handler,0xE0,0xFF);
+	// the cache and TLB arrays. What P4 has nothing of its own in is left as
+	// mem_map_default() made it: the same as everywhere else
+	_vmem_map_handler(p4_handler,0xF0,0xF7);
 
 	//Store Queues -- Write only 32bit
 	_vmem_map_block(sq_both,0xE0,0xE0,63);

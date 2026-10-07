@@ -227,6 +227,30 @@ static u32 dmac_test(void)
    return bad;
 }
 
+/* The top eighth of the address space. Only part of it is the SH4's own:
+ * through the rest an address reaches the same memory as it does from
+ * anywhere else. A word of video memory and a word of main memory, written
+ * through there and read back the usual way. Not zero if they did not get
+ * there. */
+static u32 p4_test(void)
+{
+   static volatile u32 word;
+   volatile u32 *vram_usual = (volatile u32 *)0xA5140000, *vram_top = (volatile u32 *)0xE5140000;
+   volatile u32 *ram_top = (volatile u32 *)((u32)&word | 0xE0000000);
+   u32 bad = 0;
+
+   *vram_usual = 0;
+   *vram_top = 0x0BADF00D;
+   if (*vram_usual != 0x0BADF00D || *vram_top != 0x0BADF00D)
+      bad = 1;
+   *vram_usual = 0;
+   word = 0;
+   *ram_top = 0x12344321;
+   if (word != 0x12344321 || *ram_top != 0x12344321)
+      bad = bad ? bad : 2;
+   return bad;
+}
+
 /* The two store queues each have a register saying which area their 32
  * bytes go to. Nearly every game sets the two alike, and so does this
  * program for its rendering; here, once, they differ: the second queue is
@@ -1006,6 +1030,7 @@ void cmain(void)
    u32 spg_bad;
    u32 maple_bad;
    u32 dmac_bad;
+   u32 p4_bad;
    int mmu_state;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
@@ -1100,6 +1125,7 @@ void cmain(void)
    spg_bad = spg_test();
    maple_bad = maple_test();
    dmac_bad = dmac_test();
+   p4_bad = p4_test();
    /* and the audio track playing underneath everything that follows:
     * the sector the sound chip mixes from is lent out of the image, and
     * the save, load, reset and unload below all happen while it is */
@@ -1278,6 +1304,7 @@ void cmain(void)
                : spg_bad ? 0xBAD00800 + spg_bad
                : maple_bad ? 0xBAD00900 + maple_bad
                : dmac_bad ? 0xBAD00A00 + dmac_bad
+               : p4_bad ? 0xBAD00B00 + p4_bad
                : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;

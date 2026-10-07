@@ -571,7 +571,7 @@ void map_area0_init()
 }
 void map_area0(u32 base)
 {
-	verify(base<0xE0);
+
 
 	_vmem_map_handler(area0_handler,0x00|base,0x01|base);
 

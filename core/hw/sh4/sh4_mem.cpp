@@ -171,8 +171,12 @@ void mem_map_default()
 	map_area6_init();
 	map_area7_init();
 
-   // 00-0C: 7 times the normal memmap mirrors
-   for (int i = 0; i < 7; i++)
+   /* 00-E0: eight times the normal memory map. The eighth is under the P4
+    * region: the SH4 only keeps the store queues, the cache and TLB arrays
+    * and its own registers there (see map_p4), and an address in the rest
+    * of it (E4-EF, F8-FE) reaches the same memory as it does anywhere
+    * else. NHL 2K2 gets at its textures that way. */
+   for (int i = 0; i < 8; i++)
 	{
 		map_area0(i << 5); //Bios,Flahsrom,i/f regs,Ext. Device,Sound Ram
 		map_area1(i << 5); //VRAM
