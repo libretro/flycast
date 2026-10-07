@@ -755,7 +755,9 @@ shil_opc(cvt_f2i_t)
 shil_canonical
 (
 u32,f1,(f32 f1),
-   if (f1 > 2147483520.0f)	// IEEE 754: 0x4effffff
+   if (float_is_nan(f1))	// first, and from its bits: see float_is_nan()
+		return 0x80000000;
+   else if (f1 > 2147483520.0f)	// IEEE 754: 0x4effffff
 		return 0x7fffffff;
 	else
 	{
@@ -773,10 +775,10 @@ u32,f1,(f32 f1),
 shil_canonical
 (
 u32,f1,(f32 f1),
-	if (f1 > 2147483520.0f) // IEEE 754: 0x4effffff
-		return 0x7fffffff;
-	else if (f1 != f1)	// a NaN: these hosts would make it 0
+	if (float_is_nan(f1))	// these hosts would make it 0. From its bits: see float_is_nan()
 		return 0x80000000;
+	else if (f1 > 2147483520.0f) // IEEE 754: 0x4effffff
+		return 0x7fffffff;
 	else
 		return (s32)f1;
 )

@@ -1410,11 +1410,21 @@ int ta_parse_cnt = 0;
 //
 // Check if a vertex has huge x,y,z values or negative z
 //
+/* Asked of the bits, not the values: a float's bits with the sign taken off
+ * go up as its size does, with infinity and the NaNs above everything, so
+ * one integer comparison says "huge, infinite or not a number". And it has
+ * to be the bits: on targets built with fast-math the compiler is told
+ * there are no NaNs, and the std::isnan() calls that were here were dropped,
+ * so that a vertex with a NaN in it went through to the renderer. */
 static bool is_vertex_inf(const Vertex& vtx)
 {
-	return std::isnan(vtx.x) || fabsf(vtx.x) > 3.4e37f
-			|| std::isnan(vtx.y) || fabsf(vtx.y) > 3.4e37f
-			|| std::isnan(vtx.z) || vtx.z < 0.f || vtx.z > 3.4e37f;
+	const u32 huge = float_bits(3.4e37f);
+	const u32 z = float_bits(vtx.z);
+
+	return (float_bits(vtx.x) & 0x7fffffff) > huge
+			|| (float_bits(vtx.y) & 0x7fffffff) > huge
+			// negative too, which is every z with the sign bit but -0
+			|| (z > huge && z != 0x80000000);
 }
 
 //

@@ -87,6 +87,32 @@ typedef uint64_t u64;
 typedef float f32;
 typedef double f64;
 
+#include <string.h>
+
+/* Whether a value is a NaN, asked of its bits. Several targets - Android,
+ * the Switch, the PlayStation Classic - are built with fast-math, which
+ * tells the compiler there are no NaNs: it then drops std::isnan() and
+ * every comparison a NaN would fail, and the code that depended on them
+ * runs as if they were not there. It cannot drop these. */
+static inline u32 float_bits(f32 f)
+{
+	u32 bits;
+	memcpy(&bits, &f, sizeof(bits));
+	return bits;
+}
+
+static inline bool float_is_nan(f32 f)
+{
+	return (float_bits(f) & 0x7fffffff) > 0x7f800000;
+}
+
+static inline bool double_is_nan(f64 f)
+{
+	u64 bits;
+	memcpy(&bits, &f, sizeof(bits));
+	return (bits & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
+}
+
 typedef ptrdiff_t snat;
 typedef size_t unat;
 

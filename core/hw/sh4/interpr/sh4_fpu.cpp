@@ -637,7 +637,7 @@ sh4op(i1111_nnnn_0011_1101)
 	if (fpscr.PR == 0)
 	{
 		u32 n = GetN(op);
-		if (std::isnan(fr[n]))
+		if (float_is_nan(fr[n]))
 			fpul = 0x80000000;
 		else
 		{
@@ -655,7 +655,7 @@ sh4op(i1111_nnnn_0011_1101)
 	{
 		u32 n = (op >> 9) & 0x07;
 		f64 f = GetDR(n);
-		if (std::isnan(f))
+		if (double_is_nan(f))
 			fpul = 0x80000000;
 		else
 		{
