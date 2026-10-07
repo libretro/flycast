@@ -584,7 +584,7 @@ static u32 gd_sense(void)
  * and shut again (headless.sh's last). A drive that has just been given a
  * disc is busy for a second before it has one, and then says, when asked,
  * that the medium may have changed: sense key 6, code 0x28. */
-static u32 drive_open, drive_busy, drive_ready, drive_sense;
+static u32 drive_open, drive_busy, drive_ready, drive_sense, drive_bios_bad;
 
 static void drive_watch(void)
 {
@@ -595,7 +595,16 @@ static void drive_watch(void)
    else if (drive_open && !drive_ready)
    {
       if (status == 0)
+      {
+         /* and the BIOS, asked how the drive is, says the same: busy,
+          * not that the lid is still open */
+         u32 answer[2] = { 9, 9 };
+
+         ((int (*)(u32 *, u32, u32, u32))(*(volatile u32 *)0x8C0000BC))(answer, 0, 0, 4);
+         if (answer[0] != 0)
+            drive_bios_bad = 1;
          drive_busy++;
+      }
       else
       {
          drive_ready = 1;
@@ -1368,6 +1377,7 @@ void cmain(void)
             live_verdict = (drive_busy < 55 || drive_busy > 65) ? 0xBAD00C01
                : !drive_ready ? 0xBAD00C02
                : drive_sense != 0x628 ? 0xBAD00C03
+               : drive_bios_bad ? 0xBAD00C04
                : 0x600D5A9D;
       }
 

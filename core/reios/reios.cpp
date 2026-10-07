@@ -715,7 +715,14 @@ void DYNACALL reios_trap(u32 op) {
 
 	//debugf("dispatch %08X -> %08X", pc, mapd);
 
-	hooks[mapd]();
+	// (looking one up with [] would make an empty one, and then call it)
+	auto hook = hooks.find(mapd);
+	if (hook == hooks.end() || !hook->second)
+	{
+		ERROR_LOG(REIOS, "Unknown trap vector %08x pc %08x", mapd, pc);
+		return;
+	}
+	hook->second();
 
 	// Return from syscall, except if pc was modified
 	if (pc == next_pc - 2)

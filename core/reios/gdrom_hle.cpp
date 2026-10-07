@@ -116,9 +116,11 @@ static void read_sectors_to(u32 addr, u32 sector, u32 count)
  * so no single retro_run stalls on a large synchronous disc read. The data is
  * still fully in guest memory by xfer_end_time, so the emulated completion tick
  * -- and therefore emulation determinism -- is unchanged. */
+/* A sector's address is 24 bits. The BIOS does not look at the rest, and
+ * neither does this: Guilty Gear X asks for audio with junk up there. */
 static void GDROM_HLE_ReadDMA()
 {
-	u32 s = gd_hle_state.params[0];
+	u32 s = gd_hle_state.params[0] & 0xffffff;
 	u32 n = gd_hle_state.params[1];
 	u32 b = gd_hle_state.params[2];
 	u32 u = gd_hle_state.params[3];
@@ -180,7 +182,7 @@ static void GDROM_HLE_ReadDMA_step()
 
 static void GDROM_HLE_ReadPIO()
 {
-	u32 s = gd_hle_state.params[0];
+	u32 s = gd_hle_state.params[0] & 0xffffff;
 	u32 n = gd_hle_state.params[1];
 	u32 b = gd_hle_state.params[2];
 	u32 u = gd_hle_state.params[3];
@@ -199,26 +201,30 @@ static void GDCC_HLE_GETSCD() {
 
 	DEBUG_LOG(REIOS, "GDROM: GETSCD format %x size %x dest %08x", format, size, dest);
 
-	if (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk)
-	{
-		gd_hle_state.status = BIOS_ERROR;
-		gd_hle_state.result[0] = 2;	// ?
-		gd_hle_state.result[1] = 0;
-		gd_hle_state.result[2] = 0;
-		gd_hle_state.result[3] = 0;
-		return;
-	}
+	/* What the drive has to say comes first, with both sense codes in the
+	 * second result word, as the BIOS gives them: while a disc that has just
+	 * been put in is being looked at that is "becoming ready", and after it
+	 * "the medium may have changed". */
 	if (sns_asc != 0)
 	{
 		// Helps D2 detect the disk change
 		gd_hle_state.status = BIOS_ERROR;
 		gd_hle_state.result[0] = sns_key;
-		gd_hle_state.result[1] = sns_asc;
+		gd_hle_state.result[1] = sns_asc | (sns_ascq << 8);
 		gd_hle_state.result[2] = 0x18;		// ?
-		gd_hle_state.result[3] = sns_ascq;	// ?
+		gd_hle_state.result[3] = 0;
 		sns_key = 0;
 		sns_asc = 0;
 		sns_ascq = 0;
+		return;
+	}
+	if (SecNumber.Status != GD_BUSY && (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk))
+	{
+		gd_hle_state.status = BIOS_ERROR;
+		gd_hle_state.result[0] = 2;
+		gd_hle_state.result[1] = 0x3a;	// a command for a disc, and there is no disc
+		gd_hle_state.result[2] = 0;
+		gd_hle_state.result[3] = 0;
 		return;
 	}
 	if (cdda.status == cdda_t::Playing)
@@ -364,9 +370,17 @@ static void GD_HLE_Command(u32 cc)
 
 	case GDCC_PLAY_SECTOR:
 		{
-			u32 start_fad = gd_hle_state.params[0];
-			u32 end_fad = gd_hle_state.params[1];
+			u32 start_fad = gd_hle_state.params[0] & 0xffffff;
+			u32 end_fad = gd_hle_state.params[1] & 0xffffff;
 			DEBUG_LOG(REIOS, "GDROM: CMD PLAYSEC from %d to %d repeats %d", start_fad, end_fad, gd_hle_state.params[2]);
+			if (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk)
+			{
+				// nothing to play
+				gd_hle_state.status = BIOS_ERROR;
+				cdda.status = cdda_t::NoInfo;
+				SecNumber.Status = GD_STANDBY;
+				break;
+			}
 			cdda.status = cdda_t::Playing;
 			cdda.StartAddr.FAD = start_fad;
 			cdda.EndAddr.FAD = end_fad;
@@ -401,6 +415,14 @@ static void GD_HLE_Command(u32 cc)
 			u32 last_track = gd_hle_state.params[1];
 			u32 repeats = gd_hle_state.params[2];
 			u32 start_fad, end_fad, dummy;
+			if (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk)
+			{
+				// no disc, no tracks: asking for one was a crash
+				gd_hle_state.status = BIOS_ERROR;
+				cdda.status = cdda_t::NoInfo;
+				SecNumber.Status = GD_STANDBY;
+				break;
+			}
 			libGDR_GetTrack(first_track, start_fad, dummy);
 			libGDR_GetTrack(last_track, dummy, end_fad);
 			debugf("GDROM: CMD PLAY first_track %x last_track %x repeats %x start_fad %x end_fad %x param4 %x", first_track, last_track, repeats,
@@ -424,7 +446,7 @@ static void GD_HLE_Command(u32 cc)
 
 	case GDCC_READ:
 		{
-			u32 sector = gd_hle_state.params[0];
+			u32 sector = gd_hle_state.params[0] & 0xffffff;
 			u32 num = gd_hle_state.params[1];
 
 			debugf("GDROM: CMD READ Sector=%d, Num=%d", sector, num);
@@ -553,7 +575,7 @@ static void GD_HLE_Command(u32 cc)
 	case GDCC_MULTI_DMAREAD:
 	case GDCC_MULTI_PIOREAD:
 		{
-			u32 sector = gd_hle_state.params[0];
+			u32 sector = gd_hle_state.params[0] & 0xffffff;
 			u32 num = gd_hle_state.params[1];
 			bool dma = cc == GDCC_MULTI_DMAREAD;
 
@@ -729,7 +751,13 @@ void gdrom_hle_op()
 				//
 				// Returns: zero if successful, nonzero if failure
 				u32 discType = libGDR_GetDiscType();
-				switch (discType)
+				if (SecNumber.Status == GD_BUSY)
+				{
+					// a disc has just been put in and the drive is looking at it
+					WriteMem32(r[4], 0);
+					WriteMem32(r[4] + 4, 0);
+				}
+				else switch (discType)
 				{
 				case Open:
 					WriteMem32(r[4], 6);
