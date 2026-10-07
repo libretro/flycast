@@ -115,28 +115,50 @@ void WriteCHCR(u32 addr, u32 data)
 	{
 		if (DMAC_CHCR(ch).RS == 4)
 		{
-			u32 len = DMAC_DMATCR(ch) * 32;
+			/* A transfer the program asks for itself, memory to memory.
+			 *
+			 * TS says how much goes at a time: 8 bytes, 1, 2, 4, or a block
+			 * of 32. DMATCR counts those, not bytes. SM and DM say whether
+			 * each address stays, goes up or goes down by that much after
+			 * every one. When it is over the addresses are where they got
+			 * to and the count is 0.
+			 *
+			 * This used to be 32-byte blocks only (anything else ended the
+			 * process), always with both addresses going up as the copy was
+			 * made, and with the count left as it was. */
+			DEBUG_LOG(SH4, "DMAC: Manual DMA ch:%d TS:%d src: %08X dst: %08X len: %08X SM: %d, DM: %d", ch, DMAC_CHCR(ch).TS,
+					DMAC_SAR(ch), DMAC_DAR(ch), DMAC_DMATCR(ch), DMAC_CHCR(ch).SM, DMAC_CHCR(ch).DM);
+			static const u32 unit_of[8] = { 8, 1, 2, 4, 32, 4, 4, 4 };
+			const u32 unit = unit_of[DMAC_CHCR(ch).TS];
+			const int src_step = DMAC_CHCR(ch).SM == 1 ? (int)unit : DMAC_CHCR(ch).SM == 2 ? -(int)unit : 0;
+			const int dst_step = DMAC_CHCR(ch).DM == 1 ? (int)unit : DMAC_CHCR(ch).DM == 2 ? -(int)unit : 0;
+			u32 src = DMAC_SAR(ch);
+			u32 dst = DMAC_DAR(ch);
 
-         DEBUG_LOG(SH4, "DMAC: Manual DMA ch:%d TS:%d src: %08X dst: %08X len: %08X SM: %d, DM: %d", ch, DMAC_CHCR(ch).TS,
-               DMAC_SAR(ch), DMAC_DAR(ch), DMAC_DMATCR(ch), DMAC_CHCR(ch).SM, DMAC_CHCR(ch).DM);
-         verify(DMAC_CHCR(ch).TS == 4);
-			for (u32 ofs = 0; ofs < len; ofs += 4)
+			for (u32 count = DMAC_DMATCR(ch); count != 0; count--)
 			{
-				u32 data = ReadMem32_nommu(DMAC_SAR(ch) + ofs);
-				WriteMem32_nommu(DMAC_DAR(ch) + ofs, data);
+				switch (unit)
+				{
+				case 1:
+					WriteMem8_nommu(dst, ReadMem8_nommu(src));
+					break;
+				case 2:
+					WriteMem16_nommu(dst, ReadMem16_nommu(src));
+					break;
+				default:
+					// 4, 8 or 32 bytes: so many longwords, lowest address first
+					for (u32 ofs = 0; ofs < unit; ofs += 4)
+						WriteMem32_nommu(dst + ofs, ReadMem32_nommu(src + ofs));
+					break;
+				}
+				src += src_step;
+				dst += dst_step;
 			}
-
 			DMAC_CHCR(ch).TE = 1;
-         if (DMAC_CHCR(ch).SM == 1)
-            DMAC_SAR(ch) += len;
-         else if (DMAC_CHCR(ch).SM == 2)
-            DMAC_SAR(ch) -= len;
-         if (DMAC_CHCR(ch).DM == 1)
-            DMAC_DAR(ch) += len;
-         else if (DMAC_CHCR(ch).DM == 2)
-            DMAC_DAR(ch) -= len;
+			DMAC_SAR(ch) = src;
+			DMAC_DAR(ch) = dst;
+			DMAC_DMATCR(ch) = 0;
 		}
-
 		InterruptPend(dmac_itr[ch], DMAC_CHCR(ch).TE);
 		InterruptMask(dmac_itr[ch], DMAC_CHCR(ch).IE);
 	}

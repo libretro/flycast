@@ -175,6 +175,58 @@ static u32 maple_test(void)
    return 0;
 }
 
+/* The SH4's own DMA controller, asked by the program for a transfer from
+ * memory to memory (channel 1, which nothing on a Dreamcast uses). Sixteen
+ * single bytes with both addresses going up; then four longwords from an
+ * address that stays where it is. Afterwards the addresses are where they
+ * got to, the count is 0 and the channel says it is done. Not zero if not. */
+static u32 dmac_test(void)
+{
+   static unsigned char from[32] __attribute__((aligned(4))), to[32] __attribute__((aligned(4)));
+   static u32 word[2], fill[6];
+   volatile u32 *sar = (volatile u32 *)0xFFA00010, *dar = (volatile u32 *)0xFFA00014;
+   volatile u32 *count = (volatile u32 *)0xFFA00018, *chcr = (volatile u32 *)0xFFA0001C;
+   volatile u32 *dmaor = (volatile u32 *)0xFFA00040;
+   u32 i, bad = 0, old = *dmaor;
+
+   for (i = 0; i < 32; i++)
+   {
+      from[i] = 0x40 + i;
+      to[i] = 0;
+   }
+   *dmaor = 0x8201;
+   *chcr = 0;
+   *sar = (u32)from;
+   *dar = (u32)to;
+   *count = 16;
+   *chcr = (1 << 14) | (1 << 12) | (4 << 8) | (1 << 4) | 1;   /* both up, by the program, bytes, go */
+   for (i = 0; i < 16; i++)
+      if (to[i] != from[i])
+         bad = 1;
+   if (to[16] != 0)
+      bad = 2;
+   if (*sar != (u32)from + 16 || *dar != (u32)to + 16 || *count != 0 || !(*chcr & 2))
+      bad = bad ? bad : 3;
+
+   word[0] = 0xCAFE0001;
+   word[1] = 0xCAFE0002;
+   for (i = 0; i < 6; i++)
+      fill[i] = 0;
+   *chcr = 0;
+   *sar = (u32)word;
+   *dar = (u32)fill;
+   *count = 4;
+   *chcr = (1 << 14) | (4 << 8) | (3 << 4) | 1;               /* source stays, longwords */
+   for (i = 0; i < 4; i++)
+      if (fill[i] != 0xCAFE0001)
+         bad = bad ? bad : 4;
+   if (fill[4] != 0 || *sar != (u32)word || *dar != (u32)fill + 16)
+      bad = bad ? bad : 5;
+   *chcr = 0;
+   *dmaor = old;
+   return bad;
+}
+
 /* The two store queues each have a register saying which area their 32
  * bytes go to. Nearly every game sets the two alike, and so does this
  * program for its rendering; here, once, they differ: the second queue is
@@ -953,6 +1005,7 @@ void cmain(void)
    int sq_bad;
    u32 spg_bad;
    u32 maple_bad;
+   u32 dmac_bad;
    int mmu_state;
    int cpu_bad;
    /* Read-only system bus registers nothing has written yet: the Maple
@@ -1046,6 +1099,7 @@ void cmain(void)
    cpu_bad = cpu_test();
    spg_bad = spg_test();
    maple_bad = maple_test();
+   dmac_bad = dmac_test();
    /* and the audio track playing underneath everything that follows:
     * the sector the sound chip mixes from is lent out of the image, and
     * the save, load, reset and unload below all happen while it is */
@@ -1223,6 +1277,7 @@ void cmain(void)
                : sq_bad ? 0xBAD00006
                : spg_bad ? 0xBAD00800 + spg_bad
                : maple_bad ? 0xBAD00900 + maple_bad
+               : dmac_bad ? 0xBAD00A00 + dmac_bad
                : mmu_state > 1 ? 0xBAD00700 + mmu_state
                : mmu_state == 1 ? 0x600D4D4D
                : 0x600D600D;
