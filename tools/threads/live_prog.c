@@ -172,6 +172,27 @@ static u32 maple_test(void)
       return 3;                                        /* over, and no answer */
    if (reply[0] != 0xFFFFFFFF && early != 0x12345678)
       return 1;                                        /* the answer was there at once */
+   if (reply[0] == 0xFFFFFFFF)
+      return 0;
+
+   /* Asked for all of its status, a controller answers with its 28 words
+    * and 20 more of its maker's notes, which begin "Version". */
+   {
+      volatile u32 *frame = (volatile u32 *)0xAC00E000;
+
+      reply[0] = 0x12345678;
+      frame[0] = 0x80000000;                           /* last frame, port A, 1 word */
+      frame[1] = 0x0C00E100;
+      frame[2] = 0x02 | (0x20 << 8);                   /* all status, to A0 */
+      SB(0xC04) = 0x0C00E000;
+      SB(0xC18) = 1;
+      for (guard = 0; guard < 2000000 && (SB(0xC18) & 1); guard++)
+         ;
+      if ((reply[0] & 0xFF) != 6 || (reply[0] >> 24) != 48)
+         return 4;
+      if (reply[29] != ('V' | ('e' << 8) | ('r' << 16) | ('s' << 24)))
+         return 5;
+   }
    return 0;
 }
 

@@ -271,7 +271,14 @@ struct maple_sega_controller: maple_base
 			//2
 			w16(0x01F4);	// 50 mA
 
-			return cmd == MDC_DeviceRequest ? MDRS_DeviceStatus : MDRS_DeviceStatusAll;
+			if (cmd == MDC_AllStatusReq)
+			{
+				// what a controller adds when asked for all of its status: its maker's notes, 80 bytes
+				const char *extra = "Version 1.010,1998/09/28,315-6211-AB   ,Analog Module : The 4th Edition.5/8  +DF";
+				wptr(extra, strlen(extra));
+				return MDRS_DeviceStatusAll;
+			}
+			return MDRS_DeviceStatus;
 
 			//controller condition
 		case MDCF_GetCondition:
@@ -563,6 +570,7 @@ struct maple_sega_vmu: maple_base
 	/* Bytes of flash_data changed since the last flush: [dirty_lo, dirty_hi) */
 	u32 dirty_lo;
 	u32 dirty_hi;
+	bool full_save_needed = false;
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[VMU_SCREEN_WIDTH*VMU_SCREEN_HEIGHT];
@@ -581,6 +589,14 @@ struct maple_sega_vmu: maple_base
 	}
 	virtual bool maple_unserialize(void **data, unsigned int *total_size)
 	{
+		/* What is on the card is about to be what the state says, all of it,
+		 * and the file is still what it was. Whatever was waiting to be
+		 * written belongs to the card as it was: out it goes first. And the
+		 * next thing the game writes cannot be patched into the file, which
+		 * would leave a card that is part one and part the other - a broken
+		 * file system. The whole card is written then. */
+		FlushSave();
+		full_save_needed = true;
 		LIBRETRO_USA(flash_data,128*1024);
 		LIBRETRO_USA(lcd_data,192);
 		LIBRETRO_USA(lcd_data_decoded,48*32);
@@ -677,7 +693,14 @@ struct maple_sega_vmu: maple_base
 			//2
 			w16(0x0082);	// 13 mA
 
-			return cmd == MDC_DeviceRequest ? MDRS_DeviceStatus : MDRS_DeviceStatusAll;
+			if (cmd == MDC_AllStatusReq)
+			{
+				// and a memory card's
+				const char *extra = "Version 1.005,1999/04/15,315-6208-03,SEGA Visual Memory System BIOS Produced by ";
+				wptr(extra, strlen(extra));
+				return MDRS_DeviceStatusAll;
+			}
+			return MDRS_DeviceStatus;
 
 			//in[0] is function used
 			//out[0] is function used
@@ -850,7 +873,14 @@ struct maple_sega_vmu: maple_base
 						rptr(&flash_data[write_adr],write_len);
 
 						/* Written out by FlushSave() between frames */
-						if (dirty_lo >= dirty_hi)
+						if (full_save_needed)
+						{
+							// the first write after a state was loaded: see maple_unserialize()
+							full_save_needed = false;
+							dirty_lo = 0;
+							dirty_hi = sizeof(flash_data);
+						}
+						else if (dirty_lo >= dirty_hi)
 						{
 							dirty_lo = write_adr;
 							dirty_hi = write_adr + write_len;
@@ -1505,9 +1535,10 @@ struct maple_lightgun : maple_base
 		 //2 key code
 			w16(transform_kcode(pjs.kcode));
 
-		 //not used
+		 // the two trigger axes, which a gun has not: at rest. (They read as
+		 // fully pulled, and Death Crimson 2 took that for "skip the story".)
 		 //2
-		 w16(0xFFFF);
+		 w16(0);
 
 		 //not used
 		 //4
