@@ -978,7 +978,18 @@ public:
 				break;
 
 			case shop_cvt_f2i_t:
-				Fcvtzs(regalloc.MapRegister(op.rd), regalloc.MapVRegister(op.rs1));
+				{
+					/* The host's conversion gives the largest or smallest
+					 * integer for a value too large, as the SH4 does, but 0
+					 * for a NaN, where the SH4 gives 0x80000000. A NaN is
+					 * the one value that does not compare with itself. */
+					const VRegister& from = regalloc.MapVRegister(op.rs1);
+					const Register& to = regalloc.MapRegister(op.rd);
+					Fcvtzs(to, from);
+					Fcmp(from, from);
+					Mov(w0, 0x80000000);
+					Csel(to, to, w0, vc);
+				}
 				break;
 			case shop_cvt_i2f_n:
 			case shop_cvt_i2f_z:

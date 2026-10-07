@@ -2149,7 +2149,14 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 				//BKPT();
 				VCVT_to_S32_VFP(f0,reg.mapf(op->rs1));
 				VMOV(reg.mapg(op->rd),f0);
-				//shil_chf[op->op](op);
+				/* The host's conversion gives the largest or smallest integer
+				 * for a value too large, as the SH4 does, but 0 for a NaN,
+				 * where the SH4 gives 0x80000000. A NaN is the one value that
+				 * does not compare with itself. */
+				VCMP_F32(reg.mapfs(op->rs1),reg.mapfs(op->rs1));
+				VMRS(R15);
+				MOVW(reg.mapg(op->rd),0,CC_VS);
+				MOVT(reg.mapg(op->rd),0x8000,CC_VS);
 				break;
 			
 			case shop_cvt_i2f_n:	// may be some difference should be made ?
