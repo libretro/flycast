@@ -965,13 +965,12 @@ static bool RenderFrame(void)
 			case 1: //0x1   565 RGB 16 bit
 				channels=GL_RGB;
 				/* Five or six bits a channel is what the game asked for, and
-				 * what the picture is cut down to if it is copied back to
-				 * video memory. Kept as a texture it does not have to lose
-				 * them: eight bits a channel, as the Vulkan renderer keeps
-				 * it, where the driver is sure to render to that (OpenGL 3
-				 * and OpenGL ES 3 on). */
-				format = (settings.rend.RenderToTextureBuffer || gl.gl_major < 3)
-						? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
+				 * what the picture is cut down to when it goes to video
+				 * memory. As a texture it does not have to lose them: eight
+				 * bits a channel, as the Vulkan renderer keeps it, where the
+				 * driver is sure to render to that (OpenGL 3 and OpenGL ES 3
+				 * on). */
+				format = gl.gl_major < 3 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
 				break;
 
 			case 2: //0x2   4444 ARGB 16 bit
@@ -1086,7 +1085,7 @@ static bool RenderFrame(void)
 				height = pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1;
 				min_x = pvrrc.fb_X_CLIP.min;
 				min_y = pvrrc.fb_Y_CLIP.min;
-				if (settings.rend.RenderToTextureUpscale > 1 && !settings.rend.RenderToTextureBuffer)
+				if (settings.rend.RenderToTextureUpscale > 1)
 				{
 					min_x *= settings.rend.RenderToTextureUpscale;
 					min_y *= settings.rend.RenderToTextureUpscale;

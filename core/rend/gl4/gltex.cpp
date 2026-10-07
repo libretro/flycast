@@ -20,7 +20,7 @@ GLuint gl4BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 	while (fbw2 < fbw)
 		fbw2 *= 2;
 
-	if (settings.rend.RenderToTextureUpscale > 1 && !settings.rend.RenderToTextureBuffer)
+	if (settings.rend.RenderToTextureUpscale > 1)
 	{
 		fbw *= settings.rend.RenderToTextureUpscale;
 		fbh *= settings.rend.RenderToTextureUpscale;

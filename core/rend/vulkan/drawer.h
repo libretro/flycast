@@ -226,7 +226,6 @@ private:
 
 	Texture *texture = nullptr;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
-	std::unique_ptr<FramebufferAttachment> colorAttachment;
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
 	TextureCache *textureCache = nullptr;
 };

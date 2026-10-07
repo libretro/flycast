@@ -879,18 +879,6 @@ static void update_variables(bool first_startup)
       settings.rend.MaxFilteredTextureSize = 256;
 #endif
 
-   var.key = CORE_OPTION_NAME "_enable_rttb";
-
-   /* A game that needs it has it whatever the option says. The option alone
-    * was written here, every time any option changed: changing one while such
-    * a game ran switched this off under it. */
-   {
-      extern bool game_needs_rtt_buffer;
-      settings.rend.RenderToTextureBuffer = game_needs_rtt_buffer
-         || (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
-               && !strcmp("enabled", var.value));
-   }
-
    var.key = CORE_OPTION_NAME "_render_to_texture_upscaling";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

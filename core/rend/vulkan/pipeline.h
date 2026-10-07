@@ -280,12 +280,11 @@ public:
 	void Init(ShaderManager *shaderManager)
 	{
 		// RTT render pass
-		renderToTextureBuffer = settings.rend.RenderToTextureBuffer;
 	    vk::AttachmentDescription attachmentDescriptions[] = {
 	    		vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), vk::Format::eR8G8B8A8Unorm, vk::SampleCountFlagBits::e1,
 	    				vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
 						vk::ImageLayout::eColorAttachmentOptimal,
-						renderToTextureBuffer ? vk::ImageLayout::eTransferSrcOptimal : vk::ImageLayout::eShaderReadOnlyOptimal),
+						vk::ImageLayout::eShaderReadOnlyOptimal),
 				vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetContext()->GetDepthFormat(), vk::SampleCountFlagBits::e1,
 						vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
 						vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal),
@@ -299,25 +298,13 @@ public:
 			vk::SubpassDependency(0, VK_SUBPASS_EXTERNAL, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
 					vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead),
 	    };
-	    vk::SubpassDependency vramWriteDeps[] {
-			vk::SubpassDependency(0, VK_SUBPASS_EXTERNAL,
-					vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eHost,
-					vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eHostRead),
-	    };
 
 	    rttRenderPass = GetContext()->GetDevice().createRenderPassUnique(vk::RenderPassCreateInfo(vk::RenderPassCreateFlags(), 2, attachmentDescriptions,
-	    		1, &subpass, renderToTextureBuffer ? ARRAY_SIZE(vramWriteDeps) : ARRAY_SIZE(dependencies), renderToTextureBuffer ? vramWriteDeps : dependencies));
+	    		1, &subpass, ARRAY_SIZE(dependencies), dependencies));
 
 		PipelineManager::Init(shaderManager, *rttRenderPass);
 	}
 
-	void CheckSettingsChange()
-	{
-		if (renderToTextureBuffer != settings.rend.RenderToTextureBuffer)
-			Init(shaderManager);
-	}
-
 private:
 	vk::UniqueRenderPass rttRenderPass;
-	bool renderToTextureBuffer;
 };

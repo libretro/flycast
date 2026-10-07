@@ -522,7 +522,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	while (widthPow2 < upscaledWidth)
 		widthPow2 *= 2;
 
-	if (settings.rend.RenderToTextureUpscale > 1 && !settings.rend.RenderToTextureBuffer)
+	if (settings.rend.RenderToTextureUpscale > 1)
 	{
 		upscaledWidth *= settings.rend.RenderToTextureUpscale;
 		upscaledHeight *= settings.rend.RenderToTextureUpscale;
@@ -530,7 +530,6 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 		heightPow2 *= settings.rend.RenderToTextureUpscale;
 	}
 
-	rttPipelineManager->CheckSettingsChange();
 	VulkanContext *context = GetContext();
 	vk::Device device = context->GetDevice();
 
@@ -542,77 +541,58 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	vk::ImageView colorImageView;
 	vk::ImageLayout colorImageCurrentLayout;
 
-	if (!settings.rend.RenderToTextureBuffer)
+	/* what an earlier render left waiting in this memory, while its picture is still what it was: see rtt_read.h */
+	vk_rtt_supersede(textureAddr, origWidth, origHeight);
+	// TexAddr : fb_rtt.TexAddr, Reserved : 0, StrideSel : 0, ScanOrder : 1
+	TCW tcw = { { textureAddr >> 3, 0, 0, 1 } };
+	switch (FB_W_CTRL.fb_packmode) {
+	case 0:
+	case 3:
+		tcw.PixelFmt = Pixel1555;
+		break;
+	case 1:
+		tcw.PixelFmt = Pixel565;
+		break;
+	case 2:
+		tcw.PixelFmt = Pixel4444;
+		break;
+	}
+
+	TSP tsp = {};
+	for (tsp.TexU = 0; tsp.TexU <= 7 && (8u << tsp.TexU) < origWidth; tsp.TexU++);
+	for (tsp.TexV = 0; tsp.TexV <= 7 && (8u << tsp.TexV) < origHeight; tsp.TexV++);
+
+	texture = textureCache->getTextureCacheData(tsp, tcw);
+	if (texture->IsNew())
 	{
-		/* what an earlier render left waiting in this memory, while its picture is still what it was: see rtt_read.h */
-		vk_rtt_supersede(textureAddr, origWidth, origHeight);
-		// TexAddr : fb_rtt.TexAddr, Reserved : 0, StrideSel : 0, ScanOrder : 1
-		TCW tcw = { { textureAddr >> 3, 0, 0, 1 } };
-		switch (FB_W_CTRL.fb_packmode) {
-		case 0:
-		case 3:
-			tcw.PixelFmt = Pixel1555;
-			break;
-		case 1:
-			tcw.PixelFmt = Pixel565;
-			break;
-		case 2:
-			tcw.PixelFmt = Pixel4444;
-			break;
-		}
+		texture->Create();
+		texture->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
+		texture->SetDevice(device);
+	}
+	else if (textureCache->IsInFlight(texture))
+	{
+		texture->readOnlyImageView = *texture->imageView;
+		textureCache->DestroyLater(texture);
+	}
+	textureCache->SetInFlight(texture);
 
-		TSP tsp = {};
-		for (tsp.TexU = 0; tsp.TexU <= 7 && (8u << tsp.TexU) < origWidth; tsp.TexU++);
-		for (tsp.TexV = 0; tsp.TexV <= 7 && (8u << tsp.TexV) < origHeight; tsp.TexV++);
-
-		texture = textureCache->getTextureCacheData(tsp, tcw);
-		if (texture->IsNew())
-		{
-			texture->Create();
-			texture->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
-			texture->SetDevice(device);
-		}
-		else if (textureCache->IsInFlight(texture))
-		{
-			texture->readOnlyImageView = *texture->imageView;
-			textureCache->DestroyLater(texture);
-		}
-		textureCache->SetInFlight(texture);
-
-		if (texture->format != vk::Format::eR8G8B8A8Unorm || texture->extent.width != widthPow2 || texture->extent.height != heightPow2)
-		{
-			texture->extent = vk::Extent2D(widthPow2, heightPow2);
-			texture->format = vk::Format::eR8G8B8A8Unorm;
-			texture->needsStaging = true;
-			texture->CreateImage(vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
-					| vk::ImageUsageFlagBits::eTransferSrc,	// read back when the game touches it in video memory
-					
-					vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
-			colorImageCurrentLayout = vk::ImageLayout::eUndefined;
-		}
-		else
-		{
-			colorImageCurrentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-		}
-		colorImage = *texture->image;
-		colorImageView = texture->GetImageView();
+	if (texture->format != vk::Format::eR8G8B8A8Unorm || texture->extent.width != widthPow2 || texture->extent.height != heightPow2)
+	{
+		texture->extent = vk::Extent2D(widthPow2, heightPow2);
+		texture->format = vk::Format::eR8G8B8A8Unorm;
+		texture->needsStaging = true;
+		texture->CreateImage(vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferSrc,	// read back when the game touches it in video memory
+				
+				vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
+		colorImageCurrentLayout = vk::ImageLayout::eUndefined;
 	}
 	else
 	{
-		if (!colorAttachment || widthPow2 > colorAttachment->getExtent().width || heightPow2 > colorAttachment->getExtent().height)
-		{
-			if (colorAttachment)
-				commandPool->DeferDelete(std::move(colorAttachment));
-			colorAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), device));
-			colorAttachment->Init(widthPow2, heightPow2, vk::Format::eR8G8B8A8Unorm,
-					vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc);
-			colorImageCurrentLayout = vk::ImageLayout::eUndefined;
-		}
-		else
-			colorImageCurrentLayout = vk::ImageLayout::eTransferSrcOptimal;
-		colorImage = colorAttachment->GetImage();
-		colorImageView = colorAttachment->GetImageView();
+		colorImageCurrentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 	}
+	colorImage = *texture->image;
+	colorImageView = texture->GetImageView();
 	viewport.offset.x = 0;
 	viewport.offset.y = 0;
 	viewport.extent.width = widthPow2;
@@ -641,54 +621,11 @@ void OITTextureDrawer::EndFrame()
 {
 	currentCommandBuffer.endRenderPass();
 
-	u32 clippedWidth = pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1;
-	u32 clippedHeight = pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1;
-
-	u32 stride = FB_W_LINESTRIDE.stride * 8;
-	if (clippedWidth * 2 > stride)
-		// Happens for Virtua Tennis
-		clippedWidth = stride / 2;
-
-	if (settings.rend.RenderToTextureBuffer)
-	{
-		vk::BufferImageCopy copyRegion(0, clippedWidth, clippedHeight,
-				vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1), vk::Offset3D(0, 0, 0),
-				vk::Extent3D(clippedWidth, clippedHeight, 1));
-		currentCommandBuffer.copyImageToBuffer(colorAttachment->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
-				*colorAttachment->GetBufferData()->buffer, copyRegion);
-
-		vk::BufferMemoryBarrier bufferMemoryBarrier(
-				vk::AccessFlagBits::eTransferWrite,
-				vk::AccessFlagBits::eHostRead,
-				VK_QUEUE_FAMILY_IGNORED,
-				VK_QUEUE_FAMILY_IGNORED,
-				*colorAttachment->GetBufferData()->buffer,
-				0,
-				VK_WHOLE_SIZE);
-		currentCommandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-						vk::PipelineStageFlagBits::eHost, {}, nullptr, bufferMemoryBarrier, nullptr);
-	}
 	currentCommandBuffer.end();
 
 	colorImage = nullptr;
 	currentCommandBuffer = nullptr;
 	commandPool->EndFrame();
-
-	if (settings.rend.RenderToTextureBuffer)
-	{
-		vk::Fence fence = commandPool->GetCurrentFence();
-		GetContext()->GetDevice().waitForFences(1, &fence, true, UINT64_MAX);
-
-		u16 *dst = (u16 *)&vram[textureAddr];
-
-		PixelBuffer<u32> tmpBuf;
-		tmpBuf.init(clippedWidth, clippedHeight);
-		colorAttachment->GetBufferData()->download(clippedWidth * clippedHeight * 4, tmpBuf.data());
-		WriteTextureToVRam(clippedWidth, clippedHeight, (u8 *)tmpBuf.data(), dst);
-
-		return;
-	}
-	//memset(&vram[fb_rtt.TexAddr << 3], '\0', size);
 
 	texture->dirty = 0;
    libCore_vramlock_Lock(texture->sa_tex, texture->sa + texture->size - 1, texture);

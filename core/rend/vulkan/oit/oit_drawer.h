@@ -206,7 +206,6 @@ public:
 	}
 	void Term()
 	{
-		colorAttachment.reset();
 		framebuffers.clear();
 		rttPipelineManager.reset();
 		OITDrawer::Term();
@@ -224,7 +223,6 @@ private:
 
 	Texture *texture = nullptr;
 	vk::Image colorImage;
-	std::unique_ptr<FramebufferAttachment> colorAttachment;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<RttOITPipelineManager> rttPipelineManager;
 

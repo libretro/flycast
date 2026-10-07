@@ -534,20 +534,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      "Enable RTT (Render To Texture) Buffer",
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       "Render To Texture Upscaling",

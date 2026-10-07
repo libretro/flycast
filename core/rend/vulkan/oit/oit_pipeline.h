@@ -407,19 +407,10 @@ public:
 		this->oitBuffers = oitBuffers;
 		OITPipelineManager::Init(shaderManager, oitBuffers);
 
-		renderToTextureBuffer = settings.rend.RenderToTextureBuffer;
 		rttRenderPasses.Reset();
-	}
-	void CheckSettingsChange()
-	{
-		if (renderToTextureBuffer != settings.rend.RenderToTextureBuffer)
-		{
-			Init(shaderManager, oitBuffers);
-		}
 	}
 
 private:
-	bool renderToTextureBuffer = false;
 	RttRenderPasses rttRenderPasses;
 	OITBuffers *oitBuffers = nullptr;
 };

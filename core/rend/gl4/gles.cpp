@@ -633,7 +633,7 @@ static bool RenderFrame()
 	int rendering_height;
 	if (is_rtt)
 	{
-		int scaling = settings.rend.RenderToTextureBuffer ? 1 : settings.rend.RenderToTextureUpscale;
+		int scaling = settings.rend.RenderToTextureUpscale;
 		rendering_width = matrices.GetDreamcastViewport().x * scaling;
 		rendering_height = matrices.GetDreamcastViewport().y * scaling;
 	}
@@ -799,7 +799,7 @@ static bool RenderFrame()
 				height = pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1;
 				min_x = pvrrc.fb_X_CLIP.min;
 				min_y = pvrrc.fb_Y_CLIP.min;
-				if (settings.rend.RenderToTextureUpscale > 1 && !settings.rend.RenderToTextureBuffer)
+				if (settings.rend.RenderToTextureUpscale > 1)
 				{
 					min_x *= settings.rend.RenderToTextureUpscale;
 					min_y *= settings.rend.RenderToTextureUpscale;

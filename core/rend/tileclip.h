@@ -58,7 +58,7 @@ static inline TileClipping GetTileClip(u32 val, const xform& viewport, int *clip
 		cey = xform_y(&viewport, cey);
 		cex = xform_x(&viewport, cex);
 	}
-	else if (!settings.rend.RenderToTextureBuffer)
+	else
 	{
 		csx *= settings.rend.RenderToTextureUpscale;
 		csy *= settings.rend.RenderToTextureUpscale;

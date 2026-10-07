@@ -276,7 +276,7 @@ void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
    while (fbw2 < fbw)
       fbw2 *= 2;
 
-   if (settings.rend.RenderToTextureUpscale > 1 && !settings.rend.RenderToTextureBuffer)
+   if (settings.rend.RenderToTextureUpscale > 1)
 	{
 		fbw *= settings.rend.RenderToTextureUpscale;
 		fbh *= settings.rend.RenderToTextureUpscale;
@@ -341,49 +341,8 @@ void ReadRTTBuffer() {
     	// Happens for Virtua Tennis
     	w = stride / 2;
     }
-	u32 size = w * h * 2;
 
 	const u8 fb_packmode = FB_W_CTRL.fb_packmode;
-
-	if (settings.rend.RenderToTextureBuffer)
-	{
-		u32 tex_addr = gl.rtt.TexAddr << 3;
-
-		// Remove all vram locks before calling glReadPixels
-		// (deadlock on rpi)
-		u32 page_tex_addr = tex_addr & PAGE_MASK;
-		u32 page_size = size + tex_addr - page_tex_addr;
-		page_size = ((page_size - 1) / PAGE_SIZE + 1) * PAGE_SIZE;
-		for (u32 page = page_tex_addr; page < page_tex_addr + page_size; page += PAGE_SIZE)
-			VramLockedWriteOffset(page);
-
-		glPixelStorei(GL_PACK_ALIGNMENT, 1);
-		u16 *dst = (u16 *)&vram[tex_addr];
-
-		GLint color_fmt, color_type;
-		glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &color_fmt);
-		glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &color_type);
-
-		if (fb_packmode == 1 && stride == w * 2 && color_fmt == GL_RGB && color_type == GL_UNSIGNED_SHORT_5_6_5)
-		{
-			// Can be read directly into vram
-			glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, dst);
-		}
-		else
-		{
-			PixelBuffer<u32> tmp_buf;
-			tmp_buf.init(w, h);
-
-			u8 *p = (u8 *)tmp_buf.data();
-			glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, p);
-
-			WriteTextureToVRam(w, h, p, dst);
-		}
-	}
-	else
-	{
-		//memset(&vram[fb_rtt.TexAddr << 3], '\0', size);
-	}
 
     //dumpRtTexture(fb_rtt.TexAddr, w, h);
     
@@ -400,13 +359,10 @@ void ReadRTTBuffer() {
     watch.alpha_threshold = FB_W_CTRL.fb_alpha_threshold;
     watch.tex = gl.rtt.tex;
     watch.scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
-    if (!settings.rend.RenderToTextureBuffer && watch.bytes != 0)
+    if (watch.bytes != 0)
        rtt_watch_supersede(watch.addr, watch.bytes);
 
-    if (settings.rend.RenderToTextureBuffer) {
-    	glcache.DeleteTextures(1, &gl.rtt.tex);
-    }
-    else if (w > 1024 || h > 1024) {
+    if (w > 1024 || h > 1024) {
     	/* too large to be drawn with from here: kept for video memory alone */
     	watch.owned = true;
     	rtt_watch_add(&watch, &rtt_gl_backend);

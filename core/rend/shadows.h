@@ -95,7 +95,7 @@ static inline void BoundsToScissor(const ScreenBounds& b, const xform& viewport,
 		ex = xform_x(&viewport, ex);
 		ey = xform_y(&viewport, ey);
 	}
-	else if (!settings.rend.RenderToTextureBuffer)
+	else
 	{
 		sx *= settings.rend.RenderToTextureUpscale;
 		sy *= settings.rend.RenderToTextureUpscale;

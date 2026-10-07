@@ -81,19 +81,14 @@ protected:
 				vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
 				vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
 				vk::ImageLayout::eUndefined,
-				settings.rend.RenderToTextureBuffer && last ? vk::ImageLayout::eTransferSrcOptimal : vk::ImageLayout::eShaderReadOnlyOptimal);
+				vk::ImageLayout::eShaderReadOnlyOptimal);
 	}
 	virtual vk::Format GetColorFormat() const override { return vk::Format::eR8G8B8A8Unorm; }
 	virtual std::vector<vk::SubpassDependency> GetSubpassDependencies() const override
 	{
 		std::vector<vk::SubpassDependency> deps;
-		if (settings.rend.RenderToTextureBuffer)
-			deps.emplace_back(2, VK_SUBPASS_EXTERNAL,
-					vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eHost,
-					vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eHostRead);
-		else
-			deps.emplace_back(2, VK_SUBPASS_EXTERNAL, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
-					vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead);
+		deps.emplace_back(2, VK_SUBPASS_EXTERNAL, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
+				vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead);
 		return deps;
 	}
 };

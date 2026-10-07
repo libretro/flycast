@@ -786,20 +786,6 @@ struct retro_core_option_v2_definition option_defs_ar[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_AR,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_AR,
@@ -2425,20 +2411,6 @@ struct retro_core_option_v2_definition option_defs_ast[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_AST,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_AST,
@@ -4064,20 +4036,6 @@ struct retro_core_option_v2_definition option_defs_ca[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_CA,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_CA,
@@ -5703,20 +5661,6 @@ struct retro_core_option_v2_definition option_defs_chs[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_CHS,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_CHS,
@@ -7342,20 +7286,6 @@ struct retro_core_option_v2_definition option_defs_cht[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_CHT,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_CHT,
@@ -8981,20 +8911,6 @@ struct retro_core_option_v2_definition option_defs_cs[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_CS,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_CS,
@@ -10620,20 +10536,6 @@ struct retro_core_option_v2_definition option_defs_cy[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_CY,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_CY,
@@ -12259,20 +12161,6 @@ struct retro_core_option_v2_definition option_defs_da[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_DA,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_DA,
@@ -13898,20 +13786,6 @@ struct retro_core_option_v2_definition option_defs_de[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_DE,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_DE,
@@ -15537,20 +15411,6 @@ struct retro_core_option_v2_definition option_defs_el[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_EL,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_EL,
@@ -17176,20 +17036,6 @@ struct retro_core_option_v2_definition option_defs_eo[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_EO,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_EO,
@@ -18815,20 +18661,6 @@ struct retro_core_option_v2_definition option_defs_es[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_ES,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_ES,
@@ -20454,20 +20286,6 @@ struct retro_core_option_v2_definition option_defs_fa[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_FA,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_FA,
@@ -22093,20 +21911,6 @@ struct retro_core_option_v2_definition option_defs_fi[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_FI,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_FI,
@@ -23732,20 +23536,6 @@ struct retro_core_option_v2_definition option_defs_fr[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_FR,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_FR,
@@ -25371,20 +25161,6 @@ struct retro_core_option_v2_definition option_defs_gl[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_GL,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_GL,
@@ -27010,20 +26786,6 @@ struct retro_core_option_v2_definition option_defs_he[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_HE,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_HE,
@@ -28649,20 +28411,6 @@ struct retro_core_option_v2_definition option_defs_hu[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_HU,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_HU,
@@ -30288,20 +30036,6 @@ struct retro_core_option_v2_definition option_defs_id[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_ID,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_ID,
@@ -31927,20 +31661,6 @@ struct retro_core_option_v2_definition option_defs_it[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_IT,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_IT,
@@ -33566,20 +33286,6 @@ struct retro_core_option_v2_definition option_defs_ja[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_JA,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_JA,
@@ -35205,20 +34911,6 @@ struct retro_core_option_v2_definition option_defs_ko[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_KO,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_KO,
@@ -36844,20 +36536,6 @@ struct retro_core_option_v2_definition option_defs_mt[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_MT,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_MT,
@@ -38483,20 +38161,6 @@ struct retro_core_option_v2_definition option_defs_nl[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_NL,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_NL,
@@ -40122,20 +39786,6 @@ struct retro_core_option_v2_definition option_defs_no[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_NO,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_NO,
@@ -41761,20 +41411,6 @@ struct retro_core_option_v2_definition option_defs_oc[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_OC,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_OC,
@@ -43400,20 +43036,6 @@ struct retro_core_option_v2_definition option_defs_pl[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_PL,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_PL,
@@ -45039,20 +44661,6 @@ struct retro_core_option_v2_definition option_defs_pt_br[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_PT_BR,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_PT_BR,
@@ -46678,20 +46286,6 @@ struct retro_core_option_v2_definition option_defs_pt_pt[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_PT_PT,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_PT_PT,
@@ -48317,20 +47911,6 @@ struct retro_core_option_v2_definition option_defs_ro[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_RO,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_RO,
@@ -49956,20 +49536,6 @@ struct retro_core_option_v2_definition option_defs_ru[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_RU,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_RU,
@@ -51595,20 +51161,6 @@ struct retro_core_option_v2_definition option_defs_si[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_SI,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_SI,
@@ -53234,20 +52786,6 @@ struct retro_core_option_v2_definition option_defs_sk[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_SK,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_SK,
@@ -54873,20 +54411,6 @@ struct retro_core_option_v2_definition option_defs_sr[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_SR,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_SR,
@@ -56512,20 +56036,6 @@ struct retro_core_option_v2_definition option_defs_sv[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_SV,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_SV,
@@ -58151,20 +57661,6 @@ struct retro_core_option_v2_definition option_defs_tr[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_TR,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_TR,
@@ -59790,20 +59286,6 @@ struct retro_core_option_v2_definition option_defs_uk[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_UK,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_UK,
@@ -61429,20 +60911,6 @@ struct retro_core_option_v2_definition option_defs_val[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_VAL,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_VAL,
@@ -63068,20 +62536,6 @@ struct retro_core_option_v2_definition option_defs_vn[] = {
       "256",
    },
 #endif
-   {/* TODO: needs explanation */
-      CORE_OPTION_NAME "_enable_rttb",
-      CORE_OPTION_NAME_ENABLE_RTTB_LABEL_VN,
-      NULL,
-      "",
-      NULL,
-      "video",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL },
-      },
-      "disabled",
-   },
    {
       CORE_OPTION_NAME "_render_to_texture_upscaling",
       CORE_OPTION_NAME_RENDER_TO_TEXTURE_UPSCALING_LABEL_VN,

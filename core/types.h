@@ -565,7 +565,6 @@ struct settings_t
 	{
 		bool ForceTextureLOD0;	// every texture drawn with its largest level only: mipmapping, which the console does, off
 		bool WideScreen;
-		bool RenderToTextureBuffer;
 		int RenderToTextureUpscale;
 		bool TranslucentPolygonDepthMask;
 		int TextureUpscale;
