@@ -3,6 +3,7 @@
 
 #if FEAT_SHREC == DYNAREC_JIT
 #include "hw/sh4/sh4_opcode_list.h"
+#include "hw/sh4/dyna/wait_site.h"
 
 #include "hw/sh4/sh4_mmr.h"
 #include "hw/sh4/sh4_rom.h"
@@ -2262,6 +2263,16 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 #endif
 	CALL((u32)intc_sched, CC_LE);
 
+	const bool accurate = settings.dynarec.AccurateTiming && !mmu_enabled();
+	if (accurate && sh4_block_writes(block))
+	{
+		// a block that can change something other than a register says so: see wait_site.h
+		MOV32(r0, (u32)&sh4_write_gen);
+		LDR(r1, r0, 0);
+		ADD(r1, r1, 1);
+		STR(r1, r0, 0);
+	}
+
 	//compile the block's opcodes
 	shil_opcode* op;
 	for (size_t i=0;i<block->oplist.size();i++)
@@ -2326,6 +2337,40 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 	*/
 
 	
+	if (accurate && block->BranchBlock <= block->vaddr
+			&& (block->BlockType == BET_StaticJump || block->BlockType == BET_StaticCall
+				|| block->BlockType == BET_Cond_0 || block->BlockType == BET_Cond_1))
+	{
+		/* A block that can go back: every so often, see whether the game is
+		 * only waiting, and give up the rest of the time slice if it is.
+		 * See wait_site.h. This is ahead of the branch, so it is also
+		 * passed on the way out of a loop; that changes nothing, since a
+		 * pass that finds the registers as they were is one that goes round
+		 * again. The cycle counter is a register: at 0, the next block's
+		 * own subtraction ends the slice. */
+		WaitSite *site = sh4_wait_site();
+		if (site != nullptr)
+		{
+			MOV32(r0, (u32)&site->skip);
+			LDR(r1, r0, 0);
+			SUB(r1, r1, 1, true);
+			STR(r1, r0, 0);
+			// "bpl over", written once the length of what it jumps is known
+			u32 *branch = (u32 *)EMIT_GET_PTR();
+			MOV(r0, r0);
+			MOV32(r0, (u32)site);
+			CALL((u32)sh4_wait_check);
+			CMP(r0, 0);
+#ifdef __MACH__
+			MOVW(r11, 0, CC_NE);
+#else
+			MOVW(rfp_r9, 0, CC_NE);
+#endif
+			u32 *over = (u32 *)EMIT_GET_PTR();
+			*branch = 0x5A000000 | ((u32)(over - branch - 2) & 0x00FFFFFF);
+		}
+	}
+
 	//Relink written bytes must be added to the count !
 
 	block->relink_offset=(u8*)EMIT_GET_PTR()-(u8*)block->code;

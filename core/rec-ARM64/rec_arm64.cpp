@@ -31,6 +31,7 @@ using namespace vixl::aarch64;
 //#define EXPLODE_SPANS
 
 #include "hw/sh4/sh4_opcode_list.h"
+#include "hw/sh4/dyna/wait_site.h"
 
 #include "hw/sh4/sh4_mmr.h"
 #include "hw/sh4/sh4_interrupts.h"
@@ -336,6 +337,16 @@ public:
 		GenBranch(*arm64_no_update);
 		Bind(&cpu_running);
 		Bind(&cycles_remaining);
+
+		const bool accurate = settings.dynarec.AccurateTiming && !mmu_enabled();
+		if (accurate && sh4_block_writes(block))
+		{
+			// a block that can change something other than a register says so: see wait_site.h
+			Mov(x1, reinterpret_cast<uintptr_t>(&sh4_write_gen));
+			Ldr(w0, MemOperand(x1));
+			Add(w0, w0, 1);
+			Str(w0, MemOperand(x1));
+		}
 
 		for (size_t i = 0; i < block->oplist.size(); i++)
 		{
@@ -1003,6 +1014,35 @@ public:
 			regalloc.OpEnd(&op);
 		}
 		regalloc.Cleanup();
+
+		if (accurate && block->BranchBlock <= block->vaddr
+				&& (block->BlockType == BET_StaticJump || block->BlockType == BET_StaticCall
+					|| block->BlockType == BET_Cond_0 || block->BlockType == BET_Cond_1))
+		{
+			/* A block that can go back: every so often, see whether the
+			 * game is only waiting, and give up the rest of the time slice
+			 * if it is. See wait_site.h. This is ahead of the branch, so it
+			 * is also passed on the way out of a loop; that changes
+			 * nothing, since a pass that finds the registers as they were
+			 * is one that goes round again. The cycle counter is w27: at 0,
+			 * the next block's own subtraction ends the slice. */
+			WaitSite *site = sh4_wait_site();
+			if (site != nullptr)
+			{
+				Label over;
+
+				Mov(x1, reinterpret_cast<uintptr_t>(&site->skip));
+				Ldr(w0, MemOperand(x1));
+				Subs(w0, w0, 1);
+				Str(w0, MemOperand(x1));
+				B(&over, pl);
+				Mov(x0, reinterpret_cast<uintptr_t>(site));
+				GenCallRuntime(sh4_wait_check);
+				Cbz(w0, &over);
+				Mov(w27, 0);
+				Bind(&over);
+			}
+		}
 
 		block->relink_offset = (u32)GetBuffer()->GetCursorOffset();
 		block->relink_data = 0;

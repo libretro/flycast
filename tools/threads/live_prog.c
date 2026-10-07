@@ -73,6 +73,13 @@ static void set_palette(u32 index, u16 colour)
    PVR(0x1000 + index * 4) = colour;
 }
 
+/* What the program has found, for a test that has no picture to look at
+ * (headless.c reads it out of the machine's memory): 0 until frame 250,
+ * then 0x600D600D if every check the background colour reports came out
+ * right, or 0xBAD0000n for the first that did not, in the order they are
+ * tested below. */
+volatile u32 live_verdict;
+
 /* Wait for the beam to start a new frame: the scanline counter in
  * SPG_STATUS going back down. That holds whatever video mode the BIOS
  * left behind, which the vsync bit does not. */
@@ -907,6 +914,15 @@ void cmain(void)
             set_palette(4, 0x7C1F);                    /* magenta: a register with junk in it */
          else if (frame == 250 && gd_bad)
             set_palette(4, 0x001F | (gd_bad << 7));     /* blue: the disc read back wrong */
+         /* The same verdict where it can be read without a picture: see
+          * live_verdict. */
+         if (frame == 250)
+            live_verdict = cpu_bad ? 0xBAD00001
+               : longest - shortest > 200 ? 0xBAD00002
+               : (total < FRAMES_150 - 100 || total > FRAMES_150 + 100) ? 0xBAD00003
+               : stale ? 0xBAD00004
+               : gd_bad ? 0xBAD00005
+               : 0x600D600D;
       }
 
       /* ...and shown at the next vblank, the way a game flips buffers */

@@ -7,6 +7,7 @@
 #include <set>
 #include <map>
 #include "blockmanager.h"
+#include "wait_site.h"
 #include "ngen.h"
 
 #include "../sh4_core.h"
@@ -310,6 +311,7 @@ static void bm_UnlockPage(u32 addr)
 void bm_ResetCache()
 {
 	ngen_ResetBlocks();
+	sh4_wait_sites_reset();
 	_vmem_bm_reset();
 
 	for (const auto& it : blkmap)
