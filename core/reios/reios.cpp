@@ -74,10 +74,23 @@ static bool reios_locate_bootfile(const char* bootfile)
 	reios_pre_init();
 
 	// Load IP.BIN bootstrap
-	libGDR_ReadSector(GetMemPtr(0x8c008000, 0), base_fad, 16, 2048);
+	u8 *ip_bin = GetMemPtr(0x8c008000, 0);
+	memset(ip_bin, 0xFF, 16);
+	libGDR_ReadSector(ip_bin, base_fad, 16, 2048);
+	/* A read from a drive with nothing in it reads nothing, and the drive
+	 * can say it has a disc when it has not: a state saved with one in,
+	 * loaded with the lid open, says so. What was read then has to be a
+	 * boot sector before anything is made of it. */
+	if (memcmp(ip_bin, "SEGA SEGAKATANA ", 16) != 0)
+		return false;
 
 	u32 data_len = 2048 * 1024;
-	u8* temp = new u8[data_len];
+	/* Zeroed: left as it came, it could be the block the last boot's
+	 * directory was read into and freed, and a read that read nothing
+	 * left that directory there to find the boot file in - which was then
+	 * "loaded" by reading nothing again, and run from memory that had
+	 * just been wiped. */
+	u8* temp = new u8[data_len]();
 
 	libGDR_ReadSector(temp, base_fad + 16, 1, 2048);
 	iso9660_pvd_t *pvd = (iso9660_pvd_t *)temp;
