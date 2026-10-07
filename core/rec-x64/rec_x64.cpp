@@ -158,6 +158,37 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
 }
 #endif
 
+#ifndef _WIN32
+/* Calls the function whose address is in rax, with the arguments as they
+ * are, and keeps xmm8 to xmm11 across it: the floating-point registers
+ * recompiled code is handed, which no function has to keep on these hosts.
+ *
+ * For a fast memory access that faulted and was written over with a call
+ * (ngen_Rewrite): the code around it was compiled for a move, which leaves
+ * every register alone, so whatever of those four is in use there has to
+ * survive, and there is no room at the place itself to save them. The low
+ * 32 bits are what recompiled code keeps in them. */
+extern "C" void ngen_call_keep_xmm();
+__asm__ (
+		".text                                  \n\t"
+		".p2align 4                             \n\t"
+		".globl " _U "ngen_call_keep_xmm        \n"
+	_U "ngen_call_keep_xmm:                     \n\t"
+		"subq $40, %rsp                         \n\t"   // 16 for the four, and the stack back to a multiple of 16
+		"movd %xmm8, 0(%rsp)                    \n\t"
+		"movd %xmm9, 4(%rsp)                    \n\t"
+		"movd %xmm10, 8(%rsp)                   \n\t"
+		"movd %xmm11, 12(%rsp)                  \n\t"
+		"call *%rax                             \n\t"
+		"movd 0(%rsp), %xmm8                    \n\t"
+		"movd 4(%rsp), %xmm9                    \n\t"
+		"movd 8(%rsp), %xmm10                   \n\t"
+		"movd 12(%rsp), %xmm11                  \n\t"
+		"addq $40, %rsp                         \n\t"
+		"ret                                    \n"
+);
+#endif
+
 #undef _U
 #undef _S
 
@@ -1370,6 +1401,7 @@ public:
 
 	void InitializeRewrite(RuntimeBlockInfo *block, size_t opid)
 	{
+		rewriting = true;
 	}
 
 	void FinalizeRewrite()
@@ -1997,6 +2029,16 @@ public:
 	void GenCall(Ret(*function)(Params...), bool skip_floats = false)
 	{
 #ifndef _WIN32
+		if (rewriting && !mmu_enabled())
+		{
+			/* Written over a fast memory access that faulted. Which of the
+			 * floating-point registers are in use here is not known any
+			 * more, and with the MMU off they are not written back before
+			 * a memory access as they are with it on: all four are kept. */
+			mov(rax, (uintptr_t)function);
+			call((const void*)ngen_call_keep_xmm);
+			return;
+		}
 		bool xmm8_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm8, current_opid);
 		bool xmm9_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm9, current_opid);
 		bool xmm10_mapped = !skip_floats && current_opid != (size_t)-1 && regalloc.IsMapped(xmm10, current_opid);
@@ -2165,6 +2207,7 @@ public:
 	static Xbyak::util::Cpu cpu;
 	size_t current_opid;
 	Xbyak::Label exit_block;
+	bool rewriting = false;	// writing a call over a fast memory access: see ngen_Rewrite()
 	static const u32 read_mem_op_size;
 	static const u32 write_mem_op_size;
 public:
