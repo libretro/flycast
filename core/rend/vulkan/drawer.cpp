@@ -76,16 +76,10 @@ void BaseDrawer::SetBaseScissor()
 			float height;
 			float min_x;
 			float min_y;
-			glm::vec4 clip_min(pvrrc.fb_X_CLIP.min, pvrrc.fb_Y_CLIP.min, 0, 1);
-			glm::vec4 clip_dim(pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1,
-			pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1, 0, 0);
-			clip_min = matrices.GetScissorMatrix() * clip_min;
-			clip_dim = matrices.GetScissorMatrix() * clip_dim;
-
-			min_x = clip_min[0];
-			min_y = clip_min[1];
-			width = clip_dim[0];
-			height = clip_dim[1];
+			min_x = xform_x(&matrices.GetScissorMatrix(), pvrrc.fb_X_CLIP.min);
+				min_y = xform_y(&matrices.GetScissorMatrix(), pvrrc.fb_Y_CLIP.min);
+				width = xform_w(&matrices.GetScissorMatrix(), pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1);
+				height = xform_h(&matrices.GetScissorMatrix(), pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
 			if (width < 0)
 			{
 				min_x += width;
@@ -355,7 +349,7 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 {
 	VertexShaderUniforms vtxUniforms;
-	vtxUniforms.normal_matrix = matrices.GetNormalMatrix();
+	xform_to_mat4(&matrices.GetNormalMatrix(), vtxUniforms.normal_matrix);
 
 	FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<FragmentShaderUniforms>();
 	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;

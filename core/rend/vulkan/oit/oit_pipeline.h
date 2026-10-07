@@ -20,7 +20,7 @@
 */
 #pragma once
 #include <tuple>
-#include <glm/glm.hpp>
+
 #include "../vulkan.h"
 #include "oit_shaders.h"
 #include "oit_renderpass.h"
@@ -34,7 +34,7 @@ public:
 	// std140 alignment required
 	struct VertexShaderUniforms
 	{
-		glm::mat4 normal_matrix;
+		float normal_matrix[16];
 	};
 
 	// std140 alignment required
@@ -51,15 +51,15 @@ public:
 
 	struct PushConstants
 	{
-		glm::vec4 clipTest;
-		glm::ivec4 blend_mode0;	// Only using 2 elements but easier for std140
+		float clipTest[4];
+		int blend_mode0[4];	// Only using 2 elements but easier for std140
 		float trilinearAlpha;
 		int pp_Number;
 		float palette_index;
 		int _pad;
 
 		// two volume mode
-		glm::ivec4 blend_mode1;	// Only using 2 elements but easier for std140
+		int blend_mode1[4];	// Only using 2 elements but easier for std140
 		int shading_instr0;
 		int shading_instr1;
 		int fog_control0;

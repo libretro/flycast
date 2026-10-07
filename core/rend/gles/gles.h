@@ -38,7 +38,7 @@
 
 //vertex types
 extern u32 gcflip;
-extern glm::mat4 ViewportMatrix;
+extern xform ViewportMatrix;
 
 void DrawStrips(void);
 
@@ -134,9 +134,7 @@ bool ProcessFrame(TA_context* ctx);
 void UpdateFogTexture(u8 *fog_table, GLenum texture_slot, GLint fog_image_format);
 void GetFramebufferScaling(float& scale_x, float& scale_y, float& scissoring_scale_x, float& scissoring_scale_y);
 void GetFramebufferSize(float& dc_width, float& dc_height);
-void SetupMatrices(float dc_width, float dc_height,
-				   float scale_x, float scale_y, float scissoring_scale_x, float scissoring_scale_y,
-				   float &ds2s_offs_x, glm::mat4& normal_mat, glm::mat4& scissor_mat);
+
 void UpdatePaletteTexture(GLenum texture_slot);
 void DoCleanup();
 void SortPParams(int first, int count);
@@ -175,7 +173,7 @@ extern struct ShaderUniforms_t
 	float trilinear_alpha;
 	float fog_clamp_min[4];
 	float fog_clamp_max[4];
-	glm::mat4 normal_mat;
+	float normal_mat[16];
 	struct {
 		bool enabled;
 		int x;
@@ -212,7 +210,7 @@ extern struct ShaderUniforms_t
 			glUniform4fv(s->fog_clamp_max, 1, fog_clamp_max);
 
 		if (s->normal_matrix != -1)
-			glUniformMatrix4fv(s->normal_matrix, 1, GL_FALSE, &normal_mat[0][0]);
+			glUniformMatrix4fv(s->normal_matrix, 1, GL_FALSE, normal_mat);
 
 		if (s->palette_index != -1)
 			glUniform1i(s->palette_index, palette_index);

@@ -19,8 +19,9 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #pragma once
-#include <glm/glm.hpp>
-#include <glm/gtx/transform.hpp>
+#include <cmath>
+#include <algorithm>
+#include "xform.h"
 #include "hw/pvr/ta_ctx.h"
 
 extern float fb_scale_x, fb_scale_y;
@@ -44,13 +45,13 @@ public:
 				|| lroundf((renderingContext->fb_Y_CLIP.max + 1) / scale_y) != 480L;
 	}
 
-	const glm::mat4& GetNormalMatrix() const {
+	const xform& GetNormalMatrix() const {
 		return normalMatrix;
 	}
-	const glm::mat4& GetScissorMatrix() const {
+	const xform& GetScissorMatrix() const {
 		return scissorMatrix;
 	}
-	const glm::mat4& GetViewportMatrix() const {
+	const xform& GetViewportMatrix() const {
 		return viewportMatrix;
 	}
 
@@ -58,7 +59,7 @@ public:
 		return sidebarWidth;
 	}
 
-	glm::vec2 GetDreamcastViewport() const {
+	vec2f GetDreamcastViewport() const {
 		return dcViewport;
 	}
 
@@ -72,8 +73,7 @@ public:
 		{
 			dcViewport.x = renderingContext->fb_X_CLIP.max - renderingContext->fb_X_CLIP.min + 1;
 			dcViewport.y = renderingContext->fb_Y_CLIP.max - renderingContext->fb_Y_CLIP.min + 1;
-			normalMatrix = glm::translate(glm::vec3(-1, -1, 0))
-				* glm::scale(glm::vec3(2.0f / dcViewport.x, 2.0f / dcViewport.y, 1.f));
+			xform_set(&normalMatrix, 2.0f / dcViewport.x, 2.0f / dcViewport.y, 1.f, -1.f, -1.f, 0.f);
 			scissorMatrix = normalMatrix;
 			sidebarWidth = 0;
 		}
@@ -120,7 +120,7 @@ public:
 			startx *= 0.8;
 			starty *= 1.1;
 #endif
-			normalMatrix = glm::translate(glm::vec3(startx, starty, 0));
+			xform_set(&normalMatrix, 1.f, 1.f, 1.f, startx, starty, 0.f);
 			scissorMatrix = normalMatrix;
 
 			float scissoring_scale_x, scissoring_scale_y;
@@ -130,29 +130,29 @@ public:
 			sidebarWidth =  (screen_width - dc2s_scale_h * 640.0f) / 2;
 			float x_coef = 2.0f / (screen_width / dc2s_scale_h * scale_x);
 			float y_coef = 2.0f / dcViewport.y * (invertY ? -1 : 1);
-			normalMatrix = glm::translate(glm::vec3(-1 + 2 * sidebarWidth / screen_width, invertY ? 1 : -1, 0))
-				* glm::scale(glm::vec3(x_coef, y_coef, 1.f))
-				* normalMatrix;
-			scissorMatrix = glm::translate(glm::vec3(-1 + 2 * sidebarWidth / screen_width, invertY ? 1 : -1, 0))
-				* glm::scale(glm::vec3(x_coef * scissoring_scale_x, y_coef * scissoring_scale_y, 1.f))
-				* scissorMatrix;
+			// scaled, then moved to where the picture starts
+			xform to_clip;
+			xform_set(&to_clip, x_coef, y_coef, 1.f,
+					-1 + 2 * sidebarWidth / screen_width, invertY ? 1.f : -1.f, 0.f);
+			xform_mul(&normalMatrix, &to_clip, &normalMatrix);
+			xform_set(&to_clip, x_coef * scissoring_scale_x, y_coef * scissoring_scale_y, 1.f,
+					-1 + 2 * sidebarWidth / screen_width, invertY ? 1.f : -1.f, 0.f);
+			xform_mul(&scissorMatrix, &to_clip, &scissorMatrix);
 		}
-		normalMatrix = glm::scale(glm::vec3(1, 1, 1 / settings.rend.ExtraDepthScale))
-				* normalMatrix;
+		xform depth;
+		xform_set(&depth, 1.f, 1.f, 1 / settings.rend.ExtraDepthScale, 0.f, 0.f, 0.f);
+		xform_mul(&normalMatrix, &depth, &normalMatrix);
 
-		glm::mat4 vp_trans = glm::translate(glm::vec3(1, 1, 0));
+		// clip space to pixels: moved by 1, then scaled by half the size
+		xform vp_trans, half;
+		xform_set(&vp_trans, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f);
 		if (renderingContext->isRTT)
-		{
-			vp_trans = glm::scale(glm::vec3(dcViewport.x / 2, dcViewport.y / 2, 1.f))
-				* vp_trans;
-		}
+			xform_set(&half, dcViewport.x / 2, dcViewport.y / 2, 1.f, 0.f, 0.f, 0.f);
 		else
-		{
-			vp_trans = glm::scale(glm::vec3(screen_width / 2, screen_height / 2, 1.f))
-				* vp_trans;
-		}
-		viewportMatrix = vp_trans * normalMatrix;
-		scissorMatrix = vp_trans * scissorMatrix;
+			xform_set(&half, screen_width / 2, screen_height / 2, 1.f, 0.f, 0.f, 0.f);
+		xform_mul(&vp_trans, &half, &vp_trans);
+		xform_mul(&viewportMatrix, &vp_trans, &normalMatrix);
+		xform_mul(&scissorMatrix, &vp_trans, &scissorMatrix);
 	}
 
 private:
@@ -192,10 +192,10 @@ private:
 
 	const rend_context *renderingContext = nullptr;
 
-	glm::mat4 normalMatrix;
-	glm::mat4 scissorMatrix;
-	glm::mat4 viewportMatrix;
-	glm::vec2 dcViewport;
+	xform normalMatrix = { 1.f, 1.f, 1.f, 0.f, 0.f, 0.f };
+	xform scissorMatrix = { 1.f, 1.f, 1.f, 0.f, 0.f, 0.f };
+	xform viewportMatrix = { 1.f, 1.f, 1.f, 0.f, 0.f, 0.f };
+	vec2f dcViewport = { 0.f, 0.f };
 	float scale_x = 0;
 	float scale_y = 0;
 	float sidebarWidth = 0;

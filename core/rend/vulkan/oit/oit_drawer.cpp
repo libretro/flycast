@@ -62,14 +62,17 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 				(float)scissorRect.offset.x + (float)scissorRect.extent.width,
 				(float)scissorRect.offset.y + (float)scissorRect.extent.height
 			},
-			{ poly.tsp.SrcInstr, poly.tsp.DstInstr, 0, 0 },
+			{ (int)poly.tsp.SrcInstr, (int)poly.tsp.DstInstr, 0, 0 },
 			trilinearAlpha,
 			listType == ListType_Translucent ? (int)(&poly - pvrrc.global_param_tr.head()) : 0,
 			palette_index,
 	};
 	if (twoVolumes)
 	{
-		pushConstants.blend_mode1 = { poly.tsp1.SrcInstr, poly.tsp1.DstInstr, 0, 0 };
+		pushConstants.blend_mode1[0] = (int)poly.tsp1.SrcInstr;
+		pushConstants.blend_mode1[1] = (int)poly.tsp1.DstInstr;
+		pushConstants.blend_mode1[2] = 0;
+		pushConstants.blend_mode1[3] = 0;
 		pushConstants.shading_instr0 = poly.tsp.ShadInstr;
 		pushConstants.shading_instr1 = poly.tsp1.ShadInstr;
 		pushConstants.fog_control0 = poly.tsp.FogCtrl;
@@ -260,7 +263,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	}
 
 	OITDescriptorSets::VertexShaderUniforms vtxUniforms;
-	vtxUniforms.normal_matrix = matrices.GetNormalMatrix();
+	xform_to_mat4(&matrices.GetNormalMatrix(), vtxUniforms.normal_matrix);
 
 	OITDescriptorSets::FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<OITDescriptorSets::FragmentShaderUniforms>();
 	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;

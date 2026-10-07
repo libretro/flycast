@@ -19,7 +19,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #pragma once
-#include <glm/glm.hpp>
+
 #include "vulkan.h"
 #include "SPIRV/GlslangToSpv.h"
 
@@ -61,7 +61,7 @@ struct FragmentShaderParams
 // std140 alignment required
 struct VertexShaderUniforms
 {
-	glm::mat4 normal_matrix;
+	float normal_matrix[16];
 };
 
 // std140 alignment required

@@ -391,7 +391,7 @@ int screen_height = 480;
 GLuint fogTextureId;
 GLuint paletteTextureId;
 
-glm::mat4 ViewportMatrix;
+xform ViewportMatrix = { 1.f, 1.f, 1.f, 0.f, 0.f, 0.f };
 
 PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 		bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr, bool pp_Offset,
@@ -887,8 +887,8 @@ static bool RenderFrame(void)
 	vtx_max_fZ *= 1.001f;
 
 	TransformMatrix<true> matrices(pvrrc);
-	ShaderUniforms.normal_mat = matrices.GetNormalMatrix();
-	const glm::mat4& scissor_mat = matrices.GetScissorMatrix();
+	xform_to_mat4(&matrices.GetNormalMatrix(), ShaderUniforms.normal_mat);
+	const xform& scissor_mat = matrices.GetScissorMatrix();
 	ViewportMatrix = matrices.GetViewportMatrix();
 
 	if (!is_rtt)
@@ -939,7 +939,7 @@ static bool RenderFrame(void)
 	glcache.UseProgram(gl.modvol_shader.program);
 
 	glUniform4fv(gl.modvol_shader.depth_scale, 1, ShaderUniforms.depth_coefs);
-	glUniformMatrix4fv(gl.modvol_shader.normal_matrix, 1, GL_FALSE, &ShaderUniforms.normal_mat[0][0]);
+	glUniformMatrix4fv(gl.modvol_shader.normal_matrix, 1, GL_FALSE, ShaderUniforms.normal_mat);
 
 	ShaderUniforms.PT_ALPHA=(PT_ALPHA_REF&0xFF)/255.0f;
 	ShaderUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
@@ -1042,16 +1042,10 @@ static bool RenderFrame(void)
 			float min_y;
 			if (!is_rtt)
 			{
-				glm::vec4 clip_min(pvrrc.fb_X_CLIP.min, pvrrc.fb_Y_CLIP.min, 0, 1);
-				glm::vec4 clip_dim(pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1,
-								   pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1, 0, 0);
-				clip_min = scissor_mat * clip_min;
-				clip_dim = scissor_mat * clip_dim;
-
-				min_x = clip_min[0];
-				min_y = clip_min[1];
-				width = clip_dim[0];
-				height = clip_dim[1];
+				min_x = xform_x(&scissor_mat, pvrrc.fb_X_CLIP.min);
+				min_y = xform_y(&scissor_mat, pvrrc.fb_Y_CLIP.min);
+				width = xform_w(&scissor_mat, pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1);
+				height = xform_h(&scissor_mat, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
 				if (width < 0)
 				{
 					min_x += width;

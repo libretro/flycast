@@ -19,7 +19,9 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
-#include <glm/glm.hpp>
+#include <cmath>
+#include <algorithm>
+#include "xform.h"
 
 #include "types.h"
 #include "hw/pvr/Renderer_if.h"
@@ -78,7 +80,7 @@ static inline bool PolyOverlaps(const PolyParam *gp, const ScreenBounds& area)
 }
 
 // Bounds to a scissor rectangle (x, y, width, height), a pixel wider all round
-static inline void BoundsToScissor(const ScreenBounds& b, const glm::mat4& viewport, int *rect)
+static inline void BoundsToScissor(const ScreenBounds& b, const xform& viewport, int *rect)
 {
 	// huge coordinates are common in volumes; keep them where rounding is defined
 	float sx = std::min(std::max(b.min_x - 1.f, -32768.f), 32768.f);
@@ -88,12 +90,10 @@ static inline void BoundsToScissor(const ScreenBounds& b, const glm::mat4& viewp
 
 	if (!pvrrc.isRTT)
 	{
-		glm::vec4 start = viewport * glm::vec4(sx, sy, 0, 1);
-		glm::vec4 end = viewport * glm::vec4(ex, ey, 0, 1);
-		sx = start[0];
-		sy = start[1];
-		ex = end[0];
-		ey = end[1];
+		sx = xform_x(&viewport, sx);
+		sy = xform_y(&viewport, sy);
+		ex = xform_x(&viewport, ex);
+		ey = xform_y(&viewport, ey);
 	}
 	else if (!settings.rend.RenderToTextureBuffer)
 	{

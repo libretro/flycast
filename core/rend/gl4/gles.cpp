@@ -614,8 +614,8 @@ static bool RenderFrame()
 	const bool is_rtt = pvrrc.isRTT;
 
 	TransformMatrix<true> matrices(pvrrc);
-	gl4ShaderUniforms.normal_mat = matrices.GetNormalMatrix();
-	const glm::mat4& scissor_mat = matrices.GetScissorMatrix();
+	xform_to_mat4(&matrices.GetNormalMatrix(), gl4ShaderUniforms.normal_mat);
+	const xform& scissor_mat = matrices.GetScissorMatrix();
 	ViewportMatrix = matrices.GetViewportMatrix();
 
 	if (!is_rtt)
@@ -678,7 +678,7 @@ static bool RenderFrame()
 
 	glcache.UseProgram(gl4.modvol_shader.program);
 
-	glUniformMatrix4fv(gl4.modvol_shader.normal_matrix, 1, GL_FALSE, &gl4ShaderUniforms.normal_mat[0][0]);
+	glUniformMatrix4fv(gl4.modvol_shader.normal_matrix, 1, GL_FALSE, gl4ShaderUniforms.normal_mat);
 
 	gl4ShaderUniforms.PT_ALPHA=(PT_ALPHA_REF&0xFF)/255.0f;
 
@@ -765,16 +765,10 @@ static bool RenderFrame()
 			float min_y;
 			if (!is_rtt)
 			{
-				glm::vec4 clip_min(pvrrc.fb_X_CLIP.min, pvrrc.fb_Y_CLIP.min, 0, 1);
-				glm::vec4 clip_dim(pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1,
-								   pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1, 0, 0);
-				clip_min = scissor_mat * clip_min;
-				clip_dim = scissor_mat * clip_dim;
-
-				min_x = clip_min[0];
-				min_y = clip_min[1];
-				width = clip_dim[0];
-				height = clip_dim[1];
+				min_x = xform_x(&scissor_mat, pvrrc.fb_X_CLIP.min);
+				min_y = xform_y(&scissor_mat, pvrrc.fb_Y_CLIP.min);
+				width = xform_w(&scissor_mat, pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1);
+				height = xform_h(&scissor_mat, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
 				if (width < 0)
 				{
 					min_x += width;

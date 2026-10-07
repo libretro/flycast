@@ -13,7 +13,9 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #pragma once
-#include <glm/glm.hpp>
+#include <cmath>
+#include <algorithm>
+#include "xform.h"
 
 #include "types.h"
 #include "hw/pvr/Renderer_if.h"
@@ -25,7 +27,7 @@ enum class TileClipping {
 };
 
 // clip_rect[] will contain x, y, width, height
-static inline TileClipping GetTileClip(u32 val, const glm::mat4& viewport, int *clip_rect)
+static inline TileClipping GetTileClip(u32 val, const xform& viewport, int *clip_rect)
 {
 	u32 clipmode = val >> 28;
 	if (clipmode < 2)
@@ -51,15 +53,10 @@ static inline TileClipping GetTileClip(u32 val, const glm::mat4& viewport, int *
 
 	if (!pvrrc.isRTT)
 	{
-		glm::vec4 clip_start(csx, csy, 0, 1);
-		glm::vec4 clip_end(cex, cey, 0, 1);
-		clip_start = viewport * clip_start;
-		clip_end = viewport * clip_end;
-
-		csx = clip_start[0];
-		csy = clip_start[1];
-		cey = clip_end[1];
-		cex = clip_end[0];
+		csx = xform_x(&viewport, csx);
+		csy = xform_y(&viewport, csy);
+		cey = xform_y(&viewport, cey);
+		cex = xform_x(&viewport, cex);
 	}
 	else if (!settings.rend.RenderToTextureBuffer)
 	{

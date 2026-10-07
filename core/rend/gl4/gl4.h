@@ -250,7 +250,7 @@ extern struct gl4ShaderUniforms_t
 	TCW tcw1;
 	float fog_clamp_min[4];
 	float fog_clamp_max[4];
-	glm::mat4 normal_mat;
+	float normal_mat[16];
 	float palette_index;
 
 	struct {
@@ -313,7 +313,7 @@ extern struct gl4ShaderUniforms_t
 			glUniform4fv(s->fog_clamp_max, 1, fog_clamp_max);
 
 		if (s->normal_matrix != -1)
-			glUniformMatrix4fv(s->normal_matrix, 1, GL_FALSE, &normal_mat[0][0]);
+			glUniformMatrix4fv(s->normal_matrix, 1, GL_FALSE, normal_mat);
 
 		if (s->palette_index != -1)
 			glUniform1f(s->palette_index, palette_index);
