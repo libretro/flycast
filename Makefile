@@ -1160,8 +1160,15 @@ endif
 # sound processor's entry point, and the link fails. That goes by what is
 # being built for, not by the machine doing the building, which is all
 # that was looked at - so a 32-bit ARM core could not be cross-built.
+#
+# Only where a compiler does the assembling, though. A platform that sets
+# the assembler itself to a bare "as" (libnx does, for the 64-bit file, which
+# has nothing for a preprocessor in it) is given what it was given before:
+# "as" knows no -D, and stops at the first one.
 ifneq (,$(findstring arm, $(ARCH))$(filter arm arm64,$(WITH_DYNAREC)))
+ifeq (,$(filter as %-as,$(notdir $(firstword $(CC_AS)))))
 	ASFLAGS  += $(CFLAGS)
+endif
 endif
 
 ifeq ($(PGO_MAKE),1)
