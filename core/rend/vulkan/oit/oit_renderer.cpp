@@ -89,7 +89,7 @@ public:
 		drawer->Draw(fogTexture.get(), paletteTexture.get());
 
 		if (!pvrrc.isRTT)
-			vmus->DrawOSD(screenDrawer.GetCurrentCommandBuffer(), vk::Extent2D(screen_width, screen_height));
+			vmus->DrawOSD(screenDrawer.GetCurrentCommandBuffer(), vk::Extent2D(screen_width, screen_height), &texCommandPool);
 
 		drawer->EndFrame();
 

@@ -133,7 +133,7 @@ const std::vector<vk::CommandBuffer>* VulkanOSD::PrepareOSD(CommandPool *command
 	return &commandBuffers[context->GetCurrentImageIndex()];
 }
 
-void VulkanOSD::DrawOSD(vk::CommandBuffer commandBuffer, vk::Extent2D viewport)
+void VulkanOSD::DrawOSD(vk::CommandBuffer commandBuffer, vk::Extent2D viewport, CommandPool *commandPool)
 {
 	pipeline->BindPipeline(commandBuffer, false);
 	QuadVertex vtx[] = {
@@ -185,7 +185,7 @@ void VulkanOSD::DrawOSD(vk::CommandBuffer commandBuffer, vk::Extent2D viewport)
 		float blendConstants[4] = { alpha, alpha, alpha, alpha };
 		commandBuffer.setBlendConstants(blendConstants);
 
-		drawers[i]->Draw(commandBuffer, vmuTextures[i]->GetImageView(), vtx, true);
+		drawers[i]->Draw(commandBuffer, vmuTextures[i]->GetImageView(), vtx, true, commandPool);
 	}
 
 	pipeline->BindPipeline(commandBuffer, true);
@@ -206,6 +206,6 @@ void VulkanOSD::DrawOSD(vk::CommandBuffer commandBuffer, vk::Extent2D viewport)
 		float blendConstants[4] = { 1.f, 1.f, 1.f, 1.f };
 		commandBuffer.setBlendConstants(blendConstants);
 
-		xhairDrawers[i]->Draw(commandBuffer, xhairTextures[i]->GetImageView(), vtx, true);
+		xhairDrawers[i]->Draw(commandBuffer, xhairTextures[i]->GetImageView(), vtx, true, commandPool);
 	}
 }

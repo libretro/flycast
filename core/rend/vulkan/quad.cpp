@@ -21,6 +21,7 @@
 */
 #include "quad.h"
 #include "vulkan_context.h"
+#include "commandpool.h"
 
 static VulkanContext *GetContext()
 {
@@ -171,20 +172,11 @@ void QuadDrawer::Init(QuadPipeline *pipeline)
 	slots.resize(VulkanContext::Instance()->GetSwapChainSize());
 }
 
-void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, QuadVertex vertices[], bool nearestFilter)
+void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, QuadVertex vertices[], bool nearestFilter, CommandPool *commandPool)
 {
 	VulkanContext *context = GetContext();
 	Slot& slot = slots[context->GetCurrentImageIndex()];
 	const vk::Sampler sampler = nearestFilter ? pipeline->GetNearestSampler() : pipeline->GetLinearSampler();
-
-	/* Sets replaced long enough ago that no frame can still be using them */
-	for (size_t i = 0; i < retired.size(); )
-	{
-		if (--retired[i].draws == 0)
-			retired.erase(retired.begin() + i);
-		else
-			i++;
-	}
 
 	/* The set says which image to draw and how to sample it, and that is the
 	 * same from one frame to the next, so it is written when it changes and
@@ -193,11 +185,19 @@ void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, 
 	 * the frontend's frame index, which picks the set, does not move when the
 	 * game renders twice in one run - and a set in use must not be written.
 	 * When it does change, the old set is left as it is for the frames that
-	 * use it and a new one takes its place. */
+	 * use it and a new one takes its place.
+	 *
+	 * The old one goes to the command pool, which destroys what it is given
+	 * when it comes round to this frame's place again - having waited, on
+	 * the way, for the fence of every frame submitted before then. (It was
+	 * kept here for a number of draws instead, and a number of draws says
+	 * nothing about what the GPU has finished: a game that renders several
+	 * times to one of the frontend's frames gets through them at once.) */
 	if (!slot.set || slot.view != imageView || slot.sampler != sampler)
 	{
 		if (slot.set)
-			retired.push_back({ std::move(slot.set), 2 * (u32)slots.size() + 1 });
+			commandPool->DeferDelete(std::unique_ptr<vk::UniqueDescriptorSet>(
+					new vk::UniqueDescriptorSet(std::move(slot.set))));
 		vk::DescriptorSetLayout layout = pipeline->GetDescSetLayout();
 		slot.set = std::move(context->GetDevice().allocateDescriptorSetsUnique(
 				vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &layout)).front());

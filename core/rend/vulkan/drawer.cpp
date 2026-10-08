@@ -740,9 +740,9 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 		quadPipeline->BindPipeline(commandBuffer);
 		/* (the picture kept from another context can be of another size) */
 		if (havePicture)
-			lastPicture.Draw(commandBuffer, colorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+			lastPicture.Draw(commandBuffer, colorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true, commandPool);
 		else
-			lastPicture.Draw(commandBuffer, restoredPicture, nullptr, false);
+			lastPicture.Draw(commandBuffer, restoredPicture, nullptr, false, commandPool);
 	}
 	commandBuffer.setScissor(0, baseScissor);
 	currentCommandBuffer = commandBuffer;

@@ -113,11 +113,16 @@ private:
 	vk::UniqueDescriptorSetLayout descSetLayout;
 	ShaderManager *shaderManager;
 };
+class CommandPool;
+
 class QuadDrawer
 {
 public:
 	void Init(QuadPipeline *pipeline);
-	void Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, QuadVertex vertices[] = nullptr, bool nearestFilter = false);
+	/* commandPool: the pool commandBuffer is of. A descriptor set that has to
+	 * be replaced is left with it, to be destroyed once the frames that can
+	 * be using it are done. */
+	void Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, QuadVertex vertices[], bool nearestFilter, CommandPool *commandPool);
 private:
 	/* One descriptor set for each frame that can be in flight, with what
 	 * was last written to it. */
@@ -127,16 +132,7 @@ private:
 		vk::ImageView view;
 		vk::Sampler sampler;
 	};
-	/* A descriptor set that has been replaced. Frames still in flight may be
-	 * using it, so it is kept until that many draws later. */
-	struct Retired
-	{
-		vk::UniqueDescriptorSet set;
-		u32 draws;
-	};
-
 	QuadPipeline *pipeline = nullptr;
 	std::unique_ptr<QuadBuffer> buffer;
 	std::vector<Slot> slots;
-	std::vector<Retired> retired;
 };

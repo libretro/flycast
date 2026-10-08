@@ -206,9 +206,9 @@ protected:
 		lastPicturePipeline->BindPipeline(cmdBuffer);
 		/* (the picture kept from another context can be of another size) */
 		if (havePicture)
-			lastPicture.Draw(cmdBuffer, finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true);
+			lastPicture.Draw(cmdBuffer, finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true, commandPool);
 		else
-			lastPicture.Draw(cmdBuffer, restoredPicture, nullptr, false);
+			lastPicture.Draw(cmdBuffer, restoredPicture, nullptr, false, commandPool);
 		return true;
 	}
 public:
