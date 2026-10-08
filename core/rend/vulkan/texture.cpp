@@ -147,10 +147,83 @@ void setImageLayout(vk::CommandBuffer const& commandBuffer, vk::Image image, vk:
 	commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, nullptr, nullptr, imageMemoryBarrier);
 }
 
-void Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded)
+#include "rend/upload_layout.h"
+
+/* A texel of this texture's, in bytes */
+static u32 texel_bytes(TextureType type)
+{
+	return type == TextureType::_8888 ? 4 : type == TextureType::_8 ? 1 : 2;
+}
+
+UploadRing& Texture::Ring()
+{
+	static UploadRing ring;
+	return ring;
+}
+
+void UploadRing::SetCurrentIndex(int index)
+{
+	current = (u32)index;
+	if (chunks.size() <= current)
+		chunks.resize(current + 1);
+	std::vector<Chunk>& mine = chunks[current];
+	for (size_t i = 0; i < mine.size(); )
+	{
+		/* Not needed for a long while - textures arrive in bursts, a scene at
+		 * a time, and a buffer given back between two of them would only be
+		 * made again: it goes after IDLE_ROUNDS turns of this frame's place
+		 * without a texture, some ten seconds. The frame that could have
+		 * used it last is long done. */
+		if (!mine[i].touched && ++mine[i].idle >= IDLE_ROUNDS)
+		{
+			mine.erase(mine.begin() + i);
+			continue;
+		}
+		if (mine[i].touched)
+			mine[i].idle = 0;
+		mine[i].used = 0;
+		mine[i].touched = false;
+		i++;
+	}
+}
+
+u8 *UploadRing::Allocate(size_t bytes, vk::Buffer *buffer, vk::DeviceSize *offset)
+{
+	const size_t CHUNK = 4 * 1024 * 1024;
+
+	if (chunks.size() <= current)
+		chunks.resize(current + 1);
+	std::vector<Chunk>& mine = chunks[current];
+	bytes = (bytes + 15) & ~(size_t)15;
+	size_t i;
+	for (i = 0; i < mine.size(); i++)
+		if (mine[i].size - mine[i].used >= bytes)
+			break;
+	if (i == mine.size())
+	{
+		Chunk chunk;
+		chunk.size = bytes > CHUNK ? bytes : CHUNK;
+		chunk.buffer = std::unique_ptr<BufferData>(new BufferData(chunk.size, vk::BufferUsageFlagBits::eTransferSrc));
+		chunk.mapped = (u8 *)chunk.buffer->MapMemory();
+		chunk.used = 0;
+		chunk.idle = 0;
+		chunk.touched = false;
+		mine.push_back(std::move(chunk));
+	}
+	Chunk& chunk = mine[i];
+	u8 *memory = chunk.mapped + chunk.used;
+	*buffer = chunk.buffer->buffer.get();
+	*offset = chunk.used;
+	chunk.used += bytes;
+	chunk.touched = true;
+	return memory;
+}
+
+/* Makes the image what a texture of this size and kind needs, if it is not
+ * already. Returns whether it was made anew. */
+bool Texture::Prepare(int width, int height, bool mipmapped, bool mipmapsIncluded)
 {
 	vk::Format format = vk::Format::eUndefined;
-	u32 dataSize = width * height * 2;
 	switch (tex_type)
 	{
 	case TextureType::_5551:
@@ -164,30 +237,42 @@ void Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool 
 		break;
 	case TextureType::_8888:
 		format = vk::Format::eR8G8B8A8Unorm;
-		dataSize *= 2;
 		break;
 	case TextureType::_8:
 		format = vk::Format::eR8Unorm;
-		dataSize /= 2;
 		break;
 	}
+	if (width == (int)extent.width && height == (int)extent.height && format == this->format)
+		return false;
+	Init(width, height, format, width * height * texel_bytes(tex_type), mipmapped, mipmapsIncluded);
+	return true;
+}
+
+void *Texture::UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps)
+{
+	prepared = true;
+	preparedNew = Prepare(width, height, IsMipmapped(), mipmaps);
+	if (!needsStaging)
+		// a small image the texture is written into where it is, at the pitch it has
+		return nullptr;
+	const u32 pad = mipmaps && mipmapLevels > 1 ? upload_levels_pad(pixel) : 0;
+	slot = Ring().Allocate(pad + bytes, &slotBuffer, &slotOffset);
+	return slot + pad;
+}
+
+void Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded)
+{
+	const u32 pixel = texel_bytes(tex_type);
+	// the texels as they are handed over: the levels after one another, or the one image
+	u32 dataSize = width * height * pixel;
 	if (mipmapsIncluded)
-	{
-		int w = width / 2;
-		u32 size = dataSize / 4;
-		while (w)
-		{
-			dataSize += ((size + 3) >> 2) << 2;		// offset must be a multiple of 4
-			size /= 4;
-			w /= 2;
-		}
-	}
-	bool isNew = true;
-	if (width != (int)extent.width || height != (int)extent.height || format != this->format)
-		Init(width, height, format, dataSize, mipmapped, mipmapsIncluded);
-	else
-		isNew = false;
-	SetImage(dataSize, data, isNew, mipmapped && !mipmapsIncluded);
+		for (int w = width / 2; w != 0; w /= 2)
+			dataSize += w * w * pixel;
+	if (!prepared)
+		preparedNew = Prepare(width, height, mipmapped, mipmapsIncluded);
+	prepared = false;
+	SetImage(dataSize, data, preparedNew, mipmapped && !mipmapsIncluded);
+	slot = nullptr;
 }
 
 void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool mipmapped, bool mipmapsIncluded)
@@ -214,7 +299,6 @@ void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool 
 	vk::ImageUsageFlags usageFlags = vk::ImageUsageFlagBits::eSampled;
 	if (needsStaging)
 	{
-		stagingBufferData = std::unique_ptr<BufferData>(new BufferData(dataSize, vk::BufferUsageFlagBits::eTransferSrc));
 		usageFlags |= vk::ImageUsageFlagBits::eTransferDst;
 		initialLayout = vk::ImageLayout::eUndefined;
 	}
@@ -253,34 +337,53 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 	if (!isNew && !needsStaging)
 		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eGeneral);
 
-	void* data;
 	if (needsStaging)
-   {
-      if (!stagingBufferData)
-         // This can happen if a texture is first created for RTT, then later updated
-         stagingBufferData = std::unique_ptr<BufferData>(new BufferData(srcSize, vk::BufferUsageFlagBits::eTransferSrc));
-
-		data = stagingBufferData->MapMemory();
-   }
-	else
-		data = allocation.MapMemory();
-	verify(data != nullptr);
-
-	if (mipmapLevels > 1 && !genMipmaps && tex_type != TextureType::_8888)
 	{
-		// Each mipmap level must start at a 4-byte boundary
-		u8 *src = (u8 *)srcData;
-		u8 *dst = (u8 *)data;
-		for (u32 i = 0; i < mipmapLevels; i++)
+		const u32 pixel = texel_bytes(tex_type);
+		const bool levels = mipmapLevels > 1 && !genMipmaps;
+		const u32 pad = levels ? upload_levels_pad(pixel) : 0;
+
+		/* Converted into its piece of the ring already - or, for what was
+		 * not (a custom texture, one scaled up, the renderer's own small
+		 * textures), a piece for it now, and the one copy. */
+		if (slot == nullptr || srcData != slot + pad)
 		{
-			const u32 size = (1 << (2 * i)) * 2;
-			memcpy(dst, src, size);
-			dst += ((size + 3) >> 2) << 2;
-			src += size;
+			slot = Ring().Allocate(pad + srcSize, &slotBuffer, &slotOffset);
+			memcpy(slot + pad, srcData, srcSize);
 		}
+		if (pad != 0)
+			// the 1x1 level, to where a copy can start: see upload_layout.h
+			memcpy(slot, slot + pad, pixel);
+
+		// Since we're going to blit to the texture image, set its layout to eTransferDstOptimal
+		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, isNew ? vk::ImageLayout::eUndefined : vk::ImageLayout::eShaderReadOnlyOptimal,
+				vk::ImageLayout::eTransferDstOptimal);
+
+		if (levels)
+		{
+			for (u32 i = 0; i < mipmapLevels; i++)
+			{
+				vk::BufferImageCopy copyRegion(slotOffset + upload_level_at(pixel, i), 1 << i, 1 << i,
+						vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, mipmapLevels - i - 1, 0, 1),
+						vk::Offset3D(0, 0, 0), vk::Extent3D(1 << i, 1 << i, 1));
+				commandBuffer.copyBufferToImage(slotBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
+			}
+		}
+		else
+		{
+			vk::BufferImageCopy copyRegion(slotOffset, extent.width, extent.height, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+					vk::Offset3D(0, 0, 0), vk::Extent3D(extent, 1));
+			commandBuffer.copyBufferToImage(slotBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
+			if (mipmapLevels > 1)
+				GenerateMipmaps();
+		}
+		// Set the layout for the texture image from eTransferDstOptimal to SHADER_READ_ONLY
+		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
 	}
-	else if (!needsStaging)
+	else
 	{
+		void *data = allocation.MapMemory();
+		verify(data != nullptr);
 		vk::SubresourceLayout layout = device.getImageSubresourceLayout(*image, vk::ImageSubresource(vk::ImageAspectFlagBits::eColor, 0, 0));
 		if (layout.size != srcSize)
 		{
@@ -297,42 +400,6 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 		}
 		else
 			memcpy(data, srcData, srcSize);
-	}
-	else
-	memcpy(data, srcData, srcSize);
-
-	if (needsStaging)
-	{
-		stagingBufferData->UnmapMemory();
-		// Since we're going to blit to the texture image, set its layout to eTransferDstOptimal
-		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, isNew ? vk::ImageLayout::eUndefined : vk::ImageLayout::eShaderReadOnlyOptimal,
-				vk::ImageLayout::eTransferDstOptimal);
-
-		if (mipmapLevels > 1 && !genMipmaps)
-		{
-			vk::DeviceSize bufferOffset = 0;
-			for (u32 i = 0; i < mipmapLevels; i++)
-			{
-				vk::BufferImageCopy copyRegion(bufferOffset, 1 << i, 1 << i, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, mipmapLevels - i - 1, 0, 1),
-						vk::Offset3D(0, 0, 0), vk::Extent3D(1 << i, 1 << i, 1));
-				commandBuffer.copyBufferToImage(stagingBufferData->buffer.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
-				const u32 size = (1 << (2 * i)) * (tex_type == TextureType::_8888 ? 4 : 2);
-				bufferOffset += ((size + 3) >> 2) << 2;
-			}
-		}
-		else
-		{
-			vk::BufferImageCopy copyRegion(0, extent.width, extent.height, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
-					vk::Offset3D(0, 0, 0), vk::Extent3D(extent, 1));
-			commandBuffer.copyBufferToImage(stagingBufferData->buffer.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
-			if (mipmapLevels > 1)
-				GenerateMipmaps();
-		}
-		// Set the layout for the texture image from eTransferDstOptimal to SHADER_READ_ONLY
-		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
-	}
-	else
-	{
 		if (mipmapLevels > 1)
 			GenerateMipmaps();
 		else

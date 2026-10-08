@@ -1048,7 +1048,16 @@ public:
 	void ComputeHash();
 	u32 ComputeVramHash();
 	void Update();
+	void *ConvertInto(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps, bool direct);
 	virtual void UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) = 0;
+	/* Memory for Update() to convert the texture into, which UploadToGPU()
+	 * can then take as it stands: @bytes of it, for a texture of @width by
+	 * @height in texels of @pixel bytes, with its mipmap levels after one
+	 * another from the smallest if @mipmaps. Null if the renderer has none
+	 * to give, and the texture is converted into the cache's own memory and
+	 * copied by UploadToGPU() as before. What is returned is only good for
+	 * the UploadToGPU() that follows. */
+	virtual void *UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps) { return NULL; }
 	virtual bool Force32BitTexture(TextureType type) const { return false; }
 	void CheckCustomTexture();
 	//true if : dirty or paletted texture and hashes don't match

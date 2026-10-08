@@ -33,10 +33,52 @@
 
 void setImageLayout(vk::CommandBuffer const& commandBuffer, vk::Image image, vk::Format format, u32 mipmapLevels, vk::ImageLayout oldImageLayout, vk::ImageLayout newImageLayout);
 
+/* Where textures wait on the way to their images: memory that stays mapped,
+ * handed out a piece per upload and taken back a frame at a time.
+ *
+ * Every upload used to make a buffer of its own for this - a Vulkan buffer
+ * and a piece of the heap - and retire it afterwards, and the texture was
+ * converted into the cache's memory and copied into the buffer. A texture
+ * is converted straight into its piece now (Texture::UploadMemory), and the
+ * pieces come out of a few large buffers that are made once.
+ *
+ * A piece is spoken for until the frame it was handed out in has been
+ * through the GPU, which is when that frame's place in the chain of frames
+ * comes round again (SetCurrentIndex): the same life as the command buffer
+ * the copy was recorded in. */
+class UploadRing
+{
+public:
+	/* @index is the current frame's from here on: whatever was handed out
+	 * under it the last time is free again, and buffers that have gone
+	 * unused for a long while are given back */
+	void SetCurrentIndex(int index);
+	/* @bytes of mapped memory, and where they are: in @buffer at @offset,
+	 * a multiple of 16 */
+	u8 *Allocate(size_t bytes, vk::Buffer *buffer, vk::DeviceSize *offset);
+	void Term() { chunks.clear(); }
+
+private:
+	struct Chunk
+	{
+		std::unique_ptr<BufferData> buffer;
+		u8 *mapped;
+		size_t size;
+		size_t used;
+		u32 idle;			// turns of its frame's place it has gone unused
+		bool touched;
+	};
+	enum { IDLE_ROUNDS = 200 };
+	std::vector<std::vector<Chunk>> chunks;		// by frame index
+	u32 current = 0;
+};
+
 class Texture : public BaseTextureCacheData
 {
 public:
 	void UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded = false) override;
+	void *UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps) override;
+	static UploadRing& Ring();
 	u64 GetIntId() { return (u64)reinterpret_cast<uintptr_t>(this); }
 	std::string GetId() override { char s[20]; sprintf(s, "%p", this); return s; }
 	bool IsNew() const { return !image.get(); }
@@ -51,6 +93,7 @@ public:
 
 private:
 	void Init(u32 width, u32 height, vk::Format format ,u32 dataSize, bool mipmapped, bool mipmapsIncluded);
+	bool Prepare(int width, int height, bool mipmapped, bool mipmapsIncluded);
 	void SetImage(u32 size, void *data, bool isNew, bool genMipmaps);
    void CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usage, vk::ImageLayout initialLayout,
 			const vk::ImageAspectFlags& aspectMask);
@@ -62,7 +105,14 @@ private:
 	vk::Extent2D extent;
 	u32 mipmapLevels = 1;
 	bool needsStaging = false;
-	std::unique_ptr<BufferData> stagingBufferData;
+	/* the piece of the upload ring the texture was converted into, between
+	 * UploadMemory() and the UploadToGPU() that follows; and whether the
+	 * image was made anew for it */
+	u8 *slot = nullptr;
+	vk::Buffer slotBuffer;
+	vk::DeviceSize slotOffset = 0;
+	bool prepared = false;
+	bool preparedNew = false;
 	vk::CommandBuffer commandBuffer;
 
 	Allocation allocation;
@@ -152,11 +202,11 @@ public:
 			std::for_each(inFlightTextures[currentIndex].begin(), inFlightTextures[currentIndex].end(),
 				[](Texture *texture) { texture->readOnlyImageView = vk::ImageView(); });
 		currentIndex = index;
+		Texture::Ring().SetCurrentIndex(index);
 		EmptyTrash(inFlightTextures);
 		EmptyTrash(trashedImageViews);
 		EmptyTrash(trashedImages);
 		EmptyTrash(trashedMem);
-		EmptyTrash(trashedBuffers);
 	}
 
 	bool IsInFlight(Texture *texture)
@@ -179,7 +229,6 @@ public:
 		trashedImages[currentIndex].push_back(std::move(texture->image));
 		trashedImageViews[currentIndex].push_back(std::move(texture->imageView));
 		trashedMem[currentIndex].push_back(std::move(texture->allocation));
-		trashedBuffers[currentIndex].push_back(std::move(texture->stagingBufferData));
 		texture->format = vk::Format::eUndefined;
 	}
 
@@ -211,8 +260,7 @@ public:
 			v.clear();
 		for (auto& v : trashedMem)
 			v.clear();
-		for (auto& v : trashedBuffers)
-			v.clear();
+		Texture::Ring().Term();
 	}
 
 private:
@@ -234,6 +282,5 @@ private:
 	std::vector<std::vector<vk::UniqueImageView>> trashedImageViews;
 	std::vector<std::vector<vk::UniqueImage>> trashedImages;
 	std::vector<std::vector<Allocation>> trashedMem;
-	std::vector<std::vector<std::unique_ptr<BufferData>>> trashedBuffers;
 	u32 currentIndex = 0;
 };

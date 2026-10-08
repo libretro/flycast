@@ -618,6 +618,15 @@ static void *texcache_scratch(size_t size)
 	return tex_scratch;
 }
 
+/* Where Update() converts a texture into: the renderer's memory, which the
+ * upload then takes as it is, or the scratch memory, which it copies. */
+void *BaseTextureCacheData::ConvertInto(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps, bool direct)
+{
+	void *memory = direct ? UploadMemory(width, height, bytes, pixel, mipmaps) : NULL;
+
+	return memory != NULL ? memory : texcache_scratch(bytes);
+}
+
 void texcache_scratch_free()
 {
 	free(tex_scratch);
@@ -763,6 +772,10 @@ void BaseTextureCacheData::Update()
 	// TODO avoid upscaling/depost. textures that change too often
 
 	bool mipmapped = IsMipmapped() && !settings.rend.DumpTextures;
+	/* Straight into the renderer's memory, if it gives any: not a texture
+	 * that is scaled up, which is converted and then scaled into memory of
+	 * the scaler's own; nor when textures are dumped, which reads them back. */
+	const bool direct = !textureUpscaling && !settings.rend.DumpTextures;
 
 	if (texconv32 != NULL && need_32bit_buffer)
 	{
@@ -774,7 +787,7 @@ void BaseTextureCacheData::Update()
 
 		if (mipmapped)
 		{
-			pb32.init(w, h, true, texcache_scratch(PixelBuffer<u32>::bytes(w, h, true)));
+			pb32.init(w, h, true, ConvertInto(w, h, PixelBuffer<u32>::bytes(w, h, true), 4, true, direct));
 			for (u32 i = 0; i <= tsp.TexU + 3u; i++)
 			{
 				pb32.set_mipmap(i);
@@ -810,7 +823,7 @@ void BaseTextureCacheData::Update()
 		}
 		else
 		{
-			pb32.init(w, h, false, texcache_scratch(PixelBuffer<u32>::bytes(w, h, false) + stride_over * sizeof(u32)));
+			pb32.init(w, h, false, ConvertInto(w, h, PixelBuffer<u32>::bytes(w, h, false) + stride_over * sizeof(u32), 4, false, direct));
 			texconv32(&pb32, (u8*)&vram[sa], stride, rows);
 			if (rows < h)
 				memset((u32 *)pb32.data() + rows * w, 0, (size_t)(h - rows) * w * sizeof(u32));
@@ -841,7 +854,7 @@ void BaseTextureCacheData::Update()
 	{
 		if (mipmapped)
 		{
-			pb8.init(w, h, true, texcache_scratch(PixelBuffer<u8>::bytes(w, h, true)));
+			pb8.init(w, h, true, ConvertInto(w, h, PixelBuffer<u8>::bytes(w, h, true), 1, true, direct));
 			for (u32 i = 0; i <= tsp.TexU + 3u; i++)
 			{
 				pb8.set_mipmap(i);
@@ -852,7 +865,7 @@ void BaseTextureCacheData::Update()
 		}
 		else
 		{
-			pb8.init(w, h, false, texcache_scratch(PixelBuffer<u8>::bytes(w, h, false)));
+			pb8.init(w, h, false, ConvertInto(w, h, PixelBuffer<u8>::bytes(w, h, false), 1, false, direct));
 			texconv8(&pb8, &vram[sa], stride, rows);
 			if (rows < h)
 				memset((u8 *)pb8.data() + rows * w, 0, (size_t)(h - rows) * w);
@@ -863,7 +876,7 @@ void BaseTextureCacheData::Update()
 	{
 		if (mipmapped)
 		{
-			pb16.init(w, h, true, texcache_scratch(PixelBuffer<u16>::bytes(w, h, true)));
+			pb16.init(w, h, true, ConvertInto(w, h, PixelBuffer<u16>::bytes(w, h, true), 2, true, direct));
 			for (u32 i = 0; i <= tsp.TexU + 3u; i++)
 			{
 				pb16.set_mipmap(i);
@@ -889,7 +902,7 @@ void BaseTextureCacheData::Update()
 		}
 		else
 		{
-			pb16.init(w, h, false, texcache_scratch(PixelBuffer<u16>::bytes(w, h, false) + stride_over * sizeof(u16)));
+			pb16.init(w, h, false, ConvertInto(w, h, PixelBuffer<u16>::bytes(w, h, false) + stride_over * sizeof(u16), 2, false, direct));
 			texconv(&pb16,(u8*)&vram[sa],stride,rows);
 			if (rows < h)
 				memset((u16 *)pb16.data() + rows * w, 0, (size_t)(h - rows) * w * sizeof(u16));
