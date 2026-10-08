@@ -105,7 +105,11 @@ int main(int argc, char **argv)
    {
       "src/disc.gdi", "stored.zip", "deflate.zip", "subdir.zip", "solid.7z",
       /* the frontend naming a member: a track, and the image itself */
-      "solid.7z#track03.bin", "stored.zip#disc.gdi"
+      "solid.7z#track03.bin", "stored.zip#disc.gdi",
+      /* a disc image in a rar, and by a member of it: the file layer has
+       * had a name for a rar's member since ".rar" became an archive to
+       * path_get_archive_delim() */
+      "stored.rar", "stored.rar#track03.bin"
    };
    void               *lib;
    fn_set_environment  set_environment_fn;

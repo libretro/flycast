@@ -23,6 +23,8 @@
 #include <encodings/crc32.h>
 #include <file/file_path.h>
 
+#include <rar/rrar_archive.h>
+
 #include "../../core/archive/archive.h"
 #include "../../core/deps/coreio/coreio.h"
 
@@ -276,6 +278,78 @@ static void check_archive(const char *work, const char *arc_name,
    core_archive_release();
 }
 
+/* Compressed rar members, read through core_fopen("archive#member")
+ * and held to what the rar reader itself extracts. (The fixtures made
+ * for this test have only a stored one.) A build with the threshold
+ * lowered decodes them on a thread of the archive's while they are
+ * read. */
+static void check_rars(const char *dir)
+{
+   static const char *const files[] = {
+      "compress_best.rar", "rar5_compressed.rar", "filter.rar",
+      "lowdist_reset.rar", "rar5_arm.rar"
+   };
+   unsigned f;
+
+   for (f = 0; f < sizeof(files) / sizeof(files[0]); f++)
+   {
+      char            path[512];
+      char            member_path[768];
+      FILE           *fp;
+      long            len;
+      uint8_t        *data;
+      rrar_archive_t *ra = NULL;
+      uint32_t        i;
+
+      join3(path, sizeof(path), dir, "/", files[f]);
+      if (!(fp = fopen(path, "rb")))
+      {
+         CHECK(fp != NULL, path);
+         continue;
+      }
+      fseek(fp, 0, SEEK_END);
+      len = ftell(fp);
+      fseek(fp, 0, SEEK_SET);
+      data = (uint8_t*)malloc((size_t)len);
+      if (!data || fread(data, 1, (size_t)len, fp) != (size_t)len)
+         len = 0;
+      fclose(fp);
+      CHECK(len && rrar_archive_open(&ra, data, (size_t)len) == RRAR_OK, path);
+      for (i = 0; ra && i < rrar_archive_num_entries(ra); i++)
+      {
+         const rrar_entry_t *e = rrar_archive_entry(ra, i);
+         uint8_t   *want = NULL;
+         size_t     want_len = 0;
+         core_file *cf;
+
+         if (e->is_dir || !e->supported || strchr(e->name, '/'))
+            continue;
+         if (rrar_archive_extract(ra, i, &want, &want_len) != RRAR_OK)
+            continue;
+         join3(member_path, sizeof(member_path), path, "#", e->name);
+         cf = core_fopen(member_path);
+         CHECK(cf != NULL, member_path);
+         if (cf)
+         {
+            check_reads(cf, want, want_len, member_path);
+            core_fclose(cf);
+            /* and again, now that it has been decoded once */
+            cf = core_fopen(member_path);
+            CHECK(cf != NULL, member_path);
+            if (cf)
+            {
+               check_reads(cf, want, want_len, member_path);
+               core_fclose(cf);
+            }
+         }
+         free(want);
+      }
+      rrar_archive_close(ra);
+      free(data);
+      core_archive_release();
+   }
+}
+
 int main(int argc, char **argv)
 {
    const char *work;
@@ -286,7 +360,9 @@ int main(int argc, char **argv)
    size_t      len;
    uint8_t    *want;
 
-   if (argc != 2)
+   if (argc == 3)
+      check_rars(argv[2]);
+   if (argc != 2 && argc != 3)
    {
       fprintf(stderr, "usage: archive_test <workdir>\n");
       return 2;

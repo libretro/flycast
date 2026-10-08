@@ -60,6 +60,24 @@ typedef struct archive_bg
 #endif
 } archive_bg_t;
 
+/* A compressed rar member of at least ARCHIVE_SEEK_MIN that is decoded
+ * on a thread of its own while the game loads and runs: see
+ * archive_unrar_get(). */
+typedef struct archive_unrar
+{
+   struct archive     *a;
+   unsigned            index;
+   uint8_t            *buf;       /* the member, decoded into from its start */
+   size_t              size;
+#ifndef TARGET_NO_THREADS
+   sthread_t          *thread;
+   retro_eventcount_t  progress;  /* notified as more of it is final */
+   retro_atomic_size_t done;      /* how much of it is */
+   retro_atomic_int_t  stop;
+   retro_atomic_int_t  state;     /* 0 decoding, 1 decoded and checked, -1 not to be */
+#endif
+} archive_unrar_t;
+
 typedef struct archive_seek
 {
    rzip_seek_t        *seek;
@@ -87,6 +105,8 @@ struct archive
                                  per entry, made when first asked for  */
    archive_bg_t   **bg;       /* 7z folders being decoded on a thread   */
    unsigned         num_bg;
+   archive_unrar_t **unrar;   /* rar members being decoded on a thread,
+                                 one slot per entry                     */
    char            *names;
    char            *path;
    size_t           map_len;
@@ -249,6 +269,115 @@ static void archive_bg_close(archive_bg_t *bg)
    retro_eventcount_free(&bg->progress);
    r7z_archive_close(bg->sz);
    free(bg);
+}
+#endif
+
+/* ------------------------------------------- rar members decoded behind */
+
+#ifndef TARGET_NO_THREADS
+/* The decoder says how much of the member is final (on its thread). */
+static int archive_unrar_progress(void *ud, size_t done)
+{
+   archive_unrar_t *k = (archive_unrar_t*)ud;
+
+   retro_atomic_store_release_size(&k->done, done);
+   retro_eventcount_notify(&k->progress);
+   return retro_atomic_load_acquire_int(&k->stop);
+}
+
+static void archive_unrar_thread(void *data);
+
+/* The decode of rar member @index on a thread, started if it is a
+ * compressed member large enough to be worth not waiting for: NULL if it
+ * is not, or cannot be. As a large 7z folder is decoded
+ * (archive_bg_get()): the member becomes readable from its start as the
+ * decoder gets on, and the game is loaded and running meanwhile. The
+ * rar reader keeps nothing of a decode in the archive, so the thread
+ * uses the archive as it is; it has to be mapped, so that the two share
+ * only its bytes. */
+static archive_unrar_t *archive_unrar_get(archive_t *a, unsigned index, int start)
+{
+   const archive_entry_t *e;
+   archive_unrar_t       *k;
+
+   if (!a->rar || index >= a->num_entries)
+      return NULL;
+   if (a->unrar && a->unrar[index])
+      return a->unrar[index];
+   e = &a->entries[index];
+   if (     !start || !a->map || !e->usable || e->stored
+         || e->size < ARCHIVE_SEEK_MIN || e->size > (uint64_t)((size_t)-1))
+      return NULL;
+   if (     !a->unrar
+         && !(a->unrar = (archive_unrar_t**)calloc(a->num_entries, sizeof(*a->unrar))))
+      return NULL;
+   if (!(k = (archive_unrar_t*)calloc(1, sizeof(*k))))
+      return NULL;
+   k->a     = a;
+   k->index = index;
+   k->size  = (size_t)e->size;
+   retro_atomic_size_init(&k->done, 0);
+   retro_atomic_int_init(&k->stop, 0);
+   retro_atomic_int_init(&k->state, 0);
+   if (!(k->buf = (uint8_t*)malloc(k->size)))
+   {
+      free(k);
+      return NULL;
+   }
+   if (!retro_eventcount_init(&k->progress))
+   {
+      free(k->buf);
+      free(k);
+      return NULL;
+   }
+   if (!(k->thread = sthread_create(archive_unrar_thread, k)))
+   {
+      retro_eventcount_free(&k->progress);
+      free(k->buf);
+      free(k);
+      return NULL;
+   }
+   a->unrar[index] = k;
+   return k;
+}
+
+/* @len bytes at @offset of the member, once they are final. NULL if they
+ * never will be. */
+static const uint8_t *archive_unrar_reach(archive_unrar_t *k, uint64_t offset,
+      size_t len)
+{
+   if (offset > k->size || len > k->size - (size_t)offset)
+      return NULL;
+   for (;;)
+   {
+      const size_t need = (size_t)offset + len;
+      int          key;
+
+      if (retro_atomic_load_acquire_size(&k->done) >= need)
+         return k->buf + (size_t)offset;
+      if (retro_atomic_load_acquire_int(&k->state) != 0)
+         /* done, or failed: what is final now is all that will be */
+         return (   retro_atomic_load_acquire_int(&k->state) > 0
+                 && retro_atomic_load_acquire_size(&k->done) >= need)
+            ? k->buf + (size_t)offset : NULL;
+      key = retro_eventcount_prepare_wait(&k->progress);
+      if (     retro_atomic_load_acquire_size(&k->done) >= need
+            || retro_atomic_load_acquire_int(&k->state) != 0)
+         retro_eventcount_cancel_wait(&k->progress);
+      else
+         retro_eventcount_commit_wait(&k->progress, key);
+   }
+}
+
+static void archive_unrar_close(archive_unrar_t *k)
+{
+   if (!k)
+      return;
+   retro_atomic_store_release_int(&k->stop, 1);
+   sthread_join(k->thread);
+   retro_eventcount_free(&k->progress);
+   free(k->buf);
+   free(k);
 }
 #endif
 
@@ -507,12 +636,59 @@ static const uint8_t *rar_entry_data(archive_t *a, unsigned index, size_t *len)
       *len           = (size_t)e->size;
       return a->view[index];
    }
+#ifndef TARGET_NO_THREADS
+   /* being decoded behind: all of it is waited for, not decoded again */
+   {
+      archive_unrar_t *k = archive_unrar_get(a, index, 0);
+
+      if (k)
+      {
+         const uint8_t *view = archive_unrar_reach(k, 0, k->size);
+
+         if (!view || retro_atomic_load_acquire_int(&k->state) <= 0)
+         {
+            /* (the end has been decoded, but not yet checked: wait) */
+            while (retro_atomic_load_acquire_int(&k->state) == 0)
+            {
+               const int key = retro_eventcount_prepare_wait(&k->progress);
+               if (retro_atomic_load_acquire_int(&k->state) != 0)
+                  retro_eventcount_cancel_wait(&k->progress);
+               else
+                  retro_eventcount_commit_wait(&k->progress, key);
+            }
+            if (retro_atomic_load_acquire_int(&k->state) <= 0)
+               return NULL;
+            view = k->buf;
+         }
+         a->view[index] = view;
+         *len           = k->size;
+         return view;
+      }
+   }
+#endif
    if (rrar_archive_extract(a->rar, index, &out, &out_len) != RRAR_OK)
       return NULL;
    a->cache[index] = out;
    *len            = out_len;
    return out;
 }
+
+#ifndef TARGET_NO_THREADS
+static void archive_unrar_thread(void *data)
+{
+   archive_unrar_t *k = (archive_unrar_t*)data;
+   rrar_watch_t     watch;
+   int              res;
+
+   watch.progress = archive_unrar_progress;
+   watch.ud       = k;
+   res = rrar_archive_extract_to(k->a->rar, k->index, k->buf, k->size, &watch);
+   /* (a member that fails its checksum at the end is not handed out
+    * any more: what was read of it before was not known to be bad) */
+   retro_atomic_store_release_int(&k->state, res == RRAR_OK ? 1 : -1);
+   retro_eventcount_notify(&k->progress);
+}
+#endif
 
 /* ------------------------------------------------------------ common */
 
@@ -625,6 +801,10 @@ int archive_entry_seekable(archive_t *a, unsigned index)
    if (a->sz)
       return a->entries[index].usable && !a->cache[index] && !a->view[index]
          && archive_bg_get(a, index, 1) != NULL;
+   /* a large compressed rar member */
+   if (a->rar)
+      return !a->cache[index] && !a->view[index]
+         && archive_unrar_get(a, index, 1) != NULL;
 #endif
    if (!a->zip)
       return 0;
@@ -706,7 +886,7 @@ int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
    archive_seek_t *k;
 
 #ifndef TARGET_NO_THREADS
-   if (a->sz)
+   if (a->sz || a->rar)
    {
       const uint8_t *p = archive_entry_view_at(a, index, offset, len);
 
@@ -737,6 +917,12 @@ const uint8_t *archive_entry_view_at(archive_t *a, unsigned index,
          return NULL;
       return archive_bg_reach(bg, index, offset, len);
    }
+   if (a->rar)
+   {
+      archive_unrar_t *k = archive_unrar_get(a, index, 0);
+
+      return k ? archive_unrar_reach(k, offset, len) : NULL;
+   }
 #endif
    k = archive_seek_reach(a, index, offset, len);
 
@@ -758,8 +944,11 @@ void archive_close(archive_t *a)
    /* (before the mapping they decode from goes) */
    for (i = 0; i < a->num_bg; i++)
       archive_bg_close(a->bg[i]);
+   for (i = 0; i < a->num_entries && a->unrar; i++)
+      archive_unrar_close(a->unrar[i]);
 #endif
    free(a->bg);
+   free(a->unrar);
    for (i = 0; i < a->num_entries && a->cache; i++)
       free(a->cache[i]);
    free(a->cache);
@@ -882,6 +1071,18 @@ const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len)
    if (a->rar && e->stored && a->map)
       return rar_entry_data(a, index, len);
 #ifndef TARGET_NO_THREADS
+   /* A rar member that was decoded behind, and is done. */
+   if (a->rar)
+   {
+      archive_unrar_t *k = archive_unrar_get(a, index, 0);
+
+      if (k && retro_atomic_load_acquire_int(&k->state) > 0)
+      {
+         a->view[index] = k->buf;
+         *len           = k->size;
+         return k->buf;
+      }
+   }
    /* A 7z member whose folder is being decoded behind, and which the
     * decoder has passed: it is where it will stay. */
    if (a->sz)
@@ -943,16 +1144,9 @@ int archive_resolve_disc(const char *path, char *out, size_t out_len)
       free(arc);
       return 0;
    }
-   if (a->rar)
-   {
-      /* A member of a rar has no "archive#member" name the file layer
-       * knows (libretro-common's path_get_archive_delim): a disc image
-       * in one cannot be opened track by track. */
-      archive_close(a);
-      free(arc);
-      return 0;
-   }
-
+   /* (A rar is looked through like the others: a member of one has an
+    * "archive#member" name the file layer knows, since libretro-common's
+    * path_get_archive_delim took ".rar" in.) */
    for (i = 0; i < a->num_entries; i++)
    {
       const archive_entry_t *e   = &a->entries[i];

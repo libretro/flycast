@@ -100,10 +100,10 @@ mkdir -p "$WORK/fx/dc"
 export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
 fail=0
 for mode in mmap nommap mmap_seek nommap_seek; do
-   "$WORK/archive_test_$mode" "$WORK/fx" | tail -1 | grep -q PASS \
+   "$WORK/archive_test_$mode" "$WORK/fx" tools/archive/rar | tail -1 | grep -q PASS \
       || { echo "FAIL: $mode build"; fail=1; }
 done
-TSAN_OPTIONS=halt_on_error=1 "$WORK/archive_test_tsan" "$WORK/fx" | tail -1 | grep -q PASS \
+TSAN_OPTIONS=halt_on_error=1 "$WORK/archive_test_tsan" "$WORK/fx" tools/archive/rar | tail -1 | grep -q PASS \
    || { echo "FAIL: indexed members under TSan"; fail=1; }
 for z in deflate.zip subdir.zip; do
    "$WORK/seek_test" "$WORK/fx/$z" | tail -1 | grep -q "seek_test: ok" \
