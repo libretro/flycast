@@ -182,22 +182,20 @@ static int sz_open(archive_t *a)
    unsigned       n, i;
    char          *name_out;
 
+   /* In place when the file is mapped. When it is not, it is read
+    * through the same positioned reads the zip reader uses: the header
+    * at open, a folder's packed bytes when the folder is decoded - not
+    * the whole file into memory, to be kept there beside everything
+    * decoded from it. */
    if (a->map)
    {
       data = a->map;
       len  = a->map_len;
-   }
-   else
-   {
-      len = core_fsize(a->f);
-      if (!(a->sz_buf = (uint8_t*)malloc(len ? len : 1)))
+      if (r7z_archive_open(&a->sz, data, len) != R7Z_OK)
          return 0;
-      if (core_fread_at(a->f, 0, a->sz_buf, len) != len)
-         return 0;
-      data = a->sz_buf;
    }
-
-   if (r7z_archive_open(&a->sz, data, len) != R7Z_OK)
+   else if (r7z_archive_open_read(&a->sz, core_fsize(a->f), zip_read,
+            a->f) != R7Z_OK)
       return 0;
 
    n = r7z_archive_num_entries(a->sz);
