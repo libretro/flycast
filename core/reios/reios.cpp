@@ -90,7 +90,9 @@ static bool reios_locate_bootfile(const char* bootfile)
 	if (memcmp(ip_bin, "SEGA SEGAKATANA ", 16) != 0)
 		return false;
 
-	u32 data_len = 2048 * 1024;
+	/* What temp holds of a directory: 2 MB, which is a thousand sectors. */
+	const u32 dir_room = 2048 * 1024;
+	u32 data_len = dir_room;
 	/* Zeroed: left as it came, it could be the block the last boot's
 	 * directory was read into and freed, and a read that read nothing
 	 * left that directory there to find the boot file in - which was then
@@ -107,6 +109,15 @@ static bool reios_locate_bootfile(const char* bootfile)
 		u32 lba = decode_iso733(pvd->root_directory_record.extent);
 		u32 len = decode_iso733(pvd->root_directory_record.size);
 
+		/* The directory is read into temp: no more of it than temp holds,
+		 * whatever length the disc gives for it - a length above that
+		 * was read past the end of temp, and one near 4 GB came out of
+		 * the rounding below as nothing. */
+		if (len > dir_room)
+		{
+			WARN_LOG(REIOS, "iso9660 root directory of %u bytes: the first %u are looked at", len, dir_room);
+			len = dir_room;
+		}
 		data_len = ((len + 2047) / 2048) * 2048;
 
 		INFO_LOG(REIOS, "iso9660 root_directory, FAD: %d, len: %d", 150 + lba, data_len);
@@ -119,13 +130,30 @@ static bool reios_locate_bootfile(const char* bootfile)
 	int bootfile_len = strlen(bootfile);
 	while (bootfile_len > 0 && isspace(bootfile[bootfile_len - 1]))
 		bootfile_len--;
-	for (int i = 0; i < data_len; )
+	/* A record is 33 bytes and then its name (the 33rd is the name's
+	 * length). */
+	const u32 name_at = 33;
+	for (u32 i = 0; bootfile_len > 0 && i + name_at <= data_len; )
 	{
 		iso9660_dir_t *dir = (iso9660_dir_t *)&temp[i];
-		if (dir->length == 0)
+		const u32 record_len = dir->length;
+		if (record_len == 0)
+		{
+			/* Records do not run from one sector into the next: the rest
+			 * of this one is padding, and the directory goes on at the
+			 * start of the next. */
+			i = (i / 2048 + 1) * 2048;
+			continue;
+		}
+		/* One that says it is shorter than a record is, or that runs past
+		 * what was read, is not a record: the directory ends there. */
+		if (record_len < name_at || record_len > data_len - i)
 			break;
 
-		if ((dir->file_flags & ISO_DIRECTORY) == 0 && memcmp(dir->filename.str + 1, bootfile, bootfile_len) == 0)
+		if ((dir->file_flags & ISO_DIRECTORY) == 0
+				&& (u32)bootfile_len <= record_len - name_at
+				&& (u32)bootfile_len <= (u8)dir->filename.str[0]
+				&& memcmp(dir->filename.str + 1, bootfile, bootfile_len) == 0)
 		{
 			INFO_LOG(REIOS, "Found %.*s at offset %X", bootfile_len, bootfile, i);
 
@@ -134,6 +162,13 @@ static bool reios_locate_bootfile(const char* bootfile)
 
 			if (!memcmp(bootfile, "0WINCEOS.BIN", 12))
 			{
+				/* (its first sector is not part of the program) */
+				if (len < 2048)
+				{
+					ERROR_LOG(REIOS, "Boot file too small: %u", len);
+					delete[] temp;
+					return false;
+				}
 				lba++;
 				len -= 2048;
 			}
@@ -144,9 +179,11 @@ static bool reios_locate_bootfile(const char* bootfile)
 			/* The program goes to 8c010000, and has to fit between there
 			 * and the end of main memory: a length off a bad disc is not
 			 * read past it. */
-			if (len == 0 || (len + 2047) / 2048 * 2048 > RAM_SIZE - 0x10000)
+			/* (the length itself is compared: rounded up to sectors first,
+			 * one near 4 GB came out as nothing and passed) */
+			if (len == 0 || len > RAM_SIZE - 0x10000)
 			{
-				ERROR_LOG(REIOS, "Boot file too large: %d", len);
+				ERROR_LOG(REIOS, "Boot file too large: %u", len);
 				delete[] temp;
 				return false;
 			}
@@ -178,7 +215,7 @@ static bool reios_locate_bootfile(const char* bootfile)
 
 			return true;
 		}
-		i += dir->length;
+		i += record_len;
 	}
 
 	delete[] temp;
