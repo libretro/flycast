@@ -586,6 +586,22 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 	this->shaderManager = shaderManager;
 	if (viewport != GetContext()->GetViewPort())
 	{
+		/* Not destroyed on the spot: the last picture was handed to the
+		 * frontend, which shows it again for as long as no new one comes -
+		 * and may, before the first frame at the new size is drawn. They
+		 * go when the frames that could still use them have gone by.
+		 * (Upstream: a crash starting the 240p test suite.) */
+		if (commandPool != nullptr)
+		{
+			for (auto& framebuffer : framebuffers)
+				if (framebuffer)
+					commandPool->DeferDelete(std::unique_ptr<vk::UniqueFramebuffer>(new vk::UniqueFramebuffer(std::move(framebuffer))));
+			for (auto& attachment : colorAttachments)
+				if (attachment)
+					commandPool->DeferDelete(std::move(attachment));
+			if (depthAttachment)
+				commandPool->DeferDelete(std::move(depthAttachment));
+		}
 		framebuffers.clear();
 		colorAttachments.clear();
 		depthAttachment.reset();

@@ -509,6 +509,16 @@ void OITScreenDrawer::MakeFramebuffers()
 	viewport.extent = GetContext()->GetViewPort();
 
 	MakeBuffers(viewport.extent.width, viewport.extent.height);
+	// (kept until the frames that could still use them have gone by: see the per-triangle screen drawer)
+	if (commandPool != nullptr)
+	{
+		for (auto& framebuffer : framebuffers)
+			if (framebuffer)
+				commandPool->DeferDelete(std::unique_ptr<vk::UniqueFramebuffer>(new vk::UniqueFramebuffer(std::move(framebuffer))));
+		for (auto& attachment : finalColorAttachments)
+			if (attachment)
+				commandPool->DeferDelete(std::move(attachment));
+	}
 	framebuffers.clear();
 	finalColorAttachments.clear();
 	havePicture = false;
