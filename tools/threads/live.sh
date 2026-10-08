@@ -127,24 +127,24 @@ network_cmd_port = "55355"
 CFG
 cat > "$WORK/core-options.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
-reicast_hle_bios = "enabled"
+reicast_use_real_bios = "disabled"
 reicast_vmu1_screen_display = "enabled"
 CFG
 cat > "$WORK/core-options-pixel.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
-reicast_hle_bios = "enabled"
+reicast_use_real_bios = "disabled"
 reicast_vmu1_screen_display = "enabled"
 reicast_alpha_sorting = "per-pixel (accurate)"
 CFG
 cat > "$WORK/core-options-lod0.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
-reicast_hle_bios = "enabled"
+reicast_use_real_bios = "disabled"
 reicast_vmu1_screen_display = "enabled"
 reicast_force_texture_lod0 = "enabled"
 CFG
 cat > "$WORK/core-options-off.cfg" <<CFG
 reicast_threaded_rendering = "disabled"
-reicast_hle_bios = "enabled"
+reicast_use_real_bios = "disabled"
 reicast_vmu1_screen_display = "enabled"
 CFG
 
@@ -492,7 +492,7 @@ PY
    echo "== $SOUND_DRIVER: picture and sound under the accurate SH4 timing"
    cat > "$WORK/core-options-accurate.cfg" <<CFG
 reicast_threaded_rendering = "enabled"
-reicast_hle_bios = "enabled"
+reicast_use_real_bios = "disabled"
 reicast_vmu1_screen_display = "enabled"
 reicast_sh4_timing = "accurate"
 CFG

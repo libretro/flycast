@@ -21,7 +21,7 @@
  *
  *   HEADLESS_DIR=dir HEADLESS_STAGE=0x8c00f800 LD_PRELOAD=libGLESv2.so.2 \
  *      ./headless flycast_libretro.so bench.elf 30000 \
- *      reicast_hle_bios=enabled reicast_threaded_rendering=disabled \
+ *      reicast_use_real_bios=disabled reicast_threaded_rendering=disabled \
  *      reicast_sh4_timing=accurate
  *
  * The same command runs upstream's libretro core, whose options have the

@@ -465,6 +465,14 @@ static bool naomi_FlatBios(const u8 *rom, size_t size)
 	// From naomi.zip, or naomi2.zip for a NAOMI 2
 	const char *bios = settings.System == DC_PLATFORM_NAOMI2 ? "naomi2" : "naomi";
 	int region = naomi_FlatRegion(rom, size);
+	if (!settings.bios.UseRealBios)
+	{
+		// "Use Real BIOS (If Available)" is off: not the one in the
+		// archive, and not a naomi_boot.bin that was loaded already
+		bios_loaded = false;
+		NOTICE_LOG(NAOMI, "The BIOS is not to be used: the game is started without one");
+		return true;
+	}
 	if (naomi_LoadBios(bios, NULL, NULL, region))
 		bios_loaded = true;
 	else

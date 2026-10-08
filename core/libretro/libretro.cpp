@@ -428,12 +428,16 @@ static void set_variable_visibility(void)
    option_display.key = CORE_OPTION_NAME "_enable_naomi_15khz_dipswitch";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
+   /* The Atomiswave's BIOS is its own, and there is nothing in place of it */
+   option_display.visible = (settings.System != DC_PLATFORM_ATOMISWAVE);
+
+   option_display.key = CORE_OPTION_NAME "_use_real_bios";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+
    /* Show/hide Dreamcast options */
    option_display.visible = (settings.System == DC_PLATFORM_DREAMCAST);
 
    option_display.key = CORE_OPTION_NAME "_boot_to_bios";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-   option_display.key = CORE_OPTION_NAME "_hle_bios";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = CORE_OPTION_NAME "_gdrom_fast_loading";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
@@ -736,12 +740,15 @@ static void update_variables(bool first_startup)
       else
          settings.System = DC_PLATFORM_DREAMCAST;
 
-      var.key = CORE_OPTION_NAME "_hle_bios";
-
-      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      	settings.bios.UseReios = !strcmp(var.value, "enabled") && !boot_to_bios;
-      else
-      	settings.bios.UseReios = false;
+      /* "Use Real BIOS (If Available)". Off: the HLE BIOS even if the
+       * real one is there. On: the real one, and the HLE BIOS if it is
+       * not found - for the Dreamcast that is dc_init()'s doing, for a
+       * NAOMI flat image naomi_cart's. */
+      var.key = CORE_OPTION_NAME "_use_real_bios";
+      var.value = NULL;
+      settings.bios.UseRealBios = !(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+            && !strcmp(var.value, "disabled"));
+      settings.bios.UseReios = !settings.bios.UseRealBios && !boot_to_bios;
       /* A program given as an ELF is started by the HLE BIOS, which is
        * what loads it; the real one would only see an empty drive. */
       if (!settings.reios.ElfFile.empty())

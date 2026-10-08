@@ -59,8 +59,8 @@ static bool environ_cb(unsigned cmd, void *data)
       {
          struct retro_variable *var = (struct retro_variable*)data;
          var->value = NULL;
-         if (!strcmp(var->key, "reicast_hle_bios"))
-            var->value = "enabled";
+         if (!strcmp(var->key, "reicast_use_real_bios"))
+            var->value = "disabled";
          return var->value != NULL;
       }
       case RETRO_ENVIRONMENT_SET_HW_RENDER:

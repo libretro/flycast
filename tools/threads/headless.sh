@@ -163,7 +163,7 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
    [ "$NAME" != legacy ] || SOUND=$WORK/sound-plain.pcm
    HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$SOUND HEADLESS_PEEK=$VERDICT \
       $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" $FRAMES \
-      reicast_hle_bios=enabled reicast_threaded_rendering=disabled \
+      reicast_use_real_bios=disabled reicast_threaded_rendering=disabled \
       reicast_sh4_timing=$TIMING reicast_force_wince=$WINCE $EXTRA \
       > "$WORK/$NAME.out" 2> "$WORK/$NAME.log" || {
       echo "FAIL: the run ended badly" >&2

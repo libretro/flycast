@@ -555,6 +555,7 @@ struct settings_t
 
 	struct {
 		bool UseReios;
+		bool UseRealBios;	// the option: the real BIOS if it is there; reios if it is not, or if this is off
 	} bios;
 
 	struct {
