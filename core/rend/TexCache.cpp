@@ -698,15 +698,27 @@ void BaseTextureCacheData::Update()
 			stride = w;
 	}
 
-	u32 original_h = h;
-	if (sa_tex > VRAM_SIZE || size == 0 || sa + size > VRAM_SIZE)
+	/* How many of the texture's lines there are to read. All of them, but
+	 * for a texture that runs past the end of video memory: Shenmue's Space
+	 * Harrier mini-arcade loads one, and only uses the top of it.
+	 *
+	 * That was done by cutting the texture's height and size down for the
+	 * update and putting the height back after. The size stayed cut - it is
+	 * what is locked and hashed, and has to end inside video memory - so the
+	 * second update found nothing running past the end, cut nothing, and
+	 * read all the lines, the ones outside video memory included. And the
+	 * first update converted into a buffer made for the cut height, then
+	 * uploaded the whole. (From upstream, done here by what the texture
+	 * would take whole rather than by the size as it stands.) */
+	u32 rows = h;
+	const bool cut_short = tcw.ScanOrder && stride > 0 && !tcw.VQ_Comp && tex->bpp != 0;
+	const u32 whole = cut_short ? stride * h * tex->bpp / 8 : size;
+	if (sa_tex > VRAM_SIZE || size == 0 || sa + (whole > size ? whole : size) > VRAM_SIZE)
 	{
-		if (sa < VRAM_SIZE && sa + size > VRAM_SIZE && tcw.ScanOrder && stride > 0 && !tcw.VQ_Comp)
+		if (sa < VRAM_SIZE && cut_short)
 		{
-			// Shenmue Space Harrier mini-arcade loads a texture that goes beyond the end of VRAM
-			// but only uses the top portion of it
-			h = (VRAM_SIZE - sa) * 8 / stride / tex->bpp;
-			size = stride * h * tex->bpp/8;
+			rows = (VRAM_SIZE - sa) * 8 / stride / tex->bpp;
+			size = stride * rows * tex->bpp/8;
 		}
 		else
 		{
@@ -796,7 +808,9 @@ void BaseTextureCacheData::Update()
 		else
 		{
 			pb32.init(w, h, false, texcache_scratch(PixelBuffer<u32>::bytes(w, h, false) + stride_over * sizeof(u32)));
-			texconv32(&pb32, (u8*)&vram[sa], stride, h);
+			texconv32(&pb32, (u8*)&vram[sa], stride, rows);
+			if (rows < h)
+				memset((u32 *)pb32.data() + rows * w, 0, (size_t)(h - rows) * w * sizeof(u32));
 			if (stride < w)
 				for (u32 y = 0; y < h; y++)
 					memset(pb32.data(stride, y), 0, (w - stride) * sizeof(u32));
@@ -836,7 +850,9 @@ void BaseTextureCacheData::Update()
 		else
 		{
 			pb8.init(w, h, false, texcache_scratch(PixelBuffer<u8>::bytes(w, h, false)));
-			texconv8(&pb8, &vram[sa], stride, h);
+			texconv8(&pb8, &vram[sa], stride, rows);
+			if (rows < h)
+				memset((u8 *)pb8.data() + rows * w, 0, (size_t)(h - rows) * w);
 		}
 		temp_tex_buffer = pb8.data();
 	}
@@ -871,7 +887,9 @@ void BaseTextureCacheData::Update()
 		else
 		{
 			pb16.init(w, h, false, texcache_scratch(PixelBuffer<u16>::bytes(w, h, false) + stride_over * sizeof(u16)));
-			texconv(&pb16,(u8*)&vram[sa],stride,h);
+			texconv(&pb16,(u8*)&vram[sa],stride,rows);
+			if (rows < h)
+				memset((u16 *)pb16.data() + rows * w, 0, (size_t)(h - rows) * w * sizeof(u16));
 			if (stride < w)
 				for (u32 y = 0; y < h; y++)
 					memset(pb16.data(stride, y), 0, (w - stride) * sizeof(u16));
@@ -887,9 +905,6 @@ void BaseTextureCacheData::Update()
 		temp_tex_buffer = pb16.data();
 		mipmapped = false;
 	}
-	// Restore the original texture height if it was constrained to VRAM limits above
-	h = original_h;
-
 	//lock the texture to detect changes in it, unless it is frequently
 	//updated: each update of a protected texture costs a SIGSEGV (the write
 	//fault), the invalidation, a full re-upload, and a re-protect -- measured
