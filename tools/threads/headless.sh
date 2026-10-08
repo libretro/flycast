@@ -96,13 +96,23 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # the disc's sound plays: from the load on, the sound has to be the first
 # run's from where the state was saved. (A channel the program has marked
 # to start and not yet started is among what the state has to carry.)
-for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state"; do
+# The seventh changes the Internal Resolution option 120 frames in, as from
+# the frontend's menu: the core has to tell the frontend the new size, and
+# the disc's program has to go on as if nothing had happened.
+for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy resize"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
    FRAMES=300
-   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD
-   if [ "$2" = state ]; then
+   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION
+   if [ "$2" = resize ]; then
+      NAME=$TIMING-resize
+      WINCE=disabled
+      GOOD=600d600d
+      HEADLESS_OPTION=120:reicast_internal_resolution=2x
+      export HEADLESS_OPTION
+      echo "== headless: $TIMING SH4 timing, with the internal resolution changed"
+   elif [ "$2" = state ]; then
       NAME=$TIMING-state
       WINCE=disabled
       GOOD=600d600d
@@ -172,6 +182,12 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       }
    fi
    # (a Windows program ends its lines its own way)
+   if [ -n "$HEADLESS_OPTION" ]; then
+      tr -d '\r' < "$WORK/$NAME.out" | grep -q "^size 1280x960\$" || {
+         echo "FAIL: the frontend was not told the new size: $(cat "$WORK/$NAME.out")" >&2
+         exit 1
+      }
+   fi
    tr -d '\r' < "$WORK/$NAME.out" | grep -q "= $GOOD\$" || {
       echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
       exit 1

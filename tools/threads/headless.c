@@ -22,6 +22,9 @@
  *   HEADLESS_SAVE    frame to save a state before
  *   HEADLESS_LOAD    frame to load that state back before
  *   HEADLESS_DUMP    "frame:file": a state saved before that frame, written to the file
+ *   HEADLESS_OPTION  "frame:key=value": a core option changed before that frame, as
+ *                    from the frontend's menu while the game runs. Whatever size the
+ *                    core then tells the frontend is printed, "size WxH".
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -129,6 +132,10 @@ static void log_line(enum retro_log_level level, const char *fmt, ...)
 static struct retro_disk_control_callback disk;
 static int have_disk;
 
+static const char *changed_option;   /* HEADLESS_OPTION, from its frame on */
+static int option_changed;
+static unsigned told_width, told_height;
+
 static bool environment(unsigned cmd, void *data)
 {
    switch (cmd)
@@ -164,6 +171,11 @@ static bool environment(unsigned cmd, void *data)
          struct retro_variable *var = (struct retro_variable *)data;
          size_t len = strlen(var->key);
          int i;
+         if (changed_option && !strncmp(changed_option, var->key, len) && changed_option[len] == '=')
+         {
+            var->value = changed_option + len + 1;
+            return true;
+         }
          for (i = 0; i < option_count; i++)
             if (!strncmp(options[i], var->key, len) && options[i][len] == '=')
             {
@@ -178,7 +190,16 @@ static bool environment(unsigned cmd, void *data)
          have_disk = 1;
          return true;
       case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
-         *(bool *)data = false;
+         *(bool *)data = option_changed != 0;
+         option_changed = 0;
+         return true;
+      case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
+         told_width  = ((const struct retro_system_av_info *)data)->geometry.base_width;
+         told_height = ((const struct retro_system_av_info *)data)->geometry.base_height;
+         return true;
+      case RETRO_ENVIRONMENT_SET_GEOMETRY:
+         told_width  = ((const struct retro_game_geometry *)data)->base_width;
+         told_height = ((const struct retro_game_geometry *)data)->base_height;
          return true;
       default:
          return false;
@@ -311,6 +332,11 @@ int main(int argc, char **argv)
                fprintf(stderr, "the state could not be loaded\n");
                return 1;
             }
+            if (getenv("HEADLESS_OPTION") && i == atoi(getenv("HEADLESS_OPTION")) && strchr(getenv("HEADLESS_OPTION"), ':'))
+            {
+               changed_option = strchr(getenv("HEADLESS_OPTION"), ':') + 1;
+               option_changed = 1;
+            }
             if (getenv("HEADLESS_DUMP") && i == atoi(getenv("HEADLESS_DUMP")) && strchr(getenv("HEADLESS_DUMP"), ':'))
             {
                size_t dump_size = retro_serialize_size();
@@ -368,6 +394,8 @@ int main(int argc, char **argv)
             return 1;
          }
          memcpy(&word, ram + (addr & (size - 1)), 4);
+         if (told_width != 0)
+            printf("size %ux%u\n", told_width, told_height);
          printf("peek %08lx = %08x\n", addr, (unsigned)word);
       }
       fflush(stdout);
