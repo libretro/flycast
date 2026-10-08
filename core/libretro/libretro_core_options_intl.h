@@ -17421,7 +17421,7 @@ struct retro_core_options_v2 options_eo = {
 #define OPTION_VAL_1X_ES NULL
 #define OPTION_VAL_3X_ES NULL
 #define OPTION_VAL_8X_ES NULL
-#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_ES "Renderizado multihilo (es necesario reiniciar)"
+#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_ES "Renderizado multihilo"
 #define CORE_OPTION_NAME_THREADED_RENDERING_INFO_0_ES "Ejecuta la GPU y la CPU en hilos distintos. Muy recomendado."
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_LABEL_ES "Renderizado síncrono"
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_INFO_0_ES "Espera a que la GPU termine de renderizar el fotograma anterior para no descartar el actual. Nota: este ajuste solo surtirá efecto cuando la opción «Renderizado multihilo» esté activada."
@@ -22134,7 +22134,7 @@ struct retro_core_options_v2 options_fi = {
 #define OPTION_VAL_1X_FR "x1"
 #define OPTION_VAL_3X_FR "x3"
 #define OPTION_VAL_8X_FR "x8"
-#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_FR "Rendu sur plusieurs fils d'exécution (Redémarrage requis)"
+#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_FR "Rendu sur plusieurs fils d'exécution"
 #define CORE_OPTION_NAME_THREADED_RENDERING_INFO_0_FR "Fais tourner le processeur graphique et le processeur sur différents fils d'exécution. Fortement recommandé."
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_LABEL_FR "Rendu synchronisé"
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_INFO_0_FR "Attend que le processeur graphique termine le rendu de l'image précédente au lieu de supprimer l'image courante. Remarque : Cette option ne s'applique que lorsque 'Rendu sur plusieurs fils d'exécution' est activé."
@@ -29989,7 +29989,7 @@ struct retro_core_options_v2 options_id = {
 #define OPTION_VAL_1X_IT NULL
 #define OPTION_VAL_3X_IT NULL
 #define OPTION_VAL_8X_IT NULL
-#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_IT "Rendering Filettato (Riavvio Richiesto)"
+#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_IT "Rendering Filettato"
 #define CORE_OPTION_NAME_THREADED_RENDERING_INFO_0_IT "Esegue la GPU e la CPU su diversi thread. Altamente raccomandato."
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_LABEL_IT "Rendering Sincrono"
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_INFO_0_IT "Aspetta che la GPU finisca di rendere il fotogramma precedente invece di lasciare quello attuale. Nota: questa impostazione si applica solo quando il Rendering Threaded è abilitato."
@@ -42557,7 +42557,7 @@ struct retro_core_options_v2 options_pl = {
 #define OPTION_VAL_1X_PT_BR NULL
 #define OPTION_VAL_3X_PT_BR NULL
 #define OPTION_VAL_8X_PT_BR NULL
-#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_PT_BR "Renderização multi-thread (requer reinício)"
+#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_PT_BR "Renderização multi-thread"
 #define CORE_OPTION_NAME_THREADED_RENDERING_INFO_0_PT_BR "Executa a GPU e a CPU em diferentes threads. Altamente recomendado."
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_LABEL_PT_BR "Renderização síncrona"
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_INFO_0_PT_BR "Espera que a GPU termine de renderizar o quadro anterior em vez de jogar o atual. Nota: Esta configuração só será aplicada quando a 'Renderização multi-thread' estiver ativada."
@@ -55125,7 +55125,7 @@ struct retro_core_options_v2 options_sv = {
 #define OPTION_VAL_1X_TR NULL
 #define OPTION_VAL_3X_TR NULL
 #define OPTION_VAL_8X_TR NULL
-#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_TR "Baskın İşleme (Yeniden Başlatılmalı)"
+#define CORE_OPTION_NAME_THREADED_RENDERING_LABEL_TR "Baskın İşleme"
 #define CORE_OPTION_NAME_THREADED_RENDERING_INFO_0_TR "GPU ve CPU'yu farklı iş parçacıklarında çalıştırır. Şiddetle tavsiye edilir."
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_LABEL_TR "Eşzamanlı İşleme"
 #define CORE_OPTION_NAME_SYNCHRONOUS_RENDERING_INFO_0_TR "GPU'nun mevcut kareyi bırakmak yerine önceki kareyi oluşturmayı bitirmesini bekler. Not: Bu ayar yalnızca 'Baskın İşleme' etkinleştirildiğinde geçerlidir."

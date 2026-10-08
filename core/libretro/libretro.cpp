@@ -204,6 +204,10 @@ char content_name[PATH_MAX];
 char g_roms_dir[PATH_MAX];
 #if !defined(TARGET_NO_THREADS)
 static void *emu_thread_func(void *);
+static retro_atomic_int_t emu_thread_leaves_machine;
+/* The Threaded Rendering option changed while the game runs: +1 on, -1 off (libretro thread only) */
+static int threading_pending;
+static void apply_threading(void);
 static cThread emu_thread(&emu_thread_func, 0);
 static bool emu_thread_started = false;   /* libretro thread only */
 /* Who has the machine, and the frame-by-frame handshake between retro_run
@@ -243,7 +247,11 @@ static void *emu_thread_func(void *)
       emu_baton.EndFrame();
    }
 
-   dc_term();
+   /* Told to go because the game is closed: the machine goes with it. Told
+    * to go because threaded rendering was turned off: it is left as it
+    * is, for the libretro thread to run. */
+   if (!retro_atomic_load_acquire_int(&emu_thread_leaves_machine))
+      dc_term();
 
    return NULL;
 }
@@ -258,6 +266,45 @@ static void emu_release(void)
    emu_baton.Release();
 }
 #endif
+
+/* The Threaded Rendering option was changed while the game runs. Between
+ * two frames the emulation thread is asleep and outside the machine, which
+ * stops at every vblank whichever thread runs it: the thread is told to go
+ * and leave the machine as it is, or is started by the next frame as it is
+ * by the first. Nothing else is set up for one way or the other. */
+static void apply_threading(void)
+{
+   const bool on                 = threading_pending > 0;
+   bool save_state_in_background = on;
+   unsigned poll_type            = on ? 1 /* POLL_TYPE_EARLY */ : 0;
+
+   threading_pending = 0;
+#if !defined(TARGET_NO_THREADS)
+   if (!on && emu_thread_started)
+   {
+      emu_hold();
+      retro_atomic_store_release_int(&emu_thread_leaves_machine, 1);
+      emu_baton.TellThreadToExit();
+      emu_thread.WaitToEnd();
+      emu_thread_started = false;
+      emu_baton.ThreadGone();
+      retro_atomic_store_release_int(&emu_thread_leaves_machine, 0);
+      /* (a reset the thread was to make at its next frame) */
+      if (retro_atomic_load_acquire_int(&reset_requested))
+      {
+         dc_reset(false);
+         retro_atomic_store_release_int(&reset_requested, 0);
+      }
+   }
+   settings.rend.ThreadedRendering = on;
+   first_run                       = on;
+   environ_cb(RETRO_ENVIRONMENT_SET_SAVE_STATE_IN_BACKGROUND, &save_state_in_background);
+   environ_cb(RETRO_ENVIRONMENT_POLL_TYPE_OVERRIDE, &poll_type);
+#else
+   (void)save_state_in_background;
+   (void)poll_type;
+#endif
+}
 
 void retro_set_video_refresh(retro_video_refresh_t cb)
 {
@@ -941,6 +988,19 @@ static void update_variables(bool first_startup)
       settings.rend.RenderToTextureUpscale = 1;
 
 #if !defined(TARGET_NO_THREADS)
+   {
+      bool threaded = false;
+
+      var.key = CORE_OPTION_NAME "_threaded_rendering";
+
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+         threaded = !strcmp("enabled", var.value);
+      /* Changed while the game runs: the emulation thread is started or
+       * stopped between two frames, from retro_run() (apply_threading()) -
+       * this is also called from where it cannot be. */
+      if (!first_startup)
+         threading_pending = threaded == settings.rend.ThreadedRendering ? 0 : threaded ? 1 : -1;
+   }
    if (first_startup)
    {
 	   var.key = CORE_OPTION_NAME "_threaded_rendering";
@@ -1260,6 +1320,8 @@ void retro_run (void)
    }
    if (resize_pending)
       apply_new_size();
+   if (threading_pending)
+      apply_threading();
 
    if (devices_need_refresh)
       refresh_devices(false);

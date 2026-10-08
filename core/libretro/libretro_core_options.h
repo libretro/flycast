@@ -527,7 +527,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 #if !defined(TARGET_NO_THREADS)
    {
       CORE_OPTION_NAME "_threaded_rendering",
-      "Threaded Rendering (Restart Required)",
+      "Threaded Rendering",
       NULL,
       "Runs the GPU and CPU on different threads. Highly recommended.",
       NULL,
