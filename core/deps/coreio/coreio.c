@@ -244,6 +244,20 @@ const uint8_t* core_fmap(core_file* fc, size_t* len)
    return cf->mem;
 }
 
+const uint8_t* core_fview(core_file* fc, uint64_t offset, size_t len)
+{
+   core_file_impl *cf = (core_file_impl*)fc;
+
+   if (!len || offset >= cf->size || len > cf->size - (size_t)offset)
+      return NULL;
+   if (cf->mem)
+      return cf->mem + (size_t)offset;
+   if (cf->seek_entry >= 0)
+      return archive_entry_view_at(cur_archive, (unsigned)cf->seek_entry,
+            offset, len);
+   return NULL;
+}
+
 void core_fprefetch(core_file* fc, uint64_t offset, size_t len)
 {
    core_file_impl *cf = (core_file_impl*)fc;

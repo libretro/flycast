@@ -92,6 +92,24 @@ static void check_reads(core_file *cf, const uint8_t *want, size_t len,
       CHECK(!memcmp(buf, want + off, got), what);
    }
 
+   /* in place: a view, when there is one, is the bytes; a file that is
+    * all there (mapped or in memory) gives one for anything in it; and
+    * nothing past the end is given */
+   for (i = 0; i < 64 && len > 2352; i++)
+   {
+      const uint8_t *view;
+
+      off  = (i * 700001u) % (len - 2352);
+      view = core_fview(cf, off, 2352);
+      if (core_fmap(cf, NULL))
+         CHECK(view == core_fmap(cf, NULL) + off, what);
+      if (view)
+         CHECK(!memcmp(view, want + off, 2352), what);
+   }
+   CHECK(core_fview(cf, len, 1) == NULL, what);
+   CHECK(core_fview(cf, len ? len - 1 : 0, 2) == NULL, what);
+   CHECK(core_fview(cf, 0, 0) == NULL, what);
+
    /* past the end */
    got = core_fread_at(cf, len, buf, 16);
    CHECK(got == 0, what);
@@ -228,7 +246,12 @@ static void check_archive(const char *work, const char *arc_name,
          /* this build reads a deflated zip member of any size through the
           * index: there is no pointer to all of it */
          if (strstr(arc_name, ".zip") && !e->stored && want_len >= ARCHIVE_SEEK_MIN)
+         {
             CHECK(fmap == NULL, member_path);
+            /* ...but the start of it can be had in place */
+            if (want_len > 2352)
+               CHECK(core_fview(cf, 0, 2352) != NULL, member_path);
+         }
 #else
          if (strstr(arc_name, ".zip") && !e->stored)
             CHECK(fmap != NULL && flen == want_len, member_path);

@@ -83,6 +83,12 @@ int archive_entry_read(archive_t *a, unsigned index, uint8_t *dst,
 int archive_entry_seekable(archive_t *a, unsigned index);
 int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
       uint8_t *dst, size_t len);
+/* The same bytes where they lie decoded, for a reader that would only
+ * copy them on: valid until the next call for the member. NULL when they
+ * cannot be had so - they straddle two decoded pieces - and are to be
+ * read instead. */
+const uint8_t *archive_entry_view_at(archive_t *a, unsigned index,
+      uint64_t offset, size_t len);
 
 /* Read-ahead hint for @len bytes at @p, when @p lies in the archive's
  * mapping; bytes already decoded into memory need none. */

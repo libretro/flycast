@@ -487,23 +487,26 @@ int archive_entry_seekable(archive_t *a, unsigned index)
    return 1;
 }
 
-int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
-      uint8_t *dst, size_t len)
+/* The member's index, once it covers @len bytes at @offset: waits for
+ * the indexing thread, or does the indexing here when there is none.
+ * NULL if the bytes are not the member's or its stream is bad. */
+static archive_seek_t *archive_seek_reach(archive_t *a, unsigned index,
+      uint64_t offset, size_t len)
 {
    archive_seek_t *k;
    uint64_t        need;
 
    if (index >= a->num_entries || !a->seek || !(k = a->seek[index]))
-      return 0;
+      return NULL;
    if (offset > rzip_seek_size(k->seek) || len > rzip_seek_size(k->seek) - offset)
-      return 0;
+      return NULL;
    need = offset + len;
 
    /* Until the index has got that far. */
    while (rzip_seek_covered(k->seek) < need)
    {
       if (rzip_seek_state(k->seek) < 0)
-         return 0;
+         return NULL;
 #ifndef TARGET_NO_THREADS
       if (k->thread)
       {
@@ -518,9 +521,28 @@ int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
       }
 #endif
       if (rzip_seek_build(k->seek, need) < 0)
-         return 0;
+         return NULL;
    }
-   return rzip_seek_read(k->seek, offset, dst, len) == RZIP_OK;
+   return k;
+}
+
+int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
+      uint8_t *dst, size_t len)
+{
+   archive_seek_t *k = archive_seek_reach(a, index, offset, len);
+
+   return k && rzip_seek_read(k->seek, offset, dst, len) == RZIP_OK;
+}
+
+const uint8_t *archive_entry_view_at(archive_t *a, unsigned index,
+      uint64_t offset, size_t len)
+{
+   archive_seek_t *k    = archive_seek_reach(a, index, offset, len);
+   const uint8_t  *data = NULL;
+
+   if (!k || rzip_seek_view(k->seek, offset, len, &data) != RZIP_OK)
+      return NULL;
+   return data;
 }
 
 void archive_close(archive_t *a)

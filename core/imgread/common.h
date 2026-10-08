@@ -365,27 +365,36 @@ struct RawTrackFile : TrackFile
 	{
 		core_fprefetch(file, (u32)(offset + FAD * fmt), (size_t)count * fmt);
 	}
+	/* Lent until the disc is closed: only from a file that is all there
+	 * (mapped, or in memory). */
 	virtual const u8* Lend(u32 FAD, SectorFormat* sector_type)
-	{
-		return View(FAD, sector_type);
-	}
-	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
 	{
 		size_t map_len;
 		const u8* map = core_fmap(file, &map_len);
 		u32 at = (u32)(offset + FAD * fmt);
 
-		if (!map || at > map_len || fmt > map_len - at)
+		if (!map || at > map_len || fmt > map_len - at || !Format(sector_type))
 			return NULL;
+		return map + at;
+	}
+	/* Until the next call: from such a file, and also from the piece of a
+	 * large deflated archive member that is decoded around the sector. */
+	virtual const u8* View(u32 FAD, SectorFormat* sector_type)
+	{
+		if (!Format(sector_type))
+			return NULL;
+		return core_fview(file, (u32)(offset + FAD * fmt), fmt);
+	}
+	bool Format(SectorFormat* sector_type) const
+	{
 		switch (fmt)
 		{
-			case 2352: *sector_type=SECFMT_2352; break;
-			case 2048: *sector_type=SECFMT_2048_MODE2_FORM1; break;
-			case 2336: *sector_type=SECFMT_2336_MODE2; break;
-			case 2448: *sector_type=SECFMT_2448_MODE2; break;
-			default: return NULL;
+			case 2352: *sector_type=SECFMT_2352; return true;
+			case 2048: *sector_type=SECFMT_2048_MODE2_FORM1; return true;
+			case 2336: *sector_type=SECFMT_2336_MODE2; return true;
+			case 2448: *sector_type=SECFMT_2448_MODE2; return true;
+			default: return false;
 		}
-		return map + at;
 	}
 	virtual ~RawTrackFile()
 	{

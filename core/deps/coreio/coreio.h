@@ -26,6 +26,12 @@ size_t core_ftell(core_file* fc);
 /* The whole file as addressable bytes when it is mapped or already in
  * memory, else NULL. Valid until core_fclose(). */
 const uint8_t* core_fmap(core_file* fc, size_t* len);
+/* @len bytes at @offset where they already are - in the mapping, in
+ * memory, or in the piece of a large archive member decoded around them -
+ * or NULL when they have to be read. Valid until the next call on the
+ * file: for the mapped and in-memory forms, which core_fmap() also
+ * answers for, until core_fclose(). */
+const uint8_t* core_fview(core_file* fc, uint64_t offset, size_t len);
 /* Ask the OS to start bringing [offset, offset + len) in, ahead of the
  * reads that follow. A hint; returns at once. */
 void core_fprefetch(core_file* fc, uint64_t offset, size_t len);
