@@ -22,9 +22,10 @@
  *   HEADLESS_SAVE    frame to save a state before
  *   HEADLESS_LOAD    frame to load that state back before
  *   HEADLESS_DUMP    "frame:file": a state saved before that frame, written to the file
- *   HEADLESS_OPTION  "frame:key=value": a core option changed before that frame, as
- *                    from the frontend's menu while the game runs. Whatever size the
- *                    core then tells the frontend is printed, "size WxH".
+ *   HEADLESS_OPTION  "frame:key=value[,key=value...]": core options changed before
+ *                    that frame, as from the frontend's menu while the game runs.
+ *                    Whatever size the core then tells the frontend is printed,
+ *                    "size WxH".
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -132,7 +133,9 @@ static void log_line(enum retro_log_level level, const char *fmt, ...)
 static struct retro_disk_control_callback disk;
 static int have_disk;
 
-static const char *changed_option;   /* HEADLESS_OPTION, from its frame on */
+static char changed_text[512];       /* HEADLESS_OPTION, from its frame on */
+static const char *changed_options[8];
+static int changed_count;
 static int option_changed;
 static unsigned told_width, told_height;
 
@@ -171,11 +174,12 @@ static bool environment(unsigned cmd, void *data)
          struct retro_variable *var = (struct retro_variable *)data;
          size_t len = strlen(var->key);
          int i;
-         if (changed_option && !strncmp(changed_option, var->key, len) && changed_option[len] == '=')
-         {
-            var->value = changed_option + len + 1;
-            return true;
-         }
+         for (i = 0; i < changed_count; i++)
+            if (!strncmp(changed_options[i], var->key, len) && changed_options[i][len] == '=')
+            {
+               var->value = changed_options[i] + len + 1;
+               return true;
+            }
          for (i = 0; i < option_count; i++)
             if (!strncmp(options[i], var->key, len) && options[i][len] == '=')
             {
@@ -334,7 +338,15 @@ int main(int argc, char **argv)
             }
             if (getenv("HEADLESS_OPTION") && i == atoi(getenv("HEADLESS_OPTION")) && strchr(getenv("HEADLESS_OPTION"), ':'))
             {
-               changed_option = strchr(getenv("HEADLESS_OPTION"), ':') + 1;
+               char *next;
+               snprintf(changed_text, sizeof(changed_text), "%s", strchr(getenv("HEADLESS_OPTION"), ':') + 1);
+               for (next = changed_text; next && changed_count < 8; )
+               {
+                  changed_options[changed_count++] = next;
+                  next = strchr(next, ',');
+                  if (next)
+                     *next++ = '\0';
+               }
                option_changed = 1;
             }
             if (getenv("HEADLESS_DUMP") && i == atoi(getenv("HEADLESS_DUMP")) && strchr(getenv("HEADLESS_DUMP"), ':'))
