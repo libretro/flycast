@@ -136,7 +136,19 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
                         "movl " _S(PC)"(%rax), %edi     \n\t"
 #endif
                         "call " _U "bm_GetCodeByVAddr				\n\t"
-                        "call *%rax                                             \n\t"
+                        /* A block is jumped to, not called, and comes back by
+                         * jumping to the label below: recompiled code runs on
+                         * this function's stack as it stands - a multiple of
+                         * 16 for the calls it makes, with the 32 bytes Windows
+                         * wants above them already there - so no block has a
+                         * stack to set up or put back, and one block goes on
+                         * to the next without either. The address it is for
+                         * goes with it in edx: see ngen_compile_stub. */
+                        "movq " _U "p_sh4rcb(%rip), %rcx        \n\t"
+                        "movl " _S(PC)"(%rcx), %edx     \n\t"
+                        "jmp *%rax                                              \n\t"
+                        ".globl " _U "ngen_block_return         \n"
+                _U "ngen_block_return:                                  \n\t"
                         "movl " _U "cycle_counter(%rip), %ecx \n\t"
                         "testl %ecx, %ecx                                       \n\t"
                         "jg 2b                                                          \n\t"   // slice_loop
@@ -171,6 +183,33 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
         );
 }
 #endif
+
+/* What the table of blocks holds for an address with no block yet. It is
+ * reached as a block is - jumped to, from the main loop or from the end of
+ * another block, with the address in edx - has the block compiled, and
+ * goes back to the main loop, which finds it there. (The place used to
+ * hold a C function, which blocks got to by putting the stack back as the
+ * main loop's call had left it and jumping; and the function read the
+ * address from the context, where every block had stored it for that.) */
+extern "C" void ngen_block_return();
+extern "C" void ngen_compile_stub();
+extern "C" __attribute__((used)) void ngen_compile_missing(u32 pc)
+{
+	rdv_FailedToFindBlock(pc);
+}
+__asm__ (
+		".text                                  \n\t"
+		".p2align 4                             \n\t"
+		".globl " _U "ngen_compile_stub         \n"
+	_U "ngen_compile_stub:                      \n\t"
+#ifdef _WIN32
+		"movl %edx, %ecx                        \n\t"
+#else
+		"movl %edx, %edi                        \n\t"
+#endif
+		"call " _U "ngen_compile_missing        \n\t"
+		"jmp " _U "ngen_block_return            \n"
+);
 
 #ifndef _WIN32
 /* Calls the function whose address is in rax, with the arguments as they
@@ -214,8 +253,17 @@ __asm__ (
 #undef _U
 #undef _S
 
+/* The table of blocks is first filled before ngen_init() is called, and
+ * a place in it filled with the C function this replaces would be jumped
+ * to as a block is - with nowhere to return to. So: from the start. */
+static struct CompileStubInit
+{
+	CompileStubInit() { ngen_FailedToFindBlock = &ngen_compile_stub; }
+} compile_stub_init;
+
 void ngen_init()
 {
+	ngen_FailedToFindBlock = &ngen_compile_stub;
 }
 
 void ngen_ResetBlocks()
@@ -366,12 +414,8 @@ public:
       if (force_checks) {
 			CheckBlock(block);
 		}
-
-#ifdef _WIN32
-		sub(rsp, 0x28);		// 32-byte shadow space + 8 byte alignment
-#else
-		sub(rsp, 0x8);		// align stack
-#endif
+		/* (No stack to set up: the block runs on the main loop's, which is
+		 * as calls want it. See ngen_mainloop.) */
 
 		if (mmu_enabled() && block->has_fpu_op)
 		{
@@ -1233,14 +1277,23 @@ public:
 
 	  switch (block->BlockType) {
 
+		/* A block that goes on to another does not store the address in the
+		 * context first, as every block did: it takes it along in edx, and
+		 * it is stored only if the time slice turns out to be used up
+		 * (slice_out) or there is no block there yet (ngen_compile_stub).
+		 * The context's pc is what the main loop goes by, and is right
+		 * whenever it is the main loop's turn. */
 		case BET_StaticJump:
 		case BET_StaticCall:
 			//next_pc = block->BranchBlock;
-			mov(Ctx(&next_pc), block->BranchBlock);
-			if (watch)
-				GenWaitCheck(block);
 			if (go_on)
+			{
+				if (watch)
+					GenWaitCheck(block);
 				GenGoOn(block->BranchBlock);
+			}
+			else
+				mov(Ctx(&next_pc), block->BranchBlock);
 			break;
 
 		case BET_Cond_0:
@@ -1254,17 +1307,22 @@ public:
 				Xbyak::Label branch_not_taken;
 
 				jne(branch_not_taken, T_NEAR);
-				mov(Ctx(&next_pc), block->BranchBlock);
-				if (watch)
-					GenWaitCheck(block);
 				if (go_on)
+				{
+					if (watch)
+						GenWaitCheck(block);
 					GenGoOn(block->BranchBlock);
+				}
 				else
+				{
+					mov(Ctx(&next_pc), block->BranchBlock);
 					jmp(exit_block, T_NEAR);
+				}
 				L(branch_not_taken);
-				mov(Ctx(&next_pc), block->NextBlock);
 				if (go_on)
 					GenGoOn(block->NextBlock);
+				else
+					mov(Ctx(&next_pc), block->NextBlock);
 			}
 			break;
 
@@ -1273,15 +1331,17 @@ public:
 		case BET_DynamicRet:
 			//next_pc = *jdyn;
 			mov(edx, Ctx(&Sh4cntx.jdyn));
-			mov(Ctx(&next_pc), edx);
 			if (go_on)
 			{
 				// the address is only known now: its place in the table is worked out here
 				GenSliceCheck();
-				shr(edx, 1);
-				and_(edx, FPCB_MASK);
-				jmp(qword[r15 + rdx * 8 + FpcbAt(0)]);
+				mov(eax, edx);
+				shr(eax, 1);
+				and_(eax, FPCB_MASK);
+				jmp(qword[r15 + rax * 8 + FpcbAt(0)]);
 			}
+			else
+				mov(Ctx(&next_pc), edx);
 			break;
 
 		case BET_DynamicIntr:
@@ -1305,13 +1365,28 @@ public:
 			die("Invalid block end type");
 		}
 
+		/* Back to the main loop. (Far from here, as a rule: by its address.) */
 		L(exit_block);
-#ifdef _WIN32
-		add(rsp, 0x28);
-#else
-		add(rsp, 0x8);
-#endif
-		ret();
+		mov(rax, (uintptr_t)&ngen_block_return);
+		jmp(rax);
+
+		/* The time slice is used up where the block would have gone on to
+		 * another: the address it was going to is in edx, and is where the
+		 * main loop picks up from. */
+		if (slice_out_used)
+		{
+			L(slice_out);
+			mov(Ctx(&next_pc), edx);
+			jmp(exit_block, T_NEAR);
+		}
+		/* The block's code is no longer what it was compiled from. */
+		if (force_checks)
+		{
+			L(check_failed);
+			mov(rax, (uintptr_t)&ngen_blockcheckfail);
+			call(rax);
+			jmp(exit_block, T_NEAR);
+		}
 
 		ready();
 
@@ -1321,8 +1396,8 @@ public:
 		emit_Skip(getSize());
 	}
 
-	// Returns to the main loop if the time slice is used up; otherwise puts
-	// the stack back as it was when the block was entered, for a jump on
+	// To the main loop if the time slice is used up, by way of slice_out,
+	// which stores the address in edx; otherwise on
 	void GenSliceCheck()
 	{
 		if (charge_at_tail)
@@ -1336,12 +1411,8 @@ public:
 			cmp(dword[rip + &cycle_counter], 0);
 #endif
 		}
-		jle(exit_block, T_NEAR);
-#ifdef _WIN32
-		add(rsp, 0x28);
-#else
-		add(rsp, 0x8);
-#endif
+		jle(slice_out, T_NEAR);
+		slice_out_used = true;
 	}
 
 	// A block going back: every so often, see whether it is only waiting, and
@@ -1386,6 +1457,7 @@ public:
 	// On to the block at @target, through its place in the table
 	void GenGoOn(u32 target)
 	{
+		mov(edx, target);
 		GenSliceCheck();
 		jmp(qword[r15 + FpcbAt((target >> 1) & FPCB_MASK)]);
 	}
@@ -2112,7 +2184,7 @@ public:
 		{
 			mov(rax, (uintptr_t)&next_pc);
 			cmp(dword[rax], block->vaddr);
-			jne(reinterpret_cast<const void*>(&ngen_blockcheckfail));
+			jne(check_failed, T_NEAR);
 		}
 
 	   s32 sz=block->sh4_code_size;
@@ -2144,7 +2216,7 @@ public:
 				sz -= 2;
 				sa += 2;
 			 }
-			 jne(reinterpret_cast<const void*>(&ngen_blockcheckfail));
+			 jne(check_failed, T_NEAR);
 		  }
 	   }
 	}
@@ -2371,6 +2443,9 @@ public:
 	static Xbyak::util::Cpu cpu;
 	size_t current_opid;
 	Xbyak::Label exit_block;
+	Xbyak::Label slice_out;
+	Xbyak::Label check_failed;
+	bool slice_out_used = false;
 	u32 block_cycles = 0;
 	bool charge_at_tail = false;
 	bool rewriting = false;	// writing a call over a fast memory access: see ngen_Rewrite()
