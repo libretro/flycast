@@ -1305,6 +1305,51 @@ static int __attribute__((noinline)) mmu_probe(void)
    if (va[2] != 0xC1C1C1C1)
       return 0x1A;
    (*(volatile u32 *)0xFF000000) = 0;
+
+#ifdef LIVE_MMU_ALIGN
+   /* An address that is not a multiple of the access's size is an address
+    * error (0x0E0 reading, 0x100 writing) and nothing is read or written
+    * - also on a page that has just been read and written, which is when
+    * an emulator that keeps translations by has one, and may use it
+    * without looking at the address. (Only asked of a core that keeps
+    * them in a table: one that maps the pages into the host's memory
+    * lets the host do the access, and the host does not mind. That is
+    * every core but Windows' at present; see headless.sh.) */
+   {
+      /* (through a variable: given the odd address itself, the compiler
+       * knows better than to use one instruction for it) */
+      static volatile u32 page_at = 0x10000000;
+      const u32 at = page_at;
+
+      va = (volatile u32 *)at;
+      a[0] = 0x11223344;
+      a[1] = 0x55667788;
+      if (va[0] != 0x11223344)
+         return 0x1B;
+      va[1] = 0x55667788;
+      t_expevt_seen = 0;
+      (void)*(volatile u32 *)(at + 2);
+      if (t_expevt_seen != 0x0E0)
+         return 0x1C;
+      t_expevt_seen = 0;
+      (void)*(volatile u16 *)(at + 1);
+      if (t_expevt_seen != 0x0E0)
+         return 0x1D;
+      t_expevt_seen = 0;
+      *(volatile u32 *)(at + 2) = 0xDEADBEEF;
+      if (t_expevt_seen != 0x100 || a[0] != 0x11223344 || a[1] != 0x55667788)
+         return 0x1E;
+      t_expevt_seen = 0;
+      *(volatile u16 *)(at + 3) = 0xDEAD;
+      if (t_expevt_seen != 0x100 || a[0] != 0x11223344 || a[1] != 0x55667788)
+         return 0x1F;
+      /* the last halfword of the page, from its last byte: not a byte of the next */
+      t_expevt_seen = 0;
+      (void)*(volatile u16 *)(at + 0xFFF);
+      if (t_expevt_seen != 0x0E0)
+         return 0x20;
+   }
+#endif
    return 1;
 }
 

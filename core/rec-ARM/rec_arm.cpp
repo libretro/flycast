@@ -1003,9 +1003,18 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 	 * the table in. Not for 64 bits, which can run over the end of a
 	 * page. r1 to r3 are free here but for the data of a store, which can
 	 * be in r2. */
-	u32 *miss = nullptr, *hit = nullptr;
+	u32 *miss = nullptr, *hit = nullptr, *unaligned = nullptr;
 	if (optp != SZ_64F)
 	{
+		/* Nor for an address that is not a multiple of the access's size:
+		 * that is an address error, which the call raises - and which a
+		 * page already in the table used to get past. */
+		if (optp != SZ_8)
+		{
+			TST(raddr, optp == SZ_16 ? 1 : 3);
+			unaligned = (u32 *)EMIT_GET_PTR();
+			MOV(r0, r0);				// "bne" to the call
+		}
 		MOV32(r3, (u32)(read ? mmu_read_lut : mmu_write_lut));
 		LSR(r1, raddr, 12);
 		LDR(r1, r3, r1, Offset, true, S_LSL, 2);
@@ -1036,6 +1045,8 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 		hit = (u32 *)EMIT_GET_PTR();
 		MOV(r0, r0);				// "b" over the call
 		*miss = 0x0A000000 | ((u32)((u32 *)EMIT_GET_PTR() - miss - 2) & 0x00FFFFFF);
+		if (unaligned)
+			*unaligned = 0x1A000000 | ((u32)((u32 *)EMIT_GET_PTR() - unaligned - 2) & 0x00FFFFFF);
 	}
 
 	if (raddr != r0)

@@ -1411,6 +1411,15 @@ public:
 #ifdef MMU_HOST_PAGE_LUT
 		if (!mmu_enabled() || vmem32_enabled() || size == 8)
 			return false;
+		/* Not for an address that is not a multiple of the access's size
+		 * either: that is an address error, which the call raises - and
+		 * which a page already in the table used to get past, reading
+		 * on into the next page of the host's memory at the end of one. */
+		if (size == 2 || size == 4)
+		{
+			test(call_regs[0], size - 1);
+			jnz(miss);
+		}
 		mov(eax, call_regs[0]);
 		shr(eax, 12);
 		mov(r10, (uintptr_t)table);
