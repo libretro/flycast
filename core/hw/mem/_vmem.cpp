@@ -461,15 +461,19 @@ static void _vmem_set_p0_mappings()
 		{0x05000000, 0x06000000,                               0,         0, false},  // 32 bit path (unused)
 		{0x06000000, 0x07000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
 		{0x07000000, 0x08000000,                               0,         0, false},  // 32 bit path (unused) mirror
-		{0x08000000, 0x0C000000,                               0,         0, false},  // Area 2
+		{0x08000000, 0x0A000000,                               0,         0, false},  // Area 2
+		{0x0A000000, 0x0C000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
 		{0x0C000000, 0x10000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
 		{0x10000000, 0x80000000,                               0,         0, false},  // Area 4-7 (unused)
 	};
 	vmem_platform_create_mappings(&mem_mappings[0], ARRAY_SIZE(mem_mappings));
 }
 
+u8 *_vmem_elan_ram;
+
 bool _vmem_reserve(void)
 {
+	_vmem_elan_ram = NULL;
 	static_assert((sizeof(Sh4RCB) % PAGE_SIZE) == 0, "sizeof(Sh4RCB) not multiple of PAGE_SIZE");
 
 	VMemType vmemstatus = MemTypeError;
@@ -517,7 +521,8 @@ bool _vmem_reserve(void)
 				{0x05000000, 0x06000000,                               0,         0, false},  // 32 bit path (unused)
 				{0x06000000, 0x07000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
 				{0x07000000, 0x08000000,                               0,         0, false},  // 32 bit path (unused) mirror
-				{0x08000000, 0x0C000000,                               0,         0, false},  // Area 2
+				{0x08000000, 0x0A000000,                               0,         0, false},  // Area 2
+				{0x0A000000, 0x0C000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
 				{0x0C000000, 0x10000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
 				{0x10000000, 0x20000000,                               0,         0, false},  // Area 4-7 (unused)
 				// This is outside of the 512MB addr space. We map 8MB in all cases to help some games read past the end of aica ram
@@ -529,6 +534,7 @@ bool _vmem_reserve(void)
 			aica_ram.data = &virt_ram_base[0x20000000];  // Points to the writable AICA addrspace
 			vram.data = &virt_ram_base[0x04000000];   // Points to first vram mirror (writable and lockable)
 			mem_b.data = &virt_ram_base[0x0C000000];   // Main memory, first mirror
+			_vmem_elan_ram = ERAM_SIZE ? &virt_ram_base[0x0A000000] : NULL;
 		}
 		else
 		{
@@ -544,7 +550,8 @@ bool _vmem_reserve(void)
 				{0x85000000, 0x86000000,                               0,         0, false},  // 32 bit path (unused)
 				{0x86000000, 0x87000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
 				{0x87000000, 0x88000000,                               0,         0, false},  // 32 bit path (unused) mirror
-				{0x88000000, 0x8C000000,                               0,         0, false},  // Area 2
+				{0x88000000, 0x8A000000,                               0,         0, false},  // Area 2
+				{0x8A000000, 0x8C000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
 				{0x8C000000, 0x90000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
 				{0x90000000, 0xA0000000,                               0,         0, false},  // Area 4-7 (unused)
 				// P2
@@ -557,7 +564,8 @@ bool _vmem_reserve(void)
 				{0xA5000000, 0xA6000000,                               0,         0, false},  // 32 bit path (unused)
 				{0xA6000000, 0xA7000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
 				{0xA7000000, 0xA8000000,                               0,         0, false},  // 32 bit path (unused) mirror
-				{0xA8000000, 0xAC000000,                               0,         0, false},  // Area 2
+				{0xA8000000, 0xAA000000,                               0,         0, false},  // Area 2
+				{0xAA000000, 0xAC000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
 				{0xAC000000, 0xB0000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
 				{0xB0000000, 0xC0000000,                               0,         0, false},  // Area 4-7 (unused)
 				// P3
@@ -570,7 +578,8 @@ bool _vmem_reserve(void)
 				{0xC5000000, 0xC6000000,                               0,         0, false},  // 32 bit path (unused)
 				{0xC6000000, 0xC7000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
 				{0xC7000000, 0xC8000000,                               0,         0, false},  // 32 bit path (unused) mirror
-				{0xC8000000, 0xCC000000,                               0,         0, false},  // Area 2
+				{0xC8000000, 0xCA000000,                               0,         0, false},  // Area 2
+				{0xCA000000, 0xCC000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
 				{0xCC000000, 0xD0000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
 				{0xD0000000, 0x100000000L,                             0,         0, false},  // Area 4-7 (unused)
 			};
@@ -580,6 +589,7 @@ bool _vmem_reserve(void)
 			aica_ram.data = &virt_ram_base[0x80800000];  // Points to the first AICA addrspace in P1
 			vram.data = &virt_ram_base[0x84000000];   // Points to first vram mirror (writable and lockable) in P1
 			mem_b.data = &virt_ram_base[0x8C000000];   // Main memory, first mirror in P1
+			_vmem_elan_ram = ERAM_SIZE ? &virt_ram_base[0x8A000000] : NULL;
 
 			vmem_4gb_space = true;
 		}
@@ -601,6 +611,7 @@ bool _vmem_reserve(void)
 	if (x) { free(x); x = NULL; }
 
 void _vmem_release() {
+	_vmem_elan_ram = NULL;
 	if (virt_ram_base)
 		vmem_platform_destroy();
 	else {

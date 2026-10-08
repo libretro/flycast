@@ -111,6 +111,15 @@ void _vmem_enable_mmu(bool enable);
 #define MAP_RAM_START_OFFSET  0
 #define MAP_VRAM_START_OFFSET (MAP_RAM_START_OFFSET+RAM_SIZE)
 #define MAP_ARAM_START_OFFSET (MAP_VRAM_START_OFFSET+VRAM_SIZE)
+/* The memory of a NAOMI 2's geometry chip (hw/pvr/elan.h: ELAN_RAM_SIZE of
+ * it), after the rest in the shared memory and at 0x0A000000 to 0x0BFFFFFF
+ * in each of the address space's views - so that the SH4 reaches it the way
+ * it reaches its own memory, with one instruction of recompiled code. No
+ * other machine has it, and for those it is neither made nor mapped. */
+#define ERAM_SIZE (settings.System == DC_PLATFORM_NAOMI2 ? 32u * 1024 * 1024 : 0u)
+#define MAP_ERAM_START_OFFSET (MAP_ARAM_START_OFFSET+ARAM_SIZE)
+/* Where it is, if it is mapped; NULL if not (no NAOMI 2, or no address space) */
+extern u8 *_vmem_elan_ram;
 
 void _vmem_protect_vram(u32 addr, u32 size);
 void _vmem_unprotect_vram(u32 addr, u32 size);

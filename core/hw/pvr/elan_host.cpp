@@ -25,6 +25,10 @@
 #include "hw/sh4/sh4_sched.h"
 
 u8 *elan_ram;
+/* It is a piece of the address space when there is one (_vmem.h), which
+ * comes and goes with the machine; and memory of its own otherwise. */
+static bool elan_ram_own;
+static_assert(ELAN_RAM_SIZE == 32u * 1024 * 1024, "ERAM_SIZE in _vmem.h is the chip's memory");
 int elan_schid = -1;
 
 static _vmem_handler reg_handler;
@@ -151,11 +155,22 @@ void elan_host_init()
 {
 	if (elan_schid == -1)
 		elan_schid = sh4_sched_register(0, &elan_sched);
-	if (settings.System == DC_PLATFORM_NAOMI2)
+	if (elan_ram && !elan_ram_own)
+		elan_ram = NULL;		// the last machine's, gone with its address space
+	if (settings.System == DC_PLATFORM_NAOMI2 && _vmem_elan_ram)
+	{
+		if (elan_ram)
+			OS_aligned_free(elan_ram);
+		// (new with the address space, and nothing in it yet)
+		elan_ram     = _vmem_elan_ram;
+		elan_ram_own = false;
+	}
+	else if (settings.System == DC_PLATFORM_NAOMI2)
 	{
 		if (!elan_ram)
 		{
-			elan_ram = (u8 *)OS_aligned_malloc(4096, ELAN_RAM_SIZE);
+			elan_ram     = (u8 *)OS_aligned_malloc(4096, ELAN_RAM_SIZE);
+			elan_ram_own = true;
 			if (elan_ram)
 				memset(elan_ram, 0, ELAN_RAM_SIZE);
 		}
@@ -170,9 +185,11 @@ void elan_host_init()
 
 void elan_host_term()
 {
-	if (elan_ram)
+	// (a piece of the address space goes with it, after this)
+	if (elan_ram && elan_ram_own)
 		OS_aligned_free(elan_ram);
-	elan_ram = NULL;
+	elan_ram     = NULL;
+	elan_ram_own = false;
 	elan_init(NULL);
 }
 
