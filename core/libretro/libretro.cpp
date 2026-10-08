@@ -754,7 +754,12 @@ static void update_variables(bool first_startup)
       if (!settings.reios.ElfFile.empty())
       	settings.bios.UseReios = true;
 
+   }
+
 #if defined(HAVE_GL4) || defined(HAVE_VULKAN)
+   {
+      const u64 previous_size = pixel_buffer_size;
+
       var.key = CORE_OPTION_NAME "_oit_abuffer_size";
 
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -772,8 +777,13 @@ static void update_variables(bool first_startup)
       }
       else
          pixel_buffer_size = 0x20000000u;
-#endif
+      /* The per-pixel renderers make the buffer when they are set up: the
+       * one in use is set up again, as for a change of renderer. */
+      if (!first_startup && pixel_buffer_size != previous_size
+            && (settings.pvr.rend == 3 || settings.pvr.rend == 5))
+         renderer_changed = true;
    }
+#endif
 
    var.key = CORE_OPTION_NAME "_cable_type";
 
@@ -1233,7 +1243,21 @@ void retro_run (void)
    bool updated     = false;
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+   {
+      const bool was_changed = renderer_changed;
+
       update_variables(false);
+#ifdef HAVE_VULKAN
+      /* An option that has the renderer set up again - another renderer,
+       * another size of buffer. The Vulkan renderers' pictures are their
+       * own and go with them: the one on the screen is kept for the new
+       * renderer, as it is across a new context, and a game that draws
+       * part of the screen has the rest from it. (With OpenGL the picture
+       * is in the frontend's buffer, which stays.) */
+      if (renderer_changed && !was_changed && (settings.pvr.rend == 4 || settings.pvr.rend == 5))
+         rend_keep_picture();
+#endif
+   }
    if (resize_pending)
       apply_new_size();
 
@@ -2416,22 +2440,46 @@ static void take_pending_size(void)
 }
 
 /* The Internal Resolution option, or widescreen, was changed while the game
- * runs. The frontend is given the new size - it has to make room for it,
- * and RetroArch does that by starting its video driver again, which
- * destroys the context and makes another: the renderer comes back at the
- * new size by itself, with the picture it had (rend/last_picture.h). A
- * frontend that keeps its context leaves the renderer to change size. */
+ * runs. A size larger than any so far needs more room from the frontend,
+ * and RetroArch makes it by starting its video driver again, which destroys
+ * the context and makes another: the renderer comes back at the new size by
+ * itself, with the picture it had (rend/last_picture.h). Any other size,
+ * and any frontend that keeps its context, leaves the renderer to change
+ * size where it is. */
 static void apply_new_size(void)
 {
    const unsigned resets = context_resets;
+   const unsigned room   = g_av_info.geometry.max_width;
+   struct retro_game_geometry geometry;
 
    resize_pending = false;
    /* The size stays the old one while the frontend destroys the context:
     * the picture is kept from it, at the size it was drawn. It is the new
     * one from where the frontend makes the next context. */
-   set_geometry(&g_av_info.geometry, &pending_width, &pending_height);
-   if (!environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av_info))
+   set_geometry(&geometry, &pending_width, &pending_height);
+   if (geometry.max_width <= room)
+   {
+      /* It fits in the room the frontend has already made - a smaller
+       * size, or one as large as there has been: the frontend is told the
+       * new size and makes nothing again. No video restart, no new
+       * context, no textures to load again. */
+      geometry.max_width  = room;
+      geometry.max_height = room;
+      g_av_info.geometry  = geometry;
       environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g_av_info.geometry);
+   }
+   else
+   {
+      g_av_info.geometry = geometry;
+      if (!environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av_info))
+         environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g_av_info.geometry);
+   }
+   /* The same context: the renderer changes size where it is. The picture
+    * it has is kept first, at the size it has - a game that draws part of
+    * the screen has the rest from it, and what is left in the buffer is
+    * the old picture at the old size. */
+   if (context_resets == resets)
+      rend_keep_picture();
    take_pending_size();
    if (context_resets != resets)
       return;

@@ -122,7 +122,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 #if defined(HAVE_GL4) || defined(HAVE_VULKAN)
    {
       CORE_OPTION_NAME "_oit_abuffer_size",
-      "Accumulation Pixel Buffer Size (Restart Required)",
+      "Accumulation Pixel Buffer Size",
       NULL,
       "Higher values might be required for higher resolutions to output correctly.",
       NULL,
@@ -222,7 +222,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
    },
    {
       CORE_OPTION_NAME "_widescreen_hack",
-      "Widescreen Hack (Restart Required)",
+      "Widescreen Hack",
       NULL,
       "",
       NULL,

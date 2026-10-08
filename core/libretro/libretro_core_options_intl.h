@@ -17340,7 +17340,7 @@ struct retro_core_options_v2 options_eo = {
 #define OPTION_VAL_ATOMISWAVE_ES NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_ES "BIOS HLE"
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_ES "Fuerza el uso de una BIOS creada con emulación de alto nivel."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_ES "Tamaño del búfer de acumulación de píxeles (es necesario reiniciar)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_ES "Tamaño del búfer de acumulación de píxeles"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_ES "Es posible que sea necesario un valor alto para que la imagen se muestre bien a resoluciones superiores a la nativa."
 #define OPTION_VAL_512MB_ES "512 MB"
 #define OPTION_VAL_1GB_ES "1 GB"
@@ -17361,7 +17361,7 @@ struct retro_core_options_v2 options_eo = {
 #define CORE_OPTION_NAME_FOG_LABEL_ES "Efectos de niebla"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_LABEL_ES "Modificador de volúmenes"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_INFO_0_ES "Una característica de la GPU de Dreamcast que suelen utilizar los juegos para dibujar las sombras de objetos. Esta opción debe activarse por norma general; apenas afecta al rendimiento."
-#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_ES "Arreglo para pantallas panorámicas (es necesario reiniciar)"
+#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_ES "Arreglo para pantallas panorámicas"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_LABEL_ES "Trucos para pantallas panorámicas (es necesario reiniciar)"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_INFO_0_ES "Activa los trucos que permiten a ciertos juegos mostrarse en formato panorámico."
 #define CORE_OPTION_NAME_CABLE_TYPE_LABEL_ES "Tipo de cable"
@@ -22053,7 +22053,7 @@ struct retro_core_options_v2 options_fi = {
 #define OPTION_VAL_ATOMISWAVE_FR NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_FR "BIOS HLE"
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_FR "Forcer l'utilisation d'un BIOS en émulation de haut niveau."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_FR "Taille du tampon des pixels d'accumulation (Redémarrage requis)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_FR "Taille du tampon des pixels d'accumulation"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_FR "Des valeurs plus élevées peuvent être requises pour que les résolutions plus élevées s'affichent correctement."
 #define OPTION_VAL_512MB_FR "512 Mo"
 #define OPTION_VAL_1GB_FR "1 Go"
@@ -22074,7 +22074,7 @@ struct retro_core_options_v2 options_fi = {
 #define CORE_OPTION_NAME_FOG_LABEL_FR "Effets de brouillard"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_LABEL_FR "Modificateur du volume"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_INFO_0_FR "Une fonctionnalité du processeur graphique de la Dreamcast qui est généralement utilisée par les jeux pour le rendu des ombres d'objets. Cette option devrait normalement être activée — l'impact sur les performances va généralement de minimal à négligeable."
-#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_FR "Hack d'écran large (Redémarrage requis)"
+#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_FR "Hack d'écran large"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_LABEL_FR "Cheats d'écran large (Redémarrage requis)"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_INFO_0_FR "Active les cheats qui permettent à certains jeux de s'afficher au format écran large."
 #define CORE_OPTION_NAME_CABLE_TYPE_LABEL_FR "Type de câble"
@@ -23624,7 +23624,7 @@ struct retro_core_options_v2 options_fr = {
 #define OPTION_VAL_ATOMISWAVE_GL NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_GL "BIOS HLE"
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_GL "Forza o uso de emulación BIOS de alto nivel."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_GL "Tamaño do buffer de píxeis de acumulación (requírese reiniciar)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_GL "Tamaño do buffer de píxeis de acumulación"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_GL "É posible que se precisen valores máis altos para que as resolucións máis altas saian correctamente."
 #define OPTION_VAL_512MB_GL NULL
 #define OPTION_VAL_1GB_GL NULL
@@ -29908,7 +29908,7 @@ struct retro_core_options_v2 options_id = {
 #define OPTION_VAL_ATOMISWAVE_IT NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_IT NULL
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_IT "Forza l'uso di BIOS di emulazione di alto livello."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_IT "Dimensione Pixel Buffer Accumulo (Riavvio Richiesto)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_IT "Dimensione Pixel Buffer Accumulo"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_IT "Potrebbero essere necessari valori più alti per ottenere risoluzioni più elevate in uscita correttamente."
 #define OPTION_VAL_512MB_IT NULL
 #define OPTION_VAL_1GB_IT NULL
@@ -29929,7 +29929,7 @@ struct retro_core_options_v2 options_id = {
 #define CORE_OPTION_NAME_FOG_LABEL_IT "Effetti Nebbia"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_LABEL_IT "Modificatore del Volume"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_INFO_0_IT "Una funzionalità della GPU Dreamcast che viene tipicamente utilizzata dai giochi per disegnare ombre degli oggetti. Questo dovrebbe normalmente essere abilitato - l'impatto delle prestazioni di solito è minimo o trascurabile."
-#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_IT "Hack Widescreen (Riavvio Richiesto)"
+#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_IT "Hack Widescreen"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_LABEL_IT "Trucchi Widescreen (Riavvio Richiesto)"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_INFO_0_IT "Attiva i trucchi che permettono ad alcuni giochi di visualizzare in formato widescreen."
 #define CORE_OPTION_NAME_CABLE_TYPE_LABEL_IT "Tipo Di Cavo"
@@ -42476,7 +42476,7 @@ struct retro_core_options_v2 options_pl = {
 #define OPTION_VAL_ATOMISWAVE_PT_BR NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_PT_BR "BIOS HLE"
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_PT_BR "Força o uso de uma BIOS criada com emulação de alto nível."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_PT_BR "Tamanho do buffer de acumulação de pixel (requer reinício)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_PT_BR "Tamanho do buffer de acumulação de pixel"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_PT_BR "Um alto valor pode ser necessário para que a imagem seja bem exibida em resoluções superiores às nativas."
 #define OPTION_VAL_512MB_PT_BR NULL
 #define OPTION_VAL_1GB_PT_BR NULL
@@ -42497,7 +42497,7 @@ struct retro_core_options_v2 options_pl = {
 #define CORE_OPTION_NAME_FOG_LABEL_PT_BR "Efeitos de nevoeiro"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_LABEL_PT_BR "Modificador de volume"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_INFO_0_PT_BR "Uma característica da GPU do Dreamcast que é frequentemente usada por jogos para desenhar sombras em objetos. Esta opção deve geralmente ser ativada; tem pouco efeito sobre o desempenho."
-#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_PT_BR "Hack de widescreen (requer reinício)"
+#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_PT_BR "Hack de widescreen"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_LABEL_PT_BR "Hack de trapaças (requer reinício)"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_INFO_0_PT_BR "Ativa trapaças que permitem a exibição de certos jogos em formato widescreen."
 #define CORE_OPTION_NAME_CABLE_TYPE_LABEL_PT_BR "Tipo de cabo"
@@ -47189,7 +47189,7 @@ struct retro_core_options_v2 options_ro = {
 #define OPTION_VAL_ATOMISWAVE_RU NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_RU NULL
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_RU "Принудительное использование высокоуровневой эмуляции BIOS."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_RU "Размер накопительного буфера (требуется перезапуск)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_RU "Размер накопительного буфера"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_RU "Большие значения могут требоваться для правильного отображения высоких разрешений."
 #define OPTION_VAL_512MB_RU "512 МБ"
 #define OPTION_VAL_1GB_RU "1 Гб"
@@ -55044,7 +55044,7 @@ struct retro_core_options_v2 options_sv = {
 #define OPTION_VAL_ATOMISWAVE_TR NULL
 #define CORE_OPTION_NAME_HLE_BIOS_LABEL_TR NULL
 #define CORE_OPTION_NAME_HLE_BIOS_INFO_0_TR "Yüksek seviyeli taklit BIOS kullanımını zorunlu kılın."
-#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_TR "Yığın Piksel Arabellek Boyutu (Yeniden Başlatılmalı)"
+#define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_TR "Yığın Piksel Arabellek Boyutu"
 #define CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_TR "Daha yüksek çözünürlüklerin doğru çıktı alması için daha yüksek değerler gerekebilir."
 #define OPTION_VAL_512MB_TR NULL
 #define OPTION_VAL_1GB_TR NULL
@@ -55065,7 +55065,7 @@ struct retro_core_options_v2 options_sv = {
 #define CORE_OPTION_NAME_FOG_LABEL_TR "Sis Efektleri"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_LABEL_TR "Hacim Değiştirici"
 #define CORE_OPTION_NAME_VOLUME_MODIFIER_ENABLE_INFO_0_TR "Genellikle oyunlar tarafından nesne gölgeleri çizmek için kullanılan bir Dreamcast GPU özelliği. Bu normalde etkinleştirilmelidir - performansa olumsuz etkisi yok denilebilecek düzeydedir."
-#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_TR "Geniş Ekran Geliştirmeleri (Yeniden Başlatılmalı)"
+#define CORE_OPTION_NAME_WIDESCREEN_HACK_LABEL_TR "Geniş Ekran Geliştirmeleri"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_LABEL_TR "Geniş Ekran Hileleri (Yeniden Başlatılmalı)"
 #define CORE_OPTION_NAME_WIDESCREEN_CHEATS_INFO_0_TR "Belirli oyunların geniş ekran biçiminde görüntülenmesine izin veren hileleri etkinleştirir."
 #define CORE_OPTION_NAME_CABLE_TYPE_LABEL_TR "Kablo Tipi"
