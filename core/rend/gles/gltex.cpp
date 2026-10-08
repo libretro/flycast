@@ -341,14 +341,18 @@ void gl_restore_picture(void)
  * old size; a game that draws part of the screen needs it in the corner
  * that is the new size. It is scaled from the one to the other on the
  * graphics card - by way of a texture, the two overlap - and never leaves
- * it. Where that cannot be done it is kept as for a new context. */
+ * it. (Not with OpenGL ES 2, which cannot do it or put a kept picture
+ * back either.) */
 void gl_carry_picture(int from_w, int from_h, int to_w, int to_h)
 {
 	if (from_w <= 0 || from_h <= 0 || (from_w == to_w && from_h == to_h))
 		return;
+	/* (with the PowerVR2 filter the picture drawn on is the filter's own,
+	 * which takes it over itself: PostProcessor::Resize()) */
+	if (settings.rend.PowerVR2Filter)
+		return;
 #if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
-	/* (with the PowerVR2 filter the picture drawn on is the filter's own, which is made again) */
-	if (gl.gl_major >= 3 && !settings.rend.PowerVR2Filter)
+	if (gl.gl_major >= 3)
 	{
 		GLint was_fbo = 0;
 		GLuint fbo = 0;
@@ -374,10 +378,8 @@ void gl_carry_picture(int from_w, int from_h, int to_w, int to_h)
 		glBindFramebuffer(RARCH_GL_FRAMEBUFFER, was_fbo);
 		glDeleteFramebuffers(1, &fbo);
 		glcache.DeleteTextures(1, &tex);
-		return;
 	}
 #endif
-	gl_keep_picture();
 }
 
 void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)

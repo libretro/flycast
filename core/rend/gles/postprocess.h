@@ -6,6 +6,7 @@ class PostProcessor
 public:
 	void Init();
 	void Term();
+	void Resize();
 	void SelectFramebuffer();
 	void Render(GLuint output_fbo);
 

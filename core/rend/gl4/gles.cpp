@@ -922,10 +922,11 @@ struct gl4rend : Renderer
 		screen_width=w;
 		screen_height=h;
 		resize(w, h);
-		// the filter's own picture is made at the size there was when it was set up
-		postProcessor.Term();
+		// the filter's own picture is of the size there was: it goes to the new one
 		if (settings.rend.PowerVR2Filter)
-			postProcessor.Init();
+			postProcessor.Resize();
+		else
+			postProcessor.Term();
 	}
 	void KeepPicture() override
 	{

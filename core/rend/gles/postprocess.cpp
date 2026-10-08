@@ -296,6 +296,62 @@ void PostProcessor::Init()
 	glCheck();
 }
 
+/* The size rendered at has changed and the context has not. The filter's
+ * picture is what the game is drawn on, and a game that draws part of the
+ * screen has the rest from it: it is given a texture of the new size and
+ * what it held is scaled into that, on the graphics card. The framebuffer,
+ * the vertices and the shaders are as they were - taking the filter down
+ * and setting it up again threw the picture away and compiled the shaders
+ * again. */
+void PostProcessor::Resize()
+{
+	const int old_width = (int)width, old_height = (int)height;
+
+	/* (not made yet: it is made when first wanted, at the size there is then) */
+	if (framebuffer == 0 || (old_width == screen_width && old_height == screen_height))
+		return;
+
+	GLint was_fbo = 0;
+	const GLuint old_texture = texture;
+
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &was_fbo);
+	this->width = screen_width;
+	this->height = screen_height;
+
+	texture = glcache.GenTexture();
+	glcache.BindTexture(GL_TEXTURE_2D, texture);
+	glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glcache.BindTexture(GL_TEXTURE_2D, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+	glBindRenderbuffer(RARCH_GL_RENDERBUFFER, depthBuffer);
+	glRenderbufferStorage(RARCH_GL_RENDERBUFFER, RARCH_GL_DEPTH24_STENCIL8, width, height);
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
+	if (gl.gl_major >= 3)
+	{
+		GLuint old_fbo = 0;
+		const GLboolean was_scissor = glIsEnabled(GL_SCISSOR_TEST);
+
+		glGenFramebuffers(1, &old_fbo);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, old_fbo);
+		glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, old_texture, 0);
+		if (was_scissor)
+			glDisable(GL_SCISSOR_TEST);
+		glBlitFramebuffer(0, 0, old_width, old_height, 0, 0, screen_width, screen_height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+		if (was_scissor)
+			glEnable(GL_SCISSOR_TEST);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+		glDeleteFramebuffers(1, &old_fbo);
+	}
+#endif
+	glBindFramebuffer(GL_FRAMEBUFFER, was_fbo);
+	GLuint gone = old_texture;
+	glcache.DeleteTextures(1, &gone);
+	glCheck();
+}
+
 void PostProcessor::Term()
 {
 	glcache.DeleteTextures(1, &texture);
