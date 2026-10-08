@@ -124,6 +124,24 @@ static core_file_impl *core_file_alloc(void)
    return cf;
 }
 
+/* A file by its path: mapped by this core's own copy of the file layer
+ * if that can open it, read through the frontend's (filestream) if not.
+ *
+ * The order is a choice. A frontend's file layer is asked second, so a
+ * frontend that means to serve other bytes for a path that also opens
+ * locally is not heard: the local file is mapped. The file layer the
+ * frontend hands over (the VFS interface) has no way to ask for a
+ * mapping, so going through it first would mean no file is ever mapped
+ * under a frontend that supplies one - RetroArch always does - and a
+ * disc image would be read and copied where it is now borrowed from the
+ * page cache. Every path RetroArch's layer treats specially (cdrom://,
+ * smb://, a content URI on Android, a path under UWP) is one this
+ * core's copy cannot open, and so goes to the frontend's anyway.
+ *
+ * What would settle it is a mapping call in the VFS interface: the
+ * frontend maps what it means the path to be, and this asks it first.
+ * Until there is one, comparing a few bytes of the two would only look
+ * like an answer - a patch in the middle of a file would get past it. */
 static int core_file_open_path(core_file_impl *cf, const char *path)
 {
    int64_t len = 0;
