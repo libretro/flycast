@@ -1910,6 +1910,15 @@ static void retro_vk_context_destroy()
 static bool set_vulkan_hw_render()
 {
 	retro_hw_render_callback hw_render;
+	/* All of it, not only the fields set below. cache_context was left as
+	 * whatever the stack held: when that was not zero the frontend took
+	 * this core for one that keeps its context across a video restart,
+	 * kept the device, and called neither context_destroy nor
+	 * context_reset - and the renderer went on with the interface of the
+	 * video driver that had just been freed. No picture from then on, or
+	 * a crash in the frontend. (The OpenGL path has always zeroed its
+	 * own.) */
+	memset(&hw_render, 0, sizeof(hw_render));
 	hw_render.context_type = RETRO_HW_CONTEXT_VULKAN;
 	hw_render.version_major = VK_API_VERSION_1_0;
 	hw_render.version_minor = 0;
