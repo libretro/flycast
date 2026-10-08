@@ -62,7 +62,6 @@ struct archive
    r7z_archive_t   *sz;
    rzip_archive_t  *zip;
    rrar_archive_t  *rar;
-   uint8_t         *sz_buf;   /* 7z or rar read into memory when not mapped */
    uint32_t         sz_folders;
    archive_entry_t *entries;
    uint8_t        **cache;    /* decoded members, one slot per entry   */
@@ -281,6 +280,9 @@ static int rar_open(archive_t *a)
    unsigned       n, i;
    char          *name_out;
 
+   /* In place when the file is mapped; read as it is needed when it is
+    * not - its headers one at a time now, a member's bytes when the
+    * member is asked for - as the zip and the 7z are. */
    if (a->map)
    {
       data = a->map;
@@ -288,15 +290,13 @@ static int rar_open(archive_t *a)
    }
    else
    {
-      len = core_fsize(a->f);
-      if (!(a->sz_buf = (uint8_t*)malloc(len ? len : 1)))
-         return 0;
-      if (core_fread_at(a->f, 0, a->sz_buf, len) != len)
-         return 0;
-      data = a->sz_buf;
+      data = NULL;
+      len  = core_fsize(a->f);
    }
 
-   if (rrar_archive_open(&a->rar, data, len) != RRAR_OK)
+   if ((data
+            ? rrar_archive_open(&a->rar, data, len)
+            : rrar_archive_open_read(&a->rar, len, zip_read, a->f)) != RRAR_OK)
       return 0;
 
    n = rrar_archive_num_entries(a->rar);
@@ -565,7 +565,6 @@ void archive_close(archive_t *a)
       rzip_archive_close(a->zip);
    if (a->rar)
       rrar_archive_close(a->rar);
-   free(a->sz_buf);
    if (a->f)
       core_fclose(a->f);
    free(a);
