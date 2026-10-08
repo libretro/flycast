@@ -131,17 +131,22 @@ struct CHDTrack : TrackFile
 
 		u32 hunk_ofs=fad_offs%disc->sph;
 
-		memcpy(dst,hmem+hunk_ofs*(2352+96),fmt);
-
 		if (swap_bytes)
 		{
-			for (int i = 0; i < fmt; i += 2)
+			/* The other byte order, made on the way across: 16 bits at a
+			 * time, which the compiler does sixteen bytes at a time. (It
+			 * was copied, and then swapped where it lay a byte at a time.) */
+			const u8 *from = hmem + hunk_ofs * (2352 + 96);
+			for (u32 i = 0; i + 1 < fmt; i += 2)
 			{
-				u8 b = dst[i];
-				dst[i] = dst[i + 1];
-				dst[i + 1] = b;
+				u16 w;
+				memcpy(&w, from + i, 2);
+				w = (u16)((w << 8) | (w >> 8));
+				memcpy(dst + i, &w, 2);
 			}
 		}
+		else
+			memcpy(dst,hmem+hunk_ofs*(2352+96),fmt);
 
 		*sector_type=fmt==2352?SECFMT_2352:SECFMT_2048_MODE1;
 

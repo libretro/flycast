@@ -1150,16 +1150,17 @@ static void nb_sys_frame()
 	r[0] = did;
 }
 
+/* (both are words in main memory, handed over a word at a time) */
 static void nb_sys_board()
 {
-	for (u32 i = 0; i < 20; i++)
-		WriteMem8(r[4] + i, ReadMem8(NB_BOARD + i));
+	for (u32 i = 0; i < 20; i += 4)
+		WriteMem32(r[4] + i, ReadMem32(NB_BOARD + i));
 }
 
 static void nb_sys_settings()
 {
-	for (u32 i = 0; i < 68; i++)
-		WriteMem8(r[4] + i, ReadMem8(NB_SETTINGS + i));
+	for (u32 i = 0; i < 68; i += 4)
+		WriteMem32(r[4] + i, ReadMem32(NB_SETTINGS + i));
 }
 
 static void nb_sys_one_player() { nb_wr(NB_ONE_PLAYER, r[4] == 1); }
