@@ -26,6 +26,7 @@
  *                    that frame, as from the frontend's menu while the game runs.
  *                    Whatever size the core then tells the frontend is printed,
  *                    "size WxH".
+ *   HEADLESS_OPTION2 the same, for a second change at another frame
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -133,10 +134,28 @@ static void log_line(enum retro_log_level level, const char *fmt, ...)
 static struct retro_disk_control_callback disk;
 static int have_disk;
 
-static char changed_text[512];       /* HEADLESS_OPTION, from its frame on */
-static const char *changed_options[8];
+static char changed_text[2][512];    /* HEADLESS_OPTION and HEADLESS_OPTION2, from their frames on */
+static const char *changed_options[16];
 static int changed_count;
 static int option_changed;
+
+static void change_options(const char *name, int which, int frame)
+{
+   const char *env = getenv(name);
+   char *next;
+
+   if (!env || frame != atoi(env) || !strchr(env, ':'))
+      return;
+   snprintf(changed_text[which], sizeof(changed_text[which]), "%s", strchr(env, ':') + 1);
+   for (next = changed_text[which]; next && changed_count < 16; )
+   {
+      changed_options[changed_count++] = next;
+      next = strchr(next, ',');
+      if (next)
+         *next++ = '\0';
+   }
+   option_changed = 1;
+}
 static unsigned told_width, told_height;
 
 static bool environment(unsigned cmd, void *data)
@@ -174,7 +193,8 @@ static bool environment(unsigned cmd, void *data)
          struct retro_variable *var = (struct retro_variable *)data;
          size_t len = strlen(var->key);
          int i;
-         for (i = 0; i < changed_count; i++)
+         /* (the latest change of an option is the one in force) */
+         for (i = changed_count - 1; i >= 0; i--)
             if (!strncmp(changed_options[i], var->key, len) && changed_options[i][len] == '=')
             {
                var->value = changed_options[i] + len + 1;
@@ -336,19 +356,8 @@ int main(int argc, char **argv)
                fprintf(stderr, "the state could not be loaded\n");
                return 1;
             }
-            if (getenv("HEADLESS_OPTION") && i == atoi(getenv("HEADLESS_OPTION")) && strchr(getenv("HEADLESS_OPTION"), ':'))
-            {
-               char *next;
-               snprintf(changed_text, sizeof(changed_text), "%s", strchr(getenv("HEADLESS_OPTION"), ':') + 1);
-               for (next = changed_text; next && changed_count < 8; )
-               {
-                  changed_options[changed_count++] = next;
-                  next = strchr(next, ',');
-                  if (next)
-                     *next++ = '\0';
-               }
-               option_changed = 1;
-            }
+            change_options("HEADLESS_OPTION", 0, i);
+            change_options("HEADLESS_OPTION2", 1, i);
             if (getenv("HEADLESS_DUMP") && i == atoi(getenv("HEADLESS_DUMP")) && strchr(getenv("HEADLESS_DUMP"), ':'))
             {
                size_t dump_size = retro_serialize_size();

@@ -100,13 +100,26 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # widescreen hack on 120 frames in, as from the frontend's menu: the core has
 # to tell the frontend the new size - 1280x960, a third wider - and the
 # disc's program has to go on as if nothing had happened.
-for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy resize"; do
+# The eighth turns threaded rendering on 120 frames in and off again at 200:
+# the emulation thread is started and stopped between two frames, and the
+# disc's program has to go on as if nothing had happened.
+for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy resize" "legacy threads"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
    FRAMES=300
-   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION
-   if [ "$2" = resize ]; then
+   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2
+   SIZE_TOLD=
+   if [ "$2" = threads ]; then
+      NAME=$TIMING-threads
+      WINCE=disabled
+      GOOD=600d600d
+      HEADLESS_OPTION=120:reicast_threaded_rendering=enabled
+      HEADLESS_OPTION2=200:reicast_threaded_rendering=disabled
+      export HEADLESS_OPTION HEADLESS_OPTION2
+      echo "== headless: $TIMING SH4 timing, with threaded rendering turned on and off again"
+   elif [ "$2" = resize ]; then
+      SIZE_TOLD=1707x960
       NAME=$TIMING-resize
       WINCE=disabled
       GOOD=600d600d
@@ -183,8 +196,8 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       }
    fi
    # (a Windows program ends its lines its own way)
-   if [ -n "$HEADLESS_OPTION" ]; then
-      tr -d '\r' < "$WORK/$NAME.out" | grep -q "^size 1707x960\$" || {
+   if [ -n "$SIZE_TOLD" ]; then
+      tr -d '\r' < "$WORK/$NAME.out" | grep -q "^size $SIZE_TOLD\$" || {
          echo "FAIL: the frontend was not told the new size: $(cat "$WORK/$NAME.out")" >&2
          exit 1
       }
