@@ -63,6 +63,11 @@ public:
 		return dcViewport;
 	}
 
+	/* How many times wider than a render to a texture's target the game draws. */
+	static float RttHorizontalScale() {
+		return SCALER_CTL.hscale ? 2.f : 1.f;
+	}
+
 	void CalcMatrices(const rend_context *renderingContext)
 	{
 		this->renderingContext = renderingContext;
@@ -73,7 +78,12 @@ public:
 		{
 			dcViewport.x = renderingContext->fb_X_CLIP.max - renderingContext->fb_X_CLIP.min + 1;
 			dcViewport.y = renderingContext->fb_Y_CLIP.max - renderingContext->fb_Y_CLIP.min + 1;
-			xform_set(&normalMatrix, 2.0f / dcViewport.x, 2.0f / dcViewport.y, 1.f, -1.f, -1.f, 0.f);
+			/* The horizontal scaler halves what is drawn on its way to the
+			 * framebuffer, for a texture as for the screen: the game draws
+			 * twice as wide as the texture is. (The clip registers, which the
+			 * texture's size comes from, are in the framebuffer's pixels.)
+			 * From upstream. */
+			xform_set(&normalMatrix, 2.0f / (dcViewport.x * RttHorizontalScale()), 2.0f / dcViewport.y, 1.f, -1.f, -1.f, 0.f);
 			scissorMatrix = normalMatrix;
 			sidebarWidth = 0;
 		}

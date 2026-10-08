@@ -25,6 +25,7 @@
 
 #include "types.h"
 #include "hw/pvr/Renderer_if.h"
+#include "hw/pvr/pvr_regs.h"
 
 // The part of the screen something covers, in the coordinates of the vertices
 struct ScreenBounds
@@ -97,9 +98,10 @@ static inline void BoundsToScissor(const ScreenBounds& b, const xform& viewport,
 	}
 	else
 	{
-		sx *= settings.rend.RenderToTextureUpscale;
+		const float across = settings.rend.RenderToTextureUpscale / (SCALER_CTL.hscale ? 2.f : 1.f);
+		sx *= across;
 		sy *= settings.rend.RenderToTextureUpscale;
-		ex *= settings.rend.RenderToTextureUpscale;
+		ex *= across;
 		ey *= settings.rend.RenderToTextureUpscale;
 	}
 	const int x0 = std::max(0, (int)floorf(std::min(sx, ex)));

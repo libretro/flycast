@@ -551,6 +551,7 @@ static void ta_scene(void)
  * with that texture, which has to show it the same way up. */
 
 static u32 rtt_static_done, rtt_static_age, rtt_static_bad;
+static u32 rtt_hscale_age;
 
 static void render_to_texture(void)
 {
@@ -597,6 +598,41 @@ static void render_to_texture(void)
       rtt_static_age++;
    else if (*(volatile u16 *)(0xA4000000 + RTT_ADDRESS + 0x80000 + (20 * 64 + 20) * 2) != 0xF81F)
       rtt_static_bad = 1;
+
+   /* A fourth, 64 by 64, rendered once with the horizontal scaler on: the
+    * scaler halves what is drawn on its way to the framebuffer, so the
+    * program draws 128 wide - orange all the way across, blue over the left
+    * 64 - and the texture has to come out blue on its left half and orange
+    * on its right. Without the halving the blue fills it. Read back ten
+    * frames later. */
+   if (rtt_hscale_age == 0)
+   {
+      const u32 scaler = PVR(0xF4);
+
+      PVR(0xF4) = scaler | 0x10000;                    /* SCALER_CTL: hscale */
+      PVR(0x4C) = 64 * 2 / 8;
+      PVR(0x60) = 0x01000000 | (RTT_ADDRESS + 0xC0000);
+      PVR(0x68) = 63 << 16;
+      PVR(0x6C) = 63 << 16;
+      PVR(0x144) = 0x80000000;                         /* TA_LIST_INIT */
+      ta_quad(0, TSP_PLAIN, 0, 0xFFFF8000, F(0.5f), F(0.0f), F(0.0f), F(128.0f), F(64.0f));
+      ta_quad(0, TSP_PLAIN, 0, 0xFF0000FF, F(0.6f), F(0.0f), F(0.0f), F(64.0f), F(64.0f));
+      ta_send(0, 0, 0, 0, 0, 0, 0, 0);
+      PVR(0x14) = 0xFFFFFFFF;                          /* STARTRENDER */
+      PVR(0xF4) = scaler;
+      rtt_hscale_age = 1;
+   }
+   else if (rtt_hscale_age < 10)
+      rtt_hscale_age++;
+   else if (rtt_hscale_age == 10)
+   {
+      volatile u16 *tex = (volatile u16 *)(0xA4000000 + RTT_ADDRESS + 0xC0000);
+      const u16 left = tex[20 * 64 + 16], right = tex[20 * 64 + 48];
+
+      if (left != 0x001F || (right != 0xFC00 && right != 0xFBE0))
+         rtt_static_bad = 1;
+      rtt_hscale_age = 11;
+   }
 
    PVR(0x48) = fb_w_ctrl;
    PVR(0x4C) = linestride;

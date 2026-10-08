@@ -19,6 +19,7 @@
 
 #include "types.h"
 #include "hw/pvr/Renderer_if.h"
+#include "hw/pvr/pvr_regs.h"
 
 enum class TileClipping {
 	Inside,			// Render stuff outside the region
@@ -60,9 +61,11 @@ static inline TileClipping GetTileClip(u32 val, const xform& viewport, int *clip
 	}
 	else
 	{
-		csx *= settings.rend.RenderToTextureUpscale;
+		// (across, by half that where the scaler halves what is drawn: transform_matrix.h)
+		const float across = settings.rend.RenderToTextureUpscale / (SCALER_CTL.hscale ? 2.f : 1.f);
+		csx *= across;
 		csy *= settings.rend.RenderToTextureUpscale;
-		cex *= settings.rend.RenderToTextureUpscale;
+		cex *= across;
 		cey *= settings.rend.RenderToTextureUpscale;
 	}
 	clip_rect[0] = std::max(0, (int)lroundf(csx));
