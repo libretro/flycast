@@ -465,13 +465,18 @@ static bool naomi_FlatBios(const u8 *rom, size_t size)
 	// From naomi.zip, or naomi2.zip for a NAOMI 2
 	const char *bios = settings.System == DC_PLATFORM_NAOMI2 ? "naomi2" : "naomi";
 	int region = naomi_FlatRegion(rom, size);
-	if (!naomi_LoadBios(bios, NULL, NULL, region))
+	if (naomi_LoadBios(bios, NULL, NULL, region))
+		bios_loaded = true;
+	else
 	{
 		WARN_LOG(NAOMI, "Warning: Region %d bios not found in %s.zip", region, bios);
-		if (!naomi_LoadBios(bios, NULL, NULL, -1) && !bios_loaded)
+		if (naomi_LoadBios(bios, NULL, NULL, -1))
+			bios_loaded = true;
+		else if (!bios_loaded)
 		{
-			ERROR_LOG(NAOMI, "Error: cannot load BIOS. Exiting");
-			return false;
+			// A flat image says where it is loaded and where it starts:
+			// it is started without one (reios_boot())
+			NOTICE_LOG(NAOMI, "No BIOS in %s.zip or %s.7z: the game is started without one", bios, bios);
 		}
 	}
 	return true;

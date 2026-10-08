@@ -18,9 +18,14 @@
 #include "descrambl.h"
 
 #include "hw/sh4/sh4_core.h"
+#include "hw/sh4/sh4_interrupts.h"
+#include "hw/sh4/sh4_mmr.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/holly/sb_mem.h"
 #include "hw/naomi/naomi_cart.h"
+#include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/pvr_mem.h"
+#include "hw/aica/aica_if.h"
 #include "iso9660.h"
 #include "font.h"
 #include "hw/aica/aica.h"
@@ -540,7 +545,7 @@ static void reios_setup_state(u32 boot_addr)
 	old_fpscr.full = 0x00040001;
 }
 
-static void reios_setup_naomi(u32 boot_addr) {
+static void reios_setup_naomi(u32 boot_addr, u32 load_end, u32 now) {
 	/*
 		SR 0x60000000 0x00000001
 		FPSRC 0x00040001
@@ -625,30 +630,30 @@ static void reios_setup_naomi(u32 boot_addr) {
 	*/
 
 	//Setup registers to imitate a normal boot
-	r[0] = 0x0c021000;
-	r[1] = 0x0c01f820;
+	r[0] = boot_addr;
+	r[1] = 0x0c01f820;		// the header's copy, at its entry points
 	r[2] = 0xa0710004;
-	r[3] = 0x0c01f130;
-	r[4] = 0x5bfccd08;
+	r[3] = 0x0c01f130;		// where the time is
+	r[4] = now;
 	r[5] = 0xa05f7000;
 	r[6] = 0xa05f7008;
-	r[7] = 0x00000007;
+	r[7] = settings.System == DC_PLATFORM_NAOMI2 ? 0x00000007 : 0x00000006;
 	r[8] = 0x00000000;
-	r[9] = 0x00002000;
+	r[9] = 0x00000000;
 	r[10] = 0xffffffff;
-	r[11] = 0x0c0e0000;
+	r[11] = load_end;
 	r[12] = 0x00000000;
 	r[13] = 0x00000000;
 	r[14] = 0x00000000;
 	r[15] = 0x0cc00000;
 
-	gbr = 0x0c2abcc0;
+	gbr = 0x00000000;
 	ssr = 0x60000000;
-	spc = 0x0c041738;
-	sgr = 0x0cbfffb0;
+	spc = 0x0c020000;
+	sgr = 0x0cbfffb4;
 	dbr = 0x00000fff;
 	vbr = 0x0c000000;
-	pr = 0xac0195ee;
+	pr = 0xac01965e;
 	fpul = 0x000001e0;
 	next_pc = boot_addr;
 
@@ -659,6 +664,771 @@ static void reios_setup_naomi(u32 boot_addr) {
 
 	fpscr.full = 0x00040001;
 	old_fpscr.full = 0x00040001;
+}
+
+static u8 *reios_rom;       /* the boot ROM's memory, which reios fills */
+
+/* ---- the NAOMI BIOS's system routines ----
+ *
+ * The BIOS is more than a loader. It leaves in memory, at 0c018000, a
+ * table of routines that games call for the things every cabinet does
+ * the same way: what the operator set in the test menu, how many coins
+ * make a credit, the counting of coins and credits. (A game finds the
+ * same block in the BIOS ROM at a0060000 and copies it over.) Without
+ * them a game calls into empty memory and starts again, for ever.
+ *
+ * These are those routines, each doing what the BIOS's does - which was
+ * found by reading epr-21576h's and watching what Dead or Alive 2 and
+ * Virtua Fighter 4 call and with what. None of the BIOS's code is here:
+ * a routine's place in the table holds the trap that reios answers.
+ *
+ *   0  a constant                1  where things are in the BIOS ROM
+ *   2  read, 3 write a word the BIOS keeps for the game
+ *   4  check the operator's settings, and put back the defaults if they
+ *      cannot be
+ *   5  the coin setting of a number: coins and credits for each chute
+ *   6  start the coin handling for a game
+ *   7  hold the players' credits to a limit
+ *   8  what each player can do with the credits there are
+ *   9  once a frame: coin and service switches in, credits out
+ *  10  the board: region, the game's serial
+ *  11  the operator's settings
+ *  13  whether a service credit is for one player
+ *  20  whether a cartridge answers
+ *
+ * 12, 16 to 19 and 21 to 25 are for the GD-ROM's DIMM board and the
+ * network board; no cartridge game seen calls them, and they answer 0.
+ *
+ * The settings (17 words at 0c01f000, which routine 11 hands out):
+ *   0 the most credits there can be   1 players, less one
+ *   2 a coin chute to each player     3 free play
+ *   4 which coin setting              5-12 credits to start, to continue...
+ *   13, 14 what a coin of chute 1, 2 counts   15 coins for a bonus one
+ *   16 how many of those make a credit
+ * The real BIOS reads them from the EEPROM the test menu writes; these
+ * are its defaults (one coin, one credit).
+ *
+ * The coin state a game keeps and passes in ("C" below), in words:
+ *   0-3 which of settings 5-12 each player is at   4-7 credits
+ *   8-11 coins towards the next credit             12-15 towards a bonus
+ *   16-19 coins waiting to be counted              20 service credits
+ *   21-24 how long each service switch is held     25-28 coin meters
+ *   29-44 a queue of sounds to make, 45 and 46 its ends
+ *   47-50 coins counted by the I/O board           51-54 switches: now,
+ *   before, pressed, let go (bits 0-3 coin, 4-7 service)
+ */
+#define NB_BLOCK        0x0c018000
+#define NB_ROUTINES     0x0c018400      /* the traps: 8 bytes apart */
+#define NB_CONSTANT     0x0c018200
+#define NB_ROM_AREAS    0x0c018204
+#define NB_COIN_TABLE   0x0c018304
+#define NB_MAX_CREDITS  0x0c019e34      /* by region */
+#define NB_ONE_PLAYER   0x0c019e54
+#define NB_SERVICE      0x0c019e58      /* service credits given, by player */
+#define NB_SETTINGS     0x0c01f000
+#define NB_BOARD        0x0c01f100
+#define NB_GAME_WORD    0x0c01f120
+#define NB_CREDITS_AT   0x0c01ff04
+#define NB_BLOCK_SIZE   0x7000
+
+static u32 nb_rd(u32 a)            { return ReadMem32(a); }
+static void nb_wr(u32 a, u32 v)    { WriteMem32(a, v); }
+static void nb_inc(u32 a)          { WriteMem32(a, ReadMem32(a) + 1); }
+
+/* A sound for the game to make: 1 a coin, 2 a credit. */
+static void nb_queue_event(u32 C, u32 event)
+{
+	u32 head = nb_rd(C + 0xb4);
+	u32 next = (head + 1) & 15;
+	if (next == nb_rd(C + 0xb8))
+		return;
+	nb_wr(C + 116 + head * 4, event);
+	nb_wr(C + 0xb4, next);
+}
+
+/* A coin of @chute for @player. The credits it made. */
+static u32 nb_add_coin(u32 S, u32 C, u32 player, u32 chute)
+{
+	u32 added = 0;
+	u32 credits = C + 16 + player * 4;
+	u32 coins = C + 32 + player * 4;
+	u32 bonus = C + 48 + player * 4;
+
+	if (nb_rd(S + 8) == 0)
+		bonus = C + 48;
+	else if (nb_rd(NB_ONE_PLAYER))
+		nb_wr(NB_SERVICE + player * 4, 0);
+	nb_wr(C + 80, 0);
+
+	if (nb_rd(credits) < nb_rd(S) && nb_rd(S + 12) != 1)
+	{
+		nb_wr(coins, nb_rd(coins) + nb_rd(S + 52 + chute * 4));
+		if (nb_rd(S + 60) != 0)
+		{
+			nb_wr(bonus, nb_rd(bonus) + nb_rd(S + 52 + chute * 4));
+			while (nb_rd(bonus) >= nb_rd(S + 60))
+			{
+				nb_wr(bonus, nb_rd(bonus) - nb_rd(S + 60));
+				nb_inc(coins);
+			}
+		}
+		while (nb_rd(coins) >= nb_rd(S + 64))
+		{
+			nb_inc(credits);
+			added++;
+			if (nb_rd(credits) == nb_rd(S))
+			{
+				/* full: what is over is lost */
+				nb_wr(coins, 0);
+				nb_wr(bonus, 0);
+				break;
+			}
+			nb_wr(coins, nb_rd(coins) - nb_rd(S + 64));
+		}
+		nb_queue_event(C, added ? 2 : 1);
+	}
+
+	/* the meters */
+	if (nb_rd(S + 8) == 0 && nb_rd(S + 52) != nb_rd(S + 56))
+		nb_inc(C + 100 + chute * 4);
+	else
+		nb_inc(C + 100);
+	return added;
+}
+
+/* A service credit for @player, if there is room. True if one was given. */
+static bool nb_service_credit(u32 S, u32 C, u32 player)
+{
+	u32 credits = C + 16 + player * 4;
+	if (nb_rd(credits) >= nb_rd(S) || nb_rd(S + 12) == 1)
+		return false;
+	nb_inc(credits);
+	if (nb_rd(credits) == nb_rd(S))
+		nb_wr(C + 32 + player * 4, 0);
+	nb_wr(C + 48 + player * 4, 0);
+	nb_queue_event(C, 2);
+	return true;
+}
+
+/* The coins waiting and the service switch, with one chute for all (the
+ * four coin inputs are two chutes, twice). @B: the bookkeeping. */
+static u32 nb_process_common(u32 S, u32 C, u32 service, u32 B)
+{
+	u32 from_coins = 0, from_service = 0, did = 0;
+
+	for (u32 i = 0; i < 4; i++)
+	{
+		if (nb_rd(C + 64 + i * 4) == 0)
+			continue;
+		nb_wr(C + 64 + i * 4, nb_rd(C + 64 + i * 4) - 1);
+		nb_wr(NB_SERVICE + i * 4, 0);
+		from_coins += nb_add_coin(S, C, 0, i & 1);
+		did = 1;
+		nb_inc(B + 48);
+		nb_inc(B + 32 + i * 4);
+	}
+	if (service != 0 && nb_rd(C + 80) < 9)
+	{
+		if (nb_rd(C + 16) < nb_rd(S))
+			nb_inc(C + 80);
+		if (nb_service_credit(S, C, 0))
+			from_service++;
+		did = 1;
+	}
+	nb_wr(B + 56, nb_rd(B + 56) + from_service);
+	nb_wr(B + 52, nb_rd(B + 52) + from_coins);
+	nb_wr(B + 60, nb_rd(B + 60) + from_coins + from_service);
+	return did;
+}
+
+/* The same with a chute to each player; @service has a bit for each. */
+static u32 nb_process_individual(u32 S, u32 C, u32 service, u32 B)
+{
+	s32 last = (s32)nb_rd(S + 4);
+	u32 from_coins = 0, from_service = 0, did = 0;
+
+	for (s32 p = 0; p < 4 && (p == 0 || p <= last); p++)
+	{
+		if (nb_rd(C + 64 + p * 4) == 0)
+			continue;
+		nb_wr(C + 64 + p * 4, nb_rd(C + 64 + p * 4) - 1);
+		from_coins += nb_add_coin(S, C, p, 0);
+		did = 1;
+		nb_inc(B + 48);
+		nb_inc(B + 32 + p * 4);
+	}
+	if (service != 0)
+	{
+		if (nb_rd(NB_ONE_PLAYER) != 0)
+		{
+			/* to the player whose switch it was */
+			for (s32 p = 0; p <= last; p++)
+			{
+				if (!(service & (1u << p)) || (s32)nb_rd(NB_SERVICE + p * 4) >= 9)
+					continue;
+				did = 1;
+				if (nb_rd(C + 16 + p * 4) < nb_rd(S))
+					nb_inc(NB_SERVICE + p * 4);
+				if (nb_service_credit(S, C, p))
+					from_service++;
+			}
+		}
+		else if (nb_rd(C + 80) < 9)
+		{
+			/* to every player */
+			did = 1;
+			for (s32 p = 0; p <= last; p++)
+				if (nb_rd(C + 16 + p * 4) < nb_rd(S))
+				{
+					nb_inc(C + 80);
+					break;
+				}
+			for (s32 p = 0; p <= last; p++)
+				if (nb_service_credit(S, C, p))
+					from_service++;
+		}
+	}
+	nb_wr(B + 56, nb_rd(B + 56) + from_service);
+	nb_wr(B + 52, nb_rd(B + 52) + from_coins);
+	nb_wr(B + 60, nb_rd(B + 60) + from_coins + from_service);
+	return did;
+}
+
+/* For each player four bytes at @O: credits, coins towards the next,
+ * coins to a credit, and whether there is enough to play (0 nothing,
+ * 1 not yet, 2 yes). With one chute the first three are once, for all. */
+static void nb_status(u32 S, u32 C, u32 O)
+{
+	s32 last = (s32)nb_rd(S + 4);
+	bool individual = nb_rd(S + 8) == 1;
+
+	if (!individual)
+	{
+		WriteMem8(O, (u8)nb_rd(C + 16));
+		WriteMem8(O + 1, (u8)nb_rd(C + 32));
+		WriteMem8(O + 2, ReadMem8(S + 64));
+	}
+	for (s32 p = 0; p <= last; p++)
+	{
+		u32 from = individual ? (u32)p : 0;
+		u32 credits = nb_rd(C + 16 + from * 4) & 0xff;
+		u32 coins = nb_rd(C + 32 + from * 4) & 0xff;
+		u8 can;
+
+		if (individual)
+		{
+			WriteMem8(O + p * 4, (u8)credits);
+			WriteMem8(O + p * 4 + 1, (u8)coins);
+			WriteMem8(O + p * 4 + 2, ReadMem8(S + 64));
+		}
+		if (nb_rd(S + 12) == 1)
+			can = 2;
+		else if ((credits | coins) == 0)
+			can = 0;
+		else
+			can = (s32)credits >= (s32)nb_rd(S + 20 + nb_rd(C + p * 4) * 4) ? 2 : 1;
+		WriteMem8(O + p * 4 + 3, can);
+	}
+}
+
+static void nb_sys_constant()   { r[0] = nb_rd(NB_CONSTANT); }
+static void nb_sys_rom_area()
+{
+	nb_wr(r[5], nb_rd(NB_ROM_AREAS + r[4] * 8));
+	nb_wr(r[5] + 4, nb_rd(NB_ROM_AREAS + r[4] * 8 + 4));
+}
+static void nb_sys_get_word()   { r[0] = nb_rd(NB_GAME_WORD); }
+static void nb_sys_set_word()   { nb_wr(NB_GAME_WORD, r[4]); }
+
+static void nb_sys_check_settings()
+{
+	u32 S = r[4];
+	u32 bad = 0, bit = 0;
+	u32 region = nb_rd(NB_BOARD);
+
+	if (nb_rd(S + 16) >= 28)
+		bad |= 1u << bit;
+	nb_wr(S + 12, nb_rd(S + 16) == 26);		/* setting 27 is free play */
+	bit++;
+	if (region < 8)
+		nb_wr(S, nb_rd(NB_MAX_CREDITS + region * 4));
+	if (nb_rd(S) < 9 || nb_rd(S) > 24)
+		bad |= 1u << bit;
+	bit++;
+	if ((s32)nb_rd(S + 4) >= 4)
+		bad |= 1u << bit;
+	bit++;
+	if ((s32)nb_rd(S + 8) >= 2)
+		bad |= 1u << bit;
+	bit++;
+	if ((s32)nb_rd(S + 12) >= 2)
+		bad |= 1u << bit;
+	bit++;
+	if (nb_rd(S + 52) < 1 || nb_rd(S + 52) > 9)
+		bad |= 1u << bit;
+	bit++;
+	if (nb_rd(S + 56) < 1 || nb_rd(S + 56) > 9)
+		bad |= 1u << bit;
+	bit++;
+	if (nb_rd(S + 60) > 9)
+		bad |= 1u << bit;
+	bit++;
+	if (nb_rd(S + 64) < 1 || nb_rd(S + 64) > 9)
+		bad |= 1u << bit;
+	bit++;
+	for (u32 i = 0; i < 8; i++, bit++)
+		if (nb_rd(S + 20 + i * 4) < 1 || nb_rd(S + 20 + i * 4) > 5)
+			bad |= 1u << bit;
+
+	if (bad)
+	{
+		nb_wr(S, 9);
+		nb_wr(S + 4, 1);
+		nb_wr(S + 8, 0);
+		nb_wr(S + 12, 0);
+		nb_wr(S + 16, 0);
+		for (u32 i = 0; i < 8; i++)
+			nb_wr(S + 20 + i * 4, 1);
+		nb_wr(S + 52, 1);
+		nb_wr(S + 56, 1);
+		nb_wr(S + 60, 0);
+		nb_wr(S + 64, 1);
+	}
+	r[0] = bad;
+}
+
+static void nb_sys_coin_setting()
+{
+	r[0] = NB_COIN_TABLE + ((s32)r[4] > 28 ? 0 : r[4]) * 4;
+}
+
+static void nb_sys_start()
+{
+	u32 S = r[4], C = r[5], K = r[6], O = r[7];
+
+	nb_wr(NB_CREDITS_AT, K);
+	/* (the backup memory says whether service credits go by player) */
+	nb_wr(NB_ONE_PLAYER, ReadMem32(0xa020000c) == 1 && ReadMem32(0xa0200104) == 1);
+	nb_wr(C + 80, 0);
+	nb_wr(C + 0xb4, 0);
+	nb_wr(C + 0xb8, 0);
+	nb_wr(C + 0xcc, 0);
+	nb_wr(C + 0xd0, 0);
+	nb_wr(C + 0xd4, 0);
+	nb_wr(C + 0xd8, 0);
+	for (u32 i = 0; i < 4; i++)
+	{
+		nb_wr(C + 16 + i * 4, nb_rd(K + i * 4));
+		nb_wr(C + i * 4, 0);
+		nb_wr(C + 32 + i * 4, 0);
+		nb_wr(C + 48 + i * 4, 0);
+		nb_wr(C + 64 + i * 4, 0);
+		nb_wr(C + 100 + i * 4, 0);
+		nb_wr(C + 84 + i * 4, 0);
+		nb_wr(C + 0xbc + i * 4, 0);
+		nb_wr(NB_SERVICE + i * 4, 0);
+	}
+	WriteMem8(O + 16, (u8)nb_rd(S + 4) | (nb_rd(S + 8) != 0 ? 0x80 : 0));
+	WriteMem8(O + 17, ReadMem8(S + 12));
+	WriteMem8(O + 18, 2);
+	WriteMem8(O + 19, 1);
+}
+
+static void nb_sys_limit_credits()
+{
+	u32 count = 0;
+	for (u32 i = 0; i < 4; i++)
+		if (nb_rd(r[5] + i * 4) > r[4])
+		{
+			nb_wr(r[5] + i * 4, r[4]);
+			count++;
+		}
+	r[0] = count;
+}
+
+static void nb_sys_status()     { nb_status(r[4], r[5], r[6]); }
+
+static void nb_sys_frame()
+{
+	u32 S = r[4], C = r[5], O = r[6], sw = r[7];
+	u32 counted = nb_rd(r[15]);
+	u32 B = nb_rd(r[15] + 4);
+	u32 before[4], service = 0, did;
+
+	for (u32 i = 0; i < 4; i++)
+		before[i] = nb_rd(C + 16 + i * 4);
+
+	u32 last_sw = nb_rd(C + 0xcc);
+	nb_wr(C + 0xd0, last_sw);
+	nb_wr(C + 0xcc, sw);
+	nb_wr(C + 0xd4, sw & ~last_sw);
+	nb_wr(C + 0xd8, ~sw & last_sw);
+
+	for (u32 i = 0; i < 4; i++)
+	{
+		u32 held = C + 84 + i * 4;
+		u32 bit = 0x10u << i;
+
+		nb_wr(C + 64 + i * 4, 0);
+		nb_wr(C + 0xbc + i * 4, nb_rd(counted + i * 4));
+		/* a service switch counts once it has been down for seven frames */
+		if (nb_rd(held) == 0)
+		{
+			if (nb_rd(C + 0xd4) & bit)
+				nb_wr(held, 1);
+		}
+		else if (sw & bit)
+			nb_inc(held);
+		else
+			nb_wr(held, 0);
+		if (nb_rd(held) >= 7)
+		{
+			nb_wr(held, 0);
+			service |= 1u << i;
+		}
+	}
+
+	/* a coin switch let go is a coin; so is each the I/O board counted */
+	bool individual = nb_rd(S + 8) != 0;
+	s32 last = individual ? (s32)nb_rd(S + 4) : 3;
+	for (s32 i = 0; i <= last; i++)
+	{
+		if (nb_rd(C + 0xd8) & (1u << i))
+			nb_inc(C + 64 + i * 4);
+		nb_wr(C + 64 + i * 4, nb_rd(C + 64 + i * 4) + nb_rd(C + 0xbc + i * 4));
+	}
+	did = individual ? nb_process_individual(S, C, service, B)
+	                 : nb_process_common(S, C, service, B);
+
+	if (did == 1)
+		for (u32 i = 0; i < 4; i++)
+		{
+			u32 now = nb_rd(C + 16 + i * 4);
+			nb_wr(B + i * 4, now);
+			nb_wr(B + 16 + i * 4, nb_rd(B + 16 + i * 4) + now - before[i]);
+		}
+	nb_status(S, C, O);
+	for (u32 i = 0; i < 4; i++)
+		nb_wr(C + 0xbc + i * 4, 0);
+	r[0] = did;
+}
+
+static void nb_sys_board()
+{
+	for (u32 i = 0; i < 20; i++)
+		WriteMem8(r[4] + i, ReadMem8(NB_BOARD + i));
+}
+
+static void nb_sys_settings()
+{
+	for (u32 i = 0; i < 68; i++)
+		WriteMem8(r[4] + i, ReadMem8(NB_SETTINGS + i));
+}
+
+static void nb_sys_one_player() { nb_wr(NB_ONE_PLAYER, r[4] == 1); }
+
+static void nb_sys_cartridge()
+{
+	if (r[4] != 0 && ReadMem32(0xa05f7418) != 0)
+		r[0] = 0;
+	else
+		r[0] = ReadMem16(0xa05f703c) == 0xffff ? (u32)-1 : 1;
+}
+
+static void nb_sys_none()
+{
+	static bool said;
+	if (!said)
+		WARN_LOG(REIOS, "NAOMI: a BIOS routine for the DIMM or network board was called (from %08x): answering 0", pr);
+	said = true;
+	r[0] = 0;
+}
+
+static hook_fp* const nb_routines[26] = {
+	nb_sys_constant, nb_sys_rom_area, nb_sys_get_word, nb_sys_set_word,
+	nb_sys_check_settings, nb_sys_coin_setting, nb_sys_start, nb_sys_limit_credits,
+	nb_sys_status, nb_sys_frame, nb_sys_board, nb_sys_settings,
+	nb_sys_none, nb_sys_one_player, NULL, NULL,
+	nb_sys_none, nb_sys_none, nb_sys_none, nb_sys_none,
+	nb_sys_cartridge, nb_sys_none, nb_sys_none, nb_sys_none,
+	nb_sys_none, nb_sys_none,
+};
+
+/* The block as the BIOS has it at 60000 in its ROM, to @block: the table,
+ * a trap for each routine, and the tables of numbers they hand out. */
+static void nb_build_block(u8 *block)
+{
+	/* coins and credits, as the test menu's 28 coin settings have them */
+	static const u32 coin_table[29] = {
+		0x00010101, 0x00010201, 0x00010301, 0x00010401, 0x00010501, 0x00020201, 0x00020501, 0x00030301,
+		0x00040401, 0x00050501, 0x00060601, 0x00010102, 0x00010202, 0x00010402, 0x02010101, 0x02010201,
+		0x00010103, 0x00010104, 0x04010101, 0x04010401, 0x00010105, 0x05010503, 0x05010102, 0x05010502,
+		0x05010101, 0x05010501, 0x00010101, 0x00010101, 0x000bd306,
+	};
+	static const u32 rom_areas[3][2] = {
+		{ 0xa0080000, 0x000200 }, { 0xa0080200, 0x0a7000 }, { 0xa0127200, 0x07a000 },
+	};
+	static const u32 max_credits[8] = { 9, 24, 24, 9, 9, 9, 9, 9 };
+	u32 *w = (u32 *)block;
+
+	memset(block, 0, NB_BLOCK_SIZE);
+	for (u32 i = 0; i < 26; i++)
+		if (nb_routines[i])
+		{
+			w[i] = NB_ROUTINES + i * 8;
+			*(u16 *)(block + (NB_ROUTINES - NB_BLOCK) + i * 8) = REIOS_OPCODE;
+		}
+	w[(NB_CONSTANT - NB_BLOCK) / 4] = 0x3f800000;
+	memcpy(block + (NB_ROM_AREAS - NB_BLOCK), rom_areas, sizeof(rom_areas));
+	memcpy(block + (NB_COIN_TABLE - NB_BLOCK), coin_table, sizeof(coin_table));
+	memcpy(block + (NB_MAX_CREDITS - NB_BLOCK), max_credits, sizeof(max_credits));
+}
+
+/* ---- the NAOMI BIOS's interrupt service ----
+ *
+ * A game does not take the processor's exception vectors for itself: the
+ * vector base stays where the BIOS put it, at 0c000000, and the game
+ * writes the address of its handler for an event into the BIOS's table
+ * at 0c0001c0 - a word for each event code, every 0x20 - which starts out
+ * full of the address of a handler that does nothing. The BIOS's code at
+ * the vectors saves the interrupted program's registers, calls the
+ * handler as a C function, and puts everything back.
+ *
+ * Here that is done from two traps: one at each vector, which puts the
+ * registers by and sends the processor to the handler
+ * with a return address that is the other trap, where they are put back
+ * and the interrupted program goes on. (The BIOS can also switch between
+ * saved programs there, and takes a handler's answer of "not mine" to its
+ * error screen. No game seen asks for either.) */
+#define NB_VECTORS         0x0c000000
+#define NB_HANDLERS        0x0c0001c0
+#define NB_HANDLER_COUNT   66            /* events 000 to 820 */
+#define NB_NO_HANDLER      0x0c001000    /* rts; mov #1,r0 */
+#define NB_HANDLER_RETURN  0x0c000680
+
+#define NB_SAVED_COUNT      0x0c000124    /* how many interrupted programs are kept */
+#define NB_SAVED           0x0c004000    /* each in 0x200 bytes, where the BIOS keeps its own */
+#define NB_SAVED_MAX       8
+
+/* (The registers are kept in the machine's memory, not here: a saved
+ * state taken while a handler runs has them.) */
+static void nb_save_registers(u32 to)
+{
+	u32 i;
+	for (i = 0; i < 16; i++, to += 4)
+		WriteMem32(to, r[i]);
+	for (i = 0; i < 8; i++, to += 4)
+		WriteMem32(to, r_bank[i]);
+	for (i = 0; i < 32; i++, to += 4)
+		WriteMem32(to, *(u32 *)&xf[i]);
+	WriteMem32(to, pr);
+	WriteMem32(to + 4, gbr);
+	WriteMem32(to + 8, ssr);
+	WriteMem32(to + 12, spc);
+	WriteMem32(to + 16, sgr);
+	WriteMem32(to + 20, fpul);
+	WriteMem32(to + 24, fpscr.full);
+	WriteMem32(to + 28, mac.l);
+	WriteMem32(to + 32, mac.h);
+}
+
+static void nb_restore_registers(u32 from)
+{
+	u32 i;
+	for (i = 0; i < 16; i++, from += 4)
+		r[i] = ReadMem32(from);
+	for (i = 0; i < 8; i++, from += 4)
+		r_bank[i] = ReadMem32(from);
+	for (i = 0; i < 32; i++, from += 4)
+		*(u32 *)&xf[i] = ReadMem32(from);
+	pr = ReadMem32(from);
+	gbr = ReadMem32(from + 4);
+	ssr = ReadMem32(from + 8);
+	spc = ReadMem32(from + 12);
+	sgr = ReadMem32(from + 16);
+	fpul = ReadMem32(from + 20);
+	fpscr.full = ReadMem32(from + 24);
+	UpdateFPSCR();
+	mac.l = ReadMem32(from + 28);
+	mac.h = ReadMem32(from + 32);
+}
+
+/* Back to the interrupted program: what the processor's rte does. */
+static void nb_return_from_event()
+{
+	u32 to = spc;
+	sh4_sr_SetFull(ssr);
+	next_pc = to;
+	if (UpdateSR())
+		UpdateINTC();
+}
+
+static void nb_event(u32 event)
+{
+	u32 handler = NB_NO_HANDLER;
+	u32 depth = ReadMem32(NB_SAVED_COUNT);
+
+	if ((event >> 5) < NB_HANDLER_COUNT)
+		handler = ReadMem32(NB_HANDLERS + (event >> 3));
+	if (depth >= NB_SAVED_MAX || (handler & 0x1fffffff) == (NB_NO_HANDLER & 0x1fffffff) || handler == 0)
+	{
+		/* nobody's */
+		nb_return_from_event();
+		return;
+	}
+	nb_save_registers(NB_SAVED + depth * 0x200);
+	WriteMem32(NB_SAVED_COUNT, depth + 1);
+	pr = NB_HANDLER_RETURN;
+	next_pc = handler;
+}
+
+static void nb_interrupt()   { nb_event(CCN_INTEVT); }
+static void nb_exception()   { nb_event(CCN_EXPEVT); }
+
+static void nb_handler_return()
+{
+	u32 depth = ReadMem32(NB_SAVED_COUNT);
+	if (depth == 0 || depth > NB_SAVED_MAX)
+		return;
+	/* (the handler ran as the exception left the processor, on its other
+	 * set of r0 to r7: both sets go back as they were, then the status
+	 * register chooses) */
+	WriteMem32(NB_SAVED_COUNT, depth - 1);
+	nb_restore_registers(NB_SAVED + (depth - 1) * 0x200);
+	nb_return_from_event();
+}
+
+/* The vectors, the table and the handler that does nothing, in memory. */
+static void nb_install_interrupts()
+{
+	for (u32 i = 0; i < NB_HANDLER_COUNT; i++)
+		WriteMem32(NB_HANDLERS + i * 4, NB_NO_HANDLER);
+	WriteMem16(NB_NO_HANDLER, 0x000b);       /* rts */
+	WriteMem16(NB_NO_HANDLER + 2, 0xe001);   /* mov #1,r0 */
+	WriteMem16(NB_VECTORS + 0x100, REIOS_OPCODE);
+	WriteMem16(NB_VECTORS + 0x400, REIOS_OPCODE);
+	WriteMem16(NB_VECTORS + 0x600, REIOS_OPCODE);
+	WriteMem16(NB_HANDLER_RETURN, REIOS_OPCODE);
+	WriteMem32(NB_SAVED_COUNT, 0);
+}
+
+/* What the NAOMI's BIOS does to start a game, done for it when there is no
+ * BIOS: a flat image's header says what is to be loaded and where the game
+ * begins.
+ *
+ *   0x360  up to eight pieces to load, each three words - where in the
+ *          cartridge, where in memory, how long - ended by a first word
+ *          of ffffffff
+ *   0x420  the address the game starts at
+ *
+ * The BIOS keeps a copy of the header at 0c01f400 and the time it read
+ * from the clock at 0c01f130, and hands over with registers pointing at
+ * both; the display is in the 640x480 mode it showed its logo in. All as
+ * found by letting the real BIOS (epr-21576h, and the NAOMI 2's
+ * epr-23605c) run up to the game's first instruction. What it is not: the
+ * BIOS's test menu, its check of the game's region, or the routines it
+ * leaves in memory below 0c006000 - no game seen so far calls them. */
+static void reios_boot_naomi()
+{
+	static const u32 video[][2] = {
+		{ 0x030, 0x00000101 }, { 0x044, 0x00800005 }, { 0x048, 0x00000009 }, { 0x04c, 0x000000a0 },
+		{ 0x050, 0x00c00000 }, { 0x054, 0x00c00500 }, { 0x05c, 0x00177d3f }, { 0x060, 0x00800000 },
+		{ 0x064, 0x00c00000 }, { 0x068, 0x027f0000 }, { 0x06c, 0x01df0000 }, { 0x074, 0x00000001 },
+		{ 0x078, 0x3e4ccccd }, { 0x07c, 0x0027df77 }, { 0x080, 0x00000007 }, { 0x088, 0x3727c5a0 },
+		{ 0x098, 0x00800408 }, { 0x0a0, 0x00000020 }, { 0x0a4, 0x0000001f }, { 0x0a8, 0x15d1c955 },
+		{ 0x0b0, 0x00808080 }, { 0x0b4, 0x007f7f7f }, { 0x0b8, 0x00008009 }, { 0x0bc, 0xf000f0f0 },
+		{ 0x0c8, 0x03430000 }, { 0x0cc, 0x00150208 }, { 0x0d4, 0x00880343 }, { 0x0d8, 0x02110353 },
+		{ 0x0dc, 0x00240208 }, { 0x0e0, 0x03f19351 }, { 0x0e8, 0x00160000 }, { 0x0ec, 0x000000a5 },
+		{ 0x0f0, 0x00240024 }, { 0x0f4, 0x00000400 }, { 0x110, 0x00093f39 }, { 0x118, 0x00008040 },
+		{ 0x11c, 0x000000ff },
+	};
+	u8 header[0x500];
+	u32 entry, load_end = 0, now;
+
+	if (CurrentCartridge == NULL || !CurrentCartridge->Read(0, sizeof(header), header))
+	{
+		WARN_LOG(REIOS, "No cartridge loaded");
+		return;
+	}
+
+	for (u32 i = 0; i < 8; i++)
+	{
+		const u8 *e = header + 0x360 + i * 12;
+		u32 offset = e[0] | e[1] << 8 | e[2] << 16 | (u32)e[3] << 24;
+		u32 addr   = e[4] | e[5] << 8 | e[6] << 16 | (u32)e[7] << 24;
+		u32 size   = e[8] | e[9] << 8 | e[10] << 16 | (u32)e[11] << 24;
+		u32 ram    = (addr & 0x1fffffff) - 0x0c000000;
+
+		if (offset == 0xffffffff)
+			break;
+		/* (into main memory, whichever of its addresses is given) */
+		if (ram >= RAM_SIZE || size > RAM_SIZE - ram
+				|| !CurrentCartridge->Read(offset, size, GetMemPtr(0x8c000000 + ram, size)))
+		{
+			WARN_LOG(REIOS, "NAOMI boot: cannot load %x bytes at %08x from %x", size, addr, offset);
+			continue;
+		}
+		NOTICE_LOG(REIOS, "NAOMI boot: %x bytes at %08x, from %x", size, addr, offset);
+		load_end = (addr & 0x1fffffff) + size;
+	}
+	entry = header[0x420] | header[0x421] << 8 | header[0x422] << 16 | (u32)header[0x423] << 24;
+
+	/* the header's copy, and the time */
+	memcpy(GetMemPtr(0x8c01f400, sizeof(header)), header, sizeof(header));
+	now = GetRTC_now();
+	WriteMem32(0x8c01f130, now);
+
+	/* the system routines, in the ROM where a game looks for them and in
+	 * memory where it calls them; what they hand out */
+	{
+		static const u32 defaults[17] = { 9, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1 };
+		u8 *rom_block = (reios_rom && BIOS_SIZE >= 0x60000 + NB_BLOCK_SIZE) ? reios_rom + 0x60000 : NULL;
+		u32 region = settings.dreamcast.region;
+
+		/* (the region the game is given: the one asked for if it runs there) */
+		if (region > 3 || !(header[0x428] & (1 << region)))
+			for (region = 0; region < 3 && !(header[0x428] & (1 << region)); region++)
+				;
+		if (rom_block)
+			nb_build_block(rom_block);
+		if (reios_rom)
+		{
+			/* Dead or Alive 2's start-up code waits for a word to be other
+			 * than 0 that it reads through a pointer it has not set yet -
+			 * which makes it this place in the boot ROM. */
+			*(u32 *)&reios_rom[0xfc0] = 0x0009a016;
+		}
+		if (reios_rom && BIOS_SIZE >= 0x1ffd70)
+		{
+			/* What a game looks for in the boot ROM before it will use the
+			 * routines above: it compares these 112 bytes with a copy it
+			 * carries, and goes another way - one that never ends without
+			 * the BIOS's own start-up - if they are not there. */
+			static const char id1[] = "COPYRIGHT (C)SEGA ENTERPRISES,LTD.";
+			static const char id2[] = "1998 All rights reserved by SEGA ENTERPRISES,LTD.";
+			static const char id3[] = "NAOMI BOOT ROM";
+			u8 *id = reios_rom + 0x1ffd00;
+			memset(id, 0, 112);
+			memcpy(id, id1, sizeof(id1));
+			memcpy(id + 35, id2, sizeof(id2));
+			memset(id + 85, 0xff, 11);
+			memcpy(id + 96, id3, sizeof(id3));
+		}
+		nb_build_block(GetMemPtr(0x8c018000, NB_BLOCK_SIZE));
+		nb_install_interrupts();
+		memcpy(GetMemPtr(0x8c01f000, sizeof(defaults)), defaults, sizeof(defaults));
+		WriteMem32(0x8c01f100, region);
+		WriteMem32(0x8c01f104, 1);
+		WriteMem32(0x8c01f108, 0);
+		WriteMem32(0x8c01f10c, 1);
+		memcpy(GetMemPtr(0x8c01f110, 4), header + 0x134, 4);
+	}
+
+	for (u32 i = 0; i < sizeof(video) / sizeof(video[0]); i++)
+		pvr_WriteReg(0x005f8000 + video[i][0], video[i][1]);
+
+	NOTICE_LOG(REIOS, "NAOMI boot: starting at %08x", entry);
+	reios_setup_naomi(entry, load_end, now);
 }
 
 static void reios_boot()
@@ -717,26 +1487,7 @@ static void reios_boot()
 		}
 		else {
 			verify(SYSTEM_IS_NAOMI());
-			if (CurrentCartridge == NULL)
-			{
-				WARN_LOG(REIOS, "No cartridge loaded");
-				return;
-			}
-			u32 data_size = 4;
-			u32* sz = (u32*)CurrentCartridge->GetPtr(0x368, data_size);
-			if (!sz || data_size != 4) {
-				msgboxf("Naomi boot failure", MBX_ICONERROR);
-			}
-
-			int size = *sz;
-
-			data_size = 1;
-			verify(size < RAM_SIZE && CurrentCartridge->GetPtr(size - 1, data_size) && "Invalid cart size");
-
-			data_size = size;
-			WriteMemBlock_nommu_ptr(0x0c020000, (u32*)CurrentCartridge->GetPtr(0, data_size), size);
-
-			reios_setup_naomi(0x0c021000);
+			reios_boot_naomi();
 		}
 	}
 }
@@ -788,6 +1539,13 @@ bool reios_init()
 	INFO_LOG(REIOS, "reios: Init");
 
 	register_hook(0xA0000000, reios_boot);
+	for (u32 i = 0; i < 26; i++)
+		if (nb_routines[i])
+			register_hook(NB_ROUTINES + i * 8, nb_routines[i]);
+	register_hook(NB_VECTORS + 0x100, nb_exception);
+	register_hook(NB_VECTORS + 0x400, nb_exception);
+	register_hook(NB_VECTORS + 0x600, nb_interrupt);
+	register_hook(NB_HANDLER_RETURN, nb_handler_return);
 
 	register_hook(0x8C001000, reios_sys_system);
 	register_hook(0x8C001002, reios_sys_font);
@@ -803,6 +1561,7 @@ bool reios_init()
 void reios_reset(u8* rom, MemChip* flash)
 {
 	flashrom = flash;
+	reios_rom = rom;
 
 	memset(rom, 0x00, BIOS_SIZE);
 	memset(GetMemPtr(0x8C000000, 0), 0, RAM_SIZE);
@@ -843,4 +1602,3 @@ void reios_reset(u8* rom, MemChip* flash)
 			INFO_LOG(REIOS, "font.bin: loaded %zd bytes", size);
 	}
 }
-

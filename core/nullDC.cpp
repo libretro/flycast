@@ -18,6 +18,8 @@
 #include "hw/naomi/naomi_cart.h"
 
 #include "reios/reios.h"
+
+extern bool bios_loaded;
 #include <libretro.h>
 
 extern RomChip sys_rom;
@@ -475,6 +477,15 @@ int dc_init()
    {
       dc_init_unwind(DC_INIT_CPU);
       return -4;
+   }
+
+   if (SYSTEM_IS_NAOMI() && !bios_loaded)
+   {
+      /* A NAOMI game with no BIOS to start it (a flat image is let
+       * through without one): the boot ROM is reios's, which does what
+       * the BIOS does to hand over to the game. */
+      LoadHle(new_system_dir);
+      WARN_LOG(COMMON, "No NAOMI BIOS, using reios");
    }
 
    mem_map_default();
