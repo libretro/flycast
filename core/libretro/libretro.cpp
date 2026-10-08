@@ -395,6 +395,14 @@ void retro_deinit(void)
 }
 
 static bool is_dupe = false;
+/* The Internal Resolution option: how many times 640x480. */
+static unsigned internal_scale = 1;
+static bool wide_by_cheat;
+static bool resize_pending;
+static unsigned context_resets;
+static int pending_width, pending_height;
+static void apply_new_size(void);
+static void take_pending_size(void);
 
 /* av_info caching + refresh-rate change detection (see retro_run). */
 static struct retro_system_av_info g_av_info;
@@ -554,6 +562,8 @@ static void update_variables(bool first_startup)
    	maple_ReconnectDevices();
    }
 
+   const bool was_wide = settings.rend.WideScreen != 0;
+
    var.key = CORE_OPTION_NAME "_widescreen_hack";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -585,6 +595,9 @@ static void update_variables(bool first_startup)
 	  settings.rend.WideScreen = 0;
    }
 
+   if (!first_startup && (settings.rend.WideScreen != 0) != was_wide)
+      resize_pending = true;
+
    var.key = CORE_OPTION_NAME "_internal_resolution";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -598,9 +611,21 @@ static void update_variables(bool first_startup)
 
       if (end != NULL && *end == 'x' && end[1] != '\0')
          by = strtoul(end + 1, NULL, 10) / 480;
-      by            = by >= 8 ? 8 : by >= 4 ? 4 : by >= 2 ? 2 : 1;
-      screen_width  = 640 * by;
-      screen_height = 480 * by;
+      by = by >= 8 ? 8 : by >= 4 ? 4 : by >= 2 ? 2 : 1;
+      if (first_startup)
+      {
+         internal_scale = (unsigned)by;
+         screen_width   = 640 * by;
+         screen_height  = 480 * by;
+      }
+      else if (by != internal_scale)
+      {
+         /* changed while the game runs: retro_run() tells the frontend and
+          * the renderer, there and not here - this is also called from
+          * where the frontend may not be told */
+         internal_scale = (unsigned)by;
+         resize_pending = true;
+      }
 
       DEBUG_LOG(COMMON, "Got size: %u x %u.\n", screen_width, screen_height);
    }
@@ -1202,6 +1227,8 @@ void retro_run (void)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
       update_variables(false);
+   if (resize_pending)
+      apply_new_size();
 
    if (devices_need_refresh)
       refresh_devices(false);
@@ -1301,6 +1328,8 @@ void retro_reset (void)
 static void context_reset(void)
 {
 	INFO_LOG(RENDERER, "context_reset.");
+   context_resets++;
+   take_pending_size();
    gl_ctx_resetting = false;
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
    glsm_ctl(GLSM_CTL_STATE_SETUP, NULL);
@@ -1758,6 +1787,8 @@ static void retro_vk_context_reset()
    	ERROR_LOG(RENDERER, "Get Vulkan HW interface failed");
    	return;
    }
+   context_resets++;
+   take_pending_size();
    theVulkanContext.SetWindowSize(screen_width, screen_height);
    theVulkanContext.Init((retro_hw_render_interface_vulkan *)vulkan);
 }
@@ -2336,35 +2367,85 @@ void retro_get_system_info(struct retro_system_info *info)
    info->block_extract = true;
 }
 
+/* The size rendered at - the Internal Resolution option's multiple of
+ * 640x480, a third wider for widescreen - and what the frontend is told of
+ * it. Worked out from the options each time: the size used to be widened
+ * once, when the game was loaded, and put back to the plain one the next
+ * time any option was read. */
+static void set_geometry(struct retro_game_geometry *geometry, int *width, int *height)
+{
+   int maximum;
+
+   *width  = 640 * internal_scale;
+   *height = 480 * internal_scale;
+   if (wide_by_cheat)
+      geometry->aspect_ratio = 16.0 / 9.0;
+   else if (settings.rend.WideScreen)
+   {
+      *width                 = (int)lround(*width * 4.0 / 3.0);
+      geometry->aspect_ratio = 16.0 / 9.0;
+   }
+   else
+      geometry->aspect_ratio = 4.0 / 3.0;
+   if(naomi_cart_GetRotation() == 3)
+      geometry->aspect_ratio = 1 / geometry->aspect_ratio;
+   maximum               = *width > *height ? *width : *height;
+   geometry->base_width  = *width;
+   geometry->base_height = *height;
+   geometry->max_width   = maximum;
+   geometry->max_height  = maximum;
+   if (rotate_screen)
+      geometry->aspect_ratio = 1 / geometry->aspect_ratio;
+}
+
+static void take_pending_size(void)
+{
+   if (pending_width != 0)
+   {
+      screen_width  = pending_width;
+      screen_height = pending_height;
+      pending_width = 0;
+   }
+}
+
+/* The Internal Resolution option, or widescreen, was changed while the game
+ * runs. The frontend is given the new size - it has to make room for it,
+ * and RetroArch does that by starting its video driver again, which
+ * destroys the context and makes another: the renderer comes back at the
+ * new size by itself, with the picture it had (rend/last_picture.h). A
+ * frontend that keeps its context leaves the renderer to change size. */
+static void apply_new_size(void)
+{
+   const unsigned resets = context_resets;
+
+   resize_pending = false;
+   /* The size stays the old one while the frontend destroys the context:
+    * the picture is kept from it, at the size it was drawn. It is the new
+    * one from where the frontend makes the next context. */
+   set_geometry(&g_av_info.geometry, &pending_width, &pending_height);
+   if (!environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av_info))
+      environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g_av_info.geometry);
+   take_pending_size();
+   if (context_resets != resets)
+      return;
+#ifdef HAVE_VULKAN
+   if (settings.pvr.rend == 4 || settings.pvr.rend == 5)
+      theVulkanContext.SetWindowSize(screen_width, screen_height);
+#endif
+   rend_resize(screen_width, screen_height);
+}
+
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-   if (cheatManager.Reset())
+   wide_by_cheat = cheatManager.Reset();
+   if (wide_by_cheat)
    {
-      info->geometry.aspect_ratio = 16.0 / 9.0;
 		struct retro_message msg;
 		msg.msg = "Widescreen cheat activated";
 		msg.frames = 120;
 		environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
    }
-   else
-   {
-      if (settings.rend.WideScreen)
-      {
-         screen_width = (int)lround(screen_width * 4.0 / 3.0);
-         info->geometry.aspect_ratio = 16.0 / 9.0;
-      }
-      else
-      	info->geometry.aspect_ratio = 4.0 / 3.0;
-   }
-   if(naomi_cart_GetRotation() == 3)
-      info->geometry.aspect_ratio = 1 / info->geometry.aspect_ratio;
-   int maximum = screen_width > screen_height ? screen_width : screen_height;
-   info->geometry.base_width   = screen_width;
-   info->geometry.base_height  = screen_height;
-   info->geometry.max_width    = maximum;
-   info->geometry.max_height   = maximum;
-   if (rotate_screen)
-      info->geometry.aspect_ratio = 1 / info->geometry.aspect_ratio;
+   set_geometry(&info->geometry, &screen_width, &screen_height);
 
    /* Report the actual emulated refresh rate, derived from the SPG timing the
     * scheduler runs on, so the frontend's frame pacing matches the rate frames

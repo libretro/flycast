@@ -139,7 +139,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 #endif
    {
       CORE_OPTION_NAME "_internal_resolution",
-      "Internal Resolution (Restart Required)",
+      "Internal Resolution",
       NULL,
       "Modify rendering resolution: a multiple of the console's 640x480.",
       NULL,

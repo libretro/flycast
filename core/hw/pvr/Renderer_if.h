@@ -83,3 +83,5 @@ void rend_create_renderer();
 void rend_init_renderer();
 void rend_term_renderer();
 void rend_keep_picture();
+/* The size rendered at has changed and the context is the one there was. */
+void rend_resize(int width, int height);

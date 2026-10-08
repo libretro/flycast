@@ -156,6 +156,12 @@ void rend_keep_picture()
 		NOTICE_LOG(RENDERER, "%d x %d picture kept for the next context", w, h);
 }
 
+void rend_resize(int width, int height)
+{
+	if (renderer != NULL)
+		renderer->Resize(width, height);
+}
+
 void rend_term_renderer()
 {
 	/* A new renderer has no picture, and the first render to each

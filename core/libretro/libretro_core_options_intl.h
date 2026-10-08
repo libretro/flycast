@@ -12633,7 +12633,7 @@ struct retro_core_options_v2 options_da = {
 #define OPTION_VAL_1GB_DE "1 GB"
 #define OPTION_VAL_2GB_DE "2 GB"
 #define OPTION_VAL_4GB_DE "4 GB"
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_DE "Interne Auflösung (Neustart erforderlich)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_DE "Interne Auflösung"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_DE NULL
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_DE "Bildschirmausrichtung"
 #define OPTION_VAL_HORIZONTAL_DE NULL
@@ -17346,7 +17346,7 @@ struct retro_core_options_v2 options_eo = {
 #define OPTION_VAL_1GB_ES "1 GB"
 #define OPTION_VAL_2GB_ES "2 GB"
 #define OPTION_VAL_4GB_ES "4 GB"
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_ES "Resolución interna (es necesario reiniciar)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_ES "Resolución interna"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_ES "Modifica la resolución de renderizado."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_ES "Orientación de pantalla"
 #define OPTION_VAL_HORIZONTAL_ES NULL
@@ -20488,7 +20488,7 @@ struct retro_core_options_v2 options_fa = {
 #define OPTION_VAL_1GB_FI "1 Gt"
 #define OPTION_VAL_2GB_FI "2 Gt"
 #define OPTION_VAL_4GB_FI "4 Gt"
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FI "Sisäinen resoluutio (Uudelleenkäynnistys vaaditaan)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FI "Sisäinen resoluutio"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_FI NULL
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_FI "Näytön suunta"
 #define OPTION_VAL_HORIZONTAL_FI NULL
@@ -22059,7 +22059,7 @@ struct retro_core_options_v2 options_fi = {
 #define OPTION_VAL_1GB_FR "1 Go"
 #define OPTION_VAL_2GB_FR "2 Go"
 #define OPTION_VAL_4GB_FR "4 Go"
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FR "Résolution interne (Redémarrage requis)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FR "Résolution interne"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_FR "Modifier la résolution de rendu."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_FR "Orientation de l'écran"
 #define OPTION_VAL_HORIZONTAL_FR "Horizontale"
@@ -23630,7 +23630,7 @@ struct retro_core_options_v2 options_fr = {
 #define OPTION_VAL_1GB_GL NULL
 #define OPTION_VAL_2GB_GL NULL
 #define OPTION_VAL_4GB_GL NULL
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_GL "Resolución interna (requírese reiniciar)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_GL "Resolución interna"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_GL "Modificar a resolución do renderizado."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_GL "Orientación da Pantalla"
 #define OPTION_VAL_HORIZONTAL_GL NULL
@@ -29914,7 +29914,7 @@ struct retro_core_options_v2 options_id = {
 #define OPTION_VAL_1GB_IT NULL
 #define OPTION_VAL_2GB_IT NULL
 #define OPTION_VAL_4GB_IT NULL
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_IT "Risoluzione Interna (Riavvio Richiesto)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_IT "Risoluzione Interna"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_IT "Modificare la risoluzione di rendering."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_IT "Orientamento Schermo"
 #define OPTION_VAL_HORIZONTAL_IT "Orizzontale"
@@ -42482,7 +42482,7 @@ struct retro_core_options_v2 options_pl = {
 #define OPTION_VAL_1GB_PT_BR NULL
 #define OPTION_VAL_2GB_PT_BR NULL
 #define OPTION_VAL_4GB_PT_BR NULL
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_PT_BR "Resolução interna (requer reinício)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_PT_BR "Resolução interna"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_PT_BR "Modificar resolução de renderização."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_PT_BR "Orientação da tela"
 #define OPTION_VAL_HORIZONTAL_PT_BR NULL
@@ -47195,7 +47195,7 @@ struct retro_core_options_v2 options_ro = {
 #define OPTION_VAL_1GB_RU "1 Гб"
 #define OPTION_VAL_2GB_RU "2 Гб"
 #define OPTION_VAL_4GB_RU "4 Гб"
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_RU "Внутреннее разрешение (требуется перезапуск)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_RU "Внутреннее разрешение"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_RU "Настройка разрешения рендеринга."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_RU "Положение экрана"
 #define OPTION_VAL_HORIZONTAL_RU "Горизонтальная"
@@ -55050,7 +55050,7 @@ struct retro_core_options_v2 options_sv = {
 #define OPTION_VAL_1GB_TR NULL
 #define OPTION_VAL_2GB_TR NULL
 #define OPTION_VAL_4GB_TR NULL
-#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_TR "Dahili Çözünürlük (Yeniden Başlatılmalı)"
+#define CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_TR "Dahili Çözünürlük"
 #define CORE_OPTION_NAME_INTERNAL_RESOLUTION_INFO_0_TR "İşleme çözünürlüğünü değiştirin."
 #define CORE_OPTION_NAME_SCREEN_ROTATION_LABEL_TR "Ekran Yönü"
 #define OPTION_VAL_HORIZONTAL_TR "Yatay"

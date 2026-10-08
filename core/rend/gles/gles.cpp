@@ -1200,7 +1200,15 @@ struct glesrend : Renderer
 
       return true;
    }
-	void Resize(int w, int h) override { screen_width=w; screen_height=h; }
+	void Resize(int w, int h) override
+	{
+		screen_width=w;
+		screen_height=h;
+		// the filter's own picture is made at the size there was when it was set up
+		postProcessor.Term();
+		if (settings.rend.PowerVR2Filter)
+			postProcessor.Init();
+	}
 	void KeepPicture() override
 	{
 		gl_keep_picture();
