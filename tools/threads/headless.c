@@ -157,6 +157,11 @@ static void change_options(const char *name, int which, int frame)
    option_changed = 1;
 }
 static unsigned told_width, told_height;
+/* HEADLESS_SKIP=n: the core is asked for video on every n-th frame only,
+ * as a frontend's fast-forward frameskip asks, and the frames it hands
+ * over are counted */
+static int run_frame, skip_every;
+static unsigned frames_shown;
 
 static bool environment(unsigned cmd, void *data)
 {
@@ -213,6 +218,13 @@ static bool environment(unsigned cmd, void *data)
          disk = *(const struct retro_disk_control_callback *)data;
          have_disk = 1;
          return true;
+      case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
+         if (skip_every <= 0)
+            return false;
+         if (data)
+            *(int *)data = RETRO_AV_ENABLE_AUDIO
+               | ((run_frame % skip_every) ? 0 : RETRO_AV_ENABLE_VIDEO);
+         return true;
       case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
          *(bool *)data = option_changed != 0;
          option_changed = 0;
@@ -232,7 +244,9 @@ static bool environment(unsigned cmd, void *data)
 
 static void video_refresh(const void *data, unsigned width, unsigned height, size_t pitch)
 {
-   (void)data; (void)width; (void)height; (void)pitch;
+   (void)width; (void)height; (void)pitch;
+   if (data)
+      frames_shown++;
 }
 
 static void audio_sample(int16_t left, int16_t right)
@@ -273,6 +287,7 @@ int main(int argc, char **argv)
    option_count = argc - 4;
    frames = atoi(argv[3]);
    gles = getenv("HEADLESS_GLES") != NULL;
+   skip_every = getenv("HEADLESS_SKIP") ? atoi(getenv("HEADLESS_SKIP")) : 0;
 
    core = core_open(argv[1]);
    if (!core)
@@ -383,6 +398,7 @@ int main(int argc, char **argv)
                disk.set_eject_state(true);
             if (have_disk && swap_at >= 0 && i == swap_at + 20)
                disk.set_eject_state(false);
+            run_frame = i;
             retro_run();
             if (!stage_at)
                continue;
@@ -425,6 +441,8 @@ int main(int argc, char **argv)
          memcpy(&word, ram + (addr & (size - 1)), 4);
          if (told_width != 0)
             printf("size %ux%u\n", told_width, told_height);
+         if (skip_every > 0)
+            printf("shown %u\n", frames_shown);
          printf("peek %08lx = %08x\n", addr, (unsigned)word);
       }
       fflush(stdout);

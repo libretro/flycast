@@ -85,6 +85,8 @@ bool pend_rend = false;
 
 static bool render_called = false;
 static bool frame_produced = false;	/* new frame produced this vblank (for is_dupe) */
+static bool skip_screen = false;	/* rend_skip_screen */
+static bool screen_skipped = false;	/* a render to the screen was not drawn this vblank */
 u32 fb_watch_addr_start;
 u32 fb_watch_addr_end;
 bool fb_dirty;
@@ -259,6 +261,11 @@ bool rend_single_frame(void)
 	}
 }
 
+void rend_skip_screen(bool skip)
+{
+   skip_screen = skip;
+}
+
 void rend_start_render(void)
 {
 #if !defined(TARGET_NO_THREADS)
@@ -293,6 +300,15 @@ void rend_start_render(void)
             ctx->rend.clearFramebuffer = true;
             fb_addr_history[0] = fb_addr_history[1];
             fb_addr_history[1] = FB_W_SOF1;
+         }
+         if (skip_screen && !is_rtt && !ctx->rend.isRenderFramebuffer)
+         {
+            /* Not shown, so not drawn. The game did render: the vblank
+             * reports no new picture, and does not take the framebuffer
+             * for one either. */
+            screen_skipped = true;
+            tactx_Recycle(ctx);
+            return;
          }
 
          ctx->rend.fb_X_CLIP  = FB_X_CLIP;
@@ -374,8 +390,9 @@ void rend_vblank()
 		fb_dirty = false;
 		produced = true;
 	}
-	frame_produced = produced;
+	frame_produced = produced && !screen_skipped;
 	render_called = false;
+	screen_skipped = false;
 	check_framebuffer_write();
 	cheatManager.Apply();
 

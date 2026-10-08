@@ -1337,6 +1337,16 @@ void retro_run (void)
    if (devices_need_refresh)
       refresh_devices(false);
 
+   {
+      /* A frame the frontend will not show - one fast-forward's frameskip
+       * drops, a run-ahead frame - is not rendered. Asked before the
+       * emulation thread runs: it is what starts the renders. */
+      int av = RETRO_AV_ENABLE_VIDEO;
+      if (!environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av))
+         av = RETRO_AV_ENABLE_VIDEO;
+      rend_skip_screen(!(av & RETRO_AV_ENABLE_VIDEO));
+   }
+
 #if !defined(TARGET_NO_THREADS)
    if (settings.rend.ThreadedRendering)
    {

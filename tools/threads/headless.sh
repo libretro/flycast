@@ -103,14 +103,26 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # The eighth turns threaded rendering on 120 frames in and off again at 200:
 # the emulation thread is started and stopped between two frames, and the
 # disc's program has to go on as if nothing had happened.
-for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy resize" "legacy threads"; do
+# The ninth asks for video on one frame in four, as fast-forward's frameskip
+# does: the renders in between are not drawn, and the program and its sound
+# have to be what they are with every frame drawn. (A frame the program
+# writes to the framebuffer itself is still handed over: it is not written
+# again. Nearly every frame is handed over when all are asked for.)
+for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy resize" "legacy threads" "legacy skip"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
    FRAMES=300
-   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2
+   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
    SIZE_TOLD=
-   if [ "$2" = threads ]; then
+   if [ "$2" = skip ]; then
+      NAME=$TIMING-skip
+      WINCE=disabled
+      GOOD=600d600d
+      HEADLESS_SKIP=4
+      export HEADLESS_SKIP
+      echo "== headless: $TIMING SH4 timing, with video asked for on one frame in four"
+   elif [ "$2" = threads ]; then
       NAME=$TIMING-threads
       WINCE=disabled
       GOOD=600d600d
@@ -199,6 +211,13 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
    if [ -n "$SIZE_TOLD" ]; then
       tr -d '\r' < "$WORK/$NAME.out" | grep -q "^size $SIZE_TOLD\$" || {
          echo "FAIL: the frontend was not told the new size: $(cat "$WORK/$NAME.out")" >&2
+         exit 1
+      }
+   fi
+   if [ -n "$HEADLESS_SKIP" ]; then
+      SHOWN=$(tr -d '\r' < "$WORK/$NAME.out" | sed -n 's/^shown //p')
+      [ -n "$SHOWN" ] && [ "$SHOWN" -lt $((FRAMES / 2)) ] || {
+         echo "FAIL: frames the frontend did not ask for were drawn: $(cat "$WORK/$NAME.out")" >&2
          exit 1
       }
    fi

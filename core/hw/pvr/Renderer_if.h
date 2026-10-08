@@ -8,6 +8,11 @@ void rend_term();
 
 void rend_vblank();
 void rend_start_render();
+/* The frontend will not show the frame being made: renders to the screen
+ * are not drawn and the vblank reports no new picture. Renders to a
+ * texture are, the game reads them back; so is a picture the processor
+ * wrote to the framebuffer, which is taken only once. */
+void rend_skip_screen(bool skip);
 void rend_end_render();
 void rend_end_wait();
 
