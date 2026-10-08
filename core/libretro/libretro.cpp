@@ -628,16 +628,27 @@ static void update_variables(bool first_startup)
       settings.rend.WideScreen = 0;
 
    var.key = CORE_OPTION_NAME "_widescreen_cheats";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      if (!strcmp(var.value, "enabled"))
-         settings.rend.WidescreenGameHacks = true;
+      const bool cheats_before = settings.rend.WidescreenGameHacks;
+
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      {
+         if (!strcmp(var.value, "enabled"))
+            settings.rend.WidescreenGameHacks = true;
+         else
+            settings.rend.WidescreenGameHacks = false;
+      }
       else
          settings.rend.WidescreenGameHacks = false;
+      /* Changed while the game runs (the machine stands still here): the
+       * game's cheat starts or stops being written, what it wrote is taken
+       * out again, and the frontend is told the picture's new shape. */
+      if (!first_startup && settings.rend.WidescreenGameHacks != cheats_before)
+      {
+         wide_by_cheat  = cheatManager.Change();
+         resize_pending = true;
+      }
    }
-   else
-      settings.rend.WidescreenGameHacks = false;
 
    var.key = CORE_OPTION_NAME "_screen_rotation";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !strcmp("vertical", var.value))

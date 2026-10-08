@@ -303,9 +303,33 @@ const Cheat CheatManager::_naomi_widescreen_cheats[] =
 };
 CheatManager cheatManager;
 
+/* Turned off: what the cheat wrote is taken out again. The cheat writes
+ * the same words every frame, most of them the game's own constants, which
+ * the game never writes again - left there, the picture stayed as the cheat
+ * made it until the game was restarted. Turned on: Reset() finds the
+ * game's cheat as it does when the game is loaded. */
+bool CheatManager::Change()
+{
+	if (_widescreen_cheat != nullptr && !settings.rend.WidescreenGameHacks)
+	{
+		for (size_t i = 0; i < ARRAY_SIZE(_widescreen_cheat->addresses) && _widescreen_cheat->addresses[i] != 0; i++)
+		{
+			const u32 addr = 0x8C000000 + _widescreen_cheat->addresses[i];
+
+			/* (not if the game has written there since the cheat last did) */
+			if ((_have_original & (1u << i)) && ReadMem32_nommu(addr) == _widescreen_cheat->values[i])
+				WriteMem32_nommu(addr, _original[i]);
+		}
+	}
+	else if (_widescreen_cheat != nullptr)
+		return true;
+	return Reset();
+}
+
 bool CheatManager::Reset()
 {
 	_widescreen_cheat = nullptr;
+	_have_original = 0;
 	if (!settings.rend.WidescreenGameHacks)
 		return false;
 	if (settings.System == DC_PLATFORM_DREAMCAST)
@@ -349,6 +373,19 @@ void CheatManager::Apply()
 	if (_widescreen_cheat != nullptr)
 	{
 		for (size_t i = 0; i < ARRAY_SIZE(_widescreen_cheat->addresses) && _widescreen_cheat->addresses[i] != 0; i++)
-			WriteMem32_nommu(0x8C000000 + _widescreen_cheat->addresses[i], _widescreen_cheat->values[i]);
+		{
+			const u32 addr = 0x8C000000 + _widescreen_cheat->addresses[i];
+			const u32 now  = ReadMem32_nommu(addr);
+
+			/* Whatever is there that is not the cheat's is the game's: the
+			 * program as it was loaded, or a value the game has just set.
+			 * It is what goes back if the cheat is turned off (Change()). */
+			if (now != _widescreen_cheat->values[i])
+			{
+				_original[i]    = now;
+				_have_original |= 1u << i;
+				WriteMem32_nommu(addr, _widescreen_cheat->values[i]);
+			}
+		}
 	}
 }

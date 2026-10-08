@@ -32,10 +32,17 @@ struct Cheat
 class CheatManager
 {
 public:
-	CheatManager() : _widescreen_cheat(nullptr) {}
+	CheatManager() : _widescreen_cheat(nullptr), _have_original(0) {}
 	bool Reset();	// Returns true if using 16:9 anamorphic screen ratio
 	void Apply();
+	/* The option changed while the game runs (the machine standing still).
+	 * Returns what Reset() does. */
+	bool Change();
 private:
+	/* What the game had where the cheat writes, as last seen there: put
+	 * back when the cheat is turned off. */
+	u32 _original[16];
+	u32 _have_original;
 	static const Cheat _widescreen_cheats[];
 	static const Cheat _naomi_widescreen_cheats[];
 	const Cheat *_widescreen_cheat;
