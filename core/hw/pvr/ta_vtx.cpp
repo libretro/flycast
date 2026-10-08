@@ -1225,6 +1225,10 @@ private:
 	__forceinline
 		static void AppendSpriteVertexA(TA_Sprite1A* sv)
 	{
+		/* A sprite's vertices with no polygon to belong to: its parameter
+		 * came when no list was open and was dropped. */
+		if (CurrentPP == NULL)
+			return;
         CurrentPP->count = 4;
 
 		Vertex* cv = vdrc.verts.Append(4);
@@ -1298,6 +1302,8 @@ private:
 	__forceinline
 		static void AppendSpriteVertexB(TA_Sprite1B* sv)
 	{
+		if (CurrentPP == NULL)
+			return;
 		vert_res_base;
 		cv-=3;
 
