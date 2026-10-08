@@ -107,6 +107,78 @@ static int naomi_find_member(archive_t *const *archives, int count,
    return -1;
 }
 
+/* Which game of the table the romset at @path is; -1 if none.
+ *
+ * By its name, when that is a set's name: the MAME short name the table
+ * goes by. A set is not always called that - named after the game by its
+ * owner, or by another collection's rules - so otherwise by what is in it:
+ * the game most of whose ROMs the archive has, by checksum where the table
+ * has one and by file name where it has not. A set that has under half of
+ * a game's ROMs has to have its first one, the program ROM, which is what
+ * tells a game from the others that share its data ROMs. */
+static std::string found_path;
+static int found_game = -1;
+
+static int naomi_find_game(const char *path)
+{
+	char game_name[128];
+	int gameid;
+
+	if (found_path == path)
+		return found_game;
+	strncpy(game_name, path_basename(path), sizeof(game_name) - 1);
+	game_name[sizeof(game_name) - 1] = '\0';
+	path_remove_extension(game_name);
+
+	for (gameid = 0; Games[gameid].name != NULL; gameid++)
+		if (!stricmp(Games[gameid].name, game_name))
+			break;
+	if (Games[gameid].name == NULL)
+	{
+		archive_t *archive = archive_open(path);
+		int best = -1, best_found = 0;
+
+		gameid = -1;
+		if (archive != NULL)
+		{
+			for (int g = 0; Games[g].name != NULL; g++)
+			{
+				int files = 0, found = 0;
+				bool first = false;
+
+				for (int romid = 0; Games[g].blobs[romid].filename != NULL; romid++)
+				{
+					const u32 crc = Games[g].blobs[romid].crc;
+
+					if (Games[g].blobs[romid].blob_type == Copy)
+						continue;
+					files++;
+					if (crc != 0 ? archive_find_crc(archive, crc) >= 0
+							: archive_find(archive, Games[g].blobs[romid].filename) >= 0)
+					{
+						found++;
+						if (romid == 0)
+							first = true;
+					}
+				}
+				if (found > best_found && (first || found * 2 >= files))
+				{
+					best = g;
+					best_found = found;
+				}
+			}
+			archive_close(archive);
+		}
+		gameid = best;
+		if (gameid >= 0)
+			NOTICE_LOG(NAOMI, "%s is not a set's name: by its %d ROMs it is %s (%s)", game_name, best_found,
+					Games[gameid].name, Games[gameid].description);
+	}
+	found_path = path;
+	found_game = gameid;
+	return gameid;
+}
+
 /* That blob's bytes, which belong to its archive. */
 static const u8 *naomi_find_blob(archive_t *const *archives, int count,
       u32 crc, const char *filename, size_t *len)
@@ -238,20 +310,13 @@ error:
 
 static bool naomi_cart_LoadZip(const char *filename)
 {
-	char game_name[128];
 	u8 *scratch = NULL;			// for the ROMs that are spread out: see below
 	size_t scratch_size = 0;
-	strncpy(game_name, path_basename(filename), sizeof(game_name) - 1);
-	game_name[sizeof(game_name) - 1] = '\0';
-	path_remove_extension(game_name);
 
-	int gameid = 0;
-	for (; Games[gameid].name != NULL; gameid++)
-		if (!stricmp(Games[gameid].name, game_name))
-			break;
-	if (Games[gameid].name == NULL)
+	const int gameid = naomi_find_game(filename);
+	if (gameid < 0)
 	{
-		WARN_LOG(NAOMI, "Unknown game %s", game_name);
+		WARN_LOG(NAOMI, "Unknown game %s", path_basename(filename));
 		return false;
 	}
 
@@ -290,21 +355,34 @@ static bool naomi_cart_LoadZip(const char *filename)
 	   region_flag = game->region_flag;
 	if (game->region_flag == REGION_EXPORT_ONLY)
 	   region_flag = REGION_EXPORT;
-	if (!naomi_LoadBios(bios, archive, parent_archive, region_flag))
+	/* A NAOMI or NAOMI 2 game can be started without its BIOS (reios_boot()
+	 * does what the BIOS does to hand over to it), so the BIOS is used if it
+	 * is there and "Use Real BIOS (If Available)" is on, and is not required.
+	 * An Atomiswave game cannot: that BIOS has to be found. */
+	if (game->cart_type != AW && !settings.bios.UseRealBios)
+	{
+	   bios_loaded = false;
+	   NOTICE_LOG(NAOMI, "The BIOS is not to be used: the game is started without one");
+	}
+	else if (naomi_LoadBios(bios, archive, parent_archive, region_flag))
+	   bios_loaded = true;
+	else
 	{
 	   WARN_LOG(NAOMI, "Warning: Region %d bios not found in %s", settings.dreamcast.region, bios);
-	   if (!naomi_LoadBios(bios, archive, parent_archive, -1))
+	   if (naomi_LoadBios(bios, archive, parent_archive, -1))
+		  bios_loaded = true;
+	   else if (game->cart_type == AW)
 	   {
-		  // If a specific BIOS is needed for this game, fail.
-		  if (game->bios != NULL || !bios_loaded)
+		  if (!bios_loaded)
 		  {
 			 ERROR_LOG(NAOMI, "Error: cannot load BIOS. Exiting");
 			 goto error;
 		  }
 		  // otherwise use the default BIOS
 	   }
+	   else if (!bios_loaded)
+		  NOTICE_LOG(NAOMI, "No BIOS in %s.zip or %s.7z: the game is started without one", bios, bios);
 	}
-	bios_loaded = true;
 
 	switch (game->cart_type)
 	{
@@ -614,16 +692,8 @@ int naomi_cart_GetSystemType(const char* file)
 	  return system;
    }
 
-	char game_name[128];
-	strncpy(game_name, path_basename(file), sizeof(game_name) - 1);
-	game_name[sizeof(game_name) - 1] = '\0';
-	path_remove_extension(game_name);
-
-   int gameid = 0;
-   for (; Games[gameid].name != NULL; gameid++)
-	  if (!stricmp(Games[gameid].name, game_name))
-		 break;
-   if (Games[gameid].name == NULL)
+   const int gameid = naomi_find_game(file);
+   if (gameid < 0)
    {
 	  // Not a romset. A flat image, archived?
 	  if (!naomi_FlatArchiveOpen(file))
@@ -633,8 +703,10 @@ int naomi_cart_GetSystemType(const char* file)
 
    if (Games[gameid].cart_type == AW)
 	  return DC_PLATFORM_ATOMISWAVE;
-   else
-	  return DC_PLATFORM_NAOMI;
+   // a NAOMI 2 game is one whose BIOS is the NAOMI 2's
+   if (Games[gameid].bios != NULL && !strcmp(Games[gameid].bios, "naomi2"))
+	  return DC_PLATFORM_NAOMI2;
+   return DC_PLATFORM_NAOMI;
 }
 
 int naomi_cart_GetRotation()
@@ -650,6 +722,7 @@ int naomi_cart_GetRotation()
 
 void naomi_cart_Close()
 {
+	found_path.clear();		// the set there may be another by the next time
 	if (CurrentCartridge != NULL)
 	{
 		delete CurrentCartridge;

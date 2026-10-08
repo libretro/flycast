@@ -626,4 +626,25 @@ InputDescriptors blockpong_inputs = {
 	  },
 };
 
+//
+// NAOMI 2 Games
+//
+InputDescriptors vf4_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "PUNCH" },
+			{ NAOMI_BTN1_KEY, "KICK" },
+			{ NAOMI_BTN2_KEY, "GUARD" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ NULL },
+	  },
+};
+
 #endif /* CORE_HW_NAOMI_NAOMI_ROMS_INPUT_H_ */
