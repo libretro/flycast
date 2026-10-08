@@ -74,12 +74,49 @@ vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool 
 			vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
 			vk::DependencyFlagBits::eByRegion);
     dependencies.emplace_back(VK_SUBPASS_EXTERNAL, 1, vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eColorAttachmentOutput,
-    		vk::AccessFlagBits::eInputAttachmentRead, vk::AccessFlagBits::eColorAttachmentWrite, vk::DependencyFlagBits::eByRegion),
+    		vk::AccessFlagBits::eInputAttachmentRead, vk::AccessFlagBits::eColorAttachmentWrite, vk::DependencyFlagBits::eByRegion);
+    /* The colour and depth attachments the polygons are drawn into, and the
+     * per-pixel lists, are the same ones for every render pass and every
+     * frame: the one before may still be reading or writing them when this
+     * one clears or loads them and writes the lists again. Nothing said it
+     * had to be done first. Most drivers work that out for themselves; the
+     * ones that do not show one frame's leavings in the next. (From
+     * upstream, which names MoltenVK on macOS 15.)
+     * These two attachments are first used in subpasses 0 and 1. */
+    const vk::PipelineStageFlags oitStages = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+    		| vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    for (u32 subpass = 0; subpass < 2; subpass++)
+    	dependencies.emplace_back(VK_SUBPASS_EXTERNAL, subpass, oitStages, oitStages,
+    			vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eShaderWrite,
+    			vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
+    				| vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+    				| vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    /* The picture's attachment is first used in subpass 2. With several
+     * render passes it was the polygons' colour attachment of the one
+     * before, written and then read as an input. */
+    dependencies.emplace_back(VK_SUBPASS_EXTERNAL, 2,
+    		vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+    		vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+    		vk::AccessFlagBits::eColorAttachmentWrite,
+    		vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite);
     dependencies.emplace_back(0, 1, vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader,
     		vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
 			vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eShaderRead, vk::DependencyFlagBits::eByRegion);
-    dependencies.emplace_back(1, 2, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
-    		vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eInputAttachmentRead, vk::DependencyFlagBits::eByRegion);
+    // carries the dependency above on to where the colour attachment changes hands for subpass 2
+    dependencies.emplace_back(0, 1, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eColorAttachmentOutput,
+    		vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite,
+			vk::DependencyFlagBits::eByRegion);
+    // the depth attachment is stored at the end of subpass 2, and changes layout after that - not before
+    dependencies.emplace_back(2, VK_SUBPASS_EXTERNAL,
+    		vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests, oitStages,
+    		vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+    		vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+    			| vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eShaderRead);
+    // (the colour attachment is stored at the end of subpass 2)
+    dependencies.emplace_back(1, 2, vk::PipelineStageFlagBits::eColorAttachmentOutput,
+    		vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+    		vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite,
+    		vk::DependencyFlagBits::eByRegion);
     // This dependency is only needed if the render pass isn't the last: it's needed for the depth-only Tr pass
     // Unfortunately we want all render passes to be compatible, and that means all attachments must be identical
     dependencies.emplace_back(1, 2, vk::PipelineStageFlagBits::eFragmentShader,

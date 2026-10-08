@@ -112,10 +112,11 @@ public:
 			abufferPointerTransitionNeeded = false;
 
 			vk::ImageSubresourceRange imageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-			vk::ImageMemoryBarrier imageMemoryBarrier(vk::AccessFlags(), vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+			// (made ready for the clear below, which is what uses it next)
+			vk::ImageMemoryBarrier imageMemoryBarrier(vk::AccessFlags(), vk::AccessFlagBits::eTransferWrite,
 					vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
 					abufferPointerAttachment->GetImage(), imageSubresourceRange);
-			commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr,
+			commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, nullptr, nullptr,
 					imageMemoryBarrier);
 			/* The lists start empty. The image is new and holds nothing
 			 * that means anything; every frame leaves the lists empty for
@@ -136,8 +137,18 @@ public:
 
 	void ResetPixelCounter(vk::CommandBuffer commandBuffer)
 	{
+    	/* The render passes and frames before this must be done counting... */
+    	vk::BufferMemoryBarrier barrier(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferWrite,
+    			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *pixelCounter->buffer, 0, VK_WHOLE_SIZE);
+    	commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
+    			{}, nullptr, barrier, nullptr);
     	vk::BufferCopy copy(0, 0, sizeof(int));
     	commandBuffer.copyBuffer(*pixelCounterReset->buffer, *pixelCounter->buffer, 1, &copy);
+    	/* ...and the next render pass's shaders must see it back at nothing. (From upstream.) */
+    	barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    	barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+    	commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
+    			{}, nullptr, barrier, nullptr);
 	}
 
 	void Term()

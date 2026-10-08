@@ -644,6 +644,20 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 		std::vector<vk::SubpassDependency> dependencies;
 		dependencies.emplace_back(0, VK_SUBPASS_EXTERNAL, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
 				vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead, vk::DependencyFlagBits::eByRegion);
+		/* The depth attachment is the same one every frame: the frame before
+		 * has to be done with it before this one clears it. Nothing said
+		 * so. (The per-pixel renderer's render pass has the same, from
+		 * upstream.) */
+		// (the colour attachment is in it as well: once one dependency into the
+		// subpass is spelled out, the one Vulkan would have assumed for the rest is gone)
+		dependencies.emplace_back(VK_SUBPASS_EXTERNAL, 0,
+				vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+					| vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+					| vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eColorAttachmentWrite,
+				vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+					| vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite);
 
 		renderPass = GetContext()->GetDevice().createRenderPassUnique(vk::RenderPassCreateInfo(vk::RenderPassCreateFlags(),
 				ARRAY_SIZE(attachmentDescriptions), attachmentDescriptions,
