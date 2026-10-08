@@ -41,36 +41,41 @@ CustomTexture custom_texture;
 
 /* Loader thread: load the custom image for one queued texture. Requests
  * that arrive for it meanwhile are not queued again (the count is not
- * zero), so go round until the count this pass answered is all there is. */
+ * zero), so go round until the count this pass answered is all there is.
+ *
+ * Nothing of the texture is read here but what the request left for it,
+ * and nothing written but the image and its size, which the renderer
+ * only looks at once the count is back to zero. The texture's hash used
+ * to be worked out here, from video memory the game may be writing by
+ * then and from a texture the renderer may be updating. */
 void CustomTexture::Load(BaseTextureCacheData *texture)
 {
 	for (;;)
 	{
-		int requests = retro_atomic_load_acquire_int(&texture->custom_load_in_progress);
+		/* The count, and only then the names: see TexCache.h. */
+		const int requests = retro_atomic_load_acquire_int(&texture->custom_load_in_progress);
+		const u32 hash       = (u32)retro_atomic_load_acquire_int(&texture->custom_request_hash);
+		const u32 old_vqhash = (u32)retro_atomic_load_acquire_int(&texture->custom_request_old_vqhash);
+		const u32 old_hash   = (u32)retro_atomic_load_acquire_int(&texture->custom_request_old_hash);
+		int width, height;
+		u8 *image_data;
 
-		texture->ComputeHash();
 		if (texture->custom_image_data != NULL)
 		{
 			free(texture->custom_image_data);
 			texture->custom_image_data = NULL;
 		}
-		if (!texture->dirty)
+		image_data = LoadCustomTexture(hash, width, height);
+		// under the names it has had before
+		if (image_data == NULL && old_vqhash != 0)
+			image_data = LoadCustomTexture(old_vqhash, width, height);
+		if (image_data == NULL)
+			image_data = LoadCustomTexture(old_hash, width, height);
+		if (image_data != NULL)
 		{
-			int width, height;
-			u8 *image_data = LoadCustomTexture(texture->texture_hash, width, height);
-			// under the names it has had before
-			if (image_data == NULL && texture->old_vqtexture_hash != 0)
-				image_data = LoadCustomTexture(texture->old_vqtexture_hash, width, height);
-			if (image_data == NULL)
-			{
-				image_data = LoadCustomTexture(texture->old_texture_hash, width, height);
-			}
-			if (image_data != NULL)
-			{
-				texture->custom_width = width;
-				texture->custom_height = height;
-				texture->custom_image_data = image_data;
-			}
+			texture->custom_width = width;
+			texture->custom_height = height;
+			texture->custom_image_data = image_data;
 		}
 		if (retro_atomic_fetch_sub_int(&texture->custom_load_in_progress, requests) == requests)
 			break;
@@ -204,10 +209,19 @@ u8* CustomTexture::LoadCustomTexture(u32 hash, int& width, int& height)
 	return image;
 }
 
+/* Renderer: ask for this texture's custom image. Its names are worked out
+ * here and now - the renderer is updating the texture, and the game is
+ * held while it does - and left for the loader, before the request is
+ * counted. */
 void CustomTexture::LoadCustomTextureAsync(BaseTextureCacheData *texture_data)
 {
 	if (!Init())
 		return;
+
+	texture_data->ComputeHash();
+	retro_atomic_store_release_int(&texture_data->custom_request_hash, (int)texture_data->texture_hash);
+	retro_atomic_store_release_int(&texture_data->custom_request_old_vqhash, (int)texture_data->old_vqtexture_hash);
+	retro_atomic_store_release_int(&texture_data->custom_request_old_hash, (int)texture_data->old_texture_hash);
 
 	if (retro_atomic_fetch_add_int(&texture_data->custom_load_in_progress, 1) == 0)
 	{

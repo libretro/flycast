@@ -203,11 +203,19 @@ static void test_triple_buffer(void)
 #define MPSC_NODES     4
 #define MPSC_REQUESTS  100000
 
+/* A request carries three words (the loader's are a texture's three
+ * names), written by the producer before it counts the request and read
+ * by the consumer after it has read the count. What the consumer made of
+ * them is only looked at once the count is back to zero - and has then
+ * to be what the node's last request asked for, whole. */
 struct mpsc_node
 {
 	retro_atomic_int_t pending;	/* requests not answered yet */
 	mpsc_node *next;
 	long handled;			/* plain: consumer only */
+	retro_atomic_int_t want[3];	/* the request */
+	int got[3];			/* plain: the consumer's, until pending is zero */
+	int last;			/* plain: producer only */
 };
 
 static cMpscList<mpsc_node, &mpsc_node::next> mpsc_list;
@@ -223,6 +231,12 @@ static void mpsc_producer(void *p)
 	for (int i = 0; i < MPSC_REQUESTS; i++)
 	{
 		mpsc_node *n = &nodes[rng_next(&seed) % MPSC_NODES];
+		const int want = (int)(rng_next(&seed) | 1u);
+
+		n->last = want;
+		retro_atomic_store_release_int(&n->want[0], want);
+		retro_atomic_store_release_int(&n->want[1], want ^ 0x5a5a5a5a);
+		retro_atomic_store_release_int(&n->want[2], want + 12345);
 		/* Queue the node only when it is not queued already. */
 		if (retro_atomic_fetch_add_int(&n->pending, 1) == 0)
 		{
@@ -247,6 +261,9 @@ static void mpsc_consumer(void *)
 			for (;;)
 			{
 				int requests = retro_atomic_load_acquire_int(&n->pending);
+				n->got[0] = retro_atomic_load_acquire_int(&n->want[0]);
+				n->got[1] = retro_atomic_load_acquire_int(&n->want[1]);
+				n->got[2] = retro_atomic_load_acquire_int(&n->want[2]);
 				n->handled += requests;
 				if (retro_atomic_fetch_sub_int(&n->pending, requests) == requests)
 					break;
@@ -275,8 +292,17 @@ static void test_mpsc_list(void)
 	for (int i = 0; i < MPSC_PRODUCERS; i++)
 		for (int j = 0; j < MPSC_NODES; j++)
 		{
-			CHECK(retro_atomic_load_acquire_int(&mpsc_nodes[i][j].pending) == 0);
-			handled += mpsc_nodes[i][j].handled;
+			mpsc_node *n = &mpsc_nodes[i][j];
+
+			CHECK(retro_atomic_load_acquire_int(&n->pending) == 0);
+			handled += n->handled;
+			/* What was made of the last request is that request's, and all of it. */
+			if (n->handled)
+			{
+				CHECK(n->got[0] == n->last);
+				CHECK(n->got[1] == (n->last ^ 0x5a5a5a5a));
+				CHECK(n->got[2] == n->last + 12345);
+			}
 		}
 	/* Every request answered exactly once. */
 	CHECK(handled == (long)MPSC_PRODUCERS * MPSC_REQUESTS);

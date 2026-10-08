@@ -484,6 +484,9 @@ void BaseTextureCacheData::Create()
 	lock_block = nullptr;
 	custom_image_data = nullptr;
 	retro_atomic_store_release_int(&custom_load_in_progress, 0);
+	retro_atomic_int_init(&custom_request_hash, 0);
+	retro_atomic_int_init(&custom_request_old_hash, 0);
+	retro_atomic_int_init(&custom_request_old_vqhash, 0);
 
 	//decode info from tsp/tcw into the texture struct
 	tex = &format[tcw.PixelFmt == PixelReserved ? Pixel1555 : tcw.PixelFmt];	//texture format table entry

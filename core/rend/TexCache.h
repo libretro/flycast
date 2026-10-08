@@ -999,6 +999,15 @@ public:
 	u32 custom_height;
 	retro_atomic_int_t custom_load_in_progress;
 	BaseTextureCacheData *custom_load_next;	// link in the custom texture loader's work list
+	/* What the loader is asked to look for: the three names above as they
+	 * were when the renderer asked, which is when it had the texture and
+	 * video memory to itself. Written by the renderer before it counts the
+	 * request in custom_load_in_progress; read by the loader after it has
+	 * read that count - so a request that changes them under the loader is
+	 * one more for it to answer, and what it found is thrown away. */
+	retro_atomic_int_t custom_request_hash;
+	retro_atomic_int_t custom_request_old_hash;
+	retro_atomic_int_t custom_request_old_vqhash;
 
 	void PrintTextureName();
 	virtual std::string GetId() = 0;
