@@ -182,6 +182,8 @@ ARCHIVE_SOURCES_C = \
 					$(LIBRETRO_COMM_DIR)/formats/7z/r7z_bcj2.c \
 					$(LIBRETRO_COMM_DIR)/formats/7z/r7z_filters.c \
 					$(LIBRETRO_COMM_DIR)/formats/zip/rzip_archive.c \
+					$(LIBRETRO_COMM_DIR)/formats/rar/rrar_archive.c \
+					$(LIBRETRO_COMM_DIR)/formats/rar/rrar_ppmd7.c \
 					$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
 PICOTCP_INCFLAGS = \

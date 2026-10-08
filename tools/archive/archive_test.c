@@ -243,6 +243,9 @@ int main(int argc, char **argv)
    check_archive(work, "subdir.zip",  "GAME/", 0, mapped_build, NUM_MEMBERS);
    check_archive(work, "solid.7z",    "",      0, mapped_build, NUM_MEMBERS);
    check_archive(work, "suffix",      "",      1, mapped_build, NUM_MEMBERS);
+   /* (a rar's members are reached through the archive only: the file
+    * layer has no "archive#member" names for one) */
+   check_archive(work, "stored.rar",  "",      0, mapped_build, NUM_MEMBERS);
 
    /* single.7z holds track03.bin only: the detach path */
    {

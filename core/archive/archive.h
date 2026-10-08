@@ -25,7 +25,7 @@
 
 RETRO_BEGIN_DECLS
 
-/* Read-only view of a zip or 7z archive. Members are handed out as
+/* Read-only view of a zip, 7z or rar archive. Members are handed out as
  * borrowed byte ranges: a stored member of a mapped zip is the mapping
  * itself, anything else is decoded once and kept for the archive's
  * lifetime. */
@@ -43,7 +43,7 @@ typedef struct archive_entry
    uint8_t     usable;    /* 0: unsupported method or unreadable header */
 } archive_entry_t;
 
-/* Opens @path, then @path with .zip/.ZIP/.7z/.7Z appended. */
+/* Opens @path, then @path with .zip/.ZIP/.7z/.7Z/.rar/.RAR appended. */
 archive_t *archive_open(const char *path);
 void archive_close(archive_t *a);
 const char *archive_path(const archive_t *a);

@@ -15,6 +15,9 @@ Writes <workdir>/src/{disc.gdi,track01.bin,track02.raw,track03.bin} and:
                  output and is handed over without a copy
   suffix         stored.zip again under a name with no extension, to be
                  opened as "suffix" + ".zip"
+  stored.rar     every member stored, in the RAR 2.9 format, written out
+                 by hand here (no free tool packs one; packed ones, made
+                 by RAR itself, are in tools/archive/rar)
 """
 import os
 import shutil
@@ -23,6 +26,8 @@ import sys
 import zipfile
 
 import py7zr
+import struct
+import zlib
 
 MEMBERS = ['disc.gdi', 'track01.bin', 'track02.raw', 'track03.bin']
 
@@ -64,6 +69,34 @@ def main():
             z.write(os.path.join(src, m), m)
     with py7zr.SevenZipFile(os.path.join(work, 'single.7z'), 'w') as z:
         z.write(os.path.join(src, 'track03.bin'), 'track03.bin')
+
+    write_stored_rar(os.path.join(work, 'stored.rar'), src, MEMBERS)
+
+
+def rar_block(kind, flags, body, data_size=None):
+    """A RAR 2.9 block: checksum, kind, flags, size, then the body; the
+    checksum is the low half of the CRC-32 of everything after it."""
+    size = 7 + len(body)
+    head = struct.pack('<BHH', kind, flags, size) + body
+    return struct.pack('<H', zlib.crc32(head) & 0xffff) + head
+
+
+def write_stored_rar(path, src, members):
+    with open(path, 'wb') as out:
+        out.write(b'Rar!\x1a\x07\x00')
+        out.write(rar_block(0x73, 0, bytes(6)))               # archive header
+        for m in members:
+            with open(os.path.join(src, m), 'rb') as f:
+                data = f.read()
+            name = m.encode()
+            # packed size, size, host (Unix), CRC-32, time, version needed
+            # (2.9), method (0x30: stored), name length, attributes
+            body = struct.pack('<IIBIIBBHI', len(data), len(data), 3,
+                               zlib.crc32(data), 0x3d2a8000, 29, 0x30,
+                               len(name), 0o100644) + name
+            out.write(rar_block(0x74, 0x8000, body))          # file header
+            out.write(data)
+        out.write(rar_block(0x7b, 0x4000, b''))               # end of archive
 
 
 if __name__ == '__main__':

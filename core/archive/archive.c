@@ -24,6 +24,7 @@
 #include <file/file_path.h>
 #include <string/stdstring.h>
 #include <zip/rzip_archive.h>
+#include <rar/rrar_archive.h>
 
 #include "archive.h"
 #include "deps/coreio/coreio.h"
@@ -34,7 +35,8 @@ struct archive
    const uint8_t   *map;      /* the whole file, when addressable      */
    r7z_archive_t   *sz;
    rzip_archive_t  *zip;
-   uint8_t         *sz_buf;   /* 7z read into memory when not mapped   */
+   rrar_archive_t  *rar;
+   uint8_t         *sz_buf;   /* 7z or rar read into memory when not mapped */
    uint32_t         sz_folders;
    archive_entry_t *entries;
    uint8_t        **cache;    /* decoded members, one slot per entry   */
@@ -239,6 +241,86 @@ static const uint8_t *sz_entry_data(archive_t *a, unsigned index, size_t *len)
    return out;
 }
 
+/* --------------------------------------------------------------- rar */
+
+/* A RAR archive is read through libretro-common's rrar_archive, which is
+ * handed the whole file: the mapping, or the file read into memory. A
+ * stored member of a mapped archive is the mapping itself; any other is
+ * unpacked when it is asked for and kept, like a deflated one. */
+static int rar_open(archive_t *a)
+{
+   const uint8_t *data;
+   size_t         len = 0;
+   size_t         name_bytes = 0;
+   unsigned       n, i;
+   char          *name_out;
+
+   if (a->map)
+   {
+      data = a->map;
+      len  = a->map_len;
+   }
+   else
+   {
+      len = core_fsize(a->f);
+      if (!(a->sz_buf = (uint8_t*)malloc(len ? len : 1)))
+         return 0;
+      if (core_fread_at(a->f, 0, a->sz_buf, len) != len)
+         return 0;
+      data = a->sz_buf;
+   }
+
+   if (rrar_archive_open(&a->rar, data, len) != RRAR_OK)
+      return 0;
+
+   n = rrar_archive_num_entries(a->rar);
+   for (i = 0; i < n; i++)
+      name_bytes += strlen(rrar_archive_entry(a->rar, i)->name) + 1;
+   if (!archive_alloc_tables(a, n, name_bytes))
+      return 0;
+
+   name_out = a->names;
+   for (i = 0; i < n; i++)
+   {
+      const rrar_entry_t *re = rrar_archive_entry(a->rar, i);
+      archive_entry_t    *e  = &a->entries[i];
+      size_t              nl = strlen(re->name);
+
+      memcpy(name_out, re->name, nl + 1);
+      e->name     = name_out;
+      name_out   += nl + 1;
+      e->size     = re->size;
+      e->csize    = re->packed_size;
+      e->data_off = re->data_offset;
+      e->crc      = re->crc;
+      e->is_dir   = re->is_dir != 0;
+      e->stored   = re->method == 0x30;
+      e->usable   = re->supported != 0;
+   }
+   return 1;
+}
+
+static const uint8_t *rar_entry_data(archive_t *a, unsigned index, size_t *len)
+{
+   const archive_entry_t *e = &a->entries[index];
+   uint8_t *out;
+   size_t   out_len;
+
+   if (e->stored && a->map)
+   {
+      /* in place (its checksum is the archive's word for it, as a
+       * stored zip member's is) */
+      a->view[index] = a->map + (size_t)e->data_off;
+      *len           = (size_t)e->size;
+      return a->view[index];
+   }
+   if (rrar_archive_extract(a->rar, index, &out, &out_len) != RRAR_OK)
+      return NULL;
+   a->cache[index] = out;
+   *len            = out_len;
+   return out;
+}
+
 /* ------------------------------------------------------------ common */
 
 static archive_t *archive_open_one(const char *path)
@@ -268,6 +350,8 @@ static archive_t *archive_open_one(const char *path)
          ok = sz_open(a);
       else if (sig[0] == 'P' && sig[1] == 'K')
          ok = zip_open(a);
+      else if (!memcmp(sig, "Rar!\x1a\x07", 6))
+         ok = rar_open(a);
    }
 
    if (!ok)
@@ -280,7 +364,7 @@ static archive_t *archive_open_one(const char *path)
 
 archive_t *archive_open(const char *path)
 {
-   static const char *const suffixes[] = { "", ".zip", ".ZIP", ".7z", ".7Z" };
+   static const char *const suffixes[] = { "", ".zip", ".ZIP", ".7z", ".7Z", ".rar", ".RAR" };
    archive_t *a   = NULL;
    size_t     len = strlen(path);
    char      *buf;
@@ -315,6 +399,8 @@ void archive_close(archive_t *a)
       r7z_archive_close(a->sz);
    if (a->zip)
       rzip_archive_close(a->zip);
+   if (a->rar)
+      rrar_archive_close(a->rar);
    free(a->sz_buf);
    if (a->f)
       core_fclose(a->f);
@@ -372,6 +458,8 @@ const uint8_t *archive_entry_data(archive_t *a, unsigned index, size_t *len)
    }
    if (a->sz)
       return sz_entry_data(a, index, len);
+   if (a->rar)
+      return rar_entry_data(a, index, len);
    return zip_entry_data(a, index, len);
 }
 
@@ -391,6 +479,8 @@ const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len)
    }
    if (a->zip && e->stored && a->map)
       return zip_entry_data(a, index, len);
+   if (a->rar && e->stored && a->map)
+      return rar_entry_data(a, index, len);
    return NULL;
 }
 
@@ -431,6 +521,15 @@ int archive_resolve_disc(const char *path, char *out, size_t out_len)
    }
    if (!(a = archive_open_one(path)))
    {
+      free(arc);
+      return 0;
+   }
+   if (a->rar)
+   {
+      /* A member of a rar has no "archive#member" name the file layer
+       * knows (libretro-common's path_get_archive_delim): a disc image
+       * in one cannot be opened track by track. */
+      archive_close(a);
       free(arc);
       return 0;
    }
