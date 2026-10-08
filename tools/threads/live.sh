@@ -151,12 +151,21 @@ CFG
 # With VALIDATE=1 every run is made with the Vulkan validation layer on
 # (VK_LAYER_KHRONOS_validation has to be installed), and anything it
 # reports as an error fails the test.
+# VALIDATE=sync adds its synchronization checks.
 if [ -n "$VALIDATE" ]; then
    cat > "$WORK/vk_layer_settings.txt" <<CFG
 khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG
 khronos_validation.log_filename = $WORK/validation.txt
 khronos_validation.report_flags = error
 CFG
+   # VALIDATE=sync: the layer's synchronization checks as well - whether
+   # each use of an image or a buffer is ordered after the one before it
+   if [ "$VALIDATE" = sync ]; then
+      cat >> "$WORK/vk_layer_settings.txt" <<CFG
+khronos_validation.enables = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+khronos_validation.validate_sync = true
+CFG
+   fi
    VK_LAYER_SETTINGS_PATH="$WORK/vk_layer_settings.txt"
    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
    export VK_LAYER_SETTINGS_PATH VK_INSTANCE_LAYERS
