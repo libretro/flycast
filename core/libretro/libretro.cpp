@@ -589,16 +589,18 @@ static void update_variables(bool first_startup)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      char *pch;
-      char str[100];
-      snprintf(str, sizeof(str), "%s", var.value);
+      /* "1x", "2x", "4x" or "8x": that many times the console's 640x480.
+       * The option used to be a list of sizes, "2880x2160" and the like; a
+       * frontend that hands one of those over gets the largest of the four
+       * that is no larger than it. */
+      char *end        = NULL;
+      unsigned long by = strtoul(var.value, &end, 10);
 
-      pch = strtok(str, "x");
-      if (pch)
-         screen_width = strtoul(pch, NULL, 0);
-      pch = strtok(NULL, "x");
-      if (pch)
-         screen_height = strtoul(pch, NULL, 0);
+      if (end != NULL && *end == 'x' && end[1] != '\0')
+         by = strtoul(end + 1, NULL, 10) / 480;
+      by            = by >= 8 ? 8 : by >= 4 ? 4 : by >= 2 ? 2 : 1;
+      screen_width  = 640 * by;
+      screen_height = 480 * by;
 
       DEBUG_LOG(COMMON, "Got size: %u x %u.\n", screen_width, screen_height);
    }
