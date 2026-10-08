@@ -1999,6 +1999,15 @@ bool retro_load_game(const struct retro_game_info *game)
                system = DC_PLATFORM_DREAMCAST;
             }
             settings.System = system;
+            /* A NAOMI 2 game goes by how long its processor takes over
+             * things: with the legacy timing Virtua Fighter 4 draws
+             * stages unlit. (Before the machine is made: everything timed
+             * is laid out for one timing or the other.) */
+            if (settings.System == DC_PLATFORM_NAOMI2 && !settings.dynarec.AccurateTiming)
+            {
+               settings.dynarec.AccurateTiming = true;
+               NOTICE_LOG(COMMON, "SH4 timing: accurate, as a NAOMI 2 needs");
+            }
             /* System may have changed - have to update
              * hidden core options */
             set_variable_visibility();

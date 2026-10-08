@@ -364,7 +364,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       CORE_OPTION_NAME "_sh4_timing",
       "SH4 Timing (Restart)",
       NULL,
-      "How long each instruction of the main processor is taken to last. 'Legacy' is the rule of thumb this core has always used: every integer instruction 8 cycles and every floating-point one none, with some kinds of loop hurried along. 'Accurate' counts them as the processor issues them, which makes the processor about three times as fast as 'Legacy' has it, and is what upstream Flycast does. Try 'Accurate' for a game whose speed or timing is off; it takes more of the host.",
+      "How long each instruction of the main processor is taken to last. 'Legacy' is the rule of thumb this core has always used: every integer instruction 8 cycles and every floating-point one none, with some kinds of loop hurried along. 'Accurate' counts them as the processor issues them, which makes the processor about three times as fast as 'Legacy' has it, and is what upstream Flycast does. Try 'Accurate' for a game whose speed or timing is off; it takes more of the host. A NAOMI 2 game always runs with 'Accurate'.",
       NULL,
       NULL,
       {
