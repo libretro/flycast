@@ -118,7 +118,7 @@ uint getNextPixelIndex()
 void setFragDepth(void)
 {
 	float w = 100000.0 * gl_FragCoord.w;
-	gl_FragDepth = log2(1.0 + w) / 34.0;
+	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 }
 struct PolyParam {
 	int tsp_isp_pcw;

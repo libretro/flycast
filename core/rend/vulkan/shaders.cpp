@@ -281,7 +281,7 @@ void main()
 	//color.rgb = vec3(gl_FragCoord.w * uniformBuffer.sp_FOG_DENSITY / 128.0);
 
 	float w = gl_FragCoord.w * 100000.0;
-	gl_FragDepth = log2(1.0 + w) / 34.0;
+	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 
 	gl_FragColor = color;
 }
@@ -325,7 +325,7 @@ layout (push_constant) uniform pushBlock
 void main()
 {
 	float w = gl_FragCoord.w * 100000.0;
-	gl_FragDepth = log2(1.0 + w) / 34.0;
+	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 	FragColor = vec4(0.0, 0.0, 0.0, pushConstants.sp_ShaderColor);
 }
 )";
