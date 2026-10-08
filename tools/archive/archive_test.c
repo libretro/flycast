@@ -224,6 +224,15 @@ static void check_archive(const char *work, const char *arc_name,
 
          if (expect_mapped && mapped_build)
             CHECK(fmap != NULL && flen == want_len, member_path);
+#ifdef ARCHIVE_SEEK_MIN
+         /* this build reads a deflated zip member of any size through the
+          * index: there is no pointer to all of it */
+         if (strstr(arc_name, ".zip") && !e->stored && want_len >= ARCHIVE_SEEK_MIN)
+            CHECK(fmap == NULL, member_path);
+#else
+         if (strstr(arc_name, ".zip") && !e->stored)
+            CHECK(fmap != NULL && flen == want_len, member_path);
+#endif
          check_reads(cf, want, want_len, member_path);
          core_fclose(cf);
       }

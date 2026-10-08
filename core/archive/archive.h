@@ -69,6 +69,21 @@ const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len);
  * fails its checksum (@dst may then hold part of it). */
 int archive_entry_read(archive_t *a, unsigned index, uint8_t *dst,
       size_t dst_size, size_t *len);
+/* A large deflated zip member is not decoded whole to be read: it is
+ * read through an index of places its stream can be decoded from
+ * (rzip_seek), a piece at a time, and takes a few megabytes where it
+ * took its full length. The index is made by decoding the member
+ * through once - on a thread of the archive's when the archive is
+ * mapped and there are threads, else by the reader as it goes - and a
+ * read past where it has got to waits for it.
+ *
+ * archive_entry_seekable(): 1 if the member is read this way (and from
+ * then on it is being indexed). archive_entry_read_at(): @len bytes at
+ * @offset; 0 if they cannot be had. One thread reads a member. */
+int archive_entry_seekable(archive_t *a, unsigned index);
+int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
+      uint8_t *dst, size_t len);
+
 /* Read-ahead hint for @len bytes at @p, when @p lies in the archive's
  * mapping; bytes already decoded into memory need none. */
 void archive_prefetch(archive_t *a, const uint8_t *p, size_t len);

@@ -26,8 +26,34 @@
 #include <zip/rzip_archive.h>
 #include <rar/rrar_archive.h>
 
+#include <retro_atomic.h>
+#ifndef TARGET_NO_THREADS
+#include <rthreads/rthreads.h>
+#include <rthreads/retro_eventcount.h>
+#endif
+
 #include "archive.h"
 #include "deps/coreio/coreio.h"
+
+/* A deflated zip member at least this long is read through an index,
+ * not decoded whole (archive_entry_seekable()). Below it the whole
+ * member is cheap to have, and can be lent out in place. */
+#ifndef ARCHIVE_SEEK_MIN
+#define ARCHIVE_SEEK_MIN (16 * 1024 * 1024)
+#endif
+/* How much the indexing thread does between looks at whether to stop. */
+#define ARCHIVE_SEEK_STEP (4 * 1024 * 1024)
+
+typedef struct archive_seek
+{
+   rzip_seek_t        *seek;
+#ifndef TARGET_NO_THREADS
+   sthread_t          *thread;    /* indexes the member; NULL: the reader does */
+   retro_eventcount_t  progress;  /* notified as the index grows */
+   retro_atomic_int_t  stop;
+   int                 progress_ok;
+#endif
+} archive_seek_t;
 
 struct archive
 {
@@ -42,6 +68,8 @@ struct archive
    uint8_t        **cache;    /* decoded members, one slot per entry   */
    const uint8_t  **view;     /* members borrowed from a mapping or a
                                  decoded folder, one slot per entry    */
+   archive_seek_t **seek;     /* members read through an index, one slot
+                                 per entry, made when first asked for  */
    char            *names;
    char            *path;
    size_t           map_len;
@@ -382,12 +410,128 @@ archive_t *archive_open(const char *path)
    return a;
 }
 
+#ifndef TARGET_NO_THREADS
+/* The indexing thread: on through the member a step at a time, saying so
+ * after each, until it is done, the stream turns out bad, or the archive
+ * is being closed. */
+static void archive_seek_thread(void *data)
+{
+   archive_seek_t *k = (archive_seek_t*)data;
+
+   while (!retro_atomic_load_acquire_int(&k->stop))
+   {
+      const int state = rzip_seek_build(k->seek,
+            rzip_seek_covered(k->seek) + ARCHIVE_SEEK_STEP);
+
+      retro_eventcount_notify(&k->progress);
+      if (state != 0)
+         break;
+   }
+}
+#endif
+
+static void archive_seek_close(archive_seek_t *k)
+{
+   if (!k)
+      return;
+#ifndef TARGET_NO_THREADS
+   if (k->thread)
+   {
+      retro_atomic_store_release_int(&k->stop, 1);
+      sthread_join(k->thread);
+   }
+   if (k->progress_ok)
+      retro_eventcount_free(&k->progress);
+#endif
+   rzip_seek_free(k->seek);
+   free(k);
+}
+
+int archive_entry_seekable(archive_t *a, unsigned index)
+{
+   const archive_entry_t *e;
+   archive_seek_t        *k;
+
+   if (index >= a->num_entries || !a->zip)
+      return 0;
+   e = &a->entries[index];
+   if (!e->usable || e->stored || e->size < ARCHIVE_SEEK_MIN)
+      return 0;
+   /* decoded for someone already: there is nothing left to save */
+   if (a->cache[index])
+      return 0;
+   if (a->seek && a->seek[index])
+      return 1;
+   if (     !a->seek
+         && !(a->seek = (archive_seek_t**)calloc(a->num_entries, sizeof(*a->seek))))
+      return 0;
+   if (!(k = (archive_seek_t*)calloc(1, sizeof(*k))))
+      return 0;
+   if (!(k->seek = rzip_seek_new(a->zip, index, 0)))
+   {
+      free(k);
+      return 0;
+   }
+#ifndef TARGET_NO_THREADS
+   /* A thread of its own only for a mapped archive: the index and the
+    * reader then share nothing but the mapping. An archive that is read
+    * has one file position for both. */
+   retro_atomic_int_init(&k->stop, 0);
+   if (a->map && retro_eventcount_init(&k->progress))
+   {
+      k->progress_ok = 1;
+      k->thread      = sthread_create(archive_seek_thread, k);
+   }
+#endif
+   a->seek[index] = k;
+   return 1;
+}
+
+int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
+      uint8_t *dst, size_t len)
+{
+   archive_seek_t *k;
+   uint64_t        need;
+
+   if (index >= a->num_entries || !a->seek || !(k = a->seek[index]))
+      return 0;
+   if (offset > rzip_seek_size(k->seek) || len > rzip_seek_size(k->seek) - offset)
+      return 0;
+   need = offset + len;
+
+   /* Until the index has got that far. */
+   while (rzip_seek_covered(k->seek) < need)
+   {
+      if (rzip_seek_state(k->seek) < 0)
+         return 0;
+#ifndef TARGET_NO_THREADS
+      if (k->thread)
+      {
+         const int key = retro_eventcount_prepare_wait(&k->progress);
+
+         if (     rzip_seek_covered(k->seek) >= need
+               || rzip_seek_state(k->seek) != 0)
+            retro_eventcount_cancel_wait(&k->progress);
+         else
+            retro_eventcount_commit_wait(&k->progress, key);
+         continue;
+      }
+#endif
+      if (rzip_seek_build(k->seek, need) < 0)
+         return 0;
+   }
+   return rzip_seek_read(k->seek, offset, dst, len) == RZIP_OK;
+}
+
 void archive_close(archive_t *a)
 {
    unsigned i;
 
    if (!a)
       return;
+   for (i = 0; i < a->num_entries && a->seek; i++)
+      archive_seek_close(a->seek[i]);
+   free(a->seek);
    for (i = 0; i < a->num_entries && a->cache; i++)
       free(a->cache[i]);
    free(a->cache);

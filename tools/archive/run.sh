@@ -46,6 +46,7 @@ SOURCES="tools/archive/archive_test.c core/archive/archive.c \
    $L/formats/zip/rzip_archive.c \
    $L/formats/rar/rrar_archive.c $L/formats/rar/rrar_ppmd7.c \
    $L/features/features_cpu.c \
+   $L/rthreads/rthreads.c $L/rthreads/retro_eventcount.c \
    $L/streams/file_stream.c $L/vfs/vfs_implementation.c \
    $L/file/file_path.c $L/file/file_path_io.c $L/file/retro_dirent.c \
    $L/compat/compat_strl.c $L/compat/fopen_utf8.c \
@@ -53,15 +54,30 @@ SOURCES="tools/archive/archive_test.c core/archive/archive.c \
    $L/string/stdstring.c $L/string/rstrtod.c $L/time/rtime.c \
    $L/memmap/memalign.c"
 
-for mode in mmap nommap; do
+# The _seek builds read every deflated zip member through the index a
+# large one is read through (ARCHIVE_SEEK_MIN lowered to take them all):
+# mapped, where a thread of the archive's makes the index while the test
+# reads, and not mapped, where the reader makes it as it goes. The mapped
+# one is built for TSan as well.
+for mode in mmap nommap mmap_seek nommap_seek; do
    case $mode in
-      mmap)   defs=-DHAVE_MMAP ;;
-      nommap) defs= ;;
+      mmap)        defs=-DHAVE_MMAP ;;
+      nommap)      defs= ;;
+      mmap_seek)   defs="-DHAVE_MMAP -DARCHIVE_SEEK_MIN=4096" ;;
+      nommap_seek) defs=-DARCHIVE_SEEK_MIN=4096 ;;
    esac
-   $CC -O1 -g $defs -fsanitize=address,undefined \
+   $CC -O1 -g $defs -DHAVE_THREADS -fsanitize=address,undefined \
       -fno-sanitize-recover=undefined -I$L/include -Icore \
       -o "$WORK/archive_test_$mode" $SOURCES -lm -lpthread
 done
+$CC -O1 -g -DHAVE_MMAP -DARCHIVE_SEEK_MIN=4096 -DHAVE_THREADS -fsanitize=thread \
+   -I$L/include -Icore -o "$WORK/archive_test_tsan" $SOURCES -lm -lpthread
+
+# libretro-common's index itself (rzip_seek), against whole extraction
+$CC -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+   -I$L/include -o "$WORK/seek_test" tools/archive/seek_test.c \
+   $L/formats/zip/rzip_archive.c $L/encodings/encoding_deflate.c \
+   $L/encodings/encoding_crc32.c $L/features/features_cpu.c -lm -lpthread
 
 # libretro-common's RAR reader on real archives (tools/archive/rar), whole
 # and mangled
@@ -83,9 +99,15 @@ mkdir -p "$WORK/fx/dc"
 
 export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
 fail=0
-for mode in mmap nommap; do
+for mode in mmap nommap mmap_seek nommap_seek; do
    "$WORK/archive_test_$mode" "$WORK/fx" | tail -1 | grep -q PASS \
       || { echo "FAIL: $mode build"; fail=1; }
+done
+TSAN_OPTIONS=halt_on_error=1 "$WORK/archive_test_tsan" "$WORK/fx" | tail -1 | grep -q PASS \
+   || { echo "FAIL: indexed members under TSan"; fail=1; }
+for z in deflate.zip subdir.zip; do
+   "$WORK/seek_test" "$WORK/fx/$z" | tail -1 | grep -q "seek_test: ok" \
+      || { echo "FAIL: seek_test $z"; fail=1; }
 done
 
 "$WORK/rar_test" tools/archive/rar | tail -1 | grep -q PASS \
@@ -96,7 +118,7 @@ done
    || { cat "$WORK/load.log"; echo "FAIL: load_test"; fail=1; }
 
 if [ $fail = 0 ]; then
-   echo "archive_test: PASS (mmap and no-mmap builds, rar reader, core loads)"
+   echo "archive_test: PASS (mmap and no-mmap builds, indexed members with and without a thread and under TSan, rar reader, core loads)"
 else
    exit 1
 fi

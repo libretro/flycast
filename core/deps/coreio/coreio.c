@@ -23,6 +23,8 @@ typedef struct core_file_impl
    size_t                            stream_pos;
    size_t                            base;       /* member start in f */
    int                               in_archive; /* holds a ref on it */
+   int                               seek_entry; /* the member read through
+                                                    the archive's index; -1 */
 } core_file_impl;
 
 /* The one archive members are being read from: content loads open a
@@ -84,6 +86,18 @@ static int core_file_open_member(core_file_impl *cf, const char *path,
 
    if (!(cf->mem = archive_entry_map(cur_archive, (unsigned)idx, &cf->size)))
    {
+      /* A large deflated member is not decoded whole and kept: it is
+       * read a piece at a time through an index (archive.h). There is
+       * no pointer to all of it, so nothing borrows from it: what reads
+       * it gets copies. */
+      if (!e->stored && archive_entry_seekable(cur_archive, (unsigned)idx))
+      {
+         cf->seek_entry = idx;
+         cf->size       = (size_t)e->size;
+         cf->in_archive = 1;
+         cur_archive_refs++;
+         return 1;
+      }
       if (!e->stored)
       {
          if (!(cf->mem = archive_entry_data(cur_archive, (unsigned)idx, &cf->size)))
@@ -121,6 +135,7 @@ static core_file_impl *core_file_alloc(void)
    cf->stream_pos = 0;
    cf->base       = 0;
    cf->in_archive = 0;
+   cf->seek_entry = -1;
    return cf;
 }
 
@@ -260,6 +275,9 @@ size_t core_fread_at(core_file* fc, uint64_t offset, void* buff, size_t len)
       memcpy(buff, cf->mem + (size_t)offset, len);
       return len;
    }
+   if (cf->seek_entry >= 0)
+      return archive_entry_read_at(cur_archive, (unsigned)cf->seek_entry,
+            offset, (uint8_t*)buff, len) ? len : 0;
 
    if (cf->stream_pos != (size_t)offset)
    {
