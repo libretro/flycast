@@ -9,7 +9,11 @@
 #include "pvr_mem.h"
 #include "Renderer_if.h"
 
-#include <algorithm>
+/* The larger and the smaller of two, as std::max() and std::min() have
+ * them (which of two equal ones, and what a NaN does, included). */
+#define ta_max(a, b) ((a) < (b) ? (b) : (a))
+#define ta_min(a, b) ((b) < (a) ? (b) : (a))
+
 #include <cmath>
 
 // TODO/FIXME - should be moved later
@@ -97,6 +101,34 @@ static INLINE f32 f16(u16 v)
 }
 
 #define vdrc vd_rc
+
+/* For the fast vertex loop (ta_poly_data): position straight to a vertex
+ * that is already there, and a packed colour turned from the PowerVR's
+ * blue, green, red, alpha to red, green, blue, alpha in one word where
+ * the host has its bytes in that order. */
+#define vert_fast_base \
+	cv->x = vtx->xyz[0]; \
+	cv->y = vtx->xyz[1]; \
+	cv->z = vtx->xyz[2];
+
+#if !defined(MSB_FIRST) && (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#include <emmintrin.h>
+#include <stddef.h>
+#define TA_VERT_SSE2 1
+/* (the vertex's fields where that code takes them to be) */
+typedef char ta_vert_layout[(offsetof(Vertex, col) == 12 && offsetof(Vertex, vtx_spc) == 16
+		&& offsetof(Vertex, u) == 20 && offsetof(Vertex, v) == 24) ? 1 : -1];
+#endif
+
+#ifdef MSB_FIRST
+#define vert_fast_packed_color(to,src) vert_packed_color_(cv->to,vtx->src)
+#else
+#define vert_fast_packed_color(to,src) \
+	{ \
+		const u32 t = vtx->src; \
+		*(u32 *)cv->to = (t & 0xff00ff00u) | ((t >> 16) & 0xffu) | ((t & 0xffu) << 16); \
+	}
+#endif
 
 //Splitter function (normally ta_dma_main , modified for split dma's)
 
@@ -261,6 +293,73 @@ case num : {\
 	{
 					//If SZ64  && 32 bytes
 #define IS_FIST_HALF ((poly_size!=SZ32) && (data==data_end))
+
+		/* The formats nearly every vertex comes in - packed colour or
+		 * intensity, with or without a texture - when the vertex list has
+		 * room for all there are here: the list's place and the farthest
+		 * depth are kept in registers for the strip, where the loop below
+		 * reads and writes them in memory for every vertex (a vertex's
+		 * colours are stored as bytes, which the compiler has to take as
+		 * possibly being those very variables). The same vertices come out. */
+		if (poly_size == SZ32
+				&& (poly_type == 0 || poly_type == 2 || poly_type == 3 || poly_type == 4 || poly_type == 7 || poly_type == 8)
+				&& (ptrdiff_t)(data_end - data) < (ptrdiff_t)vdrc.verts.avail)
+		{
+			Vertex* const first = vdrc.verts.daty;
+			Vertex* const head = vdrc.verts.head();
+			Vertex* cv = first;
+			PolyParam* pp = CurrentPP;
+			s32 z_max = (s32&)vdrc.fZ_max;
+
+			for (;;)
+			{
+				s32 z;
+				bool end_of_strip;
+
+				vert_fast<poly_type>(data, cv);
+				z = (s32&)cv->z;
+				if (z_max < z && z < 0x49800000)
+					z_max = z;
+				cv++;
+				end_of_strip = data->pcw.EndOfStrip;
+				data++;
+				if (end_of_strip)
+				{
+					/* EndPolyStrip(), from what is in hand. The strip's
+					 * parameters are read for the copy before its count is
+					 * written: read after, the wide loads of the copy wait
+					 * for that narrow store to reach memory. */
+					const u32 used = (u32)(cv - head);
+					const u32 count = used - pp->first;
+					if (count > 0)
+					{
+						const PolyParam copy = *pp;
+						PolyParam* d_pp = CurrentPPlist->Append();
+						pp->count = count;
+						*d_pp = copy;
+						d_pp->first = used;
+						d_pp->count = 0;
+						pp = d_pp;
+					}
+					else
+						pp->count = count;
+					/* The next strip of the same polygon follows at once,
+					 * more often than not: it is gone on with here, where
+					 * ta_main would only come back for it. */
+					if (data > data_end || data->pcw.ParaType != ParamType_Vertex_Parameter)
+						break;
+				}
+				else if (data > data_end)
+					break;
+			}
+
+			vdrc.verts.avail -= (int)(cv - first);
+			vdrc.verts.daty = cv;
+			(s32&)vdrc.fZ_max = z_max;
+			CurrentPP = pp;
+			TaCmd=ta_main;
+			return data;
+		}
 
 		if (IS_FIST_HALF)
 			goto fist_half;
@@ -1068,6 +1167,90 @@ private:
 
 	}
 
+	/* One vertex of a 32-byte format to @cv: what AppendPolyVertex<n>() does
+	 * past getting the vertex from the list and looking at its depth. */
+	template <u32 poly_type>
+	__forceinline
+	static void vert_fast(const Ta_Dma* data, Vertex* cv)
+	{
+		switch (poly_type)
+		{
+		case 0:
+			{
+				const TA_Vertex0* vtx = &((const TA_VertexParam*)data)->vtx0;
+				vert_fast_base;
+				vert_fast_packed_color(col,BaseCol);
+			}
+			break;
+		case 2:
+			{
+				const TA_Vertex2* vtx = &((const TA_VertexParam*)data)->vtx2;
+				vert_fast_base;
+				vert_face_base_color(BaseInt);
+			}
+			break;
+		case 3:
+#ifdef TA_VERT_SSE2
+			{
+				/* The format most vertices are in, and its fields lie in the
+				 * block nearly as they do in the vertex: three loads and
+				 * three stores. Position goes over with the word after it,
+				 * which lands where the colours then go; the two colours
+				 * are turned from blue, green, red, alpha to red, green,
+				 * blue, alpha together. */
+				const u8* from = (const u8*)data;
+				const __m128i red_blue = _mm_set1_epi32(0x00ff00ff);
+				const __m128i xyz = _mm_loadu_si128((const __m128i*)(from + 4));
+				const __m128i uv  = _mm_loadl_epi64((const __m128i*)(from + 16));
+				__m128i colours   = _mm_loadl_epi64((const __m128i*)(from + 24));
+				const __m128i rb  = _mm_and_si128(colours, red_blue);
+
+				colours = _mm_or_si128(_mm_andnot_si128(red_blue, colours),
+						_mm_or_si128(_mm_slli_epi32(rb, 16), _mm_srli_epi32(rb, 16)));
+				_mm_storeu_si128((__m128i*)cv, xyz);
+				_mm_storel_epi64((__m128i*)cv->col, colours);
+				_mm_storel_epi64((__m128i*)&cv->u, uv);
+			}
+#else
+			{
+				const TA_Vertex3* vtx = &((const TA_VertexParam*)data)->vtx3;
+				vert_fast_base;
+				vert_fast_packed_color(col,BaseCol);
+				vert_fast_packed_color(vtx_spc,OffsCol);
+				vert_uv_32(u,v);
+			}
+#endif
+			break;
+		case 4:
+			{
+				const TA_Vertex4* vtx = &((const TA_VertexParam*)data)->vtx4;
+				vert_fast_base;
+				vert_fast_packed_color(col,BaseCol);
+				vert_fast_packed_color(vtx_spc,OffsCol);
+				vert_uv_16(u,v);
+			}
+			break;
+		case 7:
+			{
+				const TA_Vertex7* vtx = &((const TA_VertexParam*)data)->vtx7;
+				vert_fast_base;
+				vert_face_base_color(BaseInt);
+				vert_face_offs_color(OffsInt);
+				vert_uv_32(u,v);
+			}
+			break;
+		case 8:
+			{
+				const TA_Vertex8* vtx = &((const TA_VertexParam*)data)->vtx8;
+				vert_fast_base;
+				vert_face_base_color(BaseInt);
+				vert_face_offs_color(OffsInt);
+				vert_uv_16(u,v);
+			}
+			break;
+		}
+	}
+
 	//(Non-Textured, Packed Color, with Two Volumes)
 	__forceinline
 		static void AppendPolyVertex9(TA_Vertex9* vtx)
@@ -1184,7 +1367,7 @@ private:
 		PolyParam* d_pp=CurrentPP;
 		if (CurrentPP == NULL || CurrentPP->count != 0)
 		{
-         if (CurrentPPlist == nullptr)	// wldkickspw
+         if (CurrentPPlist == NULL)	// wldkickspw
 				return;
 			d_pp=CurrentPPlist->Append(); 
 			CurrentPP=d_pp;
@@ -1467,19 +1650,44 @@ static bool is_vertex_inf(const Vertex& vtx)
 //
 // Create the vertex index, eliminating invalid vertices and merging strips when possible.
 //
+/* The index list ran out (List<>::sig_overrun()): the frame is marked and
+ * will not be drawn; what is written from here on only has to stay inside
+ * the list, and it starts again at its beginning. */
+static NOINLINE u32 *make_index_overrun(rend_context* ctx, u32 **out_end)
+{
+	u32 *start;
+	ctx->idx.daty = *out_end;
+	ctx->idx.avail = 0;
+	start = ctx->idx.sig_overrun();
+	*out_end = start + ctx->idx.avail;
+	return start;
+}
+
 static void make_index(const List<PolyParam> *polys, int first, int end, bool merge, rend_context* ctx)
 {
-	const u32 *indices = ctx->idx.head();
+	u32 * const indices = ctx->idx.head();
 	const Vertex *vertices = ctx->verts.head();
 
-	PolyParam *last_poly = nullptr;
+	/* Where the next index goes and where the list ends are kept here for
+	 * the whole of it, and given back to the list at the end: appending
+	 * through the list reads and writes both in memory for every index. */
+	u32 *out = ctx->idx.daty;
+	u32 *out_end = out + ctx->idx.avail;
+#define IDX_PUT(v) \
+	do { \
+		if (out == out_end) \
+			out = make_index_overrun(ctx, &out_end); \
+		*out++ = (v); \
+	} while (0)
+
+	PolyParam *last_poly = NULL;
 	const PolyParam *end_poly = &polys->head()[end];
 	for (PolyParam *poly = &polys->head()[first]; poly != end_poly; poly++)
 	{
 		int first_index;
 		bool dupe_next_vtx = false;
 		if (merge
-				&& last_poly != nullptr
+				&& last_poly != NULL
 				&& poly->pcw.full == last_poly->pcw.full
 				&& poly->tcw.full == last_poly->tcw.full
 				&& poly->tsp.full == last_poly->tsp.full
@@ -1488,31 +1696,32 @@ static void make_index(const List<PolyParam> *polys, int first, int end, bool me
 				)
 		{
 			const u32 last_vtx = indices[last_poly->first + last_poly->count - 1];
-			*ctx->idx.Append() = last_vtx;
+			IDX_PUT(last_vtx);
 			dupe_next_vtx = true;
 			first_index = last_poly->first;
 		}
 		else
 		{
 			last_poly = poly;
-			first_index = ctx->idx.used();
+			first_index = (int)(out - indices);
 		}
 		int last_good_vtx = -1;
-		for (u32 i = 0; i < poly->count; i++)
+		const u32 poly_first = poly->first;
+		const u32 poly_count = poly->count;
+		const Vertex *vtx = &vertices[poly_first];
+		for (u32 i = 0; i < poly_count; i++)
 		{
-			const Vertex& vtx = vertices[poly->first + i];
-			if (is_vertex_inf(vtx))
+			if (is_vertex_inf(vtx[i]))
 			{
-				while (i < poly->count - 1)
+				while (i < poly_count - 1)
 				{
-					const Vertex& next_vtx = vertices[poly->first + i + 1];
-					if (!is_vertex_inf(next_vtx))
+					if (!is_vertex_inf(vtx[i + 1]))
 					{
 						// repeat last and next vertices to link strips
 						if (last_good_vtx >= 0)
 						{
 							verify(!dupe_next_vtx);
-							*ctx->idx.Append() = last_good_vtx;
+							IDX_PUT(last_good_vtx);
 							dupe_next_vtx = true;
 						}
 						break;
@@ -1522,29 +1731,32 @@ static void make_index(const List<PolyParam> *polys, int first, int end, bool me
 			}
 			else
 			{
-				last_good_vtx = poly->first + i;
+				last_good_vtx = poly_first + i;
 				if (dupe_next_vtx)
 				{
-					*ctx->idx.Append() = last_good_vtx;
+					IDX_PUT(last_good_vtx);
 					dupe_next_vtx = false;
 				}
-				const u32 count = ctx->idx.used() - first_index;
+				const u32 count = (u32)(out - indices) - first_index;
 				if ((i ^ count) & 1)
-					*ctx->idx.Append() = last_good_vtx;
-				*ctx->idx.Append() = last_good_vtx;
+					IDX_PUT(last_good_vtx);
+				IDX_PUT(last_good_vtx);
 			}
 		}
 		if (last_poly == poly)
 		{
 			poly->first = first_index;
-			poly->count = ctx->idx.used() - first_index;
+			poly->count = (u32)(out - indices) - first_index;
 		}
 		else
 		{
-			last_poly->count = ctx->idx.used() - last_poly->first;
+			last_poly->count = (u32)(out - indices) - last_poly->first;
 			poly->count = 0;
 		}
 	}
+#undef IDX_PUT
+	ctx->idx.avail = (int)(out_end - out);
+	ctx->idx.daty = out;
 }
 
 static void fix_texture_bleeding(const List<PolyParam> *list)
@@ -1691,10 +1903,10 @@ bool ta_parse_vdrc(TA_context* ctx)
    {
       u32 xmin, xmax, ymin, ymax;
       getRegionTileClipping(xmin, xmax, ymin, ymax);
-      vd_rc.fb_X_CLIP.min = std::max(vd_rc.fb_X_CLIP.min, xmin);
-      vd_rc.fb_X_CLIP.max = std::min(vd_rc.fb_X_CLIP.max, xmax + 31);
-      vd_rc.fb_Y_CLIP.min = std::max(vd_rc.fb_Y_CLIP.min, ymin);
-      vd_rc.fb_Y_CLIP.max = std::min(vd_rc.fb_Y_CLIP.max, ymax + 31);
+      vd_rc.fb_X_CLIP.min = ta_max(vd_rc.fb_X_CLIP.min, xmin);
+      vd_rc.fb_X_CLIP.max = ta_min(vd_rc.fb_X_CLIP.max, xmax + 31);
+      vd_rc.fb_Y_CLIP.min = ta_max(vd_rc.fb_Y_CLIP.min, ymin);
+      vd_rc.fb_Y_CLIP.max = ta_min(vd_rc.fb_Y_CLIP.max, ymax + 31);
    }
 
 
@@ -1836,7 +2048,7 @@ void FillBGP(TA_context* ctx)
 	 * shows; here it lost to the background by a rounding. Upstream's
 	 * figure, and its list: the sky in Xtreme Sports, Blue Stinger's (JP)
 	 * intro, and the videos of many Windows CE games, which were black. */
-	bg_depth = std::max(bg_depth - 1e-6f, 1e-11f);
+	bg_depth = ta_max(bg_depth - 1e-6f, 1e-11f);
 
 	/* The plane through the three vertices, over the whole screen: see
 	 * bg_plane.h. What is drawn is wider than the screen by 256 pixels on
@@ -1884,15 +2096,15 @@ void FillBGP(TA_context* ctx)
 		}
 	}
 	// the three are not a plane: the picture stretched over the screen, as it always was
-	f32 min_u = std::min(cv[0].u, std::min(cv[1].u, cv[2].u));
-	f32 max_u = std::max(cv[0].u, std::max(cv[1].u, cv[2].u));
+	f32 min_u = ta_min(cv[0].u, ta_min(cv[1].u, cv[2].u));
+	f32 max_u = ta_max(cv[0].u, ta_max(cv[1].u, cv[2].u));
 	if (max_u == 0.f)
 		max_u = 1.f;
 	const f32 diff_u = (max_u - min_u) * 0.4f;
 	max_u += diff_u;
 	min_u -= diff_u;
-	const f32 min_v = std::min(cv[0].v, std::min(cv[1].v, cv[2].v));
-	f32 max_v = std::max(cv[0].v, std::max(cv[1].v, cv[2].v));
+	const f32 min_v = ta_min(cv[0].v, ta_min(cv[1].v, cv[2].v));
+	f32 max_v = ta_max(cv[0].v, ta_max(cv[1].v, cv[2].v));
 	if (max_v == 0.f)
 		max_v = 1.f;
 	cv[0].x = -256.f * scale_x;
@@ -1948,10 +2160,10 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
    u32 walked = 0;
    do {
       tile.full = vri(addr);
-      xmin = std::min(xmin, tile.X);
-      xmax = std::max(xmax, tile.X);
-      ymin = std::min(ymin, tile.Y);
-      ymax = std::max(ymax, tile.Y);
+      xmin = ta_min(xmin, tile.X);
+      xmax = ta_max(xmax, tile.X);
+      ymin = ta_min(ymin, tile.Y);
+      ymax = ta_max(ymax, tile.Y);
       if (type1_tile && tile.PreSort)
          // Windows CE weirdness
          tile_size = 6 * 4;

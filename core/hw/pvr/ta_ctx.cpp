@@ -130,7 +130,11 @@ void FinishRender(TA_context* ctx)
 /* Spare contexts. Both threads give them back; a slot hands each one to
  * a single taker. */
 static cSlotCache<TA_context, 3> ctx_pool;
-static std::vector<TA_context*> ctx_list;
+/* The contexts being written, by the address the game gives each: a
+ * handful, looked up a few times a frame. */
+static TA_context **ctx_list;
+static unsigned ctx_count;
+static unsigned ctx_room;
 
 TA_context* tactx_Alloc(void)
 {
@@ -164,7 +168,7 @@ void tactx_Recycle(TA_context* poped_ctx)
 
 TA_context* tactx_Find(u32 addr, bool allocnew)
 {
-   for (size_t i=0; i<ctx_list.size(); i++)
+   for (unsigned i=0; i<ctx_count; i++)
    {
       if (ctx_list[i]->Address==addr)
       {
@@ -180,9 +184,19 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
 
    if (allocnew)
    {
-      TA_context *rv = tactx_Alloc();
+      TA_context *rv;
+      if (ctx_count == ctx_room)
+      {
+         unsigned room = ctx_room ? ctx_room * 2 : 8;
+         TA_context **list = (TA_context **)realloc(ctx_list, room * sizeof(*list));
+         if (!list)
+            return 0;
+         ctx_list = list;
+         ctx_room = room;
+      }
+      rv = tactx_Alloc();
       rv->Address=addr;
-      ctx_list.push_back(rv);
+      ctx_list[ctx_count++] = rv;
 
       return rv;
    }
@@ -192,7 +206,7 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
 
 TA_context* tactx_Pop(u32 addr)
 {
-	for (size_t i=0; i<ctx_list.size(); i++)
+	for (unsigned i=0; i<ctx_count; i++)
    {
       if (ctx_list[i]->Address == addr)
       {
@@ -201,7 +215,8 @@ TA_context* tactx_Pop(u32 addr)
          if (ta_ctx == rv)
             SetCurrentTARC(TACTX_NONE);
 
-         ctx_list.erase(ctx_list.begin() + i);
+         ctx_count--;
+         memmove(&ctx_list[i], &ctx_list[i + 1], (ctx_count - i) * sizeof(*ctx_list));
 
          return rv;
       }
@@ -213,7 +228,7 @@ const u32 NULL_CONTEXT = ~0u;
 
 void SerializeTAContext(void **data, unsigned int *total_size)
 {
-	if (ta_ctx == nullptr)
+	if (ta_ctx == NULL)
 	{
 		LIBRETRO_S(NULL_CONTEXT);
 		return;
