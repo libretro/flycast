@@ -1406,6 +1406,17 @@ void retro_run (void)
 #endif
    {
 	   rtt_watch_frame();
+	   /* A reset the machine asked for itself (dc_request_reset(): a game
+	    * writing the reset register, the test switch of a NAOMI without a
+	    * BIOS) stops the processor and is made at the next frame - here,
+	    * where one thread does everything, as the emulation thread makes it
+	    * where there are two. It used to be made only there: with threaded
+	    * rendering off the machine was stopped and went on unreset. */
+	   if (retro_atomic_load_acquire_int(&reset_requested))
+	   {
+		   dc_reset(false);
+		   retro_atomic_store_release_int(&reset_requested, 0);
+	   }
 	   dc_run();
 
 	   /* Emit exactly this frame's audio as one consecutive batch, so the
