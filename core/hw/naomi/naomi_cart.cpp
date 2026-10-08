@@ -20,6 +20,7 @@
 // copyright-holders:MetalliC
 
 #include <memory>
+#include <string>
 #include <streams/file_stream.h>
 #include "naomi_cart.h"
 #include "naomi_regs.h"
@@ -379,11 +380,108 @@ error:
 	return false;
 }
 
+/* An archive that is no romset may hold a flat image, the kind a .bin
+ * file is: one member named .bin or .dat, whose first bytes say which
+ * board it is for. It is found when the archive is looked at to tell the
+ * machine, and kept until the loader takes it - 180 MB of RAR take
+ * seconds to decode, and are decoded once. */
+static archive_t *flat_archive;
+static const u8 *flat_data;
+static size_t flat_len;
+static std::string flat_path;
+
+static void naomi_FlatArchiveDrop()
+{
+	archive_close(flat_archive);
+	flat_archive = NULL;
+	flat_data = NULL;
+	flat_len = 0;
+	flat_path.clear();
+}
+
+static bool naomi_FlatArchiveOpen(const char *path)
+{
+	if (flat_archive && flat_path == path)
+		return true;
+	naomi_FlatArchiveDrop();
+
+	archive_t *a = archive_open(path);
+	if (!a)
+		return false;
+	int found = -1;
+	for (unsigned i = 0; i < archive_num_entries(a); i++)
+	{
+		const archive_entry_t *e = archive_entry(a, i);
+		const char *ext = strrchr(e->name, '.');
+		if (!e->usable || !ext || (strcasecmp(ext, ".bin") && strcasecmp(ext, ".dat")))
+			continue;
+		if (found >= 0)
+		{
+			// more than one: not an image by itself
+			found = -1;
+			break;
+		}
+		found = (int)i;
+	}
+	size_t len = 0;
+	const u8 *data = found >= 0 ? archive_entry_data(a, found, &len) : NULL;
+	if (!data || len < 0x500 || len > 0xFFFFFFFFu
+			|| (memcmp(data, "NAOMI", 5) && memcmp(data, "Naomi2", 6)))
+	{
+		archive_close(a);
+		return false;
+	}
+	flat_archive = a;
+	flat_data = data;
+	flat_len = len;
+	flat_path = path;
+	return true;
+}
+
+static bool naomi_IsArchive(const char *ext)
+{
+	return !strcasecmp(ext, "zip") || !strcasecmp(ext, "7z") || !strcasecmp(ext, "rar");
+}
+
+/* The region of the BIOS for a flat image: the one asked for if the image
+ * runs there, or else the first it does run in. Its header says where
+ * (0x428: Japan 1, USA 2, export 4, Korea 8), and a board of any other
+ * region answers "this game is not acceptable by main board". */
+static int naomi_FlatRegion(const u8 *rom, size_t size)
+{
+	int region = settings.dreamcast.region;
+	if (size > 0x428 && region >= 0 && region < 4 && !(rom[0x428] & (1 << region)))
+		for (int r = 0; r < 4; r++)
+			if (rom[0x428] & (1 << r))
+			{
+				region = r;
+				break;
+			}
+	return region;
+}
+
+static bool naomi_FlatBios(const u8 *rom, size_t size)
+{
+	// From naomi.zip, or naomi2.zip for a NAOMI 2
+	const char *bios = settings.System == DC_PLATFORM_NAOMI2 ? "naomi2" : "naomi";
+	int region = naomi_FlatRegion(rom, size);
+	if (!naomi_LoadBios(bios, NULL, NULL, region))
+	{
+		WARN_LOG(NAOMI, "Warning: Region %d bios not found in %s.zip", region, bios);
+		if (!naomi_LoadBios(bios, NULL, NULL, -1) && !bios_loaded)
+		{
+			ERROR_LOG(NAOMI, "Error: cannot load BIOS. Exiting");
+			return false;
+		}
+	}
+	return true;
+}
+
 int naomi_cart_GetSystemType(const char* file)
 {
 	const char *ext = path_get_extension(file);
 
-   if (strcasecmp(ext, "zip") && strcasecmp(ext, "7z"))
+   if (!naomi_IsArchive(ext))
    {
 	  // Not a ZIP or 7z file so it has to be a Naomi game: the board it
 	  // is for is the first thing in its header
@@ -409,7 +507,12 @@ int naomi_cart_GetSystemType(const char* file)
 	  if (!stricmp(Games[gameid].name, game_name))
 		 break;
    if (Games[gameid].name == NULL)
-	  return -1;
+   {
+	  // Not a romset. A flat image, archived?
+	  if (!naomi_FlatArchiveOpen(file))
+		 return -1;
+	  return memcmp(flat_data, "Naomi2", 6) ? DC_PLATFORM_NAOMI : DC_PLATFORM_NAOMI2;
+   }
 
    if (Games[gameid].cart_type == AW)
 	  return DC_PLATFORM_ATOMISWAVE;
@@ -471,22 +574,28 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	const char *ext = path_get_extension(file);
 
-	if (!strcasecmp(ext, "zip")	|| !strcasecmp(ext, "7z"))
-		return naomi_cart_LoadZip(file);
+	if (flat_archive && flat_path != file)
+		naomi_FlatArchiveDrop();	// one that was looked at and not loaded
 
-	// Try to load BIOS from naomi.zip, or naomi2.zip for a NAOMI 2
-	const char *bios = settings.System == DC_PLATFORM_NAOMI2 ? "naomi2" : "naomi";
-	if (!naomi_LoadBios(bios, NULL, NULL, settings.dreamcast.region))
+	if (naomi_IsArchive(ext))
 	{
-		WARN_LOG(NAOMI, "Warning: Region %d bios not found in %s.zip", settings.dreamcast.region, bios);
-	   if (!naomi_LoadBios(bios, NULL, NULL, -1))
-	   {
-		  if (!bios_loaded)
-		  {
-			 ERROR_LOG(NAOMI, "Error: cannot load BIOS. Exiting");
-			 return false;
-		  }
-	   }
+		// A flat image in an archive (found when the machine was told), or a romset
+		if (flat_archive && flat_path == file)
+		{
+			if (!naomi_FlatBios(flat_data, flat_len))
+			{
+				naomi_FlatArchiveDrop();
+				return false;
+			}
+			// The cartridge has the archive from here, and closes it
+			CurrentCartridge = new ArchivedCartridge(flat_data, (u32)flat_len, flat_archive);
+			flat_archive = NULL;
+			naomi_FlatArchiveDrop();
+			strcpy(naomi_game_id, CurrentCartridge->GetGameId().c_str());
+			NOTICE_LOG(NAOMI, "NAOMI GAME ID [%s]", naomi_game_id);
+			return true;
+		}
+		return naomi_cart_LoadZip(file);
 	}
 
 	u8* RomPtr;
@@ -675,6 +784,13 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	//done :)
 	INFO_LOG(NAOMI, "Mapped ROM Successfully !");
+
+	// (the BIOS goes by the image's header: after the image is there)
+	if (!naomi_FlatBios(RomPtr, RomSize))
+	{
+		mem_region_release(RomPtr, RomSize);
+		return false;
+	}
 
 	CurrentCartridge = new DecryptedCartridge(RomPtr, RomSize);
 	strcpy(naomi_game_id, CurrentCartridge->GetGameId().c_str());
@@ -1144,6 +1260,13 @@ void M2Cartridge::Serialize(void** data, unsigned int* total_size) {
 void M2Cartridge::Unserialize(void** data, unsigned int* total_size) {
    LIBRETRO_US(naomi_cart_ram);
    NaomiCartridge::Unserialize(data, total_size);
+}
+
+ArchivedCartridge::~ArchivedCartridge()
+{
+	// the image is the archive's
+	archive_close(archive);
+	RomPtr = NULL;
 }
 
 DecryptedCartridge::~DecryptedCartridge()

@@ -68,6 +68,19 @@ public:
 	virtual ~DecryptedCartridge() override;
 };
 
+/* A flat image that was a member of an archive, and is the archive's
+ * memory. */
+class ArchivedCartridge : public NaomiCartridge
+{
+public:
+	ArchivedCartridge(const u8 *rom_ptr, u32 size, struct archive *archive)
+		: NaomiCartridge(size), archive(archive) { free(RomPtr); RomPtr = (u8 *)rom_ptr; }
+	virtual ~ArchivedCartridge() override;
+
+private:
+	struct archive *archive;
+};
+
 class M2Cartridge : public NaomiCartridge
 {
 public:

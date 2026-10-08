@@ -1981,7 +1981,8 @@ bool retro_load_game(const struct retro_game_info *game)
         	   || !strcmp(".bin", ext) || !strcmp(".BIN", ext)
         	   || !strcmp(".dat", ext) || !strcmp(".DAT", ext)
         	   || !strcmp(".zip", ext) || !strcmp(".ZIP", ext)
-        	   || !strcmp(".7z", ext) || !strcmp(".7Z", ext))
+        	   || !strcmp(".7z", ext) || !strcmp(".7Z", ext)
+        	   || !strcmp(".rar", ext) || !strcmp(".RAR", ext))
          {
             /* A content path naming a member was resolved above: it is
              * a disc image, or the romset archive itself */
@@ -2328,7 +2329,7 @@ void retro_get_system_info(struct retro_system_info *info)
 #define GIT_VERSION ""
 #endif
    info->library_version = "0.1" GIT_VERSION;
-   info->valid_extensions = "chd|cdi|elf|cue|gdi|lst|bin|dat|zip|7z|m3u";
+   info->valid_extensions = "chd|cdi|elf|cue|gdi|lst|bin|dat|zip|7z|rar|m3u";
    info->need_fullpath = true;
    info->block_extract = true;
 }
