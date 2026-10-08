@@ -183,8 +183,16 @@ static void check_archive(const char *work, const char *arc_name,
       map  = archive_entry_map(a, (unsigned)idx, &map_len);
       if (expect_mapped && mapped_build)
          CHECK(map != NULL && map_len == want_len, name);
+#ifdef ARCHIVE_SEEK_MIN
+      /* (this build decodes a 7z folder on a thread of its own: a member
+       * the decoder has already passed is there to be had; whether it
+       * is depends on how far the thread has got) */
+      else if (!e->stored && !strstr(arc_name, ".7z"))
+         CHECK(map == NULL, name);
+#else
       else if (!e->stored)
          CHECK(map == NULL, name);
+#endif
       /* Read to a place of the caller's, before the archive has decoded
        * it for anyone: the same bytes, nothing past them touched, and a
        * place too small for them left alone. */

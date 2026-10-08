@@ -44,6 +44,22 @@
 /* How much the indexing thread does between looks at whether to stop. */
 #define ARCHIVE_SEEK_STEP (4 * 1024 * 1024)
 
+/* A 7z folder of at least ARCHIVE_SEEK_MIN that is decoded on a thread of
+ * its own, a slice at a time, while the game loads and runs: see
+ * archive_bg_get(). */
+typedef struct archive_bg
+{
+   r7z_archive_t      *sz;        /* the thread's own view of the archive */
+   uint32_t            folder;
+   unsigned            index;     /* an entry of it */
+#ifndef TARGET_NO_THREADS
+   sthread_t          *thread;
+   retro_eventcount_t  progress;  /* notified as more is decoded */
+   retro_atomic_int_t  stop;
+   retro_atomic_int_t  state;     /* 0 decoding, 1 decoded and held, -1 not to be */
+#endif
+} archive_bg_t;
+
 typedef struct archive_seek
 {
    rzip_seek_t        *seek;
@@ -69,6 +85,8 @@ struct archive
                                  decoded folder, one slot per entry    */
    archive_seek_t **seek;     /* members read through an index, one slot
                                  per entry, made when first asked for  */
+   archive_bg_t   **bg;       /* 7z folders being decoded on a thread   */
+   unsigned         num_bg;
    char            *names;
    char            *path;
    size_t           map_len;
@@ -104,6 +122,135 @@ static int archive_alloc_tables(archive_t *a, unsigned n, size_t name_bytes)
    a->num_entries = n;
    return 1;
 }
+
+/* ------------------------------------------- 7z folders decoded behind */
+
+#ifndef TARGET_NO_THREADS
+static void archive_bg_thread(void *data)
+{
+   archive_bg_t *bg = (archive_bg_t*)data;
+
+   while (!retro_atomic_load_acquire_int(&bg->stop))
+   {
+      const int res = r7z_archive_decode_step(bg->sz, bg->index);
+
+      if (res != R7Z_PENDING)
+      {
+         retro_atomic_store_release_int(&bg->state, res == R7Z_OK ? 1 : -1);
+         retro_eventcount_notify(&bg->progress);
+         break;
+      }
+      retro_eventcount_notify(&bg->progress);
+   }
+}
+
+/* The decode of the folder that holds member @index, started if the
+ * folder is large enough to be worth not waiting for: NULL if it is not,
+ * or cannot be decoded behind.
+ *
+ * A solid 7z is decoded from its start to its end and no other way.
+ * Done when the first member is asked for, that is the whole of it
+ * before the game is loaded - tens of seconds for a disc image, with
+ * the frontend stopped. Done on a thread, the members become readable
+ * as the decoder passes them: the descriptor and the first tracks at
+ * once, the rest while the game starts. The thread has the archive open
+ * a second time for itself (the reader decodes one folder at a time),
+ * which takes the archive being mapped: the two then share only its
+ * bytes. */
+static archive_bg_t *archive_bg_get(archive_t *a, unsigned index, int start)
+{
+   const r7z_entry_t *se;
+   archive_bg_t      *bg;
+   archive_bg_t     **list;
+   unsigned           i;
+
+   if (!a->sz || !(se = r7z_archive_entry(a->sz, index)) || se->is_dir || !se->size)
+      return NULL;
+   for (i = 0; i < a->num_bg; i++)
+   {
+      if (a->bg[i]->folder == se->folder)
+         return a->bg[i];
+   }
+   if (     !start || !a->map
+         || r7z_archive_folder_size(a->sz, se->folder) < ARCHIVE_SEEK_MIN)
+      return NULL;
+
+   if (!(list = (archive_bg_t**)realloc(a->bg, (a->num_bg + 1) * sizeof(*list))))
+      return NULL;
+   a->bg = list;
+   if (!(bg = (archive_bg_t*)calloc(1, sizeof(*bg))))
+      return NULL;
+   bg->folder = se->folder;
+   bg->index  = index;
+   retro_atomic_int_init(&bg->stop, 0);
+   retro_atomic_int_init(&bg->state, 0);
+   if (r7z_archive_open(&bg->sz, a->map, a->map_len) != R7Z_OK)
+   {
+      free(bg);
+      return NULL;
+   }
+   if (!retro_eventcount_init(&bg->progress))
+   {
+      r7z_archive_close(bg->sz);
+      free(bg);
+      return NULL;
+   }
+   if (!(bg->thread = sthread_create(archive_bg_thread, bg)))
+   {
+      retro_eventcount_free(&bg->progress);
+      r7z_archive_close(bg->sz);
+      free(bg);
+      return NULL;
+   }
+   a->bg[a->num_bg++] = bg;
+   return bg;
+}
+
+/* @len bytes at @offset of member @index, where the folder is being
+ * decoded: once the decoder has passed them. NULL if it never will. */
+static const uint8_t *archive_bg_reach(archive_bg_t *bg, unsigned index,
+      uint64_t offset, size_t len)
+{
+   for (;;)
+   {
+      const uint8_t *data  = NULL;
+      size_t         avail = 0;
+      int            key;
+
+      if (r7z_archive_decode_peek(bg->sz, index, &data, &avail) != R7Z_OK)
+         return NULL;
+      if (data && offset <= avail && len <= avail - (size_t)offset)
+         return data + (size_t)offset;
+      if (retro_atomic_load_acquire_int(&bg->state) != 0)
+      {
+         /* done, or failed: what there is now is all there will be */
+         if (     r7z_archive_decode_peek(bg->sz, index, &data, &avail) == R7Z_OK
+               && data && offset <= avail && len <= avail - (size_t)offset
+               && retro_atomic_load_acquire_int(&bg->state) > 0)
+            return data + (size_t)offset;
+         return NULL;
+      }
+      key = retro_eventcount_prepare_wait(&bg->progress);
+      if (     r7z_archive_decode_peek(bg->sz, index, &data, &avail) != R7Z_OK
+            || (data && offset <= avail && len <= avail - (size_t)offset)
+            || retro_atomic_load_acquire_int(&bg->state) != 0)
+         retro_eventcount_cancel_wait(&bg->progress);
+      else
+         retro_eventcount_commit_wait(&bg->progress, key);
+   }
+}
+
+static void archive_bg_close(archive_bg_t *bg)
+{
+   if (!bg)
+      return;
+   retro_atomic_store_release_int(&bg->stop, 1);
+   sthread_join(bg->thread);
+   retro_eventcount_free(&bg->progress);
+   r7z_archive_close(bg->sz);
+   free(bg);
+}
+#endif
 
 /* ---------------------------------------------------------------- zip */
 
@@ -247,6 +394,26 @@ static const uint8_t *sz_entry_data(archive_t *a, unsigned index, size_t *len)
 {
    uint8_t *out;
    size_t   out_len;
+
+#ifndef TARGET_NO_THREADS
+   /* A member of a large folder: the folder is decoded behind, once, and
+    * this waits until the decoder has passed the member. */
+   {
+      archive_bg_t *bg = archive_bg_get(a, index, 1);
+
+      if (bg)
+      {
+         const uint8_t *view = archive_bg_reach(bg, index, 0,
+               (size_t)a->entries[index].size);
+
+         if (!view)
+            return NULL;
+         a->view[index] = view;
+         *len           = (size_t)a->entries[index].size;
+         return view;
+      }
+   }
+#endif
 
    if (a->sz_folders == 1)
    {
@@ -450,7 +617,16 @@ int archive_entry_seekable(archive_t *a, unsigned index)
    const archive_entry_t *e;
    archive_seek_t        *k;
 
-   if (index >= a->num_entries || !a->zip)
+   if (index >= a->num_entries)
+      return 0;
+#ifndef TARGET_NO_THREADS
+   /* a member of a 7z folder that is decoded behind: any size, since it
+    * is the folder that takes the time */
+   if (a->sz)
+      return a->entries[index].usable && !a->cache[index] && !a->view[index]
+         && archive_bg_get(a, index, 1) != NULL;
+#endif
+   if (!a->zip)
       return 0;
    e = &a->entries[index];
    if (!e->usable || e->stored || e->size < ARCHIVE_SEEK_MIN)
@@ -527,7 +703,20 @@ static archive_seek_t *archive_seek_reach(archive_t *a, unsigned index,
 int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
       uint8_t *dst, size_t len)
 {
-   archive_seek_t *k = archive_seek_reach(a, index, offset, len);
+   archive_seek_t *k;
+
+#ifndef TARGET_NO_THREADS
+   if (a->sz)
+   {
+      const uint8_t *p = archive_entry_view_at(a, index, offset, len);
+
+      if (!p)
+         return 0;
+      memcpy(dst, p, len);
+      return 1;
+   }
+#endif
+   k = archive_seek_reach(a, index, offset, len);
 
    return k && rzip_seek_read(k->seek, offset, dst, len) == RZIP_OK;
 }
@@ -535,8 +724,21 @@ int archive_entry_read_at(archive_t *a, unsigned index, uint64_t offset,
 const uint8_t *archive_entry_view_at(archive_t *a, unsigned index,
       uint64_t offset, size_t len)
 {
-   archive_seek_t *k    = archive_seek_reach(a, index, offset, len);
+   archive_seek_t *k;
    const uint8_t  *data = NULL;
+
+#ifndef TARGET_NO_THREADS
+   if (a->sz)
+   {
+      archive_bg_t *bg = index < a->num_entries ? archive_bg_get(a, index, 0) : NULL;
+
+      if (     !bg || offset > a->entries[index].size
+            || len > a->entries[index].size - offset)
+         return NULL;
+      return archive_bg_reach(bg, index, offset, len);
+   }
+#endif
+   k = archive_seek_reach(a, index, offset, len);
 
    if (!k || rzip_seek_view(k->seek, offset, len, &data) != RZIP_OK)
       return NULL;
@@ -552,6 +754,12 @@ void archive_close(archive_t *a)
    for (i = 0; i < a->num_entries && a->seek; i++)
       archive_seek_close(a->seek[i]);
    free(a->seek);
+#ifndef TARGET_NO_THREADS
+   /* (before the mapping they decode from goes) */
+   for (i = 0; i < a->num_bg; i++)
+      archive_bg_close(a->bg[i]);
+#endif
+   free(a->bg);
    for (i = 0; i < a->num_entries && a->cache; i++)
       free(a->cache[i]);
    free(a->cache);
@@ -673,6 +881,25 @@ const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len)
       return zip_entry_data(a, index, len);
    if (a->rar && e->stored && a->map)
       return rar_entry_data(a, index, len);
+#ifndef TARGET_NO_THREADS
+   /* A 7z member whose folder is being decoded behind, and which the
+    * decoder has passed: it is where it will stay. */
+   if (a->sz)
+   {
+      archive_bg_t  *bg    = archive_bg_get(a, index, 0);
+      const uint8_t *data  = NULL;
+      size_t         avail = 0;
+
+      if (     bg
+            && r7z_archive_decode_peek(bg->sz, index, &data, &avail) == R7Z_OK
+            && data && avail == (size_t)e->size)
+      {
+         a->view[index] = data;
+         *len           = avail;
+         return data;
+      }
+   }
+#endif
    return NULL;
 }
 
