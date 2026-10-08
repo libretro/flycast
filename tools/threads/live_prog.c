@@ -25,7 +25,8 @@
  *   sh4-linux-gnu-objcopy -O binary live_prog.elf live_prog.bin
  *
  * and paste the bytes of live_prog.bin into PROGRAM; the same again with
- * -DNO_REGION_ARRAY for PROGRAM_NO_REGION_ARRAY. */
+ * -DNO_REGION_ARRAY for PROGRAM_NO_REGION_ARRAY, and with -DLIVE_MMU_ALIGN
+ * for PROGRAM_MMU_ALIGN. */
 typedef unsigned int u32;
 typedef unsigned short u16;
 #define PVR(off) (*(volatile u32 *)(0xA05F8000 + (off)))
@@ -1314,7 +1315,8 @@ static int __attribute__((noinline)) mmu_probe(void)
     * without looking at the address. (Only asked of a core that keeps
     * them in a table: one that maps the pages into the host's memory
     * lets the host do the access, and the host does not mind. That is
-    * every core but Windows' at present; see headless.sh.) */
+    * every core but Windows' and 32-bit ARM's at present; see ALIGN in
+    * headless.sh.) */
    {
       /* (through a variable: given the odd address itself, the compiler
        * knows better than to use one instruction for it) */
