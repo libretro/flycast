@@ -937,7 +937,7 @@ public:
 					shr(ecx, 26);
 					cmp(ecx, 0x38);
 					Xbyak::Label no_sqw;
-					jne(no_sqw);
+					jne(no_sqw, T_NEAR);	// (the call can be long: it keeps the floating-point registers in use)
 
 					mov(call_regs[0], rn);
 					if (mmu_enabled())
