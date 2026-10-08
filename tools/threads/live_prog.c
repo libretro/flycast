@@ -1002,6 +1002,19 @@ __asm__(".text\n.align 2\n"
         ".global t_illegal\nt_illegal:\n  stc vbr, r2\n  mov.l 3f, r1\n  ldc r1, vbr\n"
         "  .word 0xFFFD\n"
         "  ldc r2, vbr\n  rts\n  nop\n  .align 2\n3: .long t_vbr_base\n"
+        /* t_pref_floats(p): returns 7. A PREF of p - an address that is no
+         * store queue's - with all of FR0 to FR7 holding something that is
+         * used after it, in one block. A recompiler that keeps them in
+         * host registers has eight to save around the call it makes for a
+         * store queue write, and the jump over that call has to reach. */
+        ".global t_pref_floats\nt_pref_floats:\n"
+        "  .word 0xF08D\n"                             /* fldi0 fr0 */
+        "  .word 0xF19D\n  .word 0xF29D\n  .word 0xF39D\n  .word 0xF49D\n"   /* fldi1 fr1..fr7 */
+        "  .word 0xF59D\n  .word 0xF69D\n  .word 0xF79D\n"
+        "  .word 0x0483\n"                             /* pref @r4 */
+        "  .word 0xF010\n  .word 0xF020\n  .word 0xF030\n  .word 0xF040\n"   /* fadd fr1..fr7,fr0 */
+        "  .word 0xF050\n  .word 0xF060\n  .word 0xF070\n"
+        "  .word 0xF03D\n  .word 0x005A\n  rts\n  nop\n"   /* ftrc fr0,fpul; sts fpul,r0 */
         /* t_pr_neg(bits): bits into FR2 by way of FPUL, FNEG, and back */
         ".global t_pr_neg\nt_pr_neg:\n"
         "  .word 0x445A\n  .word 0xF20D\n"            /* lds r4,fpul; fsts fpul,fr2 */
@@ -1029,6 +1042,7 @@ volatile u32 t_tlb_misses;
 u32 t_mmu_map[8][2];
 extern u32 t_sr_slot_mem(void);
 extern u32 t_pr_neg(u32 bits);
+extern u32 t_pref_floats(u32 *p);
 extern void t_pr_mov(u32 *from, u32 *to);
 extern u32 t_fpscr_mem(u32 *p, u32 **after);
 extern u32 t_getfpscr(void);
@@ -1164,6 +1178,11 @@ static int cpu_test(void)
    t_illegal();
    if (t_expevt_seen != 0x180)
       return 13;
+   /* A PREF with eight floating-point registers in use: the block is
+    * compiled, and adds up. (The x86-64 recompiler threw "label is too
+    * far" at it, and the core was gone.) */
+   if (t_pref_floats(&x) != 7)
+      return 14;
    return 0;
 }
 
