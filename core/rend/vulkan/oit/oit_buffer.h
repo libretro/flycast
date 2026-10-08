@@ -82,7 +82,9 @@ public:
 			commandPool->DeferDelete(std::unique_ptr<vk::UniqueDescriptorSet>(new vk::UniqueDescriptorSet(std::move(descSet))));
 		abufferPointerAttachment = std::unique_ptr<FramebufferAttachment>(
 				new FramebufferAttachment(context->GetPhysicalDevice(), context->GetDevice()));
-		abufferPointerAttachment->Init(maxWidth, maxHeight, vk::Format::eR32Uint, vk::ImageUsageFlagBits::eStorage);
+		// (cleared when it is first used: see OnNewFrame)
+		abufferPointerAttachment->Init(maxWidth, maxHeight, vk::Format::eR32Uint,
+				vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst);
 		abufferPointerTransitionNeeded = true;
 		firstFrameAfterInit = true;
 
@@ -115,6 +117,16 @@ public:
 					abufferPointerAttachment->GetImage(), imageSubresourceRange);
 			commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr,
 					imageMemoryBarrier);
+			/* The lists start empty. The image is new and holds nothing
+			 * that means anything; every frame leaves the lists empty for
+			 * the next, and this does it for the first. */
+			const vk::ClearColorValue endOfList(std::array<uint32_t, 4>{ 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu });
+			commandBuffer.clearColorImage(abufferPointerAttachment->GetImage(), vk::ImageLayout::eGeneral, endOfList, imageSubresourceRange);
+			vk::ImageMemoryBarrier cleared(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+					vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+					abufferPointerAttachment->GetImage(), imageSubresourceRange);
+			commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr,
+					cleared);
 		}
 		else
 		{
