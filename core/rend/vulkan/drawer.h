@@ -219,6 +219,9 @@ private:
 	QuadDrawer lastPicture;
 	bool havePicture = false;	/* the image before this one holds the last frame */
 	vk::ImageView restoredPicture;	/* ...or this does: the picture kept from the context before */
+	/* ...or the image the last frame was drawn to at the size before this
+	 * one, which is then this: kept as it is, with nothing copied */
+	std::unique_ptr<FramebufferAttachment> carriedPicture;
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
 	vk::Extent2D viewport;
 	ShaderManager *shaderManager = nullptr;

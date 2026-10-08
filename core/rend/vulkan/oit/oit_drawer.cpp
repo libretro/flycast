@@ -512,6 +512,14 @@ void OITScreenDrawer::MakeFramebuffers()
 	// (kept until the frames that could still use them have gone by: see the per-triangle screen drawer)
 	if (commandPool != nullptr)
 	{
+		// the image with the last frame stays, as the picture the next render starts from
+		if (carriedPicture)
+			commandPool->DeferDelete(std::move(carriedPicture));
+		if (havePicture && (size_t)GetCurrentImage() < finalColorAttachments.size() && finalColorAttachments[GetCurrentImage()])
+		{
+			carriedPicture = std::move(finalColorAttachments[GetCurrentImage()]);
+			restoredPicture = carriedPicture->GetImageView();
+		}
 		for (auto& framebuffer : framebuffers)
 			if (framebuffer)
 				commandPool->DeferDelete(std::unique_ptr<vk::UniqueFramebuffer>(new vk::UniqueFramebuffer(std::move(framebuffer))));

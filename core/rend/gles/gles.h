@@ -146,6 +146,7 @@ void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt);
 void ReadRTTBuffer();
 void gl_keep_picture(void);
 void gl_restore_picture(void);
+void gl_carry_picture(int from_w, int from_h, int to_w, int to_h);
 void RenderFramebuffer();
 void DrawFramebuffer();
 

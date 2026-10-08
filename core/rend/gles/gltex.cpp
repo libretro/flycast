@@ -263,6 +263,13 @@ static const RttWatchBackend rtt_gl_backend = { rtt_gl_read, rtt_gl_release };
 void gl_keep_picture(void)
 {
 	const int w = screen_width, h = screen_height;
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
+	/* (what cannot be put back is not read: see gl_restore_picture()) */
+	if (gl.gl_major < 3)
+		return;
+#else
+	return;
+#endif
 	u8 *pixels = last_picture_keep(w, h);
 	GLint was_fbo = 0, was_pack = 4;
 
@@ -327,6 +334,50 @@ void gl_restore_picture(void)
 	glDeleteFramebuffers(1, &fbo);
 	glcache.DeleteTextures(1, &tex);
 #endif
+}
+
+/* The size rendered at changes and the context stays (Renderer::Resize()).
+ * The picture is in the frontend's buffer, in the corner of it that was the
+ * old size; a game that draws part of the screen needs it in the corner
+ * that is the new size. It is scaled from the one to the other on the
+ * graphics card - by way of a texture, the two overlap - and never leaves
+ * it. Where that cannot be done it is kept as for a new context. */
+void gl_carry_picture(int from_w, int from_h, int to_w, int to_h)
+{
+	if (from_w <= 0 || from_h <= 0 || (from_w == to_w && from_h == to_h))
+		return;
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
+	/* (with the PowerVR2 filter the picture drawn on is the filter's own, which is made again) */
+	if (gl.gl_major >= 3 && !settings.rend.PowerVR2Filter)
+	{
+		GLint was_fbo = 0;
+		GLuint fbo = 0;
+		const GLuint target = hw_render.get_current_framebuffer();
+		const GLboolean was_scissor = glIsEnabled(GL_SCISSOR_TEST);
+
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &was_fbo);
+		GLuint tex = glcache.GenTexture();
+		glcache.BindTexture(GL_TEXTURE_2D, tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, to_w, to_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glGenFramebuffers(1, &fbo);
+		if (was_scissor)
+			glDisable(GL_SCISSOR_TEST);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, target);
+		glBlitFramebuffer(0, 0, from_w, from_h, 0, 0, to_w, to_h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
+		glBlitFramebuffer(0, 0, to_w, to_h, 0, 0, to_w, to_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		if (was_scissor)
+			glEnable(GL_SCISSOR_TEST);
+		glBindFramebuffer(RARCH_GL_FRAMEBUFFER, was_fbo);
+		glDeleteFramebuffers(1, &fbo);
+		glcache.DeleteTextures(1, &tex);
+		return;
+	}
+#endif
+	gl_keep_picture();
 }
 
 void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)

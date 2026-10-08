@@ -2474,20 +2474,22 @@ static void apply_new_size(void)
       if (!environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av_info))
          environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g_av_info.geometry);
    }
-   /* The same context: the renderer changes size where it is. The picture
-    * it has is kept first, at the size it has - a game that draws part of
-    * the screen has the rest from it, and what is left in the buffer is
-    * the old picture at the old size. */
-   if (context_resets == resets)
-      rend_keep_picture();
-   take_pending_size();
    if (context_resets != resets)
+   {
+      take_pending_size();
       return;
+   }
+   /* The same context: the renderer changes size where it is, and takes
+    * its picture with it (Renderer::Resize()) - a game that draws part of
+    * the screen has the rest from it. The picture stays on the graphics
+    * card: with OpenGL it is scaled inside the frontend's buffer, with
+    * Vulkan the image it is in is used as it is. */
 #ifdef HAVE_VULKAN
    if (settings.pvr.rend == 4 || settings.pvr.rend == 5)
-      theVulkanContext.SetWindowSize(screen_width, screen_height);
+      theVulkanContext.SetWindowSize(pending_width, pending_height);
 #endif
-   rend_resize(screen_width, screen_height);
+   rend_resize(pending_width, pending_height);
+   take_pending_size();
 }
 
 void retro_get_system_av_info(struct retro_system_av_info *info)

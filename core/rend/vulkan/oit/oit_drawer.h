@@ -166,6 +166,8 @@ public:
 		screenPipelineManager.reset();
 		framebuffers.clear();
 		finalColorAttachments.clear();
+		carriedPicture.reset();
+		restoredPicture = nullptr;
 		lastPicture = QuadDrawer();
 		havePicture = false;
 		OITDrawer::Term();
@@ -176,6 +178,8 @@ public:
 	{
 		havePicture = true;
 		restoredPicture = nullptr;
+		if (carriedPicture)
+			commandPool->DeferDelete(std::move(carriedPicture));
 		currentCommandBuffer.endRenderPass();
 		currentCommandBuffer.end();
 		currentCommandBuffer = nullptr;
@@ -228,6 +232,8 @@ private:
 	QuadDrawer lastPicture;
 	bool havePicture = false;	/* the image before this one holds the last frame */
 	vk::ImageView restoredPicture;	/* ...or this does: the picture kept from the context before */
+	/* ...or the image the last frame was drawn to at the size before this one (see the per-triangle screen drawer) */
+	std::unique_ptr<FramebufferAttachment> carriedPicture;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<OITPipelineManager> screenPipelineManager;
 };

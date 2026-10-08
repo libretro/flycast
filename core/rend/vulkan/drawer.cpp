@@ -593,6 +593,19 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 		 * (Upstream: a crash starting the 240p test suite.) */
 		if (commandPool != nullptr)
 		{
+			/* The image with the last frame does not go with the rest. A
+			 * game that draws part of the screen has the rest from the
+			 * last picture, and this is it: the next render starts from it
+			 * as it does from one kept across a new context, at whatever
+			 * size the screen now is - and here nothing is read back or
+			 * loaded again. It goes after the next frame. */
+			if (carriedPicture)
+				commandPool->DeferDelete(std::move(carriedPicture));
+			if (havePicture && (size_t)GetCurrentImage() < colorAttachments.size() && colorAttachments[GetCurrentImage()])
+			{
+				carriedPicture = std::move(colorAttachments[GetCurrentImage()]);
+				restoredPicture = carriedPicture->GetImageView();
+			}
 			for (auto& framebuffer : framebuffers)
 				if (framebuffer)
 					commandPool->DeferDelete(std::unique_ptr<vk::UniqueFramebuffer>(new vk::UniqueFramebuffer(std::move(framebuffer))));
@@ -751,6 +764,9 @@ void ScreenDrawer::EndRenderPass()
 {
 	havePicture = true;
 	restoredPicture = nullptr;
+	// (this frame may have drawn it: it goes when the frame is done with)
+	if (carriedPicture)
+		commandPool->DeferDelete(std::move(carriedPicture));
 	currentCommandBuffer.endRenderPass();
 	currentCommandBuffer.end();
 	currentCommandBuffer = nullptr;

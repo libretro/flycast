@@ -1202,6 +1202,7 @@ struct glesrend : Renderer
    }
 	void Resize(int w, int h) override
 	{
+		gl_carry_picture(screen_width, screen_height, w, h);
 		screen_width=w;
 		screen_height=h;
 		// the filter's own picture is made at the size there was when it was set up

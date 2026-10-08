@@ -918,6 +918,7 @@ struct gl4rend : Renderer
 	}
 	void Resize(int w, int h) override
 	{
+		gl_carry_picture(screen_width, screen_height, w, h);
 		screen_width=w;
 		screen_height=h;
 		resize(w, h);
