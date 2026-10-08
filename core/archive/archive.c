@@ -463,6 +463,35 @@ const uint8_t *archive_entry_data(archive_t *a, unsigned index, size_t *len)
    return zip_entry_data(a, index, len);
 }
 
+int archive_entry_read(archive_t *a, unsigned index, uint8_t *dst,
+      size_t dst_size, size_t *len)
+{
+   const archive_entry_t *e;
+   const uint8_t         *src;
+   size_t                 src_len = 0;
+
+   if (index >= a->num_entries)
+      return 0;
+   e = &a->entries[index];
+   if (!e->usable || e->size > (uint64_t)dst_size)
+      return 0;
+
+   /* Already to hand - in the mapping, or decoded for someone else - or
+    * a zip member, which can be decoded where it is wanted. A 7z or rar
+    * member is decoded the usual way and copied: their readers have no
+    * call for it, and a solid one is decoded with its neighbours. */
+   if (!(src = archive_entry_map(a, index, &src_len)))
+   {
+      if (a->zip)
+         return rzip_archive_extract_into(a->zip, index, dst, dst_size, len) == RZIP_OK;
+      if (!(src = archive_entry_data(a, index, &src_len)))
+         return 0;
+   }
+   memcpy(dst, src, src_len);
+   *len = src_len;
+   return 1;
+}
+
 const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len)
 {
    const archive_entry_t *e;

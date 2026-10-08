@@ -167,8 +167,43 @@ static void check_archive(const char *work, const char *arc_name,
          CHECK(map != NULL && map_len == want_len, name);
       else if (!e->stored)
          CHECK(map == NULL, name);
+      /* Read to a place of the caller's, before the archive has decoded
+       * it for anyone: the same bytes, nothing past them touched, and a
+       * place too small for them left alone. */
+      {
+         uint8_t *own = (uint8_t*)malloc(want_len + 16);
+         size_t   own_len = 0;
+
+         CHECK(own != NULL, name);
+         if (own)
+         {
+            memset(own, 0xA5, want_len + 16);
+            CHECK(archive_entry_read(a, (unsigned)idx, own, want_len, &own_len), name);
+            CHECK(own_len == want_len && !memcmp(own, want, want_len), name);
+            CHECK(own[want_len] == 0xA5 && own[want_len + 15] == 0xA5, name);
+            if (want_len)
+            {
+               memset(own, 0xA5, want_len + 16);
+               CHECK(!archive_entry_read(a, (unsigned)idx, own, want_len - 1, &own_len), name);
+               CHECK(own[0] == 0xA5 && own[want_len - 1] == 0xA5, name);
+            }
+            free(own);
+         }
+      }
       data = archive_entry_data(a, (unsigned)idx, &len);
       CHECK(data != NULL && len == want_len, name);
+      /* ...and again once it has been decoded */
+      {
+         uint8_t *own = (uint8_t*)malloc(want_len ? want_len : 1);
+         size_t   own_len = 0;
+
+         if (own)
+         {
+            CHECK(archive_entry_read(a, (unsigned)idx, own, want_len, &own_len), name);
+            CHECK(own_len == want_len && !memcmp(own, want, want_len), name);
+            free(own);
+         }
+      }
       if (data)
          CHECK(!memcmp(data, want, want_len), name);
       if (map)

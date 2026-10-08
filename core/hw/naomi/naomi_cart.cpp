@@ -35,6 +35,9 @@
 #include "gdcartridge.h"
 #include "archive/archive.h"
 #include "file/file_path.h"
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#endif
 
 Cartridge *CurrentCartridge;
 bool bios_loaded = false;
@@ -76,11 +79,11 @@ InputDescriptors *naomi_game_inputs;
 u8 *naomi_default_eeprom;
 static RotationType game_rotation = ROT0;
 
-/* The blob with CRC @crc in the first of @archives that has one, else
- * the one named @filename in the first that has it. The bytes belong to
- * that archive. */
-static const u8 *naomi_find_blob(archive_t *const *archives, int count,
-      u32 crc, const char *filename, size_t *len)
+/* Where the blob is: the one with CRC @crc in the first of @archives
+ * that has one, else the one named @filename in the first that has it.
+ * Its index, with its archive in @in; -1 if there is none. */
+static int naomi_find_member(archive_t *const *archives, int count,
+      u32 crc, const char *filename, archive_t **in)
 {
    int i;
    int idx;
@@ -88,23 +91,64 @@ static const u8 *naomi_find_blob(archive_t *const *archives, int count,
    for (i = 0; i < count; i++)
    {
       if (archives[i] && (idx = archive_find_crc(archives[i], crc)) >= 0)
-         return archive_entry_data(archives[i], (unsigned)idx, len);
+      {
+         *in = archives[i];
+         return idx;
+      }
    }
    for (i = 0; i < count; i++)
    {
       if (archives[i] && (idx = archive_find(archives[i], filename)) >= 0)
-         return archive_entry_data(archives[i], (unsigned)idx, len);
+      {
+         *in = archives[i];
+         return idx;
+      }
    }
-   return NULL;
+   return -1;
 }
 
-/* Copies @len bytes of @blob to @dst, 16-bit words swapped pairwise. */
+/* That blob's bytes, which belong to its archive. */
+static const u8 *naomi_find_blob(archive_t *const *archives, int count,
+      u32 crc, const char *filename, size_t *len)
+{
+   archive_t *in = NULL;
+   int idx = naomi_find_member(archives, count, crc, filename, &in);
+
+   return idx >= 0 ? archive_entry_data(in, (unsigned)idx, len) : NULL;
+}
+
+/* The 16-bit words of @blob (@len bytes of them) to every other word from
+ * @to on: one of the two ROMs that share an address range, a word each in
+ * turn. The words in between are the other ROM's and are left as they
+ * are. */
 static void naomi_copy_interleaved(u16 *to, const u8 *blob, u32 len)
 {
    const u16 *from = (const u16 *)blob;
-   int i;
+   int i = len / 2;
 
-   for (i = len / 2; --i >= 0; to++)
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+   /* eight words at a time: spread out with nothing between them, and
+    * put over what is there with the other ROM's words kept */
+   {
+      const __m128i zero  = _mm_setzero_si128();
+      const __m128i other = _mm_set1_epi32((int)0xFFFF0000u);
+
+      for (; i >= 8; i -= 8, from += 8, to += 16)
+      {
+         const __m128i words = _mm_loadu_si128((const __m128i *)from);
+         const __m128i low   = _mm_unpacklo_epi16(words, zero);
+         const __m128i high  = _mm_unpackhi_epi16(words, zero);
+         __m128i a = _mm_loadu_si128((const __m128i *)to);
+         __m128i b = _mm_loadu_si128((const __m128i *)(to + 8));
+
+         a = _mm_or_si128(_mm_and_si128(a, other), low);
+         b = _mm_or_si128(_mm_and_si128(b, other), high);
+         _mm_storeu_si128((__m128i *)to, a);
+         _mm_storeu_si128((__m128i *)(to + 8), b);
+      }
+   }
+#endif
+   for (; --i >= 0; to++)
       *to++ = *from++;
 }
 
@@ -195,6 +239,8 @@ error:
 static bool naomi_cart_LoadZip(const char *filename)
 {
 	char game_name[128];
+	u8 *scratch = NULL;			// for the ROMs that are spread out: see below
+	size_t scratch_size = 0;
 	strncpy(game_name, path_basename(filename), sizeof(game_name) - 1);
 	game_name[sizeof(game_name) - 1] = '\0';
 	path_remove_extension(game_name);
@@ -305,6 +351,62 @@ static bool naomi_cart_LoadZip(const char *filename)
 			size_t blob_len = 0;
 			archives[0] = archive;
 			archives[1] = parent_archive;
+			if (game->blobs[romid].blob_type == Normal)
+			{
+				/* A ROM of the cartridge: decoded straight into the
+				 * cartridge's memory when it is no longer than its place
+				 * there. It used to be decoded into a buffer of the
+				 * archive's - kept, with every other ROM's, until the set
+				 * was loaded: the whole set twice over in memory - and
+				 * copied across. */
+				archive_t *in = NULL;
+				const int idx = naomi_find_member(archives, 2, game->blobs[romid].crc,
+						game->blobs[romid].filename, &in);
+				const archive_entry_t *entry = idx >= 0 ? archive_entry(in, (unsigned)idx) : NULL;
+
+				if (entry && entry->usable && entry->size <= len)
+				{
+					u8 *dst = (u8 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
+
+					if (!archive_entry_read(in, (unsigned)idx, dst, len, &blob_len))
+					{
+						WARN_LOG(NAOMI, "%s: Cannot open %s", filename, game->blobs[romid].filename);
+						goto error;
+					}
+					DEBUG_LOG(NAOMI, "Mapped %s: %x bytes at %07x", game->blobs[romid].filename, (u32)blob_len, game->blobs[romid].offset);
+					continue;
+				}
+			}
+			if (game->blobs[romid].blob_type == InterleavedWord)
+			{
+				/* One of two ROMs that share a range: decoded into a buffer
+				 * that the next such ROM uses again - not one the archive
+				 * keeps for each until the set is loaded - and spread from
+				 * there. */
+				archive_t *in = NULL;
+				const int idx = naomi_find_member(archives, 2, game->blobs[romid].crc,
+						game->blobs[romid].filename, &in);
+				const archive_entry_t *entry = idx >= 0 ? archive_entry(in, (unsigned)idx) : NULL;
+
+				if (entry && entry->usable && entry->size <= len)
+				{
+					if (len > scratch_size)
+					{
+						free(scratch);
+						scratch = (u8 *)malloc(len);
+						scratch_size = scratch ? len : 0;
+					}
+					if (!scratch || !archive_entry_read(in, (unsigned)idx, scratch, len, &blob_len))
+					{
+						WARN_LOG(NAOMI, "%s: Cannot open %s", filename, game->blobs[romid].filename);
+						goto error;
+					}
+					u16 *to = (u16 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
+					naomi_copy_interleaved(to, scratch, (u32)blob_len);
+					DEBUG_LOG(NAOMI, "Mapped %s: %x bytes (interleaved word) at %07x", game->blobs[romid].filename, (u32)blob_len, game->blobs[romid].offset);
+					continue;
+				}
+			}
 			const u8 *blob = naomi_find_blob(archives, 2, game->blobs[romid].crc,
 					game->blobs[romid].filename, &blob_len);
 			if (!blob) {
@@ -360,6 +462,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 	if (naomi_default_eeprom == NULL && game->eeprom_dump != NULL)
 		naomi_default_eeprom = game->eeprom_dump;
 	game_rotation = game->rotation_flag;
+	free(scratch);
 	archive_close(archive);
 	archive_close(parent_archive);
 
@@ -373,6 +476,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 	return true;
 
 error:
+	free(scratch);
 	archive_close(archive);
 	archive_close(parent_archive);
 	delete CurrentCartridge;

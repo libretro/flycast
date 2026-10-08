@@ -61,6 +61,14 @@ const uint8_t *archive_entry_data(archive_t *a, unsigned index, size_t *len);
  * reading anything: a stored member of an unmapped archive is better
  * read in place at data_off than pulled into memory. */
 const uint8_t *archive_entry_map(archive_t *a, unsigned index, size_t *len);
+/* The member's bytes written to @dst, which has room for @dst_size, and
+ * their length to @len: for a member whose bytes have their own place to
+ * go to. A deflated zip member is decoded straight there - not into a
+ * buffer the archive keeps until it is closed, to be copied from. Returns
+ * 0 if the member does not fit (nothing is written), cannot be decoded or
+ * fails its checksum (@dst may then hold part of it). */
+int archive_entry_read(archive_t *a, unsigned index, uint8_t *dst,
+      size_t dst_size, size_t *len);
 /* Read-ahead hint for @len bytes at @p, when @p lies in the archive's
  * mapping; bytes already decoded into memory need none. */
 void archive_prefetch(archive_t *a, const uint8_t *p, size_t len);
