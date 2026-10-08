@@ -101,6 +101,7 @@ typedef struct vk_heap
    VkDeviceSize                     bytes_used;     /* handed out */
    vk_heap_block_t                  blocks[VK_HEAP_MAX_BLOCKS];
    unsigned                         block_count;
+   VkResult                         last_error;     /* why the last block could not be had */
 } vk_heap_t;
 
 /* block_size is what one VkDeviceMemory is; anything larger gets a block
@@ -122,9 +123,16 @@ unsigned vk_heap_reserve(vk_heap_t *heap, uint32_t type_bits,
 
 /* Finds room for something with these requirements. required is what the
  * memory must be; preferred is tried first and dropped when no memory
- * type has it or the driver has none of it left. linear is non-zero for
- * a buffer or an image with linear tiling. Returns 0 when there is no
- * room and no block could be taken. */
+ * type has it or the driver has none of it left. Every memory type that
+ * will do is tried, in that order. linear is non-zero for a buffer or an
+ * image with linear tiling.
+ *
+ * With VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT in required, out->mapped is an
+ * address: memory that could not be mapped is not handed out. Where the
+ * bit is only in preferred, or not asked for, out->mapped may be NULL.
+ *
+ * Returns 0 when there is no room and no block could be taken;
+ * heap->last_error is then what the driver last said. */
 int  vk_heap_alloc(vk_heap_t *heap, const VkMemoryRequirements *req,
       VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred,
       int linear, vk_heap_alloc_t *out);

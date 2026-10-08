@@ -80,6 +80,7 @@ public:
 	Allocation AllocateForBuffer(vk::Buffer buffer, bool hostVisible, bool readBack);
 
 private:
+	vk::Result AllocError() const;
 	Allocation Allocate(const vk::MemoryRequirements& requirements, VkMemoryPropertyFlags required,
 			VkMemoryPropertyFlags preferred, bool linear);
 

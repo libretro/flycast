@@ -22,6 +22,11 @@ static VkDeviceSize refuse_taken;
 static int frees;
 static int maps;
 
+/* A memory type whose blocks the driver will not map: -1 maps all. The
+ * stub remembers which type each of its handles came from. */
+static int           fail_map_type = -1;
+static unsigned char handle_type[256];
+
 static VkResult stub_allocate(VkDevice d, const VkMemoryAllocateInfo *ai,
       const VkAllocationCallbacks *cb, VkDeviceMemory *out)
 {
@@ -33,6 +38,7 @@ static VkResult stub_allocate(VkDevice d, const VkMemoryAllocateInfo *ai,
       refuse_taken += ai->allocationSize;
    }
    allocations++;
+   handle_type[allocations & 255] = (unsigned char)ai->memoryTypeIndex;
    *out = (VkDeviceMemory)(uintptr_t)(0x1000 + allocations);
    return VK_SUCCESS;
 }
@@ -54,6 +60,12 @@ static VkResult stub_map(VkDevice d, VkDeviceMemory m, VkDeviceSize off,
 {
    (void)d; (void)off; (void)f;
    maps++;
+   if (fail_map_type >= 0
+         && handle_type[((uintptr_t)m - 0x1000) & 255] == (unsigned char)fail_map_type)
+   {
+      *out = NULL;
+      return VK_ERROR_MEMORY_MAP_FAILED;
+   }
    *out = malloc(size == VK_WHOLE_SIZE ? (4u * 1024u * 1024u) : (size_t)size);
    if (!*out)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -435,6 +447,119 @@ int main(void)
          CHECK(!c.blocks[n].memory || c.blocks[n].span_count == 1,
                "churn: each block is one free span again");
       vk_heap_shutdown(&c);
+   }
+
+   /* A block the driver will not map. Something that asked for host
+    * visible memory as a requirement writes through the address: it gets
+    * one, from another type that will do, or it is told there is none -
+    * never a success with no address. And the block that could not be
+    * mapped goes back to the driver. */
+   {
+      VkPhysicalDeviceMemoryProperties two;
+      vk_heap_t m;
+      vk_heap_alloc_t got, got2;
+      const unsigned mapped_before = mapped_n;
+      const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+      /* one host-visible type, and it will not map */
+      CHECK(vk_heap_init(&m, (VkDevice)1, &props, &fns, 1024 * 1024, 0) != 0, "map: init");
+      fail_map_type = 1;
+      allocations = frees = 0;
+      memset(&got, 0, sizeof(got));
+      req(&r, 4096, 16, 0x3u);
+      CHECK(vk_heap_alloc(&m, &r, hv, 0, 1, &got) == 0,
+            "map: memory that cannot be mapped is not handed out as host visible");
+      CHECK(allocations == 1 && frees == 1, "map: the block that could not be mapped went back to the driver");
+      CHECK(m.bytes_reserved == 0 && m.bytes_used == 0, "map: and nothing is counted as held");
+      CHECK(m.last_error == VK_ERROR_MEMORY_MAP_FAILED, "map: the reason is the driver's");
+      CHECK(vk_heap_reserve(&m, 0x3u, hv, 0, 1, 2) == 0, "map: nor is such a block reserved");
+      vk_heap_shutdown(&m);
+
+      /* two host-visible types: the second maps */
+      memset(&two, 0, sizeof(two));
+      two.memoryHeapCount = 1;
+      two.memoryHeaps[0].size = 1024u * 1024u * 1024u;
+      two.memoryTypeCount = 3;
+      two.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+      two.memoryTypes[1].propertyFlags = hv | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+      two.memoryTypes[2].propertyFlags = hv;
+      CHECK(vk_heap_init(&m, (VkDevice)1, &two, &fns, 1024 * 1024, 0) != 0, "map: init, three types");
+      allocations = frees = 0;
+      req(&r, 4096, 16, 0x7u);
+      CHECK(vk_heap_alloc(&m, &r, hv, 0, 1, &got) != 0, "map: the next host-visible type is used");
+      CHECK(got.mapped != NULL, "map: and what it gives has an address");
+      CHECK(allocations == 2 && frees == 1, "map: the first type's block was given back");
+      CHECK(m.blocks[got.block].type == 2, "map: it is of the type that maps");
+
+      /* What never looks at the address can have the unmappable type... */
+      allocations = frees = 0;
+      req(&r, 4096, 16, 0x2u);
+      CHECK(vk_heap_alloc(&m, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 1, &got2) != 0,
+            "map: device-local memory does not need to map");
+      CHECK(got2.mapped == NULL && allocations == 1 && frees == 0, "map: it is kept, unmapped");
+      /* ...and that block is then not given to something that does. */
+      vk_heap_free(&m, &got);
+      req(&r, 512 * 1024, 16, 0x6u);
+      CHECK(vk_heap_alloc(&m, &r, hv, 0, 1, &got) != 0 && got.mapped != NULL
+            && got.block != got2.block,
+            "map: an unmapped block is passed over for host-visible use");
+      vk_heap_free(&m, &got);
+      vk_heap_free(&m, &got2);
+      fail_map_type = -1;
+      vk_heap_shutdown(&m);
+      CHECK(mapped_n == mapped_before, "map: every mapping undone");
+   }
+
+   /* Two memory types that will both do. The driver has none of the first
+    * left: the second is used, where only the first was ever tried. And
+    * room in a block there already is - of either - is taken before the
+    * driver is asked for another. */
+   {
+      VkPhysicalDeviceMemoryProperties two;
+      vk_heap_t t;
+      vk_heap_alloc_t x, y, z;
+      const VkDeviceSize mb = 1024u * 1024u;
+
+      memset(&two, 0, sizeof(two));
+      two.memoryHeapCount = 2;
+      two.memoryHeaps[0].size = 1024u * mb;
+      two.memoryHeaps[1].size = 16u * mb;       /* a small heap: its blocks are an eighth of it */
+      two.memoryTypeCount = 2;
+      two.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+      two.memoryTypes[0].heapIndex = 0;
+      two.memoryTypes[1].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+      two.memoryTypes[1].heapIndex = 1;
+      CHECK(vk_heap_init(&t, (VkDevice)1, &two, &fns, 8 * 1024 * 1024, 0) != 0, "types: init");
+
+      refuse_type  = 0;
+      refuse_after = 0;
+      refuse_taken = 0;
+      allocations  = 0;
+      req(&r, 64 * 1024, 16, 0x3u);
+      CHECK(vk_heap_alloc(&t, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &x) != 0,
+            "types: the first type refused, the second taken");
+      CHECK(t.blocks[x.block].type == 1, "types: it is the second");
+      CHECK(t.blocks[x.block].size == 2 * mb, "types: its block is an eighth of its own 16 MB heap, not 8 MB");
+
+      /* the first type gives memory again: a block of each */
+      refuse_type = -1;
+      req(&r, 4 * mb, 16, 0x1u);
+      CHECK(vk_heap_alloc(&t, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &y) != 0, "types: a block of the first");
+      allocations = 0;
+      /* too big for what is left of the first type's block; fits the second's */
+      req(&r, 1 * mb, 16, 0x3u);
+      vk_heap_free(&t, &y);
+      req(&r, 7 * mb, 16, 0x1u);
+      CHECK(vk_heap_alloc(&t, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &y) != 0, "types: most of the first's block");
+      req(&r, 1536 * 1024, 16, 0x3u);
+      CHECK(vk_heap_alloc(&t, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &z) != 0, "types: room found");
+      CHECK(allocations == 0, "types: in a block there already was, of the second type, with no new block of the first");
+      CHECK(t.blocks[z.block].type == 1, "types: (the second type's)");
+      vk_heap_free(&t, &x);
+      vk_heap_free(&t, &y);
+      vk_heap_free(&t, &z);
+      vk_heap_shutdown(&t);
    }
 
    frees = 0;

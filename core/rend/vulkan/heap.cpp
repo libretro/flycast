@@ -65,12 +65,19 @@ void VulkanHeap::Term()
 	}
 }
 
+/* Why the heap had nothing to give: what the driver said - no memory of
+ * the kind, or memory it would not map - where there is that to go by. */
+vk::Result VulkanHeap::AllocError() const
+{
+	return heap.last_error != VK_SUCCESS ? (vk::Result)heap.last_error : vk::Result::eErrorOutOfDeviceMemory;
+}
+
 Allocation VulkanHeap::Allocate(const vk::MemoryRequirements& requirements, VkMemoryPropertyFlags required,
 		VkMemoryPropertyFlags preferred, bool linear)
 {
 	vk_heap_alloc_t alloc;
 	if (!vk_heap_alloc(&heap, (const VkMemoryRequirements *)&requirements, required, preferred, linear, &alloc))
-		throwResultException(vk::Result::eErrorOutOfDeviceMemory, "vk_heap_alloc failed");
+		throwResultException(AllocError(), "vk_heap_alloc failed");
 	return Allocation(&heap, alloc);
 }
 
@@ -83,7 +90,7 @@ Allocation VulkanHeap::AllocateForImage(vk::Image image, bool linear, bool hostV
 	{
 		if (!vk_heap_alloc(&heap, (const VkMemoryRequirements *)&requirements, HOST_MEMORY,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linear, &alloc))
-			throwResultException(vk::Result::eErrorOutOfDeviceMemory, "vk_heap_alloc failed");
+			throwResultException(AllocError(), "vk_heap_alloc failed");
 	}
 	/* A transient attachment takes memory the device only backs if it has
 	 * to, where there is such a thing. */
@@ -93,7 +100,7 @@ Allocation VulkanHeap::AllocateForImage(vk::Image image, bool linear, bool hostV
 	{
 		if (!vk_heap_alloc(&heap, (const VkMemoryRequirements *)&requirements, 0,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, linear, &alloc))
-			throwResultException(vk::Result::eErrorOutOfDeviceMemory, "vk_heap_alloc failed");
+			throwResultException(AllocError(), "vk_heap_alloc failed");
 	}
 
 	Allocation allocation(&heap, alloc);
