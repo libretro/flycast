@@ -661,6 +661,192 @@ static void test_state(void)
    CHECK(ta_count == 5 && !memcmp(first, ta, sizeof(first)));
 }
 
+/* Scenes made up at random - matrices, up to four lights of every kind
+ * and routing, materials, strips of every length - and a checksum of all
+ * that the chip sends for them. The chip works most vertices out four at
+ * a time where the processor can (SSE2, 64-bit NEON) and one by one
+ * elsewhere, and the two ways have to give the same bits: run.sh builds
+ * this both ways and compares what is printed here. Within one build it
+ * checks that the same scene comes out the same when its strips start at
+ * a different vertex of the four. */
+static uint32_t rnd_state;
+
+static uint32_t rnd(void)
+{
+   rnd_state = rnd_state * 1664525u + 1013904223u;
+   return rnd_state >> 8;
+}
+
+static float rnd_float(float lo, float hi)
+{
+   return lo + (hi - lo) * ((float)(rnd() & 0xffff) * (1.0f / 65535.0f));
+}
+
+static uint32_t hash_ta(uint32_t h)
+{
+   unsigned i, k;
+   for (i = 0; i < ta_count; i++)
+      for (k = 0; k < 8; k++)
+         h = (h ^ ta[i][k]) * 16777619u;
+   return h;
+}
+
+static void put_random_scene(void)
+{
+   static struct vtx v[64];
+   uint32_t *p;
+   uint32_t a, b;       /* (two random numbers in one expression would come in an order of the compiler's choosing) */
+   unsigned i, n, polys;
+
+   put_projection(320.0f, 320.0f, -240.0f, 240.0f);
+
+   /* a model turned and scaled any way, in front of the camera - now and
+    * then close enough to be cut by the near plane */
+   p = put(40);
+   p[0] = N2(4);
+   p[1] = 0xf;
+   p[2] = 0x7f;
+   for (i = 0; i < 9; i++)
+   {
+      p[10 + i] = f2u(rnd_float(-1.0f, 1.0f) + ((i % 4) ? 0.0f : 1.0f));
+      p[26 + i] = f2u(rnd_float(-1.0f, 1.0f) + ((i % 4) ? 0.0f : 1.0f));
+   }
+   p[25] = f2u(1.0f);
+   p[35] = f2u(rnd_float(-3.0f, 3.0f));
+   p[36] = f2u(rnd_float(-3.0f, 3.0f));
+   p[37] = f2u((rnd() & 7) ? rnd_float(20.0f, 60.0f) : rnd_float(2.0f, 8.0f));
+   p[38] = f2u(1000.0f);
+
+   /* the light model: which lights, to what, and the light all round */
+   p = put(8);
+   p[0] = N2(4);
+   p[1] = 0x10 | (rnd() & 0x260);
+   a = rnd() & 0xf;
+   b = rnd() & 0xf;
+   p[2] = a | b << 16;
+   p[3] = rnd() & 0x00ffffff;
+   p[4] = (rnd() & 3) ? 0 : (rnd() & 0x003f3f3f);
+
+   for (i = 0; i < 4; i++)
+   {
+      static const uint8_t routings[] = { 0, 1, 2, 3, 8, 9, 10, 11, 0, 1, 3, 3, 4, 12 };
+      unsigned routing;
+      a = (rnd() & 15) ? 12 : 14;                 /* to alpha, rarely */
+      routing = routings[rnd() % a];
+      p = put(8);
+      p[1] = i | (rnd() & 0xffffff) << 8;
+      if (rnd() & 7)
+      {
+         /* parallel */
+         p[0] = N2(4) | (1u << 20) | (rnd() & 0xf00ff);
+         a = rnd() & 0xffffff;
+         b = rnd() % 3;
+         p[2] = a | routing << 24 | b << 28;
+      }
+      else
+      {
+         /* a point or a spot, with a place and a falling off */
+         p[0] = N2(4) | (rnd() & 0xf00ff);
+         p[1] |= (rnd() % 3) << 5;
+         a = rnd() & 0xffffff;
+         b = rnd() % 3;
+         p[2] = a | routing << 24 | b << 28;
+         p[3] = f2u(rnd_float(-9.0f, 9.0f));
+         p[4] = f2u(rnd_float(-9.0f, 9.0f));
+         p[5] = f2u(rnd_float(-9.0f, 9.0f));
+         p[6] = rnd() & 0x3fff3fff;
+         p[7] = (rnd() & 1) ? (rnd() & 0x3fff3fff) : 0;
+      }
+   }
+
+   polys = 1 + rnd() % 6;
+   for (n = 0; n < polys; n++)
+   {
+      unsigned count = 3 + rnd() % 60;
+      uint32_t first;
+
+      /* the material: whose colours, how glossy; constant now and then */
+      p = put(16);
+      p[0] = N2(5);
+      p[1] = rnd() & 0xff;
+      a = rnd() & 3;
+      b = (rnd() & 31) ? 0 : 0x200;
+      p[2] = a | b;
+      p[3] = rnd() | 0x80000000u;
+      p[4] = rnd();
+
+      for (i = 0; i < count; i++)
+      {
+         v[i].x = rnd_float(-5.0f, 5.0f);
+         v[i].y = rnd_float(-5.0f, 5.0f);
+         v[i].z = rnd_float(-5.0f, 5.0f);
+         v[i].u = rnd_float(0.0f, 4.0f);
+         v[i].v = rnd_float(0.0f, 4.0f);
+         v[i].marks = i >= 2 ? ((rnd() & 15) ? MARK_STRIP : MARK_FAN) : 0;
+         if (i >= 2 && !(rnd() % 9) && count - i > 3)
+         {
+            /* the strip ends here, another begins */
+            v[i].marks |= MARK_END;
+            v[i + 1].marks = v[i + 2].marks = 0;
+            v[i + 1].x = v[i + 1].y = v[i + 1].z = 0.5f;
+            v[i + 1].u = v[i + 1].v = 0.25f;
+            v[i + 2] = v[i + 1];
+            v[i + 2].x = -0.75f;
+            i += 2;
+         }
+      }
+      v[count - 1].marks |= MARK_END;
+      first = at + 32;
+      put_polygons((rnd() & 1) ? 0xbe : 0x0a, 0x93800000u, 0x200a246du, 0xc81ab700u, v, count);
+      /* (the next command comes straight after the last vertex) */
+      at = first + count * 24;
+      /* (normals of every direction and length) */
+      for (i = 0; i < count; i++)
+      {
+         uint32_t *w = (uint32_t *)(ram + first + i * 24);
+         *w = (*w & 0xff000000u) | (rnd() & 0x00ffffffu);
+      }
+   }
+}
+
+static void test_random_scenes(void)
+{
+   uint32_t h = 2166136261u;
+   unsigned scene;
+
+   for (scene = 0; scene < 400; scene++)
+   {
+      uint32_t from, seed, once;
+
+      rnd_state = seed = 0x1234567u + scene * 7919u;
+      start();
+      from = at;
+      put_random_scene();
+      run(from);
+      CHECK(!(elan_reg_read(0x08800074) & 0x10));
+      once = hash_ta(2166136261u);
+      h    = hash_ta(h);
+
+      /* the same again, the chip's memory an odd number of words along:
+       * nothing may depend on where a list lies */
+      rnd_state = seed;
+      start();
+      at += 0x24 * 4;
+      from = at;
+      put_random_scene();
+      run(from);
+      CHECK(hash_ta(2166136261u) == once);
+   }
+   printf("random scenes: %08x\n", h);
+   /* What they have come to on every build so far - x86-64 and 64-bit
+    * ARM, four at a time and one by one, gcc at every optimisation level
+    * (built as run.sh builds it, with -ffp-contract=off: a compiler that
+    * fuses a multiplication and an addition rounds once where this
+    * rounds twice). A change to the lighting changes it, and is then to
+    * be looked at and the number put right. */
+   CHECK(h == 0x42b247b4u);
+}
+
 int main(void)
 {
    ram = (uint8_t *)calloc(1, ELAN_RAM_SIZE);
@@ -679,6 +865,7 @@ int main(void)
    test_bad_lists();
    test_deep_links();
    test_state();
+   test_random_scenes();
 
    free(ram);
    if (failures)

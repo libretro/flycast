@@ -121,6 +121,7 @@ static float ambient[2][2][3];  /* [volume][base, offset] */
 static uint8_t ambient_material[2][2];
 static bool base_over;
 static bool any_specular[2];
+static bool lights_plain;       /* all parallel, none to alpha: four vertices can be lit at once */
 
 /* set by the model command a list is drawn under */
 static bool culling_reversed;
@@ -175,10 +176,193 @@ static INLINE uint32_t float_u32(float f)
    return c.u;
 }
 
+/* (written so that what is no number comes out as 0, which is what the
+ * vector form below makes of it) */
 static INLINE float clamp01(float v)
 {
-   return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+   return v > 0.0f ? (v < 1.0f ? v : 1.0f) : 0.0f;
 }
+
+/* @d to the power @g, for a @d above 0 and a result no higher than 1: a
+ * highlight's falloff. It is worked out here, in single precision - the
+ * logarithm from the float's own exponent and a series in
+ * (m - 1) / (m + 1), the power of two from a series and an exponent put
+ * back - and not by the C library's pow(): that one takes a quarter of
+ * the time a lit vertex takes, cannot be done four at a time, and gives
+ * different last bits from one C library to the next. This is right to
+ * some 2 parts in 10 million, where a colour has 256 levels.
+ *
+ * pow01_4() below is the same operations in the same order on four at
+ * once, and gives the same bits. */
+#define POW_SQRT2  1.41421356f
+#define POW_C1     2.88539008f      /* 2 / ln 2, then over 3, 5, 7, 9 */
+#define POW_C3     0.961796694f
+#define POW_C5     0.577078016f
+#define POW_C7     0.412198583f
+#define POW_C9     0.320598898f
+#define POW_LN2    0.693147181f
+#define POW_E2     0.5f             /* 1 / n! */
+#define POW_E3     0.166666667f
+#define POW_E4     0.0416666667f
+#define POW_E5     0.00833333333f
+#define POW_E6     0.00138888889f
+
+static INLINE float pow01(float d, float g)
+{
+   uint32_t bits = float_u32(d);
+   int      e    = (int)((bits >> 23) & 0xff) - 127;
+   float    m    = u32_float((bits & 0x007fffffu) | 0x3f800000u);
+   float    t, t2, lg, y, f, u, p;
+   int      k;
+
+   if (m > POW_SQRT2)
+   {
+      m *= 0.5f;
+      e += 1;
+   }
+   t  = (m - 1.0f) / (m + 1.0f);
+   t2 = t * t;
+   lg = (float)e + t * (POW_C1 + t2 * (POW_C3 + t2 * (POW_C5 + t2 * (POW_C7 + t2 * POW_C9))));
+
+   y = g * lg;
+   if (y > 0.0f)
+      y = 0.0f;
+   if (!(y > -125.0f))
+      y = -125.0f;
+   k = (int)(y - 0.5f);
+   f = y - (float)k;
+   u = f * POW_LN2;
+   p = 1.0f + u * (1.0f + u * (POW_E2 + u * (POW_E3 + u * (POW_E4 + u * (POW_E5 + u * POW_E6)))));
+   return p * u32_float((uint32_t)(k + 127) << 23);
+}
+
+/* ---- four at a time ----
+ *
+ * SSE2, or the NEON of a 64-bit ARM (the 32-bit one has no division or
+ * square root); elsewhere, and with ELAN_NO_SIMD, vertices are done one
+ * by one. Each operation below is the one the scalar code does, on four
+ * values: the two give the same bits, as long as the compiler does not
+ * rearrange either (tools/elan builds both and compares). */
+#if !defined(ELAN_NO_SIMD) && (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#include <emmintrin.h>
+#define ELAN_SIMD 1
+typedef __m128  vf4;
+typedef __m128  vm4;       /* a comparison's result */
+typedef __m128i vi4;
+#define VF_SET1(x)        _mm_set1_ps(x)
+#define VF_LOAD(p)        _mm_loadu_ps(p)
+#define VF_STORE(p, v)    _mm_storeu_ps(p, v)
+#define VF_ADD(a, b)      _mm_add_ps(a, b)
+#define VF_SUB(a, b)      _mm_sub_ps(a, b)
+#define VF_MUL(a, b)      _mm_mul_ps(a, b)
+#define VF_DIV(a, b)      _mm_div_ps(a, b)
+#define VF_SQRT(a)        _mm_sqrt_ps(a)
+#define VF_GT(a, b)       _mm_cmpgt_ps(a, b)
+#define VF_SELECT(m, a, b) _mm_or_ps(_mm_and_ps(m, a), _mm_andnot_ps(m, b))
+#define VF_ABS(a)         _mm_andnot_ps(_mm_set1_ps(-0.0f), a)
+#define VF_NEG(a)         _mm_xor_ps(_mm_set1_ps(-0.0f), a)
+#define VI_SET1(x)        _mm_set1_epi32(x)
+#define VI_ADD(a, b)      _mm_add_epi32(a, b)
+#define VI_SUB(a, b)      _mm_sub_epi32(a, b)
+#define VI_AND(a, b)      _mm_and_si128(a, b)
+#define VI_OR(a, b)       _mm_or_si128(a, b)
+#define VI_SHR(a, n)      _mm_srli_epi32(a, n)
+#define VI_SHL(a, n)      _mm_slli_epi32(a, n)
+#define VI_FROM_MASK(m)   _mm_castps_si128(m)          /* -1 where true */
+#define VF_BITS(a)        _mm_castps_si128(a)
+#define VI_FLOAT_BITS(a)  _mm_castsi128_ps(a)
+#define VI_TO_FLOAT(a)    _mm_cvtepi32_ps(a)
+#define VF_TRUNC(a)       _mm_cvttps_epi32(a)
+#elif !defined(ELAN_NO_SIMD) && (defined(__aarch64__) || defined(_M_ARM64))
+#include <arm_neon.h>
+#define ELAN_SIMD 1
+typedef float32x4_t vf4;
+typedef uint32x4_t  vm4;
+typedef int32x4_t   vi4;
+#define VF_SET1(x)        vdupq_n_f32(x)
+#define VF_LOAD(p)        vld1q_f32(p)
+#define VF_STORE(p, v)    vst1q_f32(p, v)
+#define VF_ADD(a, b)      vaddq_f32(a, b)
+#define VF_SUB(a, b)      vsubq_f32(a, b)
+#define VF_MUL(a, b)      vmulq_f32(a, b)
+#define VF_DIV(a, b)      vdivq_f32(a, b)
+#define VF_SQRT(a)        vsqrtq_f32(a)
+#define VF_GT(a, b)       vcgtq_f32(a, b)
+#define VF_SELECT(m, a, b) vbslq_f32(m, a, b)
+#define VF_ABS(a)         vabsq_f32(a)
+#define VF_NEG(a)         vnegq_f32(a)
+#define VI_SET1(x)        vdupq_n_s32(x)
+#define VI_ADD(a, b)      vaddq_s32(a, b)
+#define VI_SUB(a, b)      vsubq_s32(a, b)
+#define VI_AND(a, b)      vandq_s32(a, b)
+#define VI_OR(a, b)       vorrq_s32(a, b)
+#define VI_SHR(a, n)      vreinterpretq_s32_u32(vshrq_n_u32(vreinterpretq_u32_s32(a), n))
+#define VI_SHL(a, n)      vshlq_n_s32(a, n)
+#define VI_FROM_MASK(m)   vreinterpretq_s32_u32(m)
+#define VF_BITS(a)        vreinterpretq_s32_f32(a)
+#define VI_FLOAT_BITS(a)  vreinterpretq_f32_s32(a)
+#define VI_TO_FLOAT(a)    vcvtq_f32_s32(a)
+#define VF_TRUNC(a)       vcvtq_s32_f32(a)
+#endif
+
+#ifdef ELAN_SIMD
+/* Four whole numbers that are a colour's red, green, blue and alpha, as
+ * the PowerVR has it in a word. */
+static INLINE uint32_t vi_argb(vi4 i)
+{
+#if defined(__aarch64__) || defined(_M_ARM64)
+   return ((uint32_t)vgetq_lane_s32(i, 3) << 24) | ((uint32_t)vgetq_lane_s32(i, 0) << 16)
+        | ((uint32_t)vgetq_lane_s32(i, 1) << 8)  |  (uint32_t)vgetq_lane_s32(i, 2);
+#else
+   i = _mm_shuffle_epi32(i, _MM_SHUFFLE(3, 0, 1, 2));
+   i = _mm_packs_epi32(i, i);
+   i = _mm_packus_epi16(i, i);
+   return (uint32_t)_mm_cvtsi128_si32(i);
+#endif
+}
+
+static INLINE vf4 clamp01_4(vf4 v)
+{
+   vf4 zero = VF_SET1(0.0f);
+   vf4 one  = VF_SET1(1.0f);
+   return VF_SELECT(VF_GT(v, zero), VF_SELECT(VF_GT(one, v), v, one), zero);
+}
+
+static INLINE vf4 pow01_4(vf4 d, vf4 g)
+{
+   vi4 bits = VF_BITS(d);
+   vi4 e    = VI_SUB(VI_AND(VI_SHR(bits, 23), VI_SET1(0xff)), VI_SET1(127));
+   vf4 m    = VI_FLOAT_BITS(VI_OR(VI_AND(bits, VI_SET1(0x007fffff)), VI_SET1(0x3f800000)));
+   vm4 big  = VF_GT(m, VF_SET1(POW_SQRT2));
+   vf4 one  = VF_SET1(1.0f);
+   vf4 t, t2, lg, y, f, u, p;
+   vi4 k;
+
+   m  = VF_SELECT(big, VF_MUL(m, VF_SET1(0.5f)), m);
+   e  = VI_SUB(e, VI_FROM_MASK(big));
+   t  = VF_DIV(VF_SUB(m, one), VF_ADD(m, one));
+   t2 = VF_MUL(t, t);
+   p  = VF_ADD(VF_SET1(POW_C7), VF_MUL(t2, VF_SET1(POW_C9)));
+   p  = VF_ADD(VF_SET1(POW_C5), VF_MUL(t2, p));
+   p  = VF_ADD(VF_SET1(POW_C3), VF_MUL(t2, p));
+   p  = VF_ADD(VF_SET1(POW_C1), VF_MUL(t2, p));
+   lg = VF_ADD(VI_TO_FLOAT(e), VF_MUL(t, p));
+
+   y = VF_MUL(g, lg);
+   y = VF_SELECT(VF_GT(y, VF_SET1(0.0f)), VF_SET1(0.0f), y);
+   y = VF_SELECT(VF_GT(y, VF_SET1(-125.0f)), y, VF_SET1(-125.0f));
+   k = VF_TRUNC(VF_SUB(y, VF_SET1(0.5f)));
+   f = VF_SUB(y, VI_TO_FLOAT(k));
+   u = VF_MUL(f, VF_SET1(POW_LN2));
+   p = VF_ADD(VF_SET1(POW_E5), VF_MUL(u, VF_SET1(POW_E6)));
+   p = VF_ADD(VF_SET1(POW_E4), VF_MUL(u, p));
+   p = VF_ADD(VF_SET1(POW_E3), VF_MUL(u, p));
+   p = VF_ADD(VF_SET1(POW_E2), VF_MUL(u, p));
+   p = VF_ADD(one, VF_MUL(u, p));
+   p = VF_ADD(one, VF_MUL(u, p));
+   return VF_MUL(p, VI_FLOAT_BITS(VI_SHL(VI_ADD(k, VI_SET1(127)), 23)));
+}
+#endif
 
 static INLINE float sqrt_float(float v)
 {
@@ -200,10 +384,14 @@ static void unpack_color(uint32_t argb, float *c)
 /* To the nearest of the 256 levels a PowerVR vertex colour has. */
 static INLINE uint32_t pack_color(const float *c)
 {
+#ifdef ELAN_SIMD
+   return vi_argb(VF_TRUNC(VF_ADD(VF_MUL(clamp01_4(VF_LOAD(c)), VF_SET1(255.0f)), VF_SET1(0.5f))));
+#else
    return (uint32_t)(clamp01(c[3]) * 255.0f + 0.5f) << 24
         | (uint32_t)(clamp01(c[0]) * 255.0f + 0.5f) << 16
         | (uint32_t)(clamp01(c[1]) * 255.0f + 0.5f) << 8
         | (uint32_t)(clamp01(c[2]) * 255.0f + 0.5f);
+#endif
 }
 
 static INLINE float dot3(const float *a, const float *b)
@@ -315,6 +503,7 @@ static void update_lights(void)
    light_count = 0;
    bump_light = -1;
    any_specular[0] = any_specular[1] = false;
+   lights_plain = true;
    have_light_model = st.light_model != ELAN_NONE && st.light_model <= ELAN_RAM_SIZE - 32;
    if (!have_light_model)
    {
@@ -400,6 +589,8 @@ static void update_lights(void)
          bump_light = light_count;
       any_specular[0] |= l->specular[0];
       any_specular[1] |= l->specular[1];
+      if (!l->parallel || (l->routing & ROUTING_ALPHA))
+         lights_plain = false;
       light_count++;
    }
 }
@@ -516,7 +707,7 @@ static void light_vertex(float *base, float *offset, int vol, const float *pos, 
             if (l->smode == LMODE_DOUBLE_SIDED)
                d = (float)fabs((double)d);
             if (d > 0.0f)
-               factor *= clamp01((float)pow((double)d, (double)gloss[vol]));
+               factor *= clamp01(pow01(d, gloss[vol]));
             else
                factor *= gloss[vol] == 0.0f ? 1.0f : 0.0f;    /* pow(0, gloss) */
          }
@@ -962,6 +1153,244 @@ static void make_vertex(elan_vtx_t *v, const uint8_t *src)
    }
 }
 
+#ifdef ELAN_SIMD
+/* a + b + c in the order dot3() adds them */
+#define VF_DOT3(a0, a1, a2, b0, b1, b2) \
+   VF_ADD(VF_ADD(VF_MUL(a0, b0), VF_MUL(a1, b1)), VF_MUL(a2, b2))
+
+/* make_vertex() for four vertices at once, for the polygons nearly all
+ * are: one volume, positions with packed normals and maybe texture
+ * coordinates, lit by parallel lights. One value of each vertex to a
+ * lane; every operation is make_vertex()'s and light_vertex()'s, in
+ * their order, so that a vertex comes out the same whichever way it was
+ * done - a strip's last few go the one-by-one way. */
+static void make_vertices4(elan_vtx_t *out4, const uint8_t *src, unsigned size)
+{
+   float fx[4], fy[4], fz[4], fnx[4], fny[4], fnz[4];
+   float base[4], offset[4];
+   float tr[6][4];
+   vf4 x, y, z, px, py, pz, n0, n1, n2, r0, r1, r2, l, inv;
+   vf4 br, bg, bb, fr, fg, fb;         /* the colours the lights work on: base, offset */
+   vf4 dr, dg, db, sr, sg, sb;         /* what they add up to */
+   vf4 zero = VF_SET1(0.0f);
+   vf4 one  = VF_SET1(1.0f);
+   vm4 m;
+   int i, k;
+
+   for (k = 0; k < 4; k++)
+   {
+      const uint8_t  *s = src + k * size;
+      const uint32_t *w = (const uint32_t *)s;
+      fx[k]  = u32_float(w[1]);
+      fy[k]  = u32_float(w[2]);
+      fz[k]  = u32_float(w[3]);
+      fnx[k] = (float)(signed char)(w[0] & 0xff) * (1.0f / 127.0f);
+      fny[k] = (float)(signed char)((w[0] >> 8) & 0xff) * (1.0f / 127.0f);
+      fnz[k] = (float)(signed char)((w[0] >> 16) & 0xff) * (1.0f / 127.0f);
+      if (poly.flags & VTX_UV)
+      {
+         out4[k].uv[0][0] = u32_float(*(const uint32_t *)(s + poly.uv_at));
+         out4[k].uv[0][1] = u32_float(*(const uint32_t *)(s + poly.uv_at + 4));
+      }
+      else
+         out4[k].uv[0][0] = out4[k].uv[0][1] = 0.0f;
+   }
+
+   /* to the camera's space */
+   x = VF_LOAD(fx);
+   y = VF_LOAD(fy);
+   z = VF_LOAD(fz);
+   px = VF_ADD(VF_DOT3(VF_SET1(mat[0]), VF_SET1(mat[1]), VF_SET1(mat[2]), x, y, z), VF_SET1(mat[3]));
+   py = VF_ADD(VF_DOT3(VF_SET1(mat[4]), VF_SET1(mat[5]), VF_SET1(mat[6]), x, y, z), VF_SET1(mat[7]));
+   pz = VF_ADD(VF_DOT3(VF_SET1(mat[8]), VF_SET1(mat[9]), VF_SET1(mat[10]), x, y, z), VF_SET1(mat[11]));
+   VF_STORE(fx, px);
+   VF_STORE(fy, py);
+   VF_STORE(fz, pz);
+   /* (the lights' space has x and z the other way) */
+   px = VF_NEG(px);
+   pz = VF_NEG(pz);
+
+   /* the normal, to the lights' space and to length 1 */
+   x  = VF_LOAD(fnx);
+   y  = VF_LOAD(fny);
+   z  = VF_LOAD(fnz);
+   n0 = VF_DOT3(VF_SET1(nmat[0]), VF_SET1(nmat[1]), VF_SET1(nmat[2]), x, y, z);
+   n1 = VF_DOT3(VF_SET1(nmat[3]), VF_SET1(nmat[4]), VF_SET1(nmat[5]), x, y, z);
+   n2 = VF_DOT3(VF_SET1(nmat[6]), VF_SET1(nmat[7]), VF_SET1(nmat[8]), x, y, z);
+   l   = VF_DOT3(n0, n1, n2, n0, n1, n2);
+   m   = VF_GT(l, zero);
+   inv = VF_DIV(one, VF_SQRT(l));
+   n0  = VF_SELECT(m, VF_MUL(n0, inv), n0);
+   n1  = VF_SELECT(m, VF_MUL(n1, inv), n1);
+   n2  = VF_SELECT(m, VF_MUL(n2, inv), n2);
+
+   /* the colours: white and none, or the model's */
+   base[0] = base[1] = base[2] = base[3] = 1.0f;
+   offset[0] = offset[1] = offset[2] = offset[3] = 0.0f;
+   if (cur_gmp)
+   {
+      if (cur_gmp[2] & 1u)
+         memcpy(base, gmp_col[0][0], 4 * sizeof(float));
+      if (cur_gmp[2] & 2u)
+         memcpy(offset, gmp_col[0][1], 4 * sizeof(float));
+   }
+   br = VF_SET1(base[0]);
+   bg = VF_SET1(base[1]);
+   bb = VF_SET1(base[2]);
+   fr = VF_SET1(offset[0]);
+   fg = VF_SET1(offset[1]);
+   fb = VF_SET1(offset[2]);
+
+   if (any_specular[0])
+   {
+      /* the view direction mirrored in the surface */
+      vf4 v0, v1, v2, d;
+      l   = VF_DOT3(px, py, pz, px, py, pz);
+      m   = VF_GT(l, zero);
+      inv = VF_DIV(one, VF_SQRT(l));
+      v0  = VF_SELECT(m, VF_MUL(px, inv), px);
+      v1  = VF_SELECT(m, VF_MUL(py, inv), py);
+      v2  = VF_SELECT(m, VF_MUL(pz, inv), pz);
+      d   = VF_MUL(VF_SET1(2.0f), VF_DOT3(n0, n1, n2, v0, v1, v2));
+      r0  = VF_SUB(v0, VF_MUL(d, n0));
+      r1  = VF_SUB(v1, VF_MUL(d, n1));
+      r2  = VF_SUB(v2, VF_MUL(d, n2));
+   }
+   else
+      r0 = r1 = r2 = zero;
+
+   dr = dg = db = zero;
+   sr = sg = sb = zero;
+   for (i = 0; i < light_count; i++)
+   {
+      const elan_light_t *lt = &lights[i];
+      vf4 d0, d1, d2, cr, cg, cb;
+
+      if (!(lt->diffuse[0] | lt->specular[0]))
+         continue;
+      d0 = VF_SET1(lt->dir[0]);
+      d1 = VF_SET1(lt->dir[1]);
+      d2 = VF_SET1(lt->dir[2]);
+      cr = VF_SET1(lt->color[0]);
+      cg = VF_SET1(lt->color[1]);
+      cb = VF_SET1(lt->color[2]);
+
+      if (lt->diffuse[0])
+      {
+         vf4 factor = VF_SET1((lt->routing & ROUTING_SUB) ? -2.0f : 2.0f);
+         if (lt->dmode == LMODE_SINGLE_SIDED)
+         {
+            vf4 d = VF_DOT3(n0, n1, n2, d0, d1, d2);
+            factor = VF_MUL(factor, VF_SELECT(VF_GT(d, zero), d, zero));
+         }
+         else if (lt->dmode == LMODE_DOUBLE_SIDED)
+            factor = VF_MUL(factor, VF_ABS(VF_DOT3(n0, n1, n2, d0, d1, d2)));
+
+         if (lt->routing & ROUTING_DIFF_TO_OFFSET)
+         {
+            sr = VF_ADD(sr, VF_MUL(VF_MUL(cr, factor), br));
+            sg = VF_ADD(sg, VF_MUL(VF_MUL(cg, factor), bg));
+            sb = VF_ADD(sb, VF_MUL(VF_MUL(cb, factor), bb));
+         }
+         else
+         {
+            dr = VF_ADD(dr, VF_MUL(VF_MUL(cr, factor), br));
+            dg = VF_ADD(dg, VF_MUL(VF_MUL(cg, factor), bg));
+            db = VF_ADD(db, VF_MUL(VF_MUL(cb, factor), bb));
+         }
+      }
+      if (lt->specular[0])
+      {
+         vf4 factor = VF_SET1((lt->routing & ROUTING_SUB) ? -2.0f : 2.0f);
+         if (lt->smode <= LMODE_DOUBLE_SIDED)
+         {
+            vf4 d = VF_DOT3(d0, d1, d2, r0, r1, r2);
+            if (lt->smode == LMODE_DOUBLE_SIDED)
+               d = VF_ABS(d);
+            factor = VF_MUL(factor, VF_SELECT(VF_GT(d, zero),
+                     clamp01_4(pow01_4(d, VF_SET1(gloss[0]))),
+                     VF_SET1(gloss[0] == 0.0f ? 1.0f : 0.0f)));
+         }
+         if (lt->routing & ROUTING_SPEC_TO_OFFSET)
+         {
+            sr = VF_ADD(sr, VF_MUL(VF_MUL(cr, factor), fr));
+            sg = VF_ADD(sg, VF_MUL(VF_MUL(cg, factor), fg));
+            sb = VF_ADD(sb, VF_MUL(VF_MUL(cb, factor), fb));
+         }
+         else
+         {
+            dr = VF_ADD(dr, VF_MUL(VF_MUL(cr, factor), fr));
+            dg = VF_ADD(dg, VF_MUL(VF_MUL(cg, factor), fg));
+            db = VF_ADD(db, VF_MUL(VF_MUL(cb, factor), fb));
+         }
+      }
+   }
+
+   /* the light from all round */
+   if (ambient_material[0][0])
+   {
+      dr = VF_ADD(dr, VF_MUL(VF_SET1(ambient[0][0][0]), br));
+      dg = VF_ADD(dg, VF_MUL(VF_SET1(ambient[0][0][1]), bg));
+      db = VF_ADD(db, VF_MUL(VF_SET1(ambient[0][0][2]), bb));
+   }
+   else
+   {
+      dr = VF_ADD(dr, VF_SET1(ambient[0][0][0]));
+      dg = VF_ADD(dg, VF_SET1(ambient[0][0][1]));
+      db = VF_ADD(db, VF_SET1(ambient[0][0][2]));
+   }
+   if (ambient_material[0][1])
+   {
+      sr = VF_ADD(sr, VF_MUL(VF_SET1(ambient[0][1][0]), fr));
+      sg = VF_ADD(sg, VF_MUL(VF_SET1(ambient[0][1][1]), fg));
+      sb = VF_ADD(sb, VF_MUL(VF_SET1(ambient[0][1][2]), fb));
+   }
+   else
+   {
+      sr = VF_ADD(sr, VF_SET1(ambient[0][1][0]));
+      sg = VF_ADD(sg, VF_SET1(ambient[0][1][1]));
+      sb = VF_ADD(sb, VF_SET1(ambient[0][1][2]));
+   }
+
+   /* (no light goes to alpha here: the sums added to it are nothing) */
+   base[3]   += 0.0f;
+   offset[3] += 0.0f;
+   if (base_over)
+   {
+      /* light the base colour has no room for goes to the offset colour */
+      sr = VF_SELECT(VF_GT(dr, one), VF_ADD(sr, VF_SUB(dr, one)), sr);
+      sg = VF_SELECT(VF_GT(dg, one), VF_ADD(sg, VF_SUB(dg, one)), sg);
+      sb = VF_SELECT(VF_GT(db, one), VF_ADD(sb, VF_SUB(db, one)), sb);
+      if (base[3] > 1.0f)
+         offset[3] += base[3] - 1.0f;
+   }
+   VF_STORE(tr[0], clamp01_4(dr));
+   VF_STORE(tr[1], clamp01_4(dg));
+   VF_STORE(tr[2], clamp01_4(db));
+   VF_STORE(tr[3], clamp01_4(sr));
+   VF_STORE(tr[4], clamp01_4(sg));
+   VF_STORE(tr[5], clamp01_4(sb));
+   base[3]   = clamp01(base[3]);
+   offset[3] = clamp01(offset[3]);
+
+   for (k = 0; k < 4; k++)
+   {
+      elan_vtx_t *v = &out4[k];
+      v->x = fx[k];
+      v->y = fy[k];
+      v->z = fz[k];
+      v->col[0][0][0] = tr[0][k];
+      v->col[0][0][1] = tr[1][k];
+      v->col[0][0][2] = tr[2][k];
+      v->col[0][0][3] = base[3];
+      v->col[0][1][0] = tr[3][k];
+      v->col[0][1][1] = tr[4][k];
+      v->col[0][1][2] = tr[5][k];
+      v->col[0][1][3] = offset[3];
+   }
+}
+#endif
+
 static unsigned vertex_size(unsigned flags)
 {
    switch (flags)
@@ -1119,6 +1548,10 @@ static void polygon_list(const uint32_t *ich, const uint8_t *vtx, unsigned size)
    elan_vtx_t buf[2];
    const elan_vtx_t *last;
    uint32_t *p;
+#ifdef ELAN_SIMD
+   elan_vtx_t fours[2][4];
+   bool by_four;
+#endif
 
    list = elan_host_ta_list();
    if (list < 0)
@@ -1223,6 +1656,17 @@ static void polygon_list(const uint32_t *ich, const uint8_t *vtx, unsigned size)
 
    memset(buf, 0, sizeof(buf));
    memset(&center, 0, sizeof(center));
+#ifdef ELAN_SIMD
+   /* The usual kind of polygon has its vertices worked out four at a
+    * time. Two lots of four are kept, so that the vertex before the one
+    * in hand is still there when a new four is begun. */
+   by_four = count >= 4
+      && !poly.two_volumes && !poly.bump && !poly.env[0] && !poly.env[1]
+      && !poly.constant[0] && !(flags & (VTX_NORMAL | VTX_RGB))
+      && have_light_model && lights_plain;
+   if (by_four)
+      memset(fours, 0, sizeof(fours));
+#endif
    strip_start = true;
    last = NULL;
    strip_total = 0;
@@ -1230,9 +1674,31 @@ static void polygon_list(const uint32_t *ich, const uint8_t *vtx, unsigned size)
    for (i = 0, v = vtx; i < count; i++, v += size)
    {
       uint32_t header = *(const uint32_t *)v;
-      elan_vtx_t *cur = &buf[i & 1];
+      elan_vtx_t *cur;
 
-      make_vertex(cur, v);
+#ifdef ELAN_SIMD
+      if (by_four)
+      {
+         elan_vtx_t *four = fours[(i >> 2) & 1];
+         if (!(i & 3))
+         {
+            if (count - i >= 4)
+               make_vertices4(four, v, size);
+            else
+            {
+               unsigned k;
+               for (k = 0; k < count - i; k++)
+                  make_vertex(&four[k], v + k * size);
+            }
+         }
+         cur = &four[i & 3];
+      }
+      else
+#endif
+      {
+         cur = &buf[i & 1];
+         make_vertex(cur, v);
+      }
       if (strip_start)
       {
          clip_start();
