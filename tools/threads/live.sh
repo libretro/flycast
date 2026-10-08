@@ -253,19 +253,29 @@ PY
    fi
 
    echo "== $DRV: fullscreen and back while running"
-   # The frontend destroys the context and makes another, three times, the
-   # later ones while the disc renders only part of its screen. What the
+   # The frontend destroys the context and makes another, three times, once
+   # the disc has said it renders only part of its screen. What the
    # core had on the graphics card goes with it - the textures, what the
    # disc rendered to textures and never looked at again, and the part of
    # the picture the disc is no longer rendering - and the picture has to
    # come out right all the same.
    rm -rf "$WORK/states" "$WORK/saves"
    mkdir -p "$WORK/states" "$WORK/saves"
-   python3 - <<'PY' &
-import socket, time
+   rm -f "$WORK/$DRV-fs.log"
+   python3 - "$WORK/$DRV-fs.log" <<'PY' &
+import socket, sys, time
+# Wait for the disc's sign that it is rendering its screen in part (see
+# live_prog.c): the toggles are to fall there, whatever the renderer's speed.
+while True:
+    try:
+        if b"ReadMem_aica_rtc : invalid address" in open(sys.argv[1], "rb").read():
+            break
+    except OSError:
+        pass
+    time.sleep(0.2)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-for wait in (5, 4, 4):
-    time.sleep(wait)
+for n in range(3):
+    time.sleep(1 if n == 0 else 3)
     s.sendto(b"FULLSCREEN_TOGGLE", ("127.0.0.1", 55355))
 PY
    POKE=$!
@@ -363,11 +373,21 @@ for DRV in $PIXEL_DRIVERS; do
    echo "== $DRV: the per-pixel renderer, fullscreen and back while running"
    rm -rf "$WORK/states" "$WORK/saves"
    mkdir -p "$WORK/states" "$WORK/saves"
-   python3 - <<'PY' &
-import socket, time
+   rm -f "$WORK/$DRV-pixel-fs.log"
+   python3 - "$WORK/$DRV-pixel-fs.log" <<'PY' &
+import socket, sys, time
+# Wait for the disc's sign that it is rendering its screen in part (see
+# live_prog.c): the toggles are to fall there, whatever the renderer's speed.
+while True:
+    try:
+        if b"ReadMem_aica_rtc : invalid address" in open(sys.argv[1], "rb").read():
+            break
+    except OSError:
+        pass
+    time.sleep(0.2)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-for wait in (5, 4, 4):
-    time.sleep(wait)
+for n in range(3):
+    time.sleep(1 if n == 0 else 3)
     s.sendto(b"FULLSCREEN_TOGGLE", ("127.0.0.1", 55355))
 PY
    POKE=$!

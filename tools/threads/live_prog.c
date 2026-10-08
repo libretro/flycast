@@ -1595,6 +1595,12 @@ void cmain(void)
             scene_in_part = frame >= 260;
             if (scene_in_part)
                PVR(0x68) = 199 << 16;                  /* FB_X_CLIP: 0..199 */
+            /* A sign, for a test that has to do something once the screen
+             * is being rendered in part and cannot see how far the program
+             * has got: the clock has no register at this address, and the core says
+             * so in its log. Nothing else comes of the read. */
+            if (frame == 262)
+               (void)*(volatile unsigned char *)0xA0710001;
          }
          PVR(0x144) = 0x80000000;                      /* TA_LIST_INIT */
          if (frame >= 64)
