@@ -716,7 +716,7 @@ static void reios_boot()
 			reios_setup_state(0xac008300);
 		}
 		else {
-			verify(settings.System == DC_PLATFORM_NAOMI);
+			verify(SYSTEM_IS_NAOMI());
 			if (CurrentCartridge == NULL)
 			{
 				WARN_LOG(REIOS, "No cartridge loaded");

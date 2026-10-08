@@ -120,7 +120,7 @@ static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archi
 	}
 
 	MemChip *rom_chip;
-	if (settings.System == DC_PLATFORM_NAOMI)
+	if (SYSTEM_IS_NAOMI())
 	   rom_chip = &sys_rom;
 	else
 	   rom_chip = &sys_nvmem_flash;
@@ -384,8 +384,20 @@ int naomi_cart_GetSystemType(const char* file)
 	const char *ext = path_get_extension(file);
 
    if (strcasecmp(ext, "zip") && strcasecmp(ext, "7z"))
-	  // Not a ZIP or 7z file so it has to be a Naomi game
-	  return DC_PLATFORM_NAOMI;
+   {
+	  // Not a ZIP or 7z file so it has to be a Naomi game: the board it
+	  // is for is the first thing in its header
+	  char board[8];
+	  int system = DC_PLATFORM_NAOMI;
+	  RFILE *fp = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	  if (fp)
+	  {
+		 if (filestream_read(fp, board, 6) == 6 && !memcmp(board, "Naomi2", 6))
+			system = DC_PLATFORM_NAOMI2;
+		 filestream_close(fp);
+	  }
+	  return system;
+   }
 
 	char game_name[128];
 	strncpy(game_name, path_basename(file), sizeof(game_name) - 1);
@@ -462,11 +474,12 @@ static bool naomi_cart_LoadRom(const char* file)
 	if (!strcasecmp(ext, "zip")	|| !strcasecmp(ext, "7z"))
 		return naomi_cart_LoadZip(file);
 
-	// Try to load BIOS from naomi.zip
-	if (!naomi_LoadBios("naomi", NULL, NULL, settings.dreamcast.region))
+	// Try to load BIOS from naomi.zip, or naomi2.zip for a NAOMI 2
+	const char *bios = settings.System == DC_PLATFORM_NAOMI2 ? "naomi2" : "naomi";
+	if (!naomi_LoadBios(bios, NULL, NULL, settings.dreamcast.region))
 	{
-		WARN_LOG(NAOMI, "Warning: Region %d bios not found in naomi.zip", settings.dreamcast.region);
-	   if (!naomi_LoadBios("naomi", NULL, NULL, -1))
+		WARN_LOG(NAOMI, "Warning: Region %d bios not found in %s.zip", settings.dreamcast.region, bios);
+	   if (!naomi_LoadBios(bios, NULL, NULL, -1))
 	   {
 		  if (!bios_loaded)
 		  {

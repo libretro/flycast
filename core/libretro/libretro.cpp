@@ -412,7 +412,7 @@ static void set_variable_visibility(void)
    unsigned i;
 
    /* Show/hide NAOMI/Atomiswave options */
-   option_display.visible = ((settings.System == DC_PLATFORM_NAOMI) ||
+   option_display.visible = (SYSTEM_IS_NAOMI() ||
                              (settings.System == DC_PLATFORM_ATOMISWAVE));
 
    option_display.key = CORE_OPTION_NAME "_allow_service_buttons";
@@ -1464,6 +1464,7 @@ static uint32_t map_gamepad_button(unsigned device, unsigned id)
 	  break;
 
    case DC_PLATFORM_NAOMI:
+   case DC_PLATFORM_NAOMI2:
 	  switch (device)
 	  {
 	  case RETRO_DEVICE_JOYPAD:
@@ -1503,7 +1504,7 @@ static uint32_t map_gamepad_button(unsigned device, unsigned id)
 	  return 0;
    uint32_t mapped = joymap[id];
    // Hack to bind Button 9 instead of Service when not used
-   if (id == RETRO_DEVICE_ID_JOYPAD_R3 && device == RETRO_DEVICE_JOYPAD && settings.System == DC_PLATFORM_NAOMI && !allow_service_buttons)
+   if (id == RETRO_DEVICE_ID_JOYPAD_R3 && device == RETRO_DEVICE_JOYPAD && SYSTEM_IS_NAOMI() && !allow_service_buttons)
 	  mapped = NAOMI_BTN8_KEY;
    return mapped;
 }
@@ -1535,7 +1536,7 @@ static void set_input_descriptors()
 {
    struct retro_input_descriptor desc[22 * 4 + 1];
    int descriptor_index = 0;
-   if (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_ATOMISWAVE)
+   if (SYSTEM_IS_NAOMI() || settings.System == DC_PLATFORM_ATOMISWAVE)
    {
 	  const char *name;
 
@@ -2694,7 +2695,7 @@ static void UpdateInputStateNaomi(u32 port)
 		 if (input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_RELOAD))
 		 {
 			force_offscreen = true;
-			if (settings.System == DC_PLATFORM_NAOMI)
+			if (SYSTEM_IS_NAOMI())
 			   kcode[port] &= ~NAOMI_BTN0_KEY;
 			else
 			   kcode[port] &= ~AWAVE_TRIGGER_KEY;
@@ -2708,7 +2709,7 @@ static void UpdateInputStateNaomi(u32 port)
 
 			if (input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_TRIGGER) || input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_RELOAD))
 			{
-			 if (settings.System == DC_PLATFORM_NAOMI)
+			 if (SYSTEM_IS_NAOMI())
 			   kcode[port] &= ~NAOMI_BTN1_KEY;
 			}
 		 }
@@ -2749,7 +2750,7 @@ static void UpdateInputStateNaomi(u32 port)
                     setDeviceButtonStateMacro(ret, port, RETRO_DEVICE_JOYPAD, id);
                  break;
               case RETRO_DEVICE_ID_JOYPAD_R3:
-                 if (settings.System == DC_PLATFORM_NAOMI || allow_service_buttons)
+                 if (SYSTEM_IS_NAOMI() || allow_service_buttons)
                     setDeviceButtonStateMacro(ret, port, RETRO_DEVICE_JOYPAD, id);
                  break;
               default:
@@ -2828,7 +2829,7 @@ static void UpdateInputStateNaomi(u32 port)
    }
 
    // Avoid Left+Right or Up+Down buttons being pressed together as this crashes some games
-	if (settings.System == DC_PLATFORM_NAOMI)
+	if (SYSTEM_IS_NAOMI())
 	{
 	   if ((kcode[port] & (NAOMI_UP_KEY|NAOMI_DOWN_KEY)) == 0)
 		  kcode[port] |= NAOMI_UP_KEY|NAOMI_DOWN_KEY;
@@ -2904,7 +2905,7 @@ void UpdateInputState(u32 port)
    if (gl_ctx_resetting)
 	  return;
 
-   if (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_ATOMISWAVE)
+   if (SYSTEM_IS_NAOMI() || settings.System == DC_PLATFORM_ATOMISWAVE)
    {
       /* Update only this port. CaptureInput already iterates all ports; the
        * previous code updated all four on every call, so a 4-port loop read

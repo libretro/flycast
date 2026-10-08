@@ -160,6 +160,14 @@ struct rend_context
 
 #define TA_DATA_SIZE (8 * 1024 * 1024)
 
+/* A NAOMI 2's geometry processor sends several times what a game can send
+ * by itself: everything a frame is kept in is that much bigger there. */
+#define TA_NAOMI2_SCALE 4
+static inline u32 ta_data_size(void)
+{
+	return settings.System == DC_PLATFORM_NAOMI2 ? TA_DATA_SIZE * TA_NAOMI2_SCALE : TA_DATA_SIZE;
+}
+
 //vertex lists
 struct TA_context
 {
@@ -169,6 +177,8 @@ struct TA_context
 	 * the renderer to read while the emulation moves on (threaded
 	 * rendering). */
 	u8 *regs;
+
+	u32 data_size;		// of the tile accelerator data: ta_data_size() when this was allocated
 
 	tad_context tad;
 	rend_context rend;
@@ -201,23 +211,25 @@ struct TA_context
 	}
 	void Alloc()
 	{
-      unsigned modtrig_size = 16384;
-      unsigned    vert_size = 4*1024*1024; //up to 4 mb of vtx data/frame = ~ 96k vtx/frame
-      tad.Reset((u8*)OS_aligned_malloc(32, TA_DATA_SIZE));
+      data_size = ta_data_size();
+      const unsigned scale = data_size / TA_DATA_SIZE;
+      unsigned modtrig_size = 16384 * scale;
+      unsigned    vert_size = 4*1024*1024 * scale; //up to 4 mb of vtx data/frame = ~ 96k vtx/frame
+      tad.Reset((u8*)OS_aligned_malloc(32, data_size));
       regs = (u8*)calloc(1, pvr_RegSize);
 
 		rend.verts.InitBytes(vert_size,&rend.Overrun, "verts"); 
-		rend.idx.Init(120*1024,&rend.Overrun, "idx"); // up to 120K indices (idx have stripification overhead)
-		rend.global_param_op.Init(16384,&rend.Overrun, "global_param_op");
-		rend.global_param_pt.Init(5120,&rend.Overrun, "global_param_pt");
-		rend.global_param_mvo.Init(4096,&rend.Overrun, "global_param_mvo");
-      rend.global_param_mvo_tr.Init(4096,&rend.Overrun, "global_param_mvo_tr");
+		rend.idx.Init(120*1024 * scale,&rend.Overrun, "idx"); // up to 120K indices (idx have stripification overhead)
+		rend.global_param_op.Init(16384 * scale,&rend.Overrun, "global_param_op");
+		rend.global_param_pt.Init(5120 * scale,&rend.Overrun, "global_param_pt");
+		rend.global_param_mvo.Init(4096 * scale,&rend.Overrun, "global_param_mvo");
+      rend.global_param_mvo_tr.Init(4096 * scale,&rend.Overrun, "global_param_mvo_tr");
 #if STRIPS_AS_PPARAMS
       // That makes a lot of polyparams but this is required for proper sorting...
 		// Rez uses more than 8192 translucent polygons sometimes
-      rend.global_param_tr.Init(10240, &rend.Overrun, "global_param_tr");
+      rend.global_param_tr.Init(10240 * scale, &rend.Overrun, "global_param_tr");
 #else
-		rend.global_param_tr.Init(8192,&rend.Overrun, "global_param_tr");
+		rend.global_param_tr.Init(8192 * scale,&rend.Overrun, "global_param_tr");
 #endif
 
 		rend.modtrig.Init(modtrig_size,&rend.Overrun, "modtrig");

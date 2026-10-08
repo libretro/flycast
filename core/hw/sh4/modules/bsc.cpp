@@ -11,7 +11,7 @@ BSC_PDTRA_type BSC_PDTRA;
 void write_BSC_PCTRA(u32 addr, u32 data)
 {
 	BSC_PCTRA.full = data;
-   if (settings.System == DC_PLATFORM_NAOMI)
+   if (SYSTEM_IS_NAOMI())
       NaomiBoardIDWriteControl((u16)data);
 	//printf("C:BSC_PCTRA = %08X\n",data);
 }
@@ -21,13 +21,13 @@ void write_BSC_PDTRA(u32 addr, u32 data)
 	BSC_PDTRA.full=(u16)data;
 	//printf("D:BSC_PDTRA = %08X\n",data);
 
-   if (settings.System == DC_PLATFORM_NAOMI)
+   if (SYSTEM_IS_NAOMI())
 		NaomiBoardIDWrite((u16)data);
 }
 
 u32 read_BSC_PDTRA(u32 addr)
 {
-   if (settings.System == DC_PLATFORM_NAOMI)
+   if (SYSTEM_IS_NAOMI())
       return NaomiBoardIDRead();
 
    /* as seen on chankast */
@@ -106,7 +106,7 @@ void bsc_init()
 
 	//note: naomi//aw might depend on rfcr
 	
-	if (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_ATOMISWAVE)
+	if (SYSTEM_IS_NAOMI() || settings.System == DC_PLATFORM_ATOMISWAVE)
 	{
 		sh4_rio_reg(BSC, BSC_RFCR_addr, RIO_RO, 16);
 	}

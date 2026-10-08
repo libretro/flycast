@@ -221,7 +221,7 @@ static NOINLINE void DYNACALL ta_handle_cmd(u32 trans)
          if (ta_fsm_cl==7)
             ta_fsm_cl=dat->pcw.ListType;
          //printf("List %d ended\n",ta_fsm_cl);
-         asic_RaiseInterrupt( ListEndInterrupt[ta_fsm_cl]);
+         asic_RaiseInterruptBothCLX(ListEndInterrupt[ta_fsm_cl]);
          ta_fsm_cl=7;
          trans=TAS_NS;
       }
@@ -274,6 +274,16 @@ void ta_vtx_SoftReset(void)
 	ta_cur_state=TAS_NS;
 }
 
+int ta_vtx_list(void)
+{
+	return ta_fsm_cl == 7 ? -1 : (int)ta_fsm_cl;
+}
+
+bool ta_vtx_half(void)
+{
+	return ta_cur_state >= TAS_PLHV32;
+}
+
 static INLINE
 void DYNACALL ta_thd_data32_i(void* data)
 {
@@ -282,7 +292,7 @@ void DYNACALL ta_thd_data32_i(void* data)
    	INFO_LOG(PVR, "Warning: data sent to TA prior to ListInit. Ignored");
 		return;
    }
-	if (ta_tad.End() - ta_tad.thd_root >= TA_DATA_SIZE)
+	if ((u32)(ta_tad.End() - ta_tad.thd_root) >= ta_ctx->data_size)
 	{
 		INFO_LOG(PVR, "Warning: TA data buffer overflow");
 		asic_RaiseInterrupt(holly_MATR_NOMEM);

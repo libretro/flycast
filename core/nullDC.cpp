@@ -500,6 +500,7 @@ int dc_init()
          break;
       case DC_PLATFORM_ATOMISWAVE:
       case DC_PLATFORM_NAOMI:
+      case DC_PLATFORM_NAOMI2:
          LoadSpecialSettingsNaomi(naomi_game_id);
          break;
    }

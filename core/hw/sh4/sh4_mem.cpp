@@ -9,6 +9,7 @@
 #include "sh4_mmr.h"
 #include "modules/modules.h"
 #include "hw/pvr/pvr_mem.h"
+#include "hw/pvr/elan_host.h"
 #include "hw/sh4/sh4_core.h"
 #include "hw/mem/_vmem.h"
 #include "modules/mmu.h"
@@ -61,12 +62,13 @@ static void map_area1(u32 base)
 //AREA 2
 static void map_area2_init()
 {
-	//nothing to map :p
+	// the NAOMI 2's geometry processor
+	elan_host_map_init();
 }
 
 static void map_area2(u32 base)
 {
-	//nothing to map :p
+	elan_host_map(base);
 }
 
 

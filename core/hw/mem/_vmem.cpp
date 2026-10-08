@@ -671,9 +671,16 @@ static void vram_set_access(u32 addr, u32 size, int access)
 
 	if (_nvmem_enabled())
 	{
+		/* The mirror 32 MB up is where a NAOMI 2 has its second PowerVR's
+		 * memory, and its games write every texture there as well: the
+		 * two are one memory here. */
+		const bool mirror = settings.System == DC_PLATFORM_NAOMI2;
+
 		if (!mmu_enabled() || !_nvmem_4gb_space())
 		{
 			set(virt_ram_base + 0x04000000 + addr, size);	// P0
+			if (mirror)
+				set(virt_ram_base + 0x06000000 + addr, size);
 			if (VRAM_SIZE == 0x800000)
 				// wraps when only 8MB VRAM
 				set(virt_ram_base + 0x04000000 + addr + VRAM_SIZE, size);
@@ -682,7 +689,12 @@ static void vram_set_access(u32 addr, u32 size, int access)
 		{
 			set(virt_ram_base + 0x84000000 + addr, size);	// P1
 			set(virt_ram_base + 0xA4000000 + addr, size);	// P2
-			// We should also lock P3, and the mirrors, but they don't seem to be used...
+			if (mirror)
+			{
+				set(virt_ram_base + 0x86000000 + addr, size);
+				set(virt_ram_base + 0xA6000000 + addr, size);
+			}
+			// We should also lock P3, and the other machines' mirrors, but they don't seem to be used...
 			if (VRAM_SIZE == 0x800000)
 			{
 				set(virt_ram_base + 0x84000000 + addr + VRAM_SIZE, size);
@@ -789,7 +801,7 @@ u32 _vmem_get_vram_offset(void *addr)
 			if (offset < 0 || offset >= 0x20000000)
 				return -1;
 		}
-		if ((offset >> 24) != 4)
+		if ((offset >> 24) != 4 && ((offset >> 24) != 6 || settings.System != DC_PLATFORM_NAOMI2))
 			return -1;
       if ((((u8*)addr - virt_ram_base) >> 29) != 0 && (((u8*)addr - virt_ram_base) >> 29) != 4  && (((u8*)addr - virt_ram_base) >> 29) != 5)
 			// other areas aren't mapped atm

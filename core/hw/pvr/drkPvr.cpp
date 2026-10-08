@@ -9,6 +9,7 @@
 	Renderer
 */
 
+#include "elan_host.h"
 #include "spg.h"
 #include "pvr_regs.h"
 #include "Renderer_if.h"
@@ -20,6 +21,7 @@ void libPvr_Reset(bool hard)
    KillTex = true;
    Regs_Reset(hard);
    spg_Reset(hard);
+   elan_host_reset(hard);
 }
 
 
@@ -30,6 +32,7 @@ s32 libPvr_Init(void)
       //failed
       return -1;
    }
+   elan_host_init();
 
 	return 0;
 }
@@ -40,4 +43,5 @@ void libPvr_Term(void)
    custom_texture.Terminate();	// Avoid deadlock on exit (win32)
    rend_term();
    spg_Term();
+   elan_host_term();
 }

@@ -633,6 +633,9 @@ struct settings_t
 
 extern settings_t settings;
 
+/* A NAOMI 2 is a NAOMI with a geometry board and a second PowerVR on it. */
+#define SYSTEM_IS_NAOMI() (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_NAOMI2)
+
 void LoadSettings(void);
 u32 GetRTC_now(void);
 
@@ -910,5 +913,6 @@ enum serialize_version_enum {
    V17,
    V18,
    V19,
-   VCUR_LIBRETRO = V19,
+   V20,
+   VCUR_LIBRETRO = V20,
 };

@@ -43,6 +43,7 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/hw/mem/vmem32.cpp \
 					\
 					$(CORE_DIR)/core/hw/pvr/drkPvr.cpp \
+					$(CORE_DIR)/core/hw/pvr/elan_host.cpp \
 					$(CORE_DIR)/core/hw/pvr/Renderer_if.cpp \
 					$(CORE_DIR)/core/hw/pvr/pvr_mem.cpp \
 					$(CORE_DIR)/core/hw/pvr/pvr_regs.cpp \
@@ -213,6 +214,9 @@ PICOTCP_SOURCES_C = \
 					$(DEPS_DIR)/picotcp/stack/pico_tree.c
 
 XXHASH_SOURCES_C = $(DEPS_DIR)/xxhash/xxhash.c
+
+# The NAOMI 2's geometry processor
+SOURCES_C += $(CORE_DIR)/core/hw/pvr/elan.c
 
 SOURCES_ASM :=
 

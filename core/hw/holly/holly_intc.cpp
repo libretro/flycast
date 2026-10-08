@@ -10,14 +10,20 @@
 	part of the holly block on dc
 */
 
+/* A NAOMI 2 has two PowerVRs and a normal interrupt status for each. The
+ * second one's is here; it has no levels of its own (the first one's are
+ * used) and nothing but the PowerVR's own interrupts ever shows in it. */
+u32 SB_ISTNRM1;
+
 //asic_RLXXPending: Update the intc flags for pending interrupts
 void asic_RL6Pending(void)
 {
 	bool t1=(SB_ISTNRM & SB_IML6NRM)!=0;
 	bool t2=(SB_ISTERR & SB_IML6ERR)!=0;
 	bool t3=(SB_ISTEXT & SB_IML6EXT)!=0;
+	bool t4=(SB_ISTNRM1 & SB_IML6NRM)!=0;
 
-	InterruptPend(sh4_IRL_9,t1|t2|t3);
+	InterruptPend(sh4_IRL_9,t1|t2|t3|t4);
 }
 
 void asic_RL4Pending(void)
@@ -25,8 +31,9 @@ void asic_RL4Pending(void)
 	bool t1=(SB_ISTNRM & SB_IML4NRM)!=0;
 	bool t2=(SB_ISTERR & SB_IML4ERR)!=0;
 	bool t3=(SB_ISTEXT & SB_IML4EXT)!=0;
+	bool t4=(SB_ISTNRM1 & SB_IML4NRM)!=0;
 
-	InterruptPend(sh4_IRL_11,t1|t2|t3);
+	InterruptPend(sh4_IRL_11,t1|t2|t3|t4);
 }
 
 void asic_RL2Pending(void)
@@ -34,8 +41,9 @@ void asic_RL2Pending(void)
 	bool t1=(SB_ISTNRM & SB_IML2NRM)!=0;
 	bool t2=(SB_ISTERR & SB_IML2ERR)!=0;
 	bool t3=(SB_ISTEXT & SB_IML2EXT)!=0;
+	bool t4=(SB_ISTNRM1 & SB_IML2NRM)!=0;
 
-	InterruptPend(sh4_IRL_13,t1|t2|t3);
+	InterruptPend(sh4_IRL_13,t1|t2|t3|t4);
 }
 
 //Raise interrupt interface
@@ -87,6 +95,47 @@ void asic_RaiseInterrupt(HollyInterruptID inter)
 		RaiseAsicErr(inter);
 		break;
 	}
+}
+
+/* An interrupt both PowerVRs raise: the end of a list, the end of a render. */
+void asic_RaiseInterruptBothCLX(HollyInterruptID inter)
+{
+	if (settings.System == DC_PLATFORM_NAOMI2 && (inter >> 8) == 0)
+		SB_ISTNRM1 |= 1 << (u8)inter;
+	asic_RaiseInterrupt(inter);
+}
+
+/* The second PowerVR's interrupt registers, at 025f69xx. */
+bool asic_IsCLXB(u32 addr)
+{
+	addr &= 0x01ffffff;
+	return addr >= SB_ISTNRM_addr && addr <= SB_IML6ERR_addr;
+}
+
+u32 asic_ReadCLXB(u32 addr)
+{
+	if ((addr & 0x01ffffff) == SB_ISTNRM_addr)
+	{
+		u32 v = SB_ISTNRM1 & 0x3FFFFFFF;
+		if (SB_ISTEXT)
+			v |= 0x40000000;
+		if (SB_ISTERR)
+			v |= 0x80000000;
+		return v;
+	}
+	return sb_ReadMem(addr & 0x01ffffff, 4);
+}
+
+void asic_WriteCLXB(u32 addr, u32 data)
+{
+	if ((addr & 0x01ffffff) == SB_ISTNRM_addr)
+	{
+		SB_ISTNRM1 &= ~data;
+		asic_RL2Pending();
+		asic_RL4Pending();
+		asic_RL6Pending();
+	}
+	// its interrupt levels are not looked at
 }
 
 u32 Read_SB_ISTNRM(u32 addr)
@@ -239,4 +288,5 @@ void asic_reg_Term(void)
 //Reset -> Reset - Initialise to default values
 void asic_reg_Reset(bool hard)
 {
+	SB_ISTNRM1 = 0;
 }

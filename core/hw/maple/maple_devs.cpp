@@ -284,7 +284,7 @@ struct maple_sega_controller: maple_base
 		case MDCF_GetCondition:
 			{
 				PlainJoystickState pjs;
-				if (settings.System != DC_PLATFORM_NAOMI)
+				if (!SYSTEM_IS_NAOMI())
 					config->GetInput(&pjs);
 
 				//caps

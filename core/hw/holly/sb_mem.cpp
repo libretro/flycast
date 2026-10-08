@@ -9,6 +9,7 @@
 #include "hw/gdrom/gdrom_if.h"
 #include "hw/aica/aica_if.h"
 #include "hw/naomi/naomi.h"
+#include "hw/holly/holly_intc.h"
 #include "hw/modem/modem.h"
 
 #include "hw/flashrom/flashrom.h"
@@ -41,7 +42,7 @@ static const char *get_rom_prefix(void)
       case DC_PLATFORM_NAOMI:
          return "naomi_";
       case DC_PLATFORM_NAOMI2:
-         return "n2_";
+         return "naomi2_";
       case DC_PLATFORM_ATOMISWAVE:
     	 // Not used
          return "";
@@ -356,6 +357,9 @@ template<class T>
 T DYNACALL ReadMem_area0(u32 addr)
 {
 	constexpr u32 sz = (u32)sizeof(T);
+	// NAOMI 2: the second PowerVR's interrupts are in the upper half
+	if (unlikely(addr & 0x02000000) && settings.System == DC_PLATFORM_NAOMI2 && asic_IsCLXB(addr))
+		return (T)asic_ReadCLXB(addr);
 	addr &= 0x01FFFFFF;//to get rid of non needed bits
 	const u32 base=(addr>>16);
 	//map 0x0000 to 0x01FF to Default handler
@@ -380,7 +384,7 @@ T DYNACALL ReadMem_area0(u32 addr)
 		}
       else if (addr >= 0x005F7000 && addr <= 0x005F70FF) // GD-ROM
 		{
-			if (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_ATOMISWAVE)
+			if (SYSTEM_IS_NAOMI() || settings.System == DC_PLATFORM_ATOMISWAVE)
 				return (T)ReadMem_naomi(addr,sz);
 			return (T)ReadMem_gdrom(addr,sz);
 		}
@@ -435,7 +439,7 @@ T DYNACALL ReadMem_area0(u32 addr)
 	//map 0x0100 to 0x01FF
 	else if (base >= 0x0100 && base <= 0x01FF) // G2 Ext. Device #1
 	{
-		if (settings.System == DC_PLATFORM_NAOMI)
+		if (SYSTEM_IS_NAOMI())
 			return (T)libExtDevice_ReadMem_A0_010(addr, sz);
 		else
 #if defined(ENABLE_MODEM)
@@ -454,6 +458,11 @@ template<class T>
 void  DYNACALL WriteMem_area0(u32 addr,T data)
 {
 	constexpr u32 sz = (u32)sizeof(T);
+	if (unlikely(addr & 0x02000000) && settings.System == DC_PLATFORM_NAOMI2 && asic_IsCLXB(addr))
+	{
+		asic_WriteCLXB(addr, data);
+		return;
+	}
 	addr &= 0x01FFFFFF;//to get rid of non needed bits
 
 	const u32 base=(addr>>16);
@@ -478,7 +487,7 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 		}
       else if (addr >= 0x005F7000 && addr <= 0x005F70FF) // GD-ROM
 		{
-			if (settings.System == DC_PLATFORM_NAOMI || settings.System == DC_PLATFORM_ATOMISWAVE)
+			if (SYSTEM_IS_NAOMI() || settings.System == DC_PLATFORM_ATOMISWAVE)
 				WriteMem_naomi(addr,data,sz);
 			else
 				WriteMem_gdrom(addr,data,sz);
@@ -529,7 +538,7 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 	//map 0x0100 to 0x01FF
 	else if (base >= 0x0100 && base <= 0x01FF) // G2 Ext. Device #1
 	{
-		if (settings.System == DC_PLATFORM_NAOMI)
+		if (SYSTEM_IS_NAOMI())
 			libExtDevice_WriteMem_A0_010(addr, data, sz);
 #if defined(ENABLE_MODEM)
       else if (settings.network.EmulateBBA)

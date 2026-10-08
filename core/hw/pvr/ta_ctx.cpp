@@ -136,6 +136,13 @@ TA_context* tactx_Alloc(void)
 {
 	TA_context* rv = ctx_pool.Take();
 
+	if (rv && rv->data_size != ta_data_size())
+	{
+		// kept from a machine whose frames are another size
+		rv->Free();
+		delete rv;
+		rv = NULL;
+	}
 	if (!rv)
    {
       rv = new TA_context();
@@ -160,7 +167,15 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
    for (size_t i=0; i<ctx_list.size(); i++)
    {
       if (ctx_list[i]->Address==addr)
+      {
+         if (ctx_list[i]->data_size != ta_data_size())
+         {
+            // left by a machine whose frames are another size
+            ctx_list[i]->Free();
+            ctx_list[i]->Alloc();
+         }
          return ctx_list[i];
+      }
    }
 
    if (allocnew)
@@ -228,8 +243,8 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
 	/* size is attacker-controlled (comes straight from the state). The TA
 	 * buffer is a fixed TA_DATA_SIZE allocation, so a corrupt/malicious state
 	 * with a larger size would memcpy past the end of the heap block. Clamp. */
-	if (size > TA_DATA_SIZE)
-		size = TA_DATA_SIZE;
+	if (size > ta_ctx->data_size)
+		size = ta_ctx->data_size;
 	LIBRETRO_USA(ta_ctx->tad.thd_root, size);
 	ta_ctx->tad.thd_data = ta_ctx->tad.thd_root + size;
    if (version >= V12)

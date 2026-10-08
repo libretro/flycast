@@ -130,6 +130,20 @@ BIOS[] =
 		}
 	},
 	{
+		"naomi2",
+		{
+			// epr-23605c (Japan)
+			{ 0, "epr-23605c.ic27", 0x000000, 0x200000, 0x297ea6ed },
+			// epr-23607c (USA)
+			{ 1, "epr-23607c.ic27", 0x000000, 0x200000, 0x750e254b },
+			// epr-23608c (Export)
+			{ 2, "epr-23608c.ic27", 0x000000, 0x200000, 0x6ef1dd8e },
+			// epr-23609b (Korea)
+			{ 3, "epr-23609b.ic27", 0x000000, 0x200000, 0x99e3751f },
+			{ 0, NULL, 0, 0 },
+		}
+	},
+	{
 		"naomi",
 		{
 			//ROM_SYSTEM_BIOS( 0, "bios0",   "epr-21576h (Japan)" )

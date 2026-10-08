@@ -30,6 +30,10 @@ void ta_vtx_SoftReset();
 
 void DYNACALL ta_vtx_data32(void* data);
 void ta_vtx_data(u32* data, u32 size);
+// The list that is open (0-4), or -1
+int ta_vtx_list(void);
+// The second half of a 64-byte parameter is what comes next
+bool ta_vtx_half(void);
 
 bool ta_parse_vdrc(TA_context* ctx);
 

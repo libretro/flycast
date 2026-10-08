@@ -338,7 +338,7 @@ void mcfg_CreateDevices()
 		 }
 	  }
    }
-   else if (settings.System == DC_PLATFORM_NAOMI)
+   else if (SYSTEM_IS_NAOMI())
    {
       bus = 0;
       mcfg_Create(MDT_NaomiJamma, bus++, 5);

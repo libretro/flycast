@@ -87,6 +87,11 @@ extern u32 SB_FFST;
 extern SRamChip sys_nvmem_sram;
 extern DCFlashChip sys_nvmem_flash;
 
+//./core/hw/pvr/elan_host.o
+#include "hw/pvr/elan.h"
+#include "hw/pvr/elan_host.h"
+#include "hw/holly/holly_intc.h"
+
 //./core/hw/gdrom/gdromv3.o
 extern int gdrom_sched;
 extern int gd_swap_schid;
@@ -666,6 +671,19 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	/* V19: the drive still looking at a disc that has just been put in */
 	LIBRETRO_S(sch_list[gd_swap_schid].start);
 	LIBRETRO_S(sch_list[gd_swap_schid].end);
+
+	/* V20: what a NAOMI 2 has that a NAOMI does not - the second PowerVR's
+	 * interrupts, and the geometry processor with its memory. */
+	if (settings.System == DC_PLATFORM_NAOMI2 && elan_ram)
+	{
+		elan_state_t elan;
+		elan_get_state(&elan);
+		LIBRETRO_S(SB_ISTNRM1);
+		LIBRETRO_S(elan);
+		LIBRETRO_SA(elan_ram, ELAN_RAM_SIZE);
+		LIBRETRO_S(sch_list[elan_schid].start);
+		LIBRETRO_S(sch_list[elan_schid].end);
+	}
 
 	return true ;
 }
@@ -1260,6 +1278,17 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	{
 		LIBRETRO_US(sch_list[gd_swap_schid].start);
 		LIBRETRO_US(sch_list[gd_swap_schid].end);
+	}
+
+	if (version >= V20 && settings.System == DC_PLATFORM_NAOMI2 && elan_ram)
+	{
+		elan_state_t elan;
+		LIBRETRO_US(SB_ISTNRM1);
+		LIBRETRO_US(elan);
+		LIBRETRO_USA(elan_ram, ELAN_RAM_SIZE);
+		LIBRETRO_US(sch_list[elan_schid].start);
+		LIBRETRO_US(sch_list[elan_schid].end);
+		elan_set_state(&elan);
 	}
 
 	/* Fail the whole load if any read was rejected for running past the end

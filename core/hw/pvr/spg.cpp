@@ -306,9 +306,9 @@ void read_lightgun_position(int x, int y)
 
 int rend_end_sch(int tag, int cycl, int jitt)
 {
-	asic_RaiseInterrupt(holly_RENDER_DONE);
-	asic_RaiseInterrupt(holly_RENDER_DONE_isp);
-	asic_RaiseInterrupt(holly_RENDER_DONE_vd);
+	asic_RaiseInterruptBothCLX(holly_RENDER_DONE);
+	asic_RaiseInterruptBothCLX(holly_RENDER_DONE_isp);
+	asic_RaiseInterruptBothCLX(holly_RENDER_DONE_vd);
 
    rend_end_render();
 	return 0;
@@ -343,7 +343,8 @@ void SetREP(TA_context* cntx)
 	if (cntx)
 	{
 		const int size = (int)(cntx->tad.thd_data - cntx->tad.thd_root);
-		sh4_sched_request(render_end_schid, std::min(450000 + size * 100, 1500000));
+		// (megabytes of it on a NAOMI 2: no overflow)
+		sh4_sched_request(render_end_schid, size >= 10500 ? 1500000 : 450000 + size * 100);
 	}
 	else
 		sh4_sched_request(render_end_schid, 4096);
