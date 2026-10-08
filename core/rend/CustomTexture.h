@@ -28,7 +28,11 @@
 
 class CustomTexture {
 public:
-	CustomTexture() : loader_thread(loader_thread_func, this) { retro_atomic_int_init(&initialized, 0); }
+	CustomTexture() : loader_thread(loader_thread_func, this)
+	{
+		retro_atomic_int_init(&initialized, 0);
+		retro_atomic_int_init(&custom_textures_available, 0);
+	}
 	~CustomTexture() { Terminate(); }
 	u8* LoadCustomTexture(u32 hash, int& width, int& height);
 	void LoadCustomTextureAsync(BaseTextureCacheData *texture_data);
@@ -47,7 +51,10 @@ private:
 	void Load(BaseTextureCacheData *texture);
 
 	retro_atomic_int_t initialized;
-	bool custom_textures_available = false;
+	/* Set by Init() for the directory being there, and by the loader once
+	 * it has listed it (to whether anything usable was in it); read by the
+	 * renderer. Cleared when the game goes. */
+	retro_atomic_int_t custom_textures_available;
 	std::string textures_path;
 	cThread loader_thread;
 	cResetEvent wakeup_thread;

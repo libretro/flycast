@@ -131,12 +131,19 @@ bool CustomTexture::Init()
 			if (path_is_directory(textures_path.c_str()))
 			{
 				INFO_LOG(RENDERER, "Found custom textures directory: %s", textures_path.c_str());
-				custom_textures_available = true;
+				retro_atomic_store_release_int(&custom_textures_available, 1);
 				loader_thread.Start();
+				/* No loader, nothing to give work to: a texture queued for
+				 * it would wait for good, and could not be freed. */
+				if (loader_thread.hThread == NULL)
+				{
+					WARN_LOG(RENDERER, "The custom texture loader could not be started");
+					retro_atomic_store_release_int(&custom_textures_available, 0);
+				}
 			}
 		}
 	}
-	return custom_textures_available;
+	return retro_atomic_load_acquire_int(&custom_textures_available) != 0;
 }
 
 void CustomTexture::Terminate()
@@ -155,6 +162,11 @@ void CustomTexture::Terminate()
 			texture = next;
 		}
 		texture_map.clear();
+		/* The next game starts from nothing: left set, a game with no
+		 * textures of its own inherited "available" from the one before
+		 * and queued work for a loader that was never started. */
+		retro_atomic_store_release_int(&custom_textures_available, 0);
+		textures_path.clear();
 	}
 }
 
@@ -315,5 +327,5 @@ void CustomTexture::LoadMap()
 		texture_map[hash] = child_path;
 	}
 	retro_closedir(dir);
-	custom_textures_available = !texture_map.empty();
+	retro_atomic_store_release_int(&custom_textures_available, !texture_map.empty());
 }
