@@ -224,6 +224,12 @@ private:
 			| (pp->tsp.DstInstr << 17);
 		hash |= (pp->isp.ZWriteDis << 20) | (pp->isp.CullMode << 21) | (pp->isp.DepthMode << 23);
 		hash |= ((u32)sortTriangles << 26) | ((u32)BaseTextureCacheData::IsGpuHandledPaletted(pp->tsp, pp->tcw) << 27);
+		/* A bump map is drawn with a shader of its own, and that was not
+		 * part of what a pipeline is kept under: a polygon with a bump map
+		 * and one without, alike in everything else here, shared whichever
+		 * pipeline was made first. (Upstream: the pause menu's lettering
+		 * gone and green wooden boxes in Mat Hoffman's Pro BMX.) */
+		hash |= (u32)(pp->tcw.PixelFmt == PixelBumpMap) << 28;
 
 		return hash;
 	}

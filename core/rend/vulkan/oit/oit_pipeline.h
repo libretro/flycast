@@ -338,6 +338,8 @@ private:
       }
 		hash |= (pp->isp.ZWriteDis << 20) | (pp->isp.CullMode << 21) | ((autosort ? 6 : pp->isp.DepthMode) << 23);
 		hash |= ((u32)BaseTextureCacheData::IsGpuHandledPaletted(pp->tsp, pp->tcw) << 26) | ((u32)pass << 27);
+		// a bump map has a shader of its own: see the per-triangle renderer's hash
+		hash |= (u32)(pp->tcw.PixelFmt == PixelBumpMap) << 29;
 
 		return hash;
 	}
