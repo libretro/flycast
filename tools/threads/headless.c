@@ -289,6 +289,7 @@ int main(int argc, char **argv)
       SYM(void, retro_set_input_state, (retro_input_state_t))
       SYM(void, retro_init, (void))
       SYM(bool, retro_load_game, (const struct retro_game_info *))
+      SYM(void, retro_get_system_av_info, (struct retro_system_av_info *))
       SYM(void, retro_run, (void))
       SYM(void, retro_reset, (void))
       SYM(size_t, retro_serialize_size, (void))
@@ -314,6 +315,13 @@ int main(int argc, char **argv)
       {
          fprintf(stderr, "headless: the core would not load %s\n", argv[2]);
          return 1;
+      }
+      /* As every frontend does once the game is loaded: the core works out
+       * its size here, and which of its cheats the game has. */
+      {
+         struct retro_system_av_info av_info;
+         memset(&av_info, 0, sizeof(av_info));
+         retro_get_system_av_info(&av_info);
       }
       if (have_hw && hw.context_reset)
          hw.context_reset();
