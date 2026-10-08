@@ -842,21 +842,34 @@ void pico_receive_eth_frame(const u8 *frame, u32 size)
 }
 
 /* Pico thread: give the stack the frames the adapter has sent. */
-static void take_eth_frames()
+/* No more than this many in one go. A guest that sends without stopping
+ * refills the ring as fast as it is emptied: taken until the ring was
+ * empty, its frames kept this thread here for good, and the stack's
+ * timers and the sockets - which come after - never had their turn (an
+ * ARP request in such a flood got its first answer and no other). */
+#define ETH_FRAMES_A_PASS 256
+
+/* True if there may be more waiting: the caller comes back for them once
+ * the rest has had its turn, without sleeping first. */
+static bool take_eth_frames()
 {
 	u8 buf[ETH_FRAME_MAX];
 	u8 len[2];
 
-	while (retro_spsc_read(&eth_out_ring, len, 2) == 2)
+	for (int taken = 0; taken < ETH_FRAMES_A_PASS; taken++)
 	{
+		if (retro_spsc_read(&eth_out_ring, len, 2) != 2)
+			return false;
+
 		const u32 size = len[0] | (len[1] << 8);
 
 		if (size > ETH_FRAME_MAX || retro_spsc_read(&eth_out_ring, buf, size) != size)
-			break;
+			return false;
 		dumpFrame(buf, size);
 		if (pico_dev != nullptr)
 			pico_stack_recv(pico_dev, buf, size);
 	}
+	return true;
 }
 /* Pico thread: the stack has a frame for the adapter. */
 static int send_eth_frame(pico_device *dev, void *data, int len)
@@ -1176,11 +1189,12 @@ static void *pico_thread_func(void *)
     {
 		const int kicks = retro_atomic_load_acquire_int(&pico_kicks);
 
-		take_eth_frames();
+		const bool more_frames = take_eth_frames();
     	read_native_sockets();
     	pico_stack_tick();
     	check_dns_entries();
-		wait_for_work(kicks);
+		if (!more_frames)
+			wait_for_work(kicks);
     }
     for (auto it = tcp_listening_sockets.begin(); it != tcp_listening_sockets.end(); it++)
     	closesocket(it->second);
