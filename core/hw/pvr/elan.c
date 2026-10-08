@@ -121,7 +121,7 @@ static float ambient[2][2][3];  /* [volume][base, offset] */
 static uint8_t ambient_material[2][2];
 static bool base_over;
 static bool any_specular[2];
-static bool lights_plain;       /* all parallel, none to alpha: four vertices can be lit at once */
+static bool lights_plain;       /* none goes to alpha: four vertices can be lit at once */
 
 /* set by the model command a list is drawn under */
 static bool culling_reversed;
@@ -603,7 +603,7 @@ static void update_lights(void)
          bump_light = light_count;
       any_specular[0] |= l->specular[0];
       any_specular[1] |= l->specular[1];
-      if (!l->parallel || (l->routing & ROUTING_ALPHA))
+      if (l->routing & ROUTING_ALPHA)
          lights_plain = false;
       light_count++;
    }
@@ -1181,10 +1181,10 @@ static void make_vertex(elan_vtx_t *v, const uint8_t *src)
 
 /* make_vertex() for four vertices at once, for the polygons nearly all
  * are: one volume, positions with packed normals and maybe texture
- * coordinates, lit by parallel lights. One value of each vertex to a
- * lane; every operation is make_vertex()'s and light_vertex()'s, in
- * their order, so that a vertex comes out the same whichever way it was
- * done - a strip's last few go the one-by-one way. */
+ * coordinates, lit by lights of any kind that do not go to alpha. One
+ * value of each vertex to a lane; every operation is make_vertex()'s and
+ * light_vertex()'s, in their order, so that a vertex comes out the same
+ * whichever way it was done - a strip's last few go the one-by-one way. */
 static void make_vertices4(elan_vtx_t *out4, const uint8_t *src, unsigned size)
 {
    float fx[4], fy[4], fz[4], fnx[4], fny[4], fnz[4];
@@ -1289,12 +1289,47 @@ static void make_vertices4(elan_vtx_t *out4, const uint8_t *src, unsigned size)
 
       if (!(lt->diffuse[0] | lt->specular[0]))
          continue;
-      d0 = VF_SET1(lt->dir[0]);
-      d1 = VF_SET1(lt->dir[1]);
-      d2 = VF_SET1(lt->dir[2]);
       cr = VF_SET1(lt->color[0]);
       cg = VF_SET1(lt->color[1]);
       cb = VF_SET1(lt->color[2]);
+      if (lt->parallel)
+      {
+         d0 = VF_SET1(lt->dir[0]);
+         d1 = VF_SET1(lt->dir[1]);
+         d2 = VF_SET1(lt->dir[2]);
+      }
+      else
+      {
+         /* a point or a spot: each vertex has its own way to the light,
+          * and the light is dimmer with the distance, and away from a
+          * spot's axis */
+         vf4 dist2, f;
+         d0    = VF_SUB(VF_SET1(lt->pos[0]), px);
+         d1    = VF_SUB(VF_SET1(lt->pos[1]), py);
+         d2    = VF_SUB(VF_SET1(lt->pos[2]), pz);
+         dist2 = VF_DOT3(d0, d1, d2, d0, d1, d2);
+         inv   = VF_SELECT(VF_GT(dist2, zero), VF_DIV(one, VF_SQRT(dist2)), zero);
+         d0    = VF_MUL(d0, inv);
+         d1    = VF_MUL(d1, inv);
+         d2    = VF_MUL(d2, inv);
+         if (lt->dist_attn)
+         {
+            f  = clamp01_4(VF_ADD(VF_MUL(VF_SET1(lt->dist_b), lt->dist_mode ? VF_MUL(dist2, inv) : inv),
+                                  VF_SET1(lt->dist_a)));
+            cr = VF_MUL(cr, f);
+            cg = VF_MUL(cg, f);
+            cb = VF_MUL(cb, f);
+         }
+         if (lt->angle_attn)
+         {
+            vf4 cosine = VF_DOT3(d0, d1, d2, VF_SET1(lt->dir[0]), VF_SET1(lt->dir[1]), VF_SET1(lt->dir[2]));
+            f  = clamp01_4(VF_ADD(VF_MUL(VF_SUB(one, VF_SELECT(VF_GT(cosine, zero), cosine, zero)),
+                                         VF_SET1(lt->angle_b)), VF_SET1(lt->angle_a)));
+            cr = VF_MUL(cr, f);
+            cg = VF_MUL(cg, f);
+            cb = VF_MUL(cb, f);
+         }
+      }
 
       if (lt->diffuse[0])
       {
