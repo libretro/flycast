@@ -30,6 +30,7 @@ void ta_vtx_SoftReset();
 
 void DYNACALL ta_vtx_data32(void* data);
 void ta_vtx_data(u32* data, u32 size);
+u8 *ta_vtx_room(u32 blocks);
 // The list that is open (0-4), or -1
 int ta_vtx_list(void);
 // The second half of a 64-byte parameter is what comes next

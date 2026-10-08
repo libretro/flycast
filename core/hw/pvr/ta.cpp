@@ -284,8 +284,10 @@ bool ta_vtx_half(void)
 	return ta_cur_state >= TAS_PLHV32;
 }
 
-static INLINE
-void DYNACALL ta_thd_data32_i(void* data)
+/* A block the careful way: with no list begun, at the very start of a
+ * frame's data, or with the buffer full. */
+static NOINLINE
+void DYNACALL ta_data32_slow(void* data)
 {
    if (ta_ctx == NULL)
    {
@@ -306,7 +308,8 @@ void DYNACALL ta_thd_data32_i(void* data)
    PCW pcw        = *(PCW*)data;
 
    /* Copy the TA data */
-   *dst = *src;
+   if (dst != src)
+      *dst = *src;
 
    ta_tad.thd_data+=32;
 
@@ -321,39 +324,153 @@ void DYNACALL ta_thd_data32_i(void* data)
       ta_handle_cmd(trans);
 }
 
+/* A block from a store queue. With data already in the buffer and room
+ * for more - one comparison says both - it is copied and the state moved
+ * on here; anything else is ta_data32_slow()'s. */
 void DYNACALL ta_vtx_data32(void* data)
 {
-	ta_thd_data32_i(data);
+   TA_context *ctx = ta_ctx;
+   u8 *to          = ta_tad.thd_data;
+
+   if (ctx == NULL || (u32)(to - ta_tad.thd_root) - 32 >= ctx->data_size - 32)
+   {
+      ta_data32_slow(data);
+      return;
+   }
+
+   PCW pcw = *(PCW*)data;
+
+   *(simd256_t*)to = *(simd256_t*)data;
+   ta_tad.thd_data = to + 32;
+
+   u32 trans    = ta_fsm[(ta_cur_state<<8) | (pcw.ParaType<<5) | (pcw.obj_ctrl>>2)%32];
+   ta_cur_state = (ta_state)trans;
+   if (trans & 0xF0)
+      ta_handle_cmd(trans);
 }
 
+/* Where the next block will be put, if @blocks more can be: something that
+ * makes blocks can make them there, and they are then taken by
+ * ta_vtx_data() without being copied. NULL: they cannot, or not there. */
+u8 *ta_vtx_room(u32 blocks)
+{
+   TA_context *ctx = ta_ctx;
+   u32 used;
+
+   if (ctx == NULL)
+      return NULL;
+   used = (u32)(ta_tad.thd_data - ta_tad.thd_root);
+   /* (nothing yet this frame: what the buffer had last is counted, as
+    * ta_data32_slow() counts it) */
+   if (used == 0 && (u32)(ta_tad.thd_old_data - ta_tad.thd_root) >= ctx->data_size)
+      return NULL;
+   if (used > ctx->data_size || blocks > (ctx->data_size - used) / 32)
+      return NULL;
+   return ta_tad.thd_data;
+}
+
+/* Many blocks at once: a DMA transfer, or the NAOMI 2's geometry processor.
+ *
+ * Where to put the next one and the state are kept in registers across a
+ * run of them, and a run of vertices in a 32-byte format - most of what
+ * there ever is - changes neither the state nor anything else, so it is
+ * found by looking at one byte of each. Blocks made in the buffer itself
+ * (ta_vtx_room()) are not copied at all. */
 void ta_vtx_data(u32* data, u32 size)
 {
-	while(size>4)
+	while (size > 0)
 	{
-		ta_thd_data32_i(data);
+		TA_context *ctx = ta_ctx;
+		u8 *to          = ta_tad.thd_data;
+		u8 *root        = ta_tad.thd_root;
+		u32 used        = (u32)(to - root);
+		u32 count;
+		u32 state;
+		const u8 *from, *stop;
+		bool handled = false;
 
-		data+=8;
-		size--;
+		if (ctx == NULL || used >= ctx->data_size
+				|| (used == 0 && (u32)(ta_tad.thd_old_data - root) >= ctx->data_size))
+		{
+			ta_data32_slow(data);
+			data += 8;
+			size--;
+			continue;
+		}
 
-		ta_thd_data32_i(data);
+		count = (ctx->data_size - used) / 32;
+		if (count > size)
+			count = size;
+		state = ta_cur_state;
+		from  = (const u8 *)data;
+		stop  = from + count * 32;
 
-		data+=8;
-		size--;
+		if (from == to)
+		{
+			/* made in place */
+			while (from != stop)
+			{
+				PCW pcw;
+				u32 trans;
 
-		ta_thd_data32_i(data);
-		data+=8;
-		size--;
+				if (state == TAS_PLV32)
+				{
+					while (from != stop && ((const PCW *)from)->ParaType == ParamType_Vertex_Parameter)
+						from += 32;
+					if (from == stop)
+						break;
+				}
+				pcw   = *(const PCW *)from;
+				trans = ta_fsm[(state<<8) | (pcw.ParaType<<5) | (pcw.obj_ctrl>>2)%32];
+				from += 32;
+				state = trans;
+				if (trans & 0xF0)
+				{
+					handled = true;
+					break;
+				}
+			}
+			to = (u8 *)from;
+		}
+		else
+		{
+			while (from != stop)
+			{
+				PCW pcw;
+				u32 trans;
 
-		ta_thd_data32_i(data);
-		data+=8;
-		size--;
-	}
+				if (state == TAS_PLV32)
+				{
+					while (from != stop && ((const PCW *)from)->ParaType == ParamType_Vertex_Parameter)
+					{
+						*(simd256_t *)to = *(const simd256_t *)from;
+						to   += 32;
+						from += 32;
+					}
+					if (from == stop)
+						break;
+				}
+				pcw   = *(const PCW *)from;
+				trans = ta_fsm[(state<<8) | (pcw.ParaType<<5) | (pcw.obj_ctrl>>2)%32];
+				*(simd256_t *)to = *(const simd256_t *)from;
+				to   += 32;
+				from += 32;
+				state = trans;
+				if (trans & 0xF0)
+				{
+					handled = true;
+					break;
+				}
+			}
+		}
 
-	while(size>0)
-	{
-		ta_thd_data32_i(data);
+		ta_tad.thd_data = to;
+		ta_cur_state    = (ta_state)state;
+		if (handled)
+			ta_handle_cmd(state);
 
-		data+=8;
-		size--;
+		count = (u32)(from - (const u8 *)data) / 32;
+		data += count * 8;
+		size -= count;
 	}
 }

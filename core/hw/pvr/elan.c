@@ -137,8 +137,20 @@ static unsigned count_in, count_out;
 /* (The tile accelerator takes its blocks from addresses that are
  * multiples of 32, as the SH4's store queues are.) */
 static uint32_t out_space[OUT_BLOCKS * 8 + 8];
-static uint32_t *out;
+static uint32_t *out_own;       /* in out_space */
+static uint32_t *out;           /* where blocks are being made */
 static unsigned out_count;
+
+/* Where the next blocks are made: in the tile accelerator's own memory
+ * when the host has room there for a buffer's worth - they are then taken
+ * as they lie, with no copy - and in this chip's buffer when it has not.
+ * Asked every time there is nothing waiting: other things send to the
+ * tile accelerator in between, and its place moves. */
+static void out_begin(void)
+{
+   uint32_t *room = elan_host_ta_room(OUT_BLOCKS);
+   out = room ? room : out_own;
+}
 
 static void out_flush(void)
 {
@@ -155,6 +167,8 @@ static INLINE uint32_t *out_alloc(unsigned blocks)
    uint32_t *p;
    if (out_count + blocks > OUT_BLOCKS)
       out_flush();
+   if (!out_count)
+      out_begin();
    p = out + out_count * 8;
    out_count += blocks;
    return p;
@@ -856,15 +870,22 @@ static void strip_vertex(const elan_vtx_t *v)
        * there are three; the rest goes. */
       unsigned keep = strip_total >= 3 ? 1 : strip_held;
       unsigned blocks = keep * strip_blocks;
+      const uint32_t *kept;
       if (keep > strip_held)
          keep = strip_held, blocks = keep * strip_blocks;
       out_count -= blocks;
+      kept = out + out_count * 8;
       if (out_count)
          elan_host_ta(out, out_count);
-      memmove(out, out + out_count * 8, blocks * 32);
+      /* (made in the tile accelerator's memory, what is kept is already
+       * where the next room begins, and nothing moves) */
+      out_begin();
+      memmove(out, kept, blocks * 32);
       out_count = blocks;
       strip_held = keep;
    }
+   else if (!out_count)
+      out_begin();
    p = out + out_count * 8;
    out_count += strip_blocks;
    strip_total++;
@@ -2021,7 +2042,8 @@ void elan_dma_done(void)
 void elan_init(uint8_t *memory)
 {
    ram = memory;
-   out = (uint32_t *)(((size_t)out_space + 31) & ~(size_t)31);
+   out_own = (uint32_t *)(((size_t)out_space + 31) & ~(size_t)31);
+   out = out_own;
 }
 
 void elan_reset(void)

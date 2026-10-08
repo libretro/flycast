@@ -32,13 +32,32 @@ static struct { uint32_t vram, src, size; int from_eram; } dma[8];
 static unsigned dma_count;
 static bool dma_refuse;
 
+/* Set: the chip is given room in ta[] itself to make its blocks in, as the
+ * core gives it room in the tile accelerator's buffer. What arrives has to
+ * be the same either way. */
+static int give_room;
+static unsigned made_in_place;
+
+uint32_t *elan_host_ta_room(unsigned blocks)
+{
+   if (!give_room || ta_count + blocks > TA_MAX)
+      return NULL;
+   return ta[ta_count];
+}
+
 void elan_host_ta(const uint32_t *blocks, unsigned count)
 {
    for (; count; count--, blocks += 8)
    {
       uint32_t pcw = blocks[0];
       if (ta_count < TA_MAX)
-         memcpy(ta[ta_count++], blocks, 32);
+      {
+         if (blocks == ta[ta_count])
+            made_in_place++;
+         else
+            memcpy(ta[ta_count], blocks, 32);
+         ta_count++;
+      }
       if (ta_half)
       {
          ta_half = 0;
@@ -813,6 +832,7 @@ static void test_random_scenes(void)
 {
    uint32_t h = 2166136261u;
    unsigned scene;
+   unsigned in_place_before = made_in_place;
 
    for (scene = 0; scene < 400; scene++)
    {
@@ -837,7 +857,8 @@ static void test_random_scenes(void)
       run(from);
       CHECK(hash_ta(2166136261u) == once);
    }
-   printf("random scenes: %08x\n", h);
+   printf("random scenes: %08x%s\n", h, give_room ? " (made in the host's buffer)" : "");
+   CHECK(give_room ? made_in_place > in_place_before : made_in_place == in_place_before);
    /* What they have come to on every build so far - x86-64 and 64-bit
     * ARM, four at a time and one by one, gcc at every optimisation level
     * (built as run.sh builds it, with -ffp-contract=off: a compiler that
@@ -866,6 +887,17 @@ int main(void)
    test_deep_links();
    test_state();
    test_random_scenes();
+   /* and all of it again with the blocks made where the host takes them from */
+   give_room = 1;
+   test_strip();
+   test_lighting();
+   test_clipping();
+   test_fan();
+   test_passthrough();
+   test_bad_lists();
+   test_deep_links();
+   test_random_scenes();
+   give_room = 0;
 
    free(ram);
    if (failures)

@@ -97,6 +97,11 @@ extern "C" void elan_host_ta(const uint32_t *blocks, unsigned count)
 	}
 }
 
+extern "C" uint32_t *elan_host_ta_room(unsigned blocks)
+{
+	return (uint32_t *)ta_vtx_room(blocks);
+}
+
 extern "C" int elan_host_ta_list(void)
 {
 	return ta_vtx_list();

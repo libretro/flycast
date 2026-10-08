@@ -76,6 +76,12 @@ void elan_counters(unsigned *in, unsigned *out);
 
 /* @count 32-byte blocks for the tile accelerator. */
 void elan_host_ta(const uint32_t *blocks, unsigned count);
+
+/* Room for @blocks blocks where the tile accelerator would put the next
+ * ones itself, or NULL if it has none to give. Blocks made there are
+ * handed to elan_host_ta() like any others - which sees where they are
+ * and does not copy them. Good until the next thing is sent. */
+uint32_t *elan_host_ta_room(unsigned blocks);
 /* The list the tile accelerator has open (0-4), or -1. */
 int elan_host_ta_list(void);
 /* The tile accelerator is waiting for the second half of a 64-byte
