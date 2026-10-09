@@ -589,9 +589,13 @@ void RuntimeBlockInfo::Discard()
 	// Update references
 	for (RuntimeBlockInfoPtr& ref : pre_refs)
 	{
-		if (ref->NextBlock == vaddr)
+		/* (By what it is linked to, not by the address it goes to: that
+		 * need not be the address this was compiled for - the same code
+		 * through another of memory's mirrors - and a link left standing
+		 * goes to code that is no longer anybody's.) */
+		if (ref->pNextBlock == this)
 			ref->pNextBlock = NULL;
-		if (ref->BranchBlock == vaddr)
+		if (ref->pBranchBlock == this)
 			ref->pBranchBlock = NULL;
 		ref->relink_data = 0;
 		ref->Relink();
