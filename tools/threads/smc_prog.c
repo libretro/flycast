@@ -155,8 +155,21 @@ __asm__(".section .text.start,\"ax\"\n.global _start\n_start:\n"
         "  mov r5, r4\n  rte\n  nop\n  .align 2\n"
         "1: lds.l @r15+, pr\n  rts\n  nop\n  .align 2\n"
         "2: .long 0x10000000\n3: .long 0xBFFFFFFF\n");
+/* smc_move64(from, to): 64 bits from one place to another, the way a game
+ * moves its vertices: with FPSCR.SZ on, which makes fmov take two words
+ * at a time. (By number: this is compiled for an SH4 without an FPU.) */
+__asm__(".text\n.align 2\n.global smc_move64\nsmc_move64:\n"
+        "  .word 0x026A\n"                           /* sts fpscr, r2 */
+        "  mov.l 1f, r3\n"
+        "  .word 0x436A\n"                           /* lds r3, fpscr */
+        "  .word 0xF048\n"                           /* fmov @r4, dr0 */
+        "  .word 0xF50A\n"                           /* fmov dr0, @r5 */
+        "  .word 0x426A\n"                           /* lds r2, fpscr */
+        "  rts\n  nop\n  .align 2\n"
+        "1: .long 0x00140001\n");
 extern char smc_vbr[];
 extern const u32 smc_own_tlb;
+extern void smc_move64(u32 from, u32 to);
 extern u32 smc_enter_user(u32 where, u32 what);
 
 #define VERDICT  ((volatile u32 *)0x8c00f800)
@@ -276,6 +289,8 @@ volatile u32 smc_misses, smc_first_writes, smc_reads_refused, smc_writes_refused
  *                   first and second of a 4K change places, and the third
  *                   and fourth
  *   0x18000000 on   for privileged mode only
+ *   0x19000000 on   each page where its neighbour would be: the first and
+ *                   second of an 8K change places
  *
  * A page that was not to be touched the way it was - the exceptions for a
  * first write and for the two refusals - is counted and given again with
@@ -327,6 +342,8 @@ void smc_fault(void)
       to = (va & 0x00FFFC00) ^ 0x400;
       entry = (va >> 10) & 0x3F;
    }
+   if (top == 0x19)
+      to ^= 0x1000;
    if (top == 0x13 || top == 0xC9 || top == 0xCD)
       to += smc_shift;
    *WORD(0xFF000004) = 0x0C000000 | to | flags;     /* PTEL */
@@ -780,6 +797,52 @@ static u32 __attribute__((noinline)) small_pages(void)
    return 0;
 }
 
+/* 64 bits at a time, from 0x19000000 on: the last four bytes of one page
+ * and the first four of the next, which are nowhere near each other in
+ * memory - the pages are each where the other would be. An emulator that
+ * translates the address and takes eight bytes from there has the second
+ * four from what comes next in memory instead. More than once: what is
+ * done about a page the first time it is touched need not be what is done
+ * after. */
+static u32 __attribute__((noinline)) in_two_pages(void)
+{
+   const u32 at = page(), va = 0x19000000 + at, mem = 0x8c000000 + at;
+   u32 k;
+
+   for (k = 0; k < 4; k++)
+   {
+      /* (@va + 0xFFC is at @mem + 0x1FFC, and @va + 0x1000 at @mem) */
+      *WORD(mem + 0x1FFC) = 0x11110000 + k;
+      *WORD(mem + 0x0000) = 0x22220000 + k;
+      *WORD(mem + 0x2000) = 0x33330000 + k;
+      *WORD(mem + 0x800) = 0;
+      *WORD(mem + 0x804) = 0;
+      smc_move64(va + 0xFFC, mem + 0x800);
+      if (*WORD(mem + 0x800) != 0x11110000 + k)
+         return 1;
+      if (*WORD(mem + 0x804) != 0x22220000 + k)
+         return 2;
+
+      *WORD(mem + 0x810) = 0x44440000 + k;
+      *WORD(mem + 0x814) = 0x55550000 + k;
+      smc_move64(mem + 0x810, va + 0xFFC);
+      if (*WORD(mem + 0x1FFC) != 0x44440000 + k)
+         return 3;
+      if (*WORD(mem + 0x0000) != 0x55550000 + k)
+         return 4;
+      if (*WORD(mem + 0x2000) != 0x33330000 + k)
+         return 5;
+
+      /* and in one page, at an address that is a multiple of 4 and not of 8 */
+      *WORD(mem + 0x1104) = 0x66660000 + k;
+      *WORD(mem + 0x1108) = 0x77770000 + k;
+      smc_move64(va + 0x104, va + 0x20C);
+      if (*WORD(mem + 0x120C) != 0x66660000 + k || *WORD(mem + 0x1210) != 0x77770000 + k)
+         return 6;
+   }
+   return 0;
+}
+
 /* A page that may be read and not written, from 0x16000000 on: the write
  * is refused, once (smc_fault() then gives the page with nothing in the
  * way), and is made. */
@@ -1138,13 +1201,16 @@ void cmain(void)
          fail(20, 0x3C | r);
    }
 
-   /* Pages of 1K; a page that may not be written to; the TLB emptied and
-    * then written to; more pages than there may be room for. */
+   /* Pages of 1K; 64 bits in two pages; a page that may not be written
+    * to; the TLB emptied and then written to; more pages than there may
+    * be room for. */
    *VERDICT = 21;
    if (mmu)
    {
       if ((r = small_pages()) != 0)
          fail(21, 0x10 | r);
+      if ((r = in_two_pages()) != 0)
+         fail(21, 0x50 | r);
       if ((r = not_to_be_written()) != 0)
          fail(21, 0x20 | r);
       if ((r = emptied_then_written()) != 0)

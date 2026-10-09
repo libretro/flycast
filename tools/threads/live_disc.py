@@ -815,7 +815,8 @@ ffffffff000020440000000017b7d1380000803f00000000ffffffff00000000
 
 # The same program built with -DLIVE_MMU_ALIGN: its MMU test also asks for
 # the address errors a misaligned access raises (live_prog.c). For a core
-# that keeps translations in a table - see headless.sh's ALIGN.
+# that keeps translations in a table, which they all do: it is the build
+# headless.sh takes.
 PROGRAM_MMU_ALIGN = bytes.fromhex("""
 01df02d02b40090000f0008c2c0f018c020005d119206b200e40543402004227
 01170b0009000900fefcffff020005d119205b200e4044340200422601160b00

@@ -1341,9 +1341,8 @@ static int __attribute__((noinline)) mmu_probe(void)
     * an emulator that keeps translations by has one, and may use it
     * without looking at the address. (Only asked of a core that keeps
     * them in a table: one that maps the pages into the host's memory
-    * lets the host do the access, and the host does not mind. That is
-    * every core but Windows' and 32-bit ARM's at present; see ALIGN in
-    * headless.sh.) */
+    * lets the host do the access, and the host does not mind. None does
+    * any more, and this is the build headless.sh takes.) */
    {
       /* (through a variable: given the odd address itself, the compiler
        * knows better than to use one instruction for it) */

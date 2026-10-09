@@ -33,11 +33,11 @@
 # symbols=ignore-all, or the one this script builds, from a first run.)
 #
 # A core built for Windows runs the same way under wine, which is how the
-# Windows build - its calling convention, and the paths only it takes, such
-# as the MMU without the host's own mapping - gets run on Linux:
+# Windows build - its calling convention, and the paths only it takes -
+# gets run on Linux:
 #
 #   make platform=win CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
-#   WINDOWS=1 ALIGN=1 CC=x86_64-w64-mingw32-gcc \
+#   WINDOWS=1 CC=x86_64-w64-mingw32-gcc \
 #   OBJDUMP=x86_64-w64-mingw32-objdump \
 #   RUN=wine tools/threads/headless.sh flycast_libretro.dll
 #
@@ -46,7 +46,7 @@
 #   make platform=armv7-neon-hardfloat CC=arm-linux-gnueabihf-gcc \
 #        CXX=arm-linux-gnueabihf-g++ AS=arm-linux-gnueabihf-gcc \
 #        LDFLAGS_END=-Wl,--unresolved-symbols=ignore-all
-#   ALIGN=1 CC=arm-linux-gnueabihf-gcc NM=arm-linux-gnueabihf-nm \
+#   CC=arm-linux-gnueabihf-gcc NM=arm-linux-gnueabihf-nm \
 #   RUN="qemu-arm -cpu cortex-a15 -L /usr/arm-linux-gnueabihf" \
 #      tools/threads/headless.sh flycast_libretro.so
 #
@@ -54,14 +54,13 @@
 # cross compiler's library directory, which is also where qemu's -L finds
 # it when the core is loaded.)
 #
-# ALIGN: the two cores above translate addresses through a table when the
-# MMU is on, where the others map the pages into the host's memory. A
-# table has to be asked whether the address is a multiple of the access's
-# size - a misaligned access is an address error, and a table that is not
-# asked lets it read on past the page - and ALIGN=1 puts the build of the
-# test program on the disc that tries it (live_disc.py --mmu-align). A
-# core that maps the pages lets the host do the access, which does not
-# mind, and fails that build: not for those.
+# Every core translates addresses through a table when the MMU is on (the
+# 64-bit ones on Linux used to map the pages into the host's memory
+# instead: vmem32.cpp says why not any more). A table has to be asked
+# whether the address is a multiple of the access's size - a misaligned
+# access is an address error, and a table that is not asked lets it read on
+# past the page - so the disc has the build of the test program that tries
+# it (live_disc.py --mmu-align).
 #
 #   headless.sh CORE [key=value ...]     key=value are more core options
 #
@@ -70,7 +69,6 @@
 # RUN   what to run the frontend with, if not directly
 # GLES  set if the core is built for OpenGL ES
 # WINDOWS  set if the core is a Windows DLL; OBJDUMP is then the objdump for it
-# ALIGN  set for a core that translates through a table (see above)
 # WORK  where to work (default /tmp/flycast-headless)
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -82,7 +80,7 @@ WORK=${WORK:-/tmp/flycast-headless}
 T=$ROOT/tools/threads
 mkdir -p "$WORK/dir"
 
-python3 "$T/live_disc.py" "$WORK/test.gdi" ${ALIGN:+--mmu-align}
+python3 "$T/live_disc.py" "$WORK/test.gdi" --mmu-align
 if [ -n "$WINDOWS" ]; then
    FRONTEND=headless.exe
    "$CC" -O1 -o "$WORK/headless.exe" "$T/headless.c"
