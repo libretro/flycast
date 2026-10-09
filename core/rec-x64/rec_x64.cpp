@@ -289,6 +289,24 @@ static struct CompileStubInit
 	CompileStubInit() { ngen_FailedToFindBlock = &ngen_compile_stub; }
 } compile_stub_init;
 
+#ifndef _WIN32
+/* What a fast memory access that faulted is written over with a call to
+ * (ngen_Rewrite()): a routine for each of loading and storing 1, 2, 4 and
+ * 8 bytes, with the address and the data where the access had them and
+ * the result where it left it. In the code cache, like the link stub, so
+ * that a near call reaches them. They go through ngen_call_keep_xmm. */
+static u8 *mem_stubs[8];
+
+static s32 mem_load8(u32 addr)  { return (s8)ReadMem8(addr); }
+static s32 mem_load16(u32 addr) { return (s16)ReadMem16(addr); }
+static u32 mem_load32(u32 addr) { return ReadMem32(addr); }
+static u64 mem_load64(u32 addr) { return ReadMem64(addr); }
+static void mem_store8(u32 addr, u32 data)  { WriteMem8(addr, (u8)data); }
+static void mem_store16(u32 addr, u32 data) { WriteMem16(addr, (u16)data); }
+static void mem_store32(u32 addr, u32 data) { WriteMem32(addr, data); }
+static void mem_store64(u32 addr, u64 data) { WriteMem64(addr, data); }
+#endif
+
 /* The link stub, which is in the code cache so that every block reaches
  * it with a near call: see DynaRBI. In the cache's writable mapping; a
  * block is the same distance from it in the executable one. */
@@ -446,8 +464,28 @@ void ngen_init()
 		stub.jmp(stub.rax);
 		stub.ready();
 		emit_Skip((stub.getSize() + 15) & ~15u);
-		emit_SetBaseAddr();
 	}
+#ifndef _WIN32
+	{
+		static const void *const routines[8] = {
+			(const void *)&mem_load8, (const void *)&mem_load16, (const void *)&mem_load32, (const void *)&mem_load64,
+			(const void *)&mem_store8, (const void *)&mem_store16, (const void *)&mem_store32, (const void *)&mem_store64,
+		};
+
+		for (int i = 0; i < 8; i++)
+		{
+			Xbyak::CodeGenerator stub(32, emit_GetCCPtr());
+
+			mem_stubs[i] = (u8 *)stub.getCode();
+			stub.mov(stub.rax, (uintptr_t)routines[i]);
+			stub.mov(stub.r11, (uintptr_t)&ngen_call_keep_xmm);
+			stub.jmp(stub.r11);
+			stub.ready();
+			emit_Skip(32);
+		}
+	}
+#endif
+	emit_SetBaseAddr();
 }
 
 void ngen_ResetBlocks()
@@ -1747,7 +1785,6 @@ public:
 
 	void GenReadMemorySlow(const shil_opcode& op, RuntimeBlockInfo* block)
 	{
-		const u8 *start_addr = getCurr();
 		u32 size = op.flags & 0x7f;
 		Xbyak::Label lut_miss, lut_done;
 #ifdef MMU_HOST_PAGE_LUT
@@ -1810,23 +1847,10 @@ public:
 		}
 		if (lut)
 			L(lut_done);
-
-		// as long as the fast access it may be written over: see ngen_Rewrite()
-		if (FastMemory())
-		{
-			Xbyak::Label quick_exit;
-			if (getCurr() - start_addr <= read_mem_op_size - 6)
-				jmp(quick_exit, T_NEAR);
-			while (getCurr() - start_addr < read_mem_op_size)
-				nop();
-			L(quick_exit);
-			verify(getCurr() - start_addr == read_mem_op_size);
-		}
 	}
 
 	void GenWriteMemorySlow(const shil_opcode& op, RuntimeBlockInfo* block)
 	{
-		const u8 *start_addr = getCurr();
 		u32 size = op.flags & 0x7f;
 		Xbyak::Label lut_miss, lut_done;
 #ifdef MMU_HOST_PAGE_LUT
@@ -1887,27 +1911,6 @@ public:
 		}
 		if (lut)
 			L(lut_done);
-		// as long as the fast access it may be written over: see ngen_Rewrite()
-		if (FastMemory())
-		{
-			Xbyak::Label quick_exit;
-			if (getCurr() - start_addr <= write_mem_op_size - 6)
-				jmp(quick_exit, T_NEAR);
-			while (getCurr() - start_addr < write_mem_op_size)
-				nop();
-			L(quick_exit);
-			verify(getCurr() - start_addr == write_mem_op_size);
-		}
-	}
-
-	void InitializeRewrite(RuntimeBlockInfo *block, size_t opid)
-	{
-		rewriting = true;
-	}
-
-	void FinalizeRewrite()
-	{
-		ready();
 	}
 
 	void ngen_CC_Start(const shil_opcode& op)
@@ -2297,19 +2300,95 @@ public:
 	 *
 	 * What is not memory - registers, the BIOS, the store queues - is not
 	 * mapped. A move there faults, and ngen_Rewrite() turns it into the
-	 * call it would have been, once; that is what the padding after it is
-	 * for. A store to a page that is watched, because code was compiled
-	 * from it or a texture read from it, faults too, and is let through by
-	 * the handlers that watch. */
+	 * call it would have been, once. A store to a page that is watched,
+	 * because code was compiled from it or a texture read from it, faults
+	 * too, and is let through by the handlers that watch. */
 	static bool FastMemory()
 	{
+#ifdef _WIN32
+		return false;
+#else
 		return !mmu_enabled() && _nvmem_4gb_space();
+#endif
 	}
 
-	// How far into its code a fast access's move is
-	static u32& MemAccessOffset()
+	/* Where the SH4's memory as the host has it mapped is from r15. The
+	 * mapping comes straight after the block that holds the context, which
+	 * is what r15 points into, so a fast access is one instruction:
+	 * [r15 + address + this]. (It was two: the mapping's 64-bit address
+	 * into rax, and then the move.) */
+	static int MemFromCtx()
 	{
-		return mem_access_offset;
+		return (int)((ptrdiff_t)sizeof(Sh4RCB) - (ptrdiff_t)CTX_BASE);
+	}
+
+	/* Whether what is at @code is a fast access as the two functions below
+	 * write them, and if so which - 0 to 3 a load of 1, 2, 4, 8 bytes, 4 to
+	 * 7 a store - and how long it is. A fast access is told by what it is,
+	 * so nothing has to be kept about where in a block they are: the
+	 * address in rdi, the data in rax or rsi, the base r15, the distance
+	 * MemFromCtx(). Nothing else a block has looks like that. */
+	static bool FastAccessAt(const u8 *code, int *which, int *length)
+	{
+		const u8 *p = code;
+		const bool word = *p == 0x66;
+		bool store;
+		int size;
+
+		if (word)
+			p++;
+		// REX, with B for r15 and nothing else but W
+		if ((*p & 0xF7) != 0x41)
+			return false;
+		const bool wide = (*p++ & 8) != 0;
+		if (p[0] == 0x0F && (p[1] == 0xBE || p[1] == 0xBF) && !word && !wide)
+		{
+			store = false;
+			size = p[1] == 0xBE ? 1 : 2;
+			p += 2;
+		}
+		else if (*p == 0x8B && !word)
+		{
+			store = false;
+			size = wide ? 8 : 4;
+			p++;
+		}
+		else if (*p == 0x88 && !word && !wide)
+		{
+			store = true;
+			size = 1;
+			p++;
+		}
+		else if (*p == 0x89 && !(word && wide))
+		{
+			store = true;
+			size = word ? 2 : wide ? 8 : 4;
+			p++;
+		}
+		else
+			return false;
+		// rax or rsi, [base + index + a distance]; rdi and r15, times one
+		const u8 modrm = *p++;
+		if ((modrm & 7) != 4 || ((modrm >> 3) & 7) != (store ? 6 : 0) || *p++ != 0x3F)
+			return false;
+		if ((modrm >> 6) == 2)
+		{
+			s32 distance;
+			memcpy(&distance, p, 4);
+			if (distance != MemFromCtx())
+				return false;
+			p += 4;
+		}
+		else if ((modrm >> 6) == 1)
+		{
+			if ((s8)*p++ != MemFromCtx())
+				return false;
+		}
+		else
+			return false;
+		*which = (store ? 4 : 0) + (size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3);
+		*length = (int)(p - code);
+		return true;
 	}
 
 	bool GenReadMemoryFast(const shil_opcode& op, RuntimeBlockInfo* block)
@@ -2317,43 +2396,34 @@ public:
 		if (!FastMemory())
 			return false;
 		const u8 *start_addr = getCurr();
-
-		mov(rax, (uintptr_t)virt_ram_base);
-
+		const Xbyak::RegExp at = r15 + call_regs64[0] + MemFromCtx();
 		u32 size = op.flags & 0x7f;
-		//verify(getCurr() - start_addr == 26);
-		u32& access_offset = MemAccessOffset();
-		if (access_offset == 0)
-			access_offset = getCurr() - start_addr;
-		else
-			verify(getCurr() - start_addr == access_offset);
 
-		block->memory_accesses[(void*)getCurr()] = (u32)current_opid;
 		switch (size)
 		{
 		case 1:
-			movsx(eax, byte[rax + call_regs64[0]]);
+			movsx(eax, byte[at]);
 			break;
 
 		case 2:
-			movsx(eax, word[rax + call_regs64[0]]);
+			movsx(eax, word[at]);
 			break;
 
 		case 4:
-			mov(eax, dword[rax + call_regs64[0]]);
+			mov(eax, dword[at]);
 			break;
 
 		case 8:
-			mov(rax, qword[rax + call_regs64[0]]);
+			mov(rax, qword[at]);
 			break;
 
 		default:
 			die("1..8 bytes");
 		}
-
-		// room for the call this becomes if the access faults
-		nop(read_mem_op_size - (getCurr() - start_addr));
-		verify(getCurr() - start_addr == read_mem_op_size);
+		// ngen_Rewrite() has to know it again, and needs five bytes for its call
+		int which, length;
+		verify(FastAccessAt(start_addr, &which, &length) && which < 4
+				&& length == (int)(getCurr() - start_addr) && length >= 5);
 
 		return true;
 	}
@@ -2363,42 +2433,33 @@ public:
 		if (!FastMemory())
 			return false;
 		const u8 *start_addr = getCurr();
-
-		mov(rax, (uintptr_t)virt_ram_base);
-
+		const Xbyak::RegExp at = r15 + call_regs64[0] + MemFromCtx();
 		u32 size = op.flags & 0x7f;
-		//verify(getCurr() - start_addr == 26);
-		u32& access_offset = MemAccessOffset();
-		if (access_offset == 0)
-			access_offset = getCurr() - start_addr;
-		else
-			verify(getCurr() - start_addr == access_offset);
 
-		block->memory_accesses[(void*)getCurr()] = (u32)current_opid;
 		switch (size)
 		{
 		case 1:
-			mov(byte[rax + call_regs64[0] + 0], call_regs[1].cvt8());
+			mov(byte[at], call_regs[1].cvt8());
 			break;
 
 		case 2:
-			mov(word[rax + call_regs64[0]], call_regs[1].cvt16());
+			mov(word[at], call_regs[1].cvt16());
 			break;
 
 		case 4:
-			mov(dword[rax + call_regs64[0]], call_regs[1]);
+			mov(dword[at], call_regs[1]);
 			break;
 
 		case 8:
-			mov(qword[rax + call_regs64[0]], call_regs64[1]);
+			mov(qword[at], call_regs64[1]);
 			break;
 
 		default:
 			die("1..8 bytes");
 		}
-
-		nop(write_mem_op_size - (getCurr() - start_addr));
-		verify(getCurr() - start_addr == write_mem_op_size);
+		int which, length;
+		verify(FastAccessAt(start_addr, &which, &length) && which >= 4
+				&& length == (int)(getCurr() - start_addr) && length >= 5);
 
 		return true;
 	}
@@ -2530,17 +2591,6 @@ public:
 	void GenCall(Ret(*function)(Params...), bool skip_floats = false)
 	{
 #ifndef _WIN32
-		if (rewriting)
-		{
-			/* Written over a fast memory access that faulted - which there
-			 * only are with the MMU off. Which of the floating-point
-			 * registers are in use here is not known any more, and with
-			 * the MMU off they are not written back before a memory access
-			 * as they are with it on: all eight are kept. */
-			mov(rax, (uintptr_t)function);
-			call((const void*)ngen_call_keep_xmm);
-			return;
-		}
 		/* The floating-point registers handed out are xmm8 to xmm15, and
 		 * none of them is kept by a function on these hosts: the ones in
 		 * use at this point are saved round the call. */
@@ -2679,16 +2729,7 @@ public:
 	bool slice_out_used = false;
 	u32 block_cycles = 0;
 	bool charge_at_tail = false;
-	bool rewriting = false;	// writing a call over a fast memory access: see ngen_Rewrite()
-	static const u32 read_mem_op_size;
-	static const u32 write_mem_op_size;
-public:
-	static u32 mem_access_offset;
 };
-
-const u32 BlockCompiler::read_mem_op_size = 30;
-const u32 BlockCompiler::write_mem_op_size = 30;
-u32 BlockCompiler::mem_access_offset = 0;
 
 void X64RegAlloc::Preload(u32 reg, Xbyak::Operand::Code nreg)
 {
@@ -2747,42 +2788,41 @@ void ngen_CC_Finish(shil_opcode* op)
 {
 }
 
+/* A fast memory access (BlockCompiler::FastMemory()) faulted: it is
+ * written over with a call to the routine that does such an access by
+ * asking (mem_stubs), and run again from where it was. It is five bytes
+ * or more, which is what a call takes, so there is no room kept after it
+ * for this; what is left of it is filled in. */
 bool ngen_Rewrite(unat& host_pc, unat, unat)
 {
-	if (!BlockCompiler::FastMemory())
-		return false;
+#ifdef _WIN32
+	return false;
+#else
+	int which, length;
 
-	//printf("ngen_Rewrite pc %p\n", host_pc);
-	RuntimeBlockInfoPtr block = bm_GetBlock2((void *)host_pc);
-	if (block == NULL)
+	if (!BlockCompiler::FastMemory() || mem_stubs[0] == NULL)
+		return false;
+	if (bm_GetBlock2((void *)host_pc) == NULL)
 	{
 		WARN_LOG(DYNAREC, "ngen_Rewrite: Block at %p not found", (void *)host_pc);
 		return false;
 	}
-	u8 *code_ptr = (u8*)host_pc;
-	auto it = block->memory_accesses.find(code_ptr);
-	if (it == block->memory_accesses.end())
+	if (!BlockCompiler::FastAccessAt((const u8 *)host_pc, &which, &length))
 	{
-		WARN_LOG(DYNAREC, "ngen_Rewrite: memory access at %p not found (%lu entries)", code_ptr, block->memory_accesses.size());
+		WARN_LOG(DYNAREC, "ngen_Rewrite: no memory access at %p", (void *)host_pc);
 		return false;
 	}
-	u32 opid = it->second;
-	verify(opid < block->oplist.size());
-	const shil_opcode& op = block->oplist[opid];
 
-	BlockCompiler *assembler = new BlockCompiler(code_ptr - BlockCompiler::MemAccessOffset());
-	assembler->InitializeRewrite(block.get(), opid);
-	if (op.op == shop_readm)
-		assembler->GenReadMemorySlow(op, block.get());
-	else
-		assembler->GenWriteMemorySlow(op, block.get());
-	assembler->FinalizeRewrite();
-	verify(block->host_code_size >= assembler->getSize());
-	delete assembler;
-	block->memory_accesses.erase(it);
-	host_pc = (unat)(code_ptr - BlockCompiler::MemAccessOffset());
+	// (a block is as far from the stubs where it is run as where it is written)
+	u8 *const site = (u8 *)CC_RX2RW((u8 *)host_pc);
+	const s32 rel = (s32)(mem_stubs[which] - (site + 5));
+	static const u8 fill[5][4] = { { 0 }, { 0x90 }, { 0x66, 0x90 }, { 0x0F, 0x1F, 0x00 }, { 0x0F, 0x1F, 0x40, 0x00 } };
 
+	site[0] = 0xE8;
+	memcpy(site + 1, &rel, 4);
+	memcpy(site + 5, fill[length - 5], length - 5);
 	return true;
+#endif
 }
 
 void ngen_HandleException()
