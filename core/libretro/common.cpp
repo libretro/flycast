@@ -69,6 +69,18 @@ static LONG ExceptionHandler(EXCEPTION_POINTERS *ExceptionInfo)
    if (BM_LockedWrite(address))
       return EXCEPTION_CONTINUE_EXECUTION;
 #endif
+#if FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X64
+   /* A load or store that recompiled code made straight on the SH4's
+    * memory as it is mapped here, at an address that is not memory: it is
+    * written over with a call, and run again. */
+   {
+      const u8 *const pc = (const u8 *)CC_RX2RW(ep->ContextRecord->Rip);
+
+      if (pc > CodeCache && pc < CodeCache + CODE_SIZE + TEMP_CODE_SIZE
+            && ngen_Rewrite((size_t&)ep->ContextRecord->Rip, 0, 0))
+         return EXCEPTION_CONTINUE_EXECUTION;
+   }
+#endif
 #if FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X86
    if ( ngen_Rewrite((size_t&)ep->ContextRecord->Eip,*(size_t*)ep->ContextRecord->Esp,ep->ContextRecord->Eax) )
    {
@@ -79,10 +91,7 @@ static LONG ExceptionHandler(EXCEPTION_POINTERS *ExceptionInfo)
       return EXCEPTION_CONTINUE_EXECUTION;
    }
 #endif
-   else
-   {
-   	ERROR_LOG(COMMON, "[GPF]Unhandled access to : %p", address);
-   }
+   ERROR_LOG(COMMON, "[GPF]Unhandled access to : %p", address);
 
    return EXCEPTION_CONTINUE_SEARCH;
 }

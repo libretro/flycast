@@ -301,25 +301,36 @@ enum
 // (whether a kind's data is in a floating-point register)
 #define MEM_KIND_F(kind) ((kind) == MEM_LOAD32F || (kind) == MEM_STORE32F)
 
-#ifndef _WIN32
 /* What a fast memory access that faulted is written over with a call to
  * (ngen_Rewrite()): a routine that does the access by asking.
  *
  * A fast access has its address and its data in whatever registers the
  * block has them in, so there is a routine for each kind of access, each
  * register the address can be in and each the data can be in: 324 of
- * them, a few instructions each, written once. They are in the code
- * cache, like the link stub, so that a near call reaches them, and they
- * go through ngen_call_keep_xmm: the access they stand in for changes
- * nothing but its data.
+ * them on Linux and macOS and 560 on Windows, a few instructions each,
+ * written once. They are in the code cache, like the link stub, so that a
+ * near call reaches them. The access they stand in for changes nothing
+ * but its data, so they keep the block's floating-point registers: by
+ * going through ngen_call_keep_xmm, or, on Windows, by those being ones
+ * every function keeps.
  *
  * The registers, by number: for the address and for data in a general
- * register, 0 is the one a call has it in (rdi; rax for what is loaded,
- * rsi for what is stored) and 1 on are the block's own, alloc_regs; for
- * data in a floating-point register, 0 on are xmm8 on. 64 bits are always
- * in rax or rsi. */
+ * register, 0 is the one a call has it in (the first argument; rax for
+ * what is loaded, the second argument for what is stored) and 1 on are
+ * the block's own, alloc_regs; for data in a floating-point register, 0
+ * on are the block's, alloc_fregs. 64 bits are always in rax or the
+ * second argument. */
 #define MEM_REGS 8
-static u8 *mem_stubs[MEM_KINDS][MEM_REGS][MEM_REGS];
+#define MEM_FREGS 10
+static u8 *mem_stubs[MEM_KINDS][MEM_REGS][MEM_FREGS];
+
+#ifdef _WIN32
+#define MEM_REG_ADDR  Xbyak::Operand::RCX
+#define MEM_REG_STORE Xbyak::Operand::RDX
+#else
+#define MEM_REG_ADDR  Xbyak::Operand::RDI
+#define MEM_REG_STORE Xbyak::Operand::RSI
+#endif
 
 static s32 mem_load8(u32 addr)  { return (s8)ReadMem8(addr); }
 static s32 mem_load16(u32 addr) { return (s16)ReadMem16(addr); }
@@ -330,12 +341,21 @@ static void mem_store16(u32 addr, u32 data) { WriteMem16(addr, (u16)data); }
 static void mem_store32(u32 addr, u32 data) { WriteMem32(addr, data); }
 static void mem_store64(u32 addr, u64 data) { WriteMem64(addr, data); }
 
-// How many registers a block is given of its own, and which is number @n of them
+// How many general registers a block is given of its own, and how many floating-point ones
 static int mem_block_regs()
 {
 	int count = 0;
 
 	while (alloc_regs[count] != (Xbyak::Operand::Code)-1)
+		count++;
+	return count;
+}
+
+static int mem_block_fregs()
+{
+	int count = 0;
+
+	while (alloc_fregs[count] != -1)
 		count++;
 	return count;
 }
@@ -352,6 +372,15 @@ static int mem_reg_number(int reg, int first)
 	return -1;
 }
 
+// The same for a floating-point register, which is one of the block's or nothing
+static int mem_freg_number(int reg)
+{
+	for (int i = 0; alloc_fregs[i] != -1; i++)
+		if (alloc_fregs[i] == reg)
+			return i;
+	return -1;
+}
+
 static void mem_stub_make(int kind, int addr, int data)
 {
 	static const void *const routines[MEM_KINDS] = {
@@ -361,36 +390,52 @@ static void mem_stub_make(int kind, int addr, int data)
 		(const void *)&mem_store64,
 	};
 	const bool load = kind < MEM_STORE8;
+	// (what is loaded has to be put somewhere after the call, unless rax is where it is wanted)
+	const bool after = load && (MEM_KIND_F(kind) || data != 0);
+	const Xbyak::Reg32 first(MEM_REG_ADDR), second(MEM_REG_STORE);
 	Xbyak::CodeGenerator stub(64, emit_GetCCPtr());
 
 	mem_stubs[kind][addr][data] = (u8 *)stub.getCode();
 	// the address and what is stored to where a function takes them (neither is ever in the other's place)
 	if (addr != 0)
-		stub.mov(stub.edi, Xbyak::Reg32(alloc_regs[addr - 1]));
+		stub.mov(first, Xbyak::Reg32(alloc_regs[addr - 1]));
 	if (!load && MEM_KIND_F(kind))
-		stub.movd(stub.esi, Xbyak::Xmm(8 + data));
+		stub.movd(second, Xbyak::Xmm(alloc_fregs[data]));
 	else if (!load && data != 0)
-		stub.mov(stub.esi, Xbyak::Reg32(alloc_regs[data - 1]));
+		stub.mov(second, Xbyak::Reg32(alloc_regs[data - 1]));
 	stub.mov(stub.rax, (uintptr_t)routines[kind]);
+#ifdef _WIN32
+	// room for the function to keep its arguments in, and the stack a multiple of 16
+	stub.sub(stub.rsp, 40);
+	stub.call(stub.rax);
+	stub.add(stub.rsp, 40);
+#else
 	stub.mov(stub.r11, (uintptr_t)&ngen_call_keep_xmm);
-	if (load && (MEM_KIND_F(kind) || data != 0))
+	if (after)
 	{
-		// what was loaded to where the access had it
 		stub.sub(stub.rsp, 8);
 		stub.call(stub.r11);
 		stub.add(stub.rsp, 8);
-		if (MEM_KIND_F(kind))
-			stub.movd(Xbyak::Xmm(8 + data), stub.eax);
-		else
-			stub.mov(Xbyak::Reg32(alloc_regs[data - 1]), stub.eax);
-		stub.ret();
 	}
 	else
 		stub.jmp(stub.r11);
+#endif
+	if (after)
+	{
+		if (MEM_KIND_F(kind))
+			stub.movd(Xbyak::Xmm(alloc_fregs[data]), stub.eax);
+		else
+			stub.mov(Xbyak::Reg32(alloc_regs[data - 1]), stub.eax);
+	}
+#ifdef _WIN32
+	stub.ret();
+#else
+	if (after)
+		stub.ret();
+#endif
 	stub.ready();
 	emit_Skip((stub.getSize() + 15) & ~15u);
 }
-#endif
 
 /* The link stub, which is in the code cache so that every block reaches
  * it with a near call: see DynaRBI. In the cache's writable mapping; a
@@ -550,21 +595,20 @@ void ngen_init()
 		stub.ready();
 		emit_Skip((stub.getSize() + 15) & ~15u);
 	}
-#ifndef _WIN32
 	{
 		const int regs = 1 + mem_block_regs();
+		const int fregs = mem_block_fregs();
 
-		verify(regs <= MEM_REGS);
+		verify(regs <= MEM_REGS && fregs <= MEM_FREGS);
 		for (int kind = 0; kind < MEM_KINDS; kind++)
 			for (int addr = 0; addr < regs; addr++)
 			{
-				const int datas = MEM_KIND_F(kind) ? 8 : kind == MEM_LOAD64 || kind == MEM_STORE64 ? 1 : regs;
+				const int datas = MEM_KIND_F(kind) ? fregs : kind == MEM_LOAD64 || kind == MEM_STORE64 ? 1 : regs;
 
 				for (int data = 0; data < datas; data++)
 					mem_stub_make(kind, addr, data);
 			}
 	}
-#endif
 	emit_SetBaseAddr();
 }
 
@@ -2365,11 +2409,7 @@ public:
 	 * too, and is let through by the handlers that watch. */
 	static bool FastMemory()
 	{
-#ifdef _WIN32
-		return false;
-#else
 		return !mmu_enabled() && _nvmem_4gb_space();
-#endif
 	}
 
 	/* Where the SH4's memory as the host has it mapped is from r15. The
@@ -2390,9 +2430,6 @@ public:
 	 * else a block has looks like that. */
 	static bool FastAccessAt(const u8 *code, int *kind, int *addr, int *data, int *length)
 	{
-#ifdef _WIN32
-		return false;
-#else
 		const u8 *p = code;
 		u8 prefix = 0;
 
@@ -2460,12 +2497,12 @@ public:
 		const int reg = ((modrm >> 3) & 7) | ((rex & 4) != 0 ? 8 : 0);
 		const bool load = *kind < MEM_STORE8;
 
-		*addr = mem_reg_number(index, Xbyak::Operand::RDI);
+		*addr = mem_reg_number(index, MEM_REG_ADDR);
 		if (MEM_KIND_F(*kind))
-			*data = reg >= 8 ? reg - 8 : -1;
+			*data = mem_freg_number(reg);
 		else
 		{
-			*data = mem_reg_number(reg, load ? Xbyak::Operand::RAX : Xbyak::Operand::RSI);
+			*data = mem_reg_number(reg, load ? Xbyak::Operand::RAX : MEM_REG_STORE);
 			if ((*kind == MEM_LOAD64 || *kind == MEM_STORE64) && *data != 0)
 				return false;
 		}
@@ -2473,7 +2510,6 @@ public:
 			return false;
 		*length = (int)(p - code);
 		return true;
-#endif
 	}
 
 	/* A fast access of @kind: the SH4's address is in the general register
@@ -2942,9 +2978,6 @@ void ngen_CC_Finish(shil_opcode* op)
  * in. */
 bool ngen_Rewrite(unat& host_pc, unat, unat)
 {
-#ifdef _WIN32
-	return false;
-#else
 	int kind, addr, data, length;
 
 	if (!BlockCompiler::FastMemory())
@@ -2972,7 +3005,6 @@ bool ngen_Rewrite(unat& host_pc, unat, unat)
 	memcpy(site + 1, &rel, 4);
 	memcpy(site + 5, fill[length - 5], length - 5);
 	return true;
-#endif
 }
 
 void ngen_HandleException()
