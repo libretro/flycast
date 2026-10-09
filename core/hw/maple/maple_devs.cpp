@@ -570,18 +570,25 @@ struct MapleSaveState
 {
 	retro_atomic_int_t failed;	// set by the writer: a write did not go through
 	u32 wait;					// frames until the next try, after one that failed
+	u32 again;					// how long the last such wait was
 
-	MapleSaveState() : wait(0)
+	MapleSaveState() : wait(0), again(0)
 	{
 		retro_atomic_int_init(&failed, 0);
 	}
-	// Whether a write has failed since this was last asked; a while before the next try
-	bool Failed()
+	/* Whether a write has failed since this was last asked: 0 if not, 1
+	 * the first time, 2 every time after. There is a while before the
+	 * next try - a second, then twice as long each time, up to a minute:
+	 * a file that cannot be written at all (no such directory, a disk
+	 * that is full) is not hammered at, and whoever logs the failure does
+	 * so the first time only. */
+	int Failed()
 	{
 		if (!retro_atomic_load_acquire_int(&failed) || !retro_atomic_exchange_int(&failed, 0))
-			return false;
-		wait = 60;
-		return true;
+			return 0;
+		again = again == 0 ? 60 : again >= 1800 ? 3600 : again * 2;
+		wait = again;
+		return again == 60 ? 1 : 2;
 	}
 	// Whether it is still too soon after a failure to try again
 	bool Waiting()
@@ -684,9 +691,10 @@ struct maple_sega_vmu: maple_base
 	 * counted as written whatever the write said. */
 	virtual void FlushSave()
 	{
-		if (save_state.Failed())
+		if (const int failed = save_state.Failed())
 		{
-			WARN_LOG(MAPLE, "VMU %s: a write to its file failed. The card will be written again", logical_port);
+			if (failed == 1)
+				WARN_LOG(MAPLE, "VMU %s: a write to its file failed. The card will be written again", logical_port);
 			dirty_lo = 0;
 			dirty_hi = sizeof(flash_data);
 		}
@@ -707,6 +715,12 @@ struct maple_sega_vmu: maple_base
 	{
 		save_state.wait = 0;
 		FlushSave();
+		if (save_state.wait != 0)
+		{
+			// (that found a write had failed, and put the next one off: now, all the same)
+			save_state.wait = 0;
+			FlushSave();
+		}
 		// the writer has the file, and the flag that is this card's
 		save_writer_drain();
 		if (file && save_state.Failed())
@@ -2130,6 +2144,11 @@ struct maple_naomi_jamma : maple_sega_controller
 	{
 		save_state.wait = 0;
 		FlushSave();
+		if (save_state.wait != 0)
+		{
+			save_state.wait = 0;
+			FlushSave();
+		}
 		// (the flag is this device's: the writer is done with it first)
 		save_writer_drain();
 		if (save_state.Failed())
@@ -2142,9 +2161,10 @@ struct maple_naomi_jamma : maple_sega_controller
 	 * later if that fails, as a memory card's is. */
 	virtual void FlushSave()
 	{
-		if (save_state.Failed())
+		if (const int failed = save_state.Failed())
 		{
-			WARN_LOG(MAPLE, "Cannot save EEPROM to file %s. It will be tried again", eeprom_file);
+			if (failed == 1)
+				WARN_LOG(MAPLE, "Cannot save EEPROM to file %s. It will be tried again", eeprom_file);
 			eeprom_dirty = true;
 		}
 		if (!eeprom_dirty || save_state.Waiting())
