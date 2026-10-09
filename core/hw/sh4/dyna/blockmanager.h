@@ -93,6 +93,14 @@ struct RuntimeBlockInfo: RuntimeBlockInfo_Core
 
 extern "C" {
 __attribute__((used)) DynarecCodeEntryPtr DYNACALL bm_GetCodeByVAddr(u32 addr);
+/* What bm_GetCodeByVAddr() keeps of where it found the code for an address
+ * with the MMU on is to go: an address may be another page now, or a
+ * block is gone. */
+#if FEAT_SHREC != DYNAREC_NONE
+void bm_ForgetVaddrs();
+#else
+static inline void bm_ForgetVaddrs() {}
+#endif
 }
 
 RuntimeBlockInfoPtr bm_GetBlock2(void* dynarec_code);

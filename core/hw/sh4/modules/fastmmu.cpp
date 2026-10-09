@@ -27,6 +27,7 @@
 
 #include "hw/mem/_vmem.h"
 #include "hw/mem/vmem32.h"
+#include "hw/sh4/dyna/blockmanager.h"
 
 #include "mmu_impl.h"
 #include "ccn.h"
@@ -87,6 +88,7 @@ void mmu_strict_changed()
 {
 	if (!mmu_strict)
 		return;
+	bm_ForgetVaddrs();
 	if (++strict_time == (1u << 25))
 	{
 		strict_time = 0;
@@ -177,6 +179,7 @@ static void flush_cache()
 		memset(entry_buckets, 0, sizeof(entry_buckets));
 	full_table_size = 0;
 	free_entries = NULL;
+	bm_ForgetVaddrs();
 }
 
 static void forget_all();
@@ -198,6 +201,8 @@ static void cache_entry(const TLB_Entry &entry)
 				&& slot->entry.Data.SZ1 == entry.Data.SZ1 && slot->entry.Data.SZ0 == entry.Data.SZ0)
 		{
 			slot->entry = entry;
+			// (where the page is may be what changed)
+			bm_ForgetVaddrs();
 			return;
 		}
 	}
@@ -332,6 +337,7 @@ int main(int argc, char *argv[])
  * addresses, and what the host has mapped for the page. */
 static void forget_page(u32 va, u32 size)
 {
+	bm_ForgetVaddrs();
 	mmu_lut_forget(va, size);
 	if (vmem32_enabled())
 		vmem32_forget(va, size);
@@ -648,5 +654,6 @@ void mmu_detect_strict()
 		NOTICE_LOG(SH4, "Enabling Full MMU support, the strict way: the TLB was loaded before AT");
 	}
 	mmu_strict = strict;
+	bm_ForgetVaddrs();
 }
 #endif 	// FAST_MMU

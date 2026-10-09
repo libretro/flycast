@@ -10,6 +10,7 @@
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/_vmem.h"
 #include "hw/mem/vmem32.h"
+#include "hw/sh4/dyna/blockmanager.h"
 #include "mmu.h"
 
 //Types
@@ -102,6 +103,7 @@ void CCN_MMUCR_write(u32 addr, u32 value)
 	CCN_MMUCR=temp;
 	// (SV has a say in which entries match)
 	mmu_strict_changed();
+	bm_ForgetVaddrs();
 
 	if (mmu_changed_state)
 	{

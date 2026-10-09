@@ -50,6 +50,38 @@ static DynarecCodeEntryPtr DYNACALL bm_GetCode(u32 addr)
 	return rv;
 }
 
+/* With the MMU on no block goes straight on into the next: each one comes
+ * back to the main loop, which asks here for the code of the address that
+ * is next - 200 to 250 thousand times a frame in Sega Rally 2. Each time
+ * the address was translated and the code for where it is looked up.
+ *
+ * So where the code for an address was found is kept: by the address and
+ * the address space, so that going over to another address space and
+ * back, which such a game does many times a frame, loses nothing. All of
+ * it is forgotten whenever an address may have come to mean another page -
+ * the MMU says when (bm_ForgetVaddrs()) - and whenever a block is made or
+ * goes. */
+struct VaddrCode
+{
+	u32 vaddr;
+	u32 when;		// bm_vaddr_time, and the address space in the low 8 bits
+	DynarecCodeEntryPtr code;
+};
+#define VADDRS_KEPT 4096
+static VaddrCode vaddrs_kept[VADDRS_KEPT];
+static u32 bm_vaddr_time = 256;
+
+void bm_ForgetVaddrs()
+{
+	bm_vaddr_time += 256;
+	if (bm_vaddr_time == 0)
+	{
+		// (once in sixteen million times)
+		memset(vaddrs_kept, 0, sizeof(vaddrs_kept));
+		bm_vaddr_time = 256;
+	}
+}
+
 // addr must be a virtual address
 // This returns an executable address
 DynarecCodeEntryPtr DYNACALL bm_GetCodeByVAddr(u32 addr)
@@ -61,6 +93,16 @@ DynarecCodeEntryPtr DYNACALL bm_GetCodeByVAddr(u32 addr)
 #ifndef NO_MMU
 	else
 	{
+		const u32 asid = CCN_PTEH.ASID;
+		const u32 when = bm_vaddr_time | asid;
+		VaddrCode& kept = vaddrs_kept[((addr >> 1) ^ (asid << 7)) & (VADDRS_KEPT - 1)];
+
+		// (an odd address is never kept: see below)
+		if (kept.vaddr == addr && kept.when == when)
+			return kept.code;
+
+		const u32 kept_addr = addr;
+
 		if (addr & 1)
 		{
 			switch (addr)
@@ -102,9 +144,23 @@ DynarecCodeEntryPtr DYNACALL bm_GetCodeByVAddr(u32 addr)
 		{
 			DoMMUException(addr, rv, MMU_TT_IREAD);
 			mmu_instruction_translation(next_pc, paddr);
+			return bm_GetCode(paddr);
 		}
 
-		return bm_GetCode(paddr);
+		const DynarecCodeEntryPtr code = bm_GetCode(paddr);
+
+		/* Kept if there is code, the address is the one that was asked for
+		 * (not where a system call or an exception went instead), and - the
+		 * strict way with MMUCR.SV on - the translation does not hang on
+		 * the mode the SH4 is in, which is not part of what it is kept by. */
+		if (code != ngen_FailedToFindBlock && kept_addr == addr && bm_vaddr_time == (when & ~0xFFu)
+				&& !(mmu_strict && CCN_MMUCR.SV))
+		{
+			kept.vaddr = addr;
+			kept.when = when;
+			kept.code = code;
+		}
+		return code;
 	}
 #endif
 }
@@ -179,6 +235,7 @@ void bm_AddBlock(RuntimeBlockInfo* blk)
 
 	verify((void*)bm_GetCode(block->addr) == (void*)ngen_FailedToFindBlock);
 	FPCA(block->addr) = (DynarecCodeEntryPtr)CC_RW2RX(block->code);
+	bm_ForgetVaddrs();
 
 #ifdef DYNA_OPROF
 	if (oprofHandle)
@@ -225,6 +282,7 @@ void bm_DiscardBlock(RuntimeBlockInfo* block)
 	// Remove from jump table
 	verify((void*)bm_GetCode(block_ptr->addr) == CC_RW2RX((void*)block_ptr->code));
 	FPCA(block_ptr->addr) = ngen_FailedToFindBlock;
+	bm_ForgetVaddrs();
 
 	if (block_ptr->temp_block)
 		all_temp_blocks.erase(block_ptr);
@@ -347,6 +405,7 @@ static void bm_UnlockPage(u32 addr)
 
 void bm_ResetCache()
 {
+	bm_ForgetVaddrs();
 	ngen_ResetBlocks();
 	sh4_wait_sites_reset();
 	_vmem_bm_reset();
