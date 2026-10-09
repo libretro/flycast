@@ -80,9 +80,10 @@ u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
  * switched off for).
  *
  * Two tables, one for reads and one for writes, each with an entry for
- * every 4K page of the SH4's address space: where on the host the page is,
- * or 0. Recompiled code looks an address up in the one for what it is
- * doing, and on a hit goes straight to memory; on a miss it calls the
+ * every 4K page of the SH4's address space: what to add to an address in
+ * the page to be at it on the host, or 0. Recompiled code looks an address
+ * up in the one for what it is doing, and on a hit goes straight to
+ * memory; on a miss it calls the
  * translation, which fills the entry in if the page is one of main memory -
  * the only kind for which a host address is all an access needs.
  *
@@ -100,7 +101,7 @@ u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
  * page whose TLB entry is loaded or invalidated is forgotten on its own.
  * Emptying costs by how much of the tables has been used since the last
  * time, which is little: the parts that were are kept note of. */
-#if !defined(NO_MMU) && (HOST_CPU == CPU_ARM || HOST_CPU == CPU_X64)
+#if !defined(NO_MMU) && (HOST_CPU == CPU_ARM || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64)
 #define MMU_HOST_PAGE_LUT 1
 extern uintptr_t mmu_read_lut[0x100000];
 extern uintptr_t mmu_write_lut[0x100000];
@@ -212,6 +213,8 @@ bool mmu_is_translated(u32 va, u32 size)
 		else
 		{
 			*exception_occurred = 0;
+			// the next read of the page need not come here
+			mmu_lut_fill(adr, addr, false);
 			return _vmem_readt<T, T>(addr);
 		}
 	}
@@ -233,6 +236,7 @@ bool mmu_is_translated(u32 va, u32 size)
 			DoMMUException(adr, rv, MMU_TT_DWRITE);
 			return 1;
 		}
+		mmu_lut_fill(adr, addr, true);
 		_vmem_writet<T>(addr, data);
 		return 0;
 	}

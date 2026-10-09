@@ -428,19 +428,32 @@ void vmem32_forget(u32 va, u32 size)
 	vmem32_unmap_buffer(va, (u64)va + size);
 }
 
+/* Not used any more: never on.
+ *
+ * What this file does is have the host's MMU do the SH4's, for a Windows CE
+ * game: each page the game touches is mapped on the host where the game has
+ * it, the first time it is touched, and recompiled code then reads and
+ * writes with no translating at all. But a mapping is for one address
+ * space, and all of them go whenever the game changes to another - which
+ * Sega Rally 2 does seventeen times a frame, between six of them. It had
+ * 1.2 million pages mapped in a minute that way, 87 in 100 of them a page
+ * it had mapped before for the same address space, and each one a fault
+ * for the kernel to hand back and a page to map in answer: of the 27
+ * seconds of processor that minute took on x86-64 Linux, 10 were the
+ * kernel's.
+ *
+ * The other way, which is what Windows and the 32-bit hosts have always
+ * had, is a table of where each page is (mmu.h), looked up by recompiled
+ * code before each access. The same minute that way: under 16 seconds, a
+ * fifth of one of them the kernel's - and no more of the game's own time
+ * either, for all that every access is a few instructions longer. So that
+ * is what all hosts do now.
+ *
+ * (It was already switched off for seventeen Windows CE games, in
+ * rom_luts.h, which have had the table all along.) */
 bool vmem32_init()
 {
-#ifdef _WIN32
 	return false;
-#else
-	if (settings.dynarec.disable_vmem32 || !_nvmem_4gb_space())
-		return false;
-
-	vmem32_inited = true;
-	p3_mapped = true;
-	vmem32_flush_mmu();
-	return true;
-#endif
 }
 
 void vmem32_term()

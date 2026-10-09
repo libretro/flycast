@@ -692,11 +692,9 @@ void mmu_lut_forget(u32 va, u32 size)
 
 void mmu_lut_fill(u32 va, u32 pa, bool write)
 {
-#if HOST_CPU == CPU_X64
 	// the host's mapping does it all, and nothing reads the tables
 	if (vmem32_enabled())
 		return;
-#endif
 	// main memory only
 	if ((pa & 0x1C000000) != 0x0C000000)
 		return;
@@ -716,7 +714,11 @@ void mmu_lut_fill(u32 va, u32 pa, bool write)
 		// neither translated nor one of the two regions that are not
 		return;
 
-	const uintptr_t host = (uintptr_t)&mem_b[pa & RAM_MASK & ~0xFFFu];
+	/* What to add to an address in the page to be at it on the host: the
+	 * page on the host, less the page's address. (0 is "not known", and is
+	 * what this is where the two are the same, which costs that page its
+	 * place in the tables and nothing else.) */
+	const uintptr_t host = (uintptr_t)&mem_b[pa & RAM_MASK & ~0xFFFu] - (va & ~0xFFFu);
 	mmu_read_lut[va >> 12] = host;
 	if (write)
 		mmu_write_lut[va >> 12] = host;

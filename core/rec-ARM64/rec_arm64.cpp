@@ -1583,7 +1583,31 @@ private:
 
 		u32 size = op.flags & 0x7f;
 		if (!optimise || !GenReadMemoryFast(op, opid))
-			GenReadMemorySlow(size);
+		{
+			Label lut_miss, lut_done;
+
+			if (GenMmuLookup(mmu_read_lut, size, lut_miss))
+			{
+				switch (size)
+				{
+				case 1:
+					Ldrsb(w0, MemOperand(x4, w0, UXTW));
+					break;
+				case 2:
+					Ldrsh(w0, MemOperand(x4, w0, UXTW));
+					break;
+				default:
+					Ldr(w0, MemOperand(x4, w0, UXTW));
+					break;
+				}
+				B(&lut_done);
+				Bind(&lut_miss);
+				GenReadMemorySlow(size);
+				Bind(&lut_done);
+			}
+			else
+				GenReadMemorySlow(size);
+		}
 
 		if (size < 8)
 			host_reg_to_shil_param(op.rd, w0);
@@ -1820,7 +1844,60 @@ private:
 		if (optimise && GenWriteMemoryFast(op, opid))
 			return;
 
-		GenWriteMemorySlow(size);
+		Label lut_miss, lut_done;
+
+		if (GenMmuLookup(mmu_write_lut, size, lut_miss))
+		{
+			switch (size)
+			{
+			case 1:
+				Strb(w1, MemOperand(x4, w0, UXTW));
+				break;
+			case 2:
+				Strh(w1, MemOperand(x4, w0, UXTW));
+				break;
+			default:
+				Str(w1, MemOperand(x4, w0, UXTW));
+				break;
+			}
+			B(&lut_done);
+			Bind(&lut_miss);
+			GenWriteMemorySlow(size);
+			Bind(&lut_done);
+		}
+		else
+			GenWriteMemorySlow(size);
+	}
+
+	/* With the MMU on an access is a call, which asks the MMU. First,
+	 * though, the table of translations kept by (mmu.h), as the x86-64
+	 * and the 32-bit ARM recompiler do: on a hit, straight to the page on
+	 * the host - x4 is then what to add to the address, which is in x0, to
+	 * be there. The call is for a miss, and fills the table in. Not for an
+	 * address that is not a multiple of the access's size, which is an
+	 * address error and the call's to raise, nor for 64 bits, which can run
+	 * over the end of a page. x3 and x4 belong to nobody here.
+	 *
+	 * (This recompiler had the host's mapping of the MMU's pages, vmem32,
+	 * or a call each time.) */
+	bool GenMmuLookup(const uintptr_t *table, u32 size, Label& miss)
+	{
+#ifdef MMU_HOST_PAGE_LUT
+		if (!mmu_enabled() || vmem32_enabled() || size == 8)
+			return false;
+		if (size == 2 || size == 4)
+		{
+			Tst(w0, size - 1);
+			B(&miss, ne);
+		}
+		Lsr(w3, w0, 12);
+		Ldr(x4, reinterpret_cast<uintptr_t>(table));
+		Ldr(x4, MemOperand(x4, x3, LSL, 3));
+		Cbz(x4, &miss);
+		return true;
+#else
+		return false;
+#endif
 	}
 
 	bool GenWriteMemoryImmediate(const shil_opcode& op)

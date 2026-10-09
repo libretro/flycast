@@ -1046,25 +1046,25 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 		CMP(r1, 0);
 		miss = (u32 *)EMIT_GET_PTR();
 		MOV(r0, r0);				// "beq" to the call, once it is known where that is
-		UBFX(r3, raddr, 0, 12);
+		// (r1: what to add to the address to be at the page on the host)
 		if (read)
 		{
 			switch (optp)
 			{
-			case SZ_8:   LDRSB(rt, r1, r3, true); break;
-			case SZ_16:  LDRSH(rt, r1, r3, true); break;
-			case SZ_32I: LDR(rt, r1, r3, Offset, true); break;
-			default:     ADD(r1, r1, r3); VLDR(ft, r1, 0); break;
+			case SZ_8:   LDRSB(rt, r1, raddr, true); break;
+			case SZ_16:  LDRSH(rt, r1, raddr, true); break;
+			case SZ_32I: LDR(rt, r1, raddr, Offset, true); break;
+			default:     ADD(r1, r1, raddr); VLDR(ft, r1, 0); break;
 			}
 		}
 		else
 		{
 			switch (optp)
 			{
-			case SZ_8:   STRB(rt, r1, r3, Offset, true); break;
-			case SZ_16:  STRH(rt, r1, r3, true); break;
-			case SZ_32I: STR(rt, r1, r3, Offset, true); break;
-			default:     ADD(r1, r1, r3); VSTR(ft, r1, 0); break;
+			case SZ_8:   STRB(rt, r1, raddr, Offset, true); break;
+			case SZ_16:  STRH(rt, r1, raddr, true); break;
+			case SZ_32I: STR(rt, r1, raddr, Offset, true); break;
+			default:     ADD(r1, r1, raddr); VSTR(ft, r1, 0); break;
 			}
 		}
 		hit = (u32 *)EMIT_GET_PTR();

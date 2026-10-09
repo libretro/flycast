@@ -1667,10 +1667,10 @@ public:
 
 	/* With the MMU on and no host mapping to do the translating (vmem32),
 	 * an access is a call. First, though, the table of translations kept
-	 * by (mmu.h): on a hit, straight to the page on the host; the call is
-	 * for a miss, and fills the table in. Not for 64 bits, which can run
-	 * over the end of a page. The address is in call_regs[0]; rax, r10 and
-	 * r11 belong to nobody here. */
+	 * by (mmu.h): on a hit, rax is what to add to the address to be at the
+	 * page on the host; the call is for a miss, and fills the table in. Not
+	 * for 64 bits, which can run over the end of a page. The address is in
+	 * call_regs[0]; rax, r10 and r11 belong to nobody here. */
 	bool GenMmuLookup(const uintptr_t *table, u32 size, Xbyak::Label& miss)
 	{
 #ifdef MMU_HOST_PAGE_LUT
@@ -1691,8 +1691,6 @@ public:
 		mov(rax, qword[r10 + rax * 8]);
 		test(rax, rax);
 		jz(miss);
-		mov(r10d, call_regs[0]);
-		and_(r10d, 0xFFF);
 		return true;
 #else
 		return false;
@@ -1713,13 +1711,13 @@ public:
 		{
 			switch (size) {
 			case 1:
-				movsx(eax, byte[rax + r10]);
+				movsx(eax, byte[rax + call_regs64[0]]);
 				break;
 			case 2:
-				movsx(eax, word[rax + r10]);
+				movsx(eax, word[rax + call_regs64[0]]);
 				break;
 			default:
-				mov(eax, dword[rax + r10]);
+				mov(eax, dword[rax + call_regs64[0]]);
 				break;
 			}
 			jmp(lut_done);
@@ -1790,13 +1788,13 @@ public:
 			// the data is in call_regs[1]
 			switch (size) {
 			case 1:
-				mov(byte[rax + r10], call_regs[1].cvt8());
+				mov(byte[rax + call_regs64[0]], call_regs[1].cvt8());
 				break;
 			case 2:
-				mov(word[rax + r10], call_regs[1].cvt16());
+				mov(word[rax + call_regs64[0]], call_regs[1].cvt16());
 				break;
 			default:
-				mov(dword[rax + r10], call_regs[1]);
+				mov(dword[rax + call_regs64[0]], call_regs[1]);
 				break;
 			}
 			jmp(lut_done);
