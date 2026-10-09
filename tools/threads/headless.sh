@@ -286,20 +286,30 @@ done
 # written over by whatever road the write came: at any of the addresses the
 # same memory is at, by DMA, through a store queue, through the MMU.
 #
-# Four times: as it is; with a state saved while it is at it and loaded a
+# Six times: as it is; with a state saved while it is at it and loaded a
 # third of a second on, which is the code of the earlier moment back in
-# memory under whatever was compiled since; and both with the MMU on, the
-# program then mapping its code somewhere else, as a Windows CE game's is.
+# memory under whatever was compiled since; both with the MMU on the way a
+# Windows CE game has it (the core option), the program then mapping its
+# code somewhere else; and both with the program bringing a TLB of its own
+# (smc_elf.py --own-tlb), which the core has to notice and do the whole MMU
+# for - the exception for a first write, user mode, an address that is
+# mapped only while its entry is in the TLB.
 python3 "$T/smc_elf.py" "$WORK/smc.elf"
-for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a state loaded"; do
+python3 "$T/smc_elf.py" --own-tlb "$WORK/smc-own.elf"
+for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a state loaded" \
+   "with a TLB of its own" "with a TLB of its own and a state loaded"; do
    echo "== headless: code that is rewritten while it is in use, $SMC"
    unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
    WINCE=disabled
    SMC_WANT=600d5ac0
+   SMC_ELF=$WORK/smc.elf
    case "$SMC" in
       *MMU*)
          WINCE=enabled
          SMC_WANT=600d5ace;;
+      *own*)
+         SMC_ELF=$WORK/smc-own.elf
+         SMC_WANT=600d5ac5;;
    esac
    case "$SMC" in
       *state*)
@@ -314,7 +324,7 @@ for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a s
       export LD_PRELOAD
    fi
    HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/smc_elf.py" --verdict) \
-      $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/smc.elf" 60 \
+      $RUN "$WORK/$FRONTEND" "$CORE" "$SMC_ELF" 60 \
       reicast_use_real_bios=disabled reicast_threaded_rendering=disabled \
       reicast_force_wince=$WINCE $EXTRA \
       > "$WORK/smc.out" 2> "$WORK/smc.log" || {

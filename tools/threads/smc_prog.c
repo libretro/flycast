@@ -65,7 +65,7 @@
  *     other; and it is in a page of 64K, not in the first 4K of it (step
  *     17);
  *   - it is rewritten at 0x2C000000 and on, where the host has nothing
- *     mapped and the write goes the long way round (step 21: the last,
+ *     mapped and the write goes the long way round (step 23: the last,
  *     because the recompiled write is not the same one afterwards).
  *
  * And with the MMU on, what is not rewritten code but goes wrong the same
@@ -77,10 +77,7 @@
  *     for it), by the number of its entry, by a write of the other memory
  *     into its entry, or with everything else; while its entry is still
  *     one of the TLB's 64, and after another page has taken that entry's
- *     place. Data, and code. Then one page is given to the TLB seventy
- *     thousand times over, taken out and given back as many times, and
- *     seventy thousand pages are given once each: more than an emulator
- *     that keeps what it is given may have room for (step 18);
+ *     place. Data, and code (step 18);
  *   - the same in P3, 0xC0000000 and on, which the MMU translates like
  *     the addresses below 0x80000000: where the same address without the
  *     MMU is main memory (step 19), where it is nothing, and where it
@@ -98,10 +95,25 @@
  * CE game's code is - the recompilers do nearly everything another way
  * then.
  *
+ * And the MMU itself, where an emulator made for Windows CE cuts corners
+ * that another program walks into:
+ *
+ *   - pages of 1K, each mapped where its neighbour would be; a page that
+ *     may be read and not written; the TLB emptied and then one of its
+ *     entries written to; and more pages than an emulator that keeps what
+ *     the TLB is given may have room for (step 21);
+ *   - if the program was started with a TLB of its own making (smc_elf.py
+ *     --own-tlb: it puts a page into the TLB by hand and only then turns
+ *     translation on, which is how a core knows such a program): the
+ *     exception for the first write to a page; a page that has to be
+ *     asked for again once another has taken its entry; a page for
+ *     privileged mode only, read from user mode; and translation turned
+ *     off and on again a thousand times (step 22).
+ *
  * The word at 0x8c00f800 says how far it has got. It is 0x600D5AC0 once
  * the steps are done and the going on for ever has begun - 0x600D5ACE if
- * that was with the MMU on - or 0xBAD0ssnn: the step, and which function
- * or turn it was.
+ * that was with the MMU on, 0x600D5AC5 if with a TLB of its own - or
+ * 0xBAD0ssnn: the step, and which function or turn it was.
  *
  * smc_elf.py carries the compiled program. To rebuild it:
  *
@@ -117,34 +129,35 @@ typedef unsigned short u16;
 __asm__(".section .text.start,\"ax\"\n.global _start\n_start:\n"
         " mov.l 1f,r15\n mov.l 2f,r0\n jmp @r0\n nop\n .align 2\n"
         "1: .long 0x8c00f000\n2: .long cmain\n"
-        /* Where VBR points when the MMU is on. 0x400 on is the handler for a
-         * TLB miss: any page that is asked for is mapped to main memory at
-         * the address's low 24 bits (0x10200000 is 0x0C200000, and so is
-         * 0x11200000), to be read and written, in the TLB entry that the
-         * page's number chooses. Pages are of 4K, but from 0x12000000 on,
-         * where they are of 64K. And from 0x13000000, 0xC9000000 and
-         * 0xCD000000 on they are mapped smc_shift further up than that. */
-        ".text\n.align 2\n.global smc_vbr\nsmc_vbr:\n  .fill 0x400, 1, 0\n"
-        "  mov.l 1f, r0\n  mov.l @r0, r1\n  mov.l 2f, r2\n  and r2, r1\n"
-        "  mov.l @r0, r4\n  shlr16 r4\n  shlr8 r4\n"
-        "  mov.l 3f, r3\n  mov #0x12, r6\n  cmp/eq r6, r4\n  bf 5f\n"
-        "  mov.l 6f, r3\n"
-        "5: mov #0x13, r6\n  cmp/eq r6, r4\n  bt 7f\n"
-        "  mov.l 8f, r6\n  cmp/eq r6, r4\n  bt 7f\n"
-        "  mov.l 9f, r6\n  cmp/eq r6, r4\n  bf 10f\n"
-        "7: mov.l 11f, r5\n  mov.l @r5, r5\n  add r5, r1\n"
-        "10: or r3, r1\n  mov.l r1, @(4,r0)\n"                               /* PTEL */
-        "  mov.l @r0, r1\n  shlr8 r1\n  shlr2 r1\n  shlr2 r1\n"
-        "  mov #0x3F, r2\n  and r2, r1\n  shll8 r1\n  shll2 r1\n"            /* the entry */
-        "  mov.l @(16,r0), r2\n  mov.l 4f, r3\n  and r3, r2\n  or r1, r2\n"
-        "  mov.l r2, @(16,r0)\n"                                             /* MMUCR.URC */
-        "  .word 0x0038\n  rte\n  nop\n"                                     /* ldtlb */
-        "  .align 2\n1: .long 0xFF000000\n2: .long 0x00FFF000\n"
-        /* main memory; valid, read and write in any mode, dirty, shared: of 4K, of 64K */
-        "3: .long 0x0C000176\n4: .long 0xFFFF03FF\n6: .long 0x0C0001E6\n"
-        "8: .long 0xC9\n9: .long 0xCD\n11: .long smc_shift\n");
-u32 smc_shift;
+        /* 16 bytes into the program: not 0 if it is to bring a TLB of its own
+         * (smc_elf.py --own-tlb sets it) */
+        ".global smc_own_tlb\nsmc_own_tlb: .long 0\n"
+        /* Where VBR points when the MMU is on: 0x100 on is where an exception
+         * goes and 0x400 on where a TLB miss does. Both go to smc_fault(),
+         * with what an exception does not put aside put aside. (r0 to r7 are
+         * another set in there.) */
+        ".text\n.align 2\n.global smc_vbr\nsmc_vbr:\n  .space 0x100\n"
+        "  mov.l 1f, r0\n  jmp @r0\n  nop\n  .align 2\n1: .long smc_enter\n"
+        "  .space smc_vbr + 0x400 - .\n"
+        "  mov.l 1f, r0\n  jmp @r0\n  nop\n  .align 2\n1: .long smc_enter\n"
+        "smc_enter:\n"
+        "  sts.l pr, @-r15\n  sts.l mach, @-r15\n  sts.l macl, @-r15\n"
+        "  mov.l 1f, r0\n  jsr @r0\n  nop\n"
+        "  lds.l @r15+, macl\n  lds.l @r15+, mach\n  lds.l @r15+, pr\n"
+        "  rte\n  nop\n  .align 2\n1: .long smc_fault\n"
+        /* smc_enter_user(where, what): the function at @where - an address
+         * the MMU maps - is run in user mode and given @what. It has to get
+         * back into privileged mode (TRAPA) before it returns. */
+        ".global smc_enter_user\nsmc_enter_user:\n"
+        "  sts.l pr, @-r15\n  mova 1f, r0\n  lds r0, pr\n"
+        "  stc sr, r1\n  mov.l 2f, r2\n  or r1, r2\n  ldc r2, sr\n"           /* nothing may come between */
+        "  mov.l 3f, r2\n  and r2, r1\n  ldc r1, ssr\n  ldc r4, spc\n"
+        "  mov r5, r4\n  rte\n  nop\n  .align 2\n"
+        "1: lds.l @r15+, pr\n  rts\n  nop\n  .align 2\n"
+        "2: .long 0x10000000\n3: .long 0xBFFFFFFF\n");
 extern char smc_vbr[];
+extern const u32 smc_own_tlb;
+extern u32 smc_enter_user(u32 where, u32 what);
 
 #define VERDICT  ((volatile u32 *)0x8c00f800)
 #define CODE(at) ((volatile u16 *)(at))
@@ -233,6 +246,94 @@ static void write_w(void)
    w[7] = 0x6043;                                   /* mov r4,r0 */
 }
 
+/* The TLB, written to as memory: an entry's address half and its data half
+ * by the entry's number, and the address that finds the entry for a page. */
+#define TLB_ADDRESS(n)  ((volatile u32 *)(0xF6000000 | ((n) << 8)))
+#define TLB_DATA(n)     ((volatile u32 *)(0xF7000000 | ((n) << 8)))
+#define TLB_FIND        ((volatile u32 *)0xF6000080)
+#define MMUCR           ((volatile u32 *)0xFF000010)
+#define WORD(at)        ((volatile u32 *)(at))
+
+/* What smc_fault() counts, and how far up from its usual place it maps a
+ * page from 0x13000000, 0xC9000000 or 0xCD000000 on. */
+/* (volatile: they change under the code that reads them) */
+volatile u32 smc_shift;
+volatile u32 smc_misses, smc_first_writes, smc_reads_refused, smc_writes_refused, smc_traps;
+
+/* Every exception there is with the MMU on, and the TLB miss.
+ *
+ * A page that is asked for is mapped to main memory at the address's low
+ * 24 bits (0x10200000 is 0x0C200000, and so is 0x11200000), in the TLB
+ * entry that the page's number chooses, to be read and written in any
+ * mode and as one that has been written to. But:
+ *
+ *   0x12000000 on   pages of 64K
+ *   0x13000000 on   smc_shift further up than that (0xC9000000 and
+ *                   0xCD000000 on as well)
+ *   0x15000000 on   as pages that have not been written to yet
+ *   0x16000000 on   as pages that may not be written to
+ *   0x17000000 on   pages of 1K, each where its neighbour would be: the
+ *                   first and second of a 4K change places, and the third
+ *                   and fourth
+ *   0x18000000 on   for privileged mode only
+ *
+ * A page that was not to be touched the way it was - the exceptions for a
+ * first write and for the two refusals - is counted and given again with
+ * nothing in the way, and a TRAPA is answered by going back in privileged
+ * mode. */
+void smc_fault(void)
+{
+   const u32 event = *WORD(0xFF000024);             /* EXPEVT */
+   const u32 va = *WORD(0xFF000000) & 0xFFFFFC00;   /* PTEH: the page */
+   const u32 top = va >> 24;
+   u32 flags = 0x176, to = va & 0x00FFF000, entry = (va >> 12) & 0x3F, ssr;
+
+   switch (event)
+   {
+      case 0x160:
+         smc_traps++;
+         __asm__ volatile ("stc ssr, %0" : "=r" (ssr));
+         ssr |= 0x40000000;
+         __asm__ volatile ("ldc %0, ssr" : : "r" (ssr));
+         return;
+      case 0x40: case 0x60:
+         smc_misses++;
+         if (top == 0x15)
+            flags = 0x172;
+         else if (top == 0x16)
+            flags = 0x156;
+         else if (top == 0x18)
+            flags = 0x136;
+         break;
+      case 0x80:
+         smc_first_writes++;
+         break;
+      case 0xA0:
+         smc_reads_refused++;
+         break;
+      case 0xC0:
+         smc_writes_refused++;
+         break;
+      default:
+         *((volatile u32 *)0x8c00f800) = 0xBAD0FF00 | (event >> 5);
+         for (;;)
+            ;
+   }
+   if (top == 0x12)
+      flags = 0x1E6;
+   if (top == 0x17)
+   {
+      flags = 0x166;
+      to = (va & 0x00FFFC00) ^ 0x400;
+      entry = (va >> 10) & 0x3F;
+   }
+   if (top == 0x13 || top == 0xC9 || top == 0xCD)
+      to += smc_shift;
+   *WORD(0xFF000004) = 0x0C000000 | to | flags;     /* PTEL */
+   *MMUCR = (*MMUCR & 0xFFFF03FF) | (entry << 10);  /* MMUCR.URC */
+   __asm__ volatile (".word 0x0038");               /* ldtlb */
+}
+
 /* (A function of its own: what is compiled before the MMU is turned on is
  * compiled for a machine without one, and a recompiler finishes the block
  * it is in.) */
@@ -242,16 +343,27 @@ static u32 __attribute__((noinline)) mmu_probe(void)
 }
 
 /* The MMU, if it can be turned on: the four pages are then somewhere else
- * as well. 1 if it is on. */
+ * as well. 1 if it is on; 2 if that was with a TLB of the program's own,
+ * which is the page the probe reads put into its entry by hand and
+ * translation turned on after that - what tells an emulator that this is
+ * a program it has to do the whole MMU for, Windows CE or not. */
 static u32 mmu_on(void)
 {
    __asm__ volatile ("ldc %0, vbr" : : "r" (smc_vbr));
    *(volatile u32 *)PAGES_IN_MEMORY = 0x11223344;
    *(volatile u32 *)0xFF000000 = 0;                 /* PTEH: address space 0 */
-   *(volatile u32 *)0xFF000010 = 0x00000005;        /* MMUCR: on, and the TLB emptied */
+   if (smc_own_tlb)
+   {
+      *MMUCR = 0x00000004;                          /* the TLB emptied */
+      *TLB_ADDRESS((PAGES_MAPPED >> 12) & 0x3F) = PAGES_MAPPED | 0x300;
+      *TLB_DATA((PAGES_MAPPED >> 12) & 0x3F) = (PAGES_IN_MEMORY & 0x00FFF000) | 0x0C000176;
+      *MMUCR = 0x00000001;                          /* on */
+   }
+   else
+      *MMUCR = 0x00000005;                          /* on, and the TLB emptied */
    if (mmu_probe())
-      return 1;
-   *(volatile u32 *)0xFF000010 = 0;                 /* nobody translates: as it was */
+      return smc_own_tlb ? 2 : 1;
+   *MMUCR = 0;                                      /* nobody translates: as it was */
    return 0;
 }
 
@@ -544,14 +656,6 @@ static u32 __attribute__((noinline)) in_a_large_page(u32 first)
    return 0;
 }
 
-/* The TLB, written to as memory: an entry's address half and its data half
- * by the entry's number, and the address that finds the entry for a page. */
-#define TLB_ADDRESS(n)  ((volatile u32 *)(0xF6000000 | ((n) << 8)))
-#define TLB_DATA(n)     ((volatile u32 *)(0xF7000000 | ((n) << 8)))
-#define TLB_FIND        ((volatile u32 *)0xF6000080)
-#define MMUCR           ((volatile u32 *)0xFF000010)
-#define WORD(at)        ((volatile u32 *)(at))
-
 enum { BY_ADDRESS, BY_NUMBER, BY_REWRITING, WITH_ALL, HOW_MASK = 3, FALLEN_OUT = 4 };
 
 /* The page at @va is taken out of the TLB, @how. (@va + 0x40000 goes into
@@ -651,6 +755,170 @@ static u32 __attribute__((noinline)) many(void)
    if (*WORD(va) != 0x5EED0001)
       return 3;
    *MMUCR = 0x00000005;
+   return 0;
+}
+
+/* Pages of 1K, from 0x17000000 on: the four of a 4K are each where a
+ * neighbour would be, which a table of addresses by the 4K - an
+ * emulator's, a host's - cannot say. */
+static u32 __attribute__((noinline)) small_pages(void)
+{
+   const u32 at = page();
+   u32 k;
+
+   for (k = 0; k < 4; k++)
+      *WORD(0x8c000000 + at + k * 0x400) = 0x1000 + k;
+   for (k = 0; k < 4; k++)
+      if (*WORD(0x17000000 + at + k * 0x400) != 0x1000 + (k ^ 1))
+         return 1 + k;
+   *WORD(0x17000000 + at + 0x404) = 0x7777;
+   if (*WORD(0x8c000000 + at + 0x004) != 0x7777)
+      return 5;
+   for (k = 4; k-- > 0; )
+      if (*WORD(0x17000000 + at + k * 0x400) != 0x1000 + (k ^ 1))
+         return 6 + k;
+   return 0;
+}
+
+/* A page that may be read and not written, from 0x16000000 on: the write
+ * is refused, once (smc_fault() then gives the page with nothing in the
+ * way), and is made. */
+static u32 __attribute__((noinline)) not_to_be_written(void)
+{
+   const u32 at = page(), va = 0x16000000 + at, before = smc_writes_refused;
+
+   *WORD(0x8c000000 + at) = 0x1111;
+   if (*WORD(va) != 0x1111 || smc_writes_refused != before)
+      return 1;
+   *WORD(va) = 0x2222;
+   if (smc_writes_refused != before + 1)
+      return 2;
+   if (*WORD(0x8c000000 + at) != 0x2222)
+      return 3;
+   *WORD(va + 4) = 0x3333;
+   if (smc_writes_refused != before + 1 || *WORD(0x8c000000 + at + 4) != 0x3333)
+      return 4;
+   return 0;
+}
+
+/* The TLB is emptied, and then another entry than the page's is written
+ * to by its number: the page was gone with the emptying and stays gone.
+ * (An emulator that keeps more than the TLB's 64 and goes back to those
+ * 64 when one is written to by hand has to know that they were emptied.) */
+static u32 __attribute__((noinline)) emptied_then_written(void)
+{
+   const u32 at = page(), va = 0x13000000 + at, entry = (va >> 12) & 0x3F;
+
+   *WORD(0x8c000000 + at) = 0xAAAA0001;
+   *WORD(0x8c000000 + at + 0x1000) = 0xBBBB0001;
+   smc_shift = 0;
+   *MMUCR = 0x00000005;
+   if (*WORD(va) != 0xAAAA0001)
+      return 1;
+   smc_shift = 0x1000;
+   *MMUCR = 0x00000005;                             /* on, and the TLB emptied */
+   *TLB_ADDRESS(entry ^ 1) = 0;
+   *TLB_DATA(entry ^ 1) = 0;
+   if (*WORD(va) != 0xBBBB0001)
+      return 2;
+   smc_shift = 0;
+   *MMUCR = 0x00000005;
+   return 0;
+}
+
+/* What follows is the MMU as it is, which an emulator made for Windows CE
+ * does not do and one that does the whole of it has to. */
+
+/* A page that has not been written to, from 0x15000000 on: reading it is
+ * nothing, and the first write is an exception, once. */
+static u32 __attribute__((noinline)) first_write(void)
+{
+   const u32 at = page(), va = 0x15000000 + at, before = smc_first_writes;
+
+   *WORD(0x8c000000 + at) = 0x1111;
+   if (*WORD(va) != 0x1111 || smc_first_writes != before)
+      return 1;
+   *WORD(va) = 0x2222;
+   if (smc_first_writes != before + 1)
+      return 2;
+   if (*WORD(0x8c000000 + at) != 0x2222)
+      return 3;
+   *WORD(va + 4) = 0x3333;
+   if (smc_first_writes != before + 1 || *WORD(0x8c000000 + at + 4) != 0x3333)
+      return 4;
+   return 0;
+}
+
+/* A page is mapped while its entry is one of the TLB's 64: once another
+ * page has taken the entry, it has to be asked for again. */
+static u32 __attribute__((noinline)) only_while_in_the_tlb(void)
+{
+   const u32 at = page(), va = 0x10000000 + at;
+   u32 before;
+
+   (void)*WORD(va);
+   before = smc_misses;
+   (void)*WORD(va);
+   if (smc_misses != before)
+      return 1;
+   (void)*WORD(va + 0x40000);                       /* the same entry */
+   if (smc_misses != before + 1)
+      return 2;
+   (void)*WORD(va);
+   if (smc_misses != before + 2)
+      return 3;
+   return 0;
+}
+
+/* A page for privileged mode only, from 0x18000000 on, read by a function
+ * in user mode: refused, once. The function is
+ *    mov.l @r4,r0 ; trapa #0 ; rts ; nop
+ * and comes back in privileged mode by way of the TRAPA. Then the page
+ * again, taken out of the TLB first and read from privileged mode: that is
+ * not refused. */
+static u32 __attribute__((noinline)) user_mode(void)
+{
+   const u32 code = page(), data = page();
+   const u32 refused = smc_reads_refused, traps = smc_traps;
+
+   *WORD(0x8c000000 + code) = 0xC3006042;
+   *WORD(0x8c000000 + code + 4) = 0x0009000B;
+   *WORD(0x8c000000 + data) = 0x4444;
+   if (smc_enter_user(0x10000000 + code, 0x18000000 + data) != 0x4444)
+      return 1;
+   if (smc_traps != traps + 1)
+      return 2;
+   if (smc_reads_refused != refused + 1)
+      return 3;
+   *TLB_FIND = 0x18000000 + data;
+   if (*WORD(0x18000000 + data) != 0x4444 || smc_reads_refused != refused + 1)
+      return 4;
+   return 0;
+}
+
+/* Translation turned off and on again, a thousand times, as such programs
+ * do all the time: while it is off an address is itself, and when it is
+ * on again the TLB is what it was. */
+static u32 __attribute__((noinline)) off_and_on(void)
+{
+   const u32 at = page();
+   u32 i, misses;
+
+   *WORD(0x8c000000 + at) = 0x5555;
+   (void)*WORD(0x10000000 + at);
+   misses = smc_misses;
+   for (i = 0; i < 1000; i++)
+   {
+      *MMUCR = 0;
+      if (*WORD(0x0c000000 + at) != 0x5555)
+         return 1;
+      *WORD(0x0c000000 + at + 4) = i;
+      *MMUCR = 1;
+      if (*WORD(0x10000000 + at + 4) != i)
+         return 2;
+   }
+   if (smc_misses != misses)
+      return 3;
    return 0;
 }
 
@@ -836,8 +1104,6 @@ void cmain(void)
          for (j = 0; j < 2; j++)
             if ((r = moved(0x13000000, i, j)) != 0)
                fail(18, (i << 5) | (j << 4) | r);
-      if ((r = many()) != 0)
-         fail(18, 0xF0 | r);
    }
 
    /* The same in P3: where the address without the MMU is main memory
@@ -872,12 +1138,41 @@ void cmain(void)
          fail(20, 0x3C | r);
    }
 
+   /* Pages of 1K; a page that may not be written to; the TLB emptied and
+    * then written to; more pages than there may be room for. */
    *VERDICT = 21;
+   if (mmu)
+   {
+      if ((r = small_pages()) != 0)
+         fail(21, 0x10 | r);
+      if ((r = not_to_be_written()) != 0)
+         fail(21, 0x20 | r);
+      if ((r = emptied_then_written()) != 0)
+         fail(21, 0x30 | r);
+      if ((r = many()) != 0)
+         fail(21, 0x40 | r);
+   }
+
+   /* The MMU as it is, for a program with a TLB of its own. */
+   *VERDICT = 22;
+   if (mmu == 2)
+   {
+      if ((r = first_write()) != 0)
+         fail(22, 0x10 | r);
+      if ((r = only_while_in_the_tlb()) != 0)
+         fail(22, 0x20 | r);
+      if ((r = user_mode()) != 0)
+         fail(22, 0x30 | r);
+      if ((r = off_and_on()) != 0)
+         fail(22, 0x40 | r);
+   }
+
+   *VERDICT = 23;
    if ((r = rewritten(0x8c000000, 0x8c000000, 0x2c000000)) != 0)
-      fail(21, r);
+      fail(23, r);
 
    /* And for ever, for whoever saves a state and loads it later. */
-   *VERDICT = mmu ? 0x600D5ACE : 0x600D5AC0;
+   *VERDICT = mmu == 2 ? 0x600D5AC5 : mmu ? 0x600D5ACE : 0x600D5AC0;
    for (i = 0; ; i++)
    {
       const u32 k = i & 0x7F;
