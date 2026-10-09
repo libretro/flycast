@@ -987,6 +987,10 @@ public:
 						Xbyak::Reg64 rd2_64 = regalloc.MapRegister(op.rd2).cvt64();
 						mov(rd2_64, rd64);
 						shr(rd2_64, 63);
+						/* Nothing is left above the low 32 bits of the result:
+						 * this very instruction, done again on it, would take
+						 * the borrow from what was there. */
+						mov(rd, rd);
    				}
    				break;
 
