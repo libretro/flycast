@@ -37,8 +37,22 @@ bool ConvertSector(const u8* in_buff , u8* out_buff , int from , int to,int sect
    switch (to)
    {
       case 2340:
-         verify((from==2352));
-         memcpy(out_buff,&in_buff[12],2340);
+         verify((from==2352) || (from==2336));
+         if (from == 2336)
+         {
+            /* A sector kept without its sync and header (a .cue's
+             * MODE2/2336) and asked for with the header: that is made
+             * from where the sector is - minutes, seconds and frames in
+             * BCD, mode 2. A PlayStation disc is read this way.
+             * (flyinghead/flycast#2443, Bruceleeto) */
+            out_buff[0] = (u8)(((sector / 75 / 60) % 10) | (((sector / 75 / 60) / 10) << 4));
+            out_buff[1] = (u8)((((sector / 75) % 60) % 10) | ((((sector / 75) % 60) / 10) << 4));
+            out_buff[2] = (u8)(((sector % 75) % 10) | (((sector % 75) / 10) << 4));
+            out_buff[3] = 2;
+            memcpy(out_buff + 4, in_buff, 2336);
+         }
+         else
+            memcpy(out_buff,&in_buff[12],2340);
          break;
       case 2328:
          verify((from==2352));

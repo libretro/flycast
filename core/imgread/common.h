@@ -236,6 +236,8 @@ struct Disc
 				}
 				else if (fmt == 2048 && secfmt==SECFMT_2336_MODE2)
 					memcpy(dst,src+8,2048);
+				else if (fmt == 2340 && secfmt==SECFMT_2336_MODE2)
+					ConvertSector(src, dst, 2336, fmt, FAD);
 				else if (fmt==2048 && (secfmt==SECFMT_2048_MODE1 || secfmt==SECFMT_2048_MODE2_FORM1 ))
 				{
 					memcpy(dst,src,2048);
