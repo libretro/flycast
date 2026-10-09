@@ -230,6 +230,34 @@ unsigned vk_heap_trim(vk_heap_t *heap)
    return freed;
 }
 
+unsigned vk_heap_trim_spare(vk_heap_t *heap)
+{
+   unsigned freed = 0;
+   unsigned i;
+   unsigned k;
+
+   for (i = 0; i < heap->block_count; i++)
+   {
+      vk_heap_block_t *b = &heap->blocks[i];
+
+      if (!b->memory || b->used != 0)
+         continue;
+      /* another of its kind, that stays? */
+      for (k = 0; k < heap->block_count; k++)
+      {
+         const vk_heap_block_t *o = &heap->blocks[k];
+
+         if (k != i && o->memory && o->type == b->type && o->linear == b->linear)
+            break;
+      }
+      if (k == heap->block_count)
+         continue;
+      vk_heap_block_release(heap, b);
+      freed++;
+   }
+   return freed;
+}
+
 /* The lowest span of the block that fits, at the alignment asked for.
  * What is left over on either side stays free. */
 static int vk_heap_block_alloc(vk_heap_t *heap, vk_heap_block_t *b, unsigned index,

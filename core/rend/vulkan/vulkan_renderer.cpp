@@ -51,6 +51,8 @@ public:
 		screenDrawer.Init(&samplerManager, &shaderManager);
 		BaseInit(screenDrawer.GetRenderPass());
 		screenDrawer.SetQuadPipeline(&quadPipeline);
+		// what this size no longer needs is given back once the frames that used it are done
+		GetContext()->GetHeap().TrimSoon();
 	}
 
 	void KeepPicture() override { screenDrawer.KeepPicture(); }

@@ -46,6 +46,7 @@ void VulkanHeap::Init(vk::PhysicalDevice physicalDevice, vk::Device device)
 		throwResultException(vk::Result::eErrorInitializationFailed, "vk_heap_init failed");
 	this->device = device;
 	ready = true;
+	trimIn = 0;
 
 	/* The first block for textures and render targets and the first one
 	 * for the buffers the CPU fills are taken now, so that a frame gets
@@ -63,6 +64,18 @@ void VulkanHeap::Term()
 		vk_heap_shutdown(&heap);
 		ready = false;
 	}
+}
+
+/* After the renderer has changed size: blocks that what it had before
+ * left empty go back to the driver, all but the last of each kind. */
+void VulkanHeap::TrimSpare()
+{
+	if (!ready)
+		return;
+	const VkDeviceSize before = heap.bytes_reserved;
+	if (vk_heap_trim_spare(&heap) != 0)
+		NOTICE_LOG(RENDERER, "Vulkan heap: %u MB given back, %u MB reserved", (u32)((before - heap.bytes_reserved) >> 20),
+				(u32)(heap.bytes_reserved >> 20));
 }
 
 /* Why the heap had nothing to give: what the driver said - no memory of

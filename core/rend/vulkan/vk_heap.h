@@ -142,6 +142,13 @@ void vk_heap_free(vk_heap_t *heap, const vk_heap_alloc_t *alloc);
 /* Gives the blocks that are empty back to the driver. Returns how many. */
 unsigned vk_heap_trim(vk_heap_t *heap);
 
+/* The same, but for the last block of each kind (memory type, and linear
+ * or not): where what was large has become small - a render size turned
+ * down - and the room it took is not coming back into use, while the next
+ * allocation of every kind still finds a block and is an offset. Returns
+ * how many blocks were given back. */
+unsigned vk_heap_trim_spare(vk_heap_t *heap);
+
 #ifdef __cplusplus
 }
 #endif

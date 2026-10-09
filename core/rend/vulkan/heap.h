@@ -68,6 +68,19 @@ public:
 	void Init(vk::PhysicalDevice physicalDevice, vk::Device device);
 	void Term();
 
+	/* What was large has become small - the renderer has changed size -
+	 * and what it had before goes back to the heap over the next frames,
+	 * as the frames that used it are done with. TrimSoon() is said then;
+	 * Frame(), called once a frame, gives the blocks that have come empty
+	 * back to the driver when those frames are long past, all but the
+	 * last of each kind. */
+	void TrimSoon() { trimIn = 32; }
+	void Frame()
+	{
+		if (trimIn != 0 && --trimIn == 0)
+			TrimSpare();
+	}
+
 	/* Memory for an image, bound to it. With hostVisible it is memory the
 	 * CPU writes the image into; otherwise it is on the device. linear is
 	 * the image's tiling. transient is an attachment that never needs
@@ -80,6 +93,7 @@ public:
 	Allocation AllocateForBuffer(vk::Buffer buffer, bool hostVisible, bool readBack);
 
 private:
+	void TrimSpare();
 	vk::Result AllocError() const;
 	Allocation Allocate(const vk::MemoryRequirements& requirements, VkMemoryPropertyFlags required,
 			VkMemoryPropertyFlags preferred, bool linear);
@@ -87,4 +101,5 @@ private:
 	vk_heap_t heap;
 	vk::Device device;
 	bool ready = false;
+	u32 trimIn = 0;		// frames until the trim, 0 if none is due
 };

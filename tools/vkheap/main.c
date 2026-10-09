@@ -284,6 +284,49 @@ int main(void)
       vk_heap_shutdown(&t2);
    }
 
+   /* The trim for when what was large has become small: empty blocks go
+    * back, but the last block of each kind stays, so that the next
+    * allocation of the kind does not go to the driver. */
+   {
+      vk_heap_t t3;
+      vk_heap_alloc_t images[4];
+      vk_heap_alloc_t buffer;
+      vk_heap_alloc_t again;
+      int k;
+      int asked;
+
+      memset(&t3, 0, sizeof(t3));
+      CHECK(vk_heap_init(&t3, (VkDevice)1, &props, &fns, 1024 * 1024, 0) != 0, "spare: init");
+      req(&r, 1024 * 1024, 256, 0x1u);
+      for (k = 0; k < 4; k++)
+         CHECK(vk_heap_alloc(&t3, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &images[k]) != 0, "spare: four blocks of images");
+      req(&r, 4096, 256, 0x1u);
+      CHECK(vk_heap_alloc(&t3, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 1, &buffer) != 0, "spare: a block of buffers");
+
+      /* one block of images still in use: the three empty ones go */
+      for (k = 1; k < 4; k++)
+         vk_heap_free(&t3, &images[k]);
+      CHECK(vk_heap_trim_spare(&t3) == 3, "the three empty blocks went back, beside one in use");
+      CHECK(t3.bytes_reserved == 2 * 1024 * 1024, "two blocks are left");
+      CHECK(vk_heap_trim_spare(&t3) == 0, "and nothing more goes");
+
+      /* none in use, of either kind: one of each stays all the same */
+      req(&r, 1024 * 1024, 256, 0x1u);
+      for (k = 1; k < 4; k++)
+         CHECK(vk_heap_alloc(&t3, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &images[k]) != 0, "spare: four blocks of images again");
+      for (k = 0; k < 4; k++)
+         vk_heap_free(&t3, &images[k]);
+      vk_heap_free(&t3, &buffer);
+      CHECK(vk_heap_trim_spare(&t3) == 3, "three of four empty blocks went back");
+      CHECK(t3.bytes_reserved == 2 * 1024 * 1024, "one block of each kind is left");
+      asked = allocations;
+      CHECK(vk_heap_alloc(&t3, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, &again) != 0, "spare: an image after the trim");
+      CHECK(allocations == asked, "which the driver was not asked for");
+      vk_heap_free(&t3, &again);
+      CHECK(t3.bytes_used == 0, "everything given back after the trim");
+      vk_heap_shutdown(&t3);
+   }
+
    /* The device-local host-visible type is a preference, not a
     * requirement. Laid out the way a discrete card without resizable BAR
     * reports it - device memory, system memory, and a small BAR window

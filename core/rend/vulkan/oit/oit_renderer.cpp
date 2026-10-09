@@ -56,6 +56,8 @@ public:
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
 		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1);
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
+		// what this size no longer needs is given back once the frames that used it are done
+		GetContext()->GetHeap().TrimSoon();
 	}
 
 	void KeepPicture() override { screenDrawer.KeepPicture(); }
