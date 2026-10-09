@@ -164,6 +164,7 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 	BlockType=BET_SCL_Intr;
 	has_fpu_op = false;
 	temp_block = false;
+	mmu_go_on = false;
 	
 	vaddr=rpc;
 #ifndef NO_MMU
@@ -219,6 +220,7 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 		return NULL;
 	}
 	rbi->blockcheck_failures = blockcheck_failures;
+	rbi->mmu_go_on = rdv_MmuMayGoOn(rbi);
 	if (smc_hotspots.find(rbi->addr) != smc_hotspots.end())
 	{
 		if (TEMP_CODE_SIZE - TempLastAddr < 16 * 1024)
@@ -338,6 +340,37 @@ DynarecCodeEntryPtr rdv_FindOrCompile()
 	return rv;
 }
 
+bool rdv_MmuMayGoOn(const RuntimeBlockInfo *block)
+{
+#ifndef NO_MMU
+	const TLB_Entry *entry;
+	u32 addr;
+
+	if (!mmu_enabled() || mmu_strict)
+		return false;
+	if ((block->vaddr >> 29) == 4 || (block->vaddr >> 29) == 5)
+		return true;
+	if (mmu_full_lookup<false>(block->vaddr, &entry, addr) != MMU_ERROR_NONE)
+		return false;
+	return entry->Data.SZ1 != 0 || entry->Data.SZ0 != 0;
+#else
+	return false;
+#endif
+}
+
+bool rdv_MmuSamePlace(const RuntimeBlockInfo *block, u32 target, u32 *addr)
+{
+	if ((target >> 29) == 4 || (target >> 29) == 5)
+	{
+		*addr = target;
+		return true;
+	}
+	if ((target >> 12) != (block->vaddr >> 12))
+		return false;
+	*addr = (block->addr & ~0xFFFu) | (target & 0xFFF);
+	return true;
+}
+
 void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 {
 	// code is the RX addr to return after, however bm_GetBlock returns RW
@@ -372,7 +405,24 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 			next_pc=rbi->NextBlock;
 	}
 
-	DynarecCodeEntryPtr rv = rdv_FindOrCompile();  // Returns rx ptr
+	const bool mmu = mmu_enabled();
+	const u32 target = next_pc;
+	// where the target is, for the block manager
+	u32 place = target;
+	DynarecCodeEntryPtr rv;
+
+	if (!mmu)
+		rv = rdv_FindOrCompile();  // Returns rx ptr
+	else
+	{
+		/* (Looking the address up can raise an exception, and so can
+		 * compiling what is there: what comes back is the handler's code
+		 * then, or the routine that compiles it, and the context has its
+		 * address.) */
+		rv = bm_GetCodeByVAddr(target);
+		if (rv == ngen_FailedToFindBlock)
+			rv = rdv_FailedToFindBlock(next_pc);
+	}
 
 	/* Compiling may have emptied the cache the block was in - the whole
 	 * one, or the temporary one if it was there. It is gone then, and is
@@ -381,7 +431,26 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 	if (!stale_block && bm_GetBlock2((void*)code) != rbi)
 		stale_block = true;
 
-	if (!mmu_enabled() && !stale_block)
+	/* With the MMU on a block asks to be linked only to an address that
+	 * is where it is whatever the TLB says (ngen.h). It is linked to the
+	 * block that was compiled for that very address - not to one for
+	 * another address of the same memory, which would send it back - and
+	 * not at all if an exception was raised instead. */
+	bool link = !stale_block;
+	if (mmu && link)
+	{
+		link = false;
+		if (bcls != BET_CLS_Dynamic && rbi->mmu_go_on && next_pc == target
+				&& rdv_MmuSamePlace(rbi.get(), target, &place))
+		{
+			RuntimeBlockInfoPtr nxt = bm_GetBlock(place);
+
+			link = nxt != NULL && nxt->addr == place && nxt->vaddr == target
+				&& (DynarecCodeEntryPtr)CC_RW2RX(nxt->code) == rv;
+		}
+	}
+
+	if (link)
 	{
 		if (bcls == BET_CLS_Dynamic)
 		{
@@ -395,17 +464,17 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 			}
 			else if (rbi->relink_data == 0)
 			{
-				rbi->pBranchBlock = bm_GetBlock(next_pc).get();
+				rbi->pBranchBlock = bm_GetBlock(place).get();
 				rbi->pBranchBlock->AddRef(rbi);
 			}
 		}
 		else
 		{
-			RuntimeBlockInfo* nxt = bm_GetBlock(next_pc).get();
+			RuntimeBlockInfo* nxt = bm_GetBlock(place).get();
 
-			if (rbi->BranchBlock == next_pc)
+			if (rbi->BranchBlock == target)
 				rbi->pBranchBlock = nxt;
-			if (rbi->NextBlock == next_pc)
+			if (rbi->NextBlock == target)
 				rbi->pNextBlock = nxt;
 
 			nxt->AddRef(rbi);
@@ -414,7 +483,7 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 		verify(rbi->host_code_size >= ncs);
 		rbi->host_code_size = ncs;
 	}
-	else
+	else if (!mmu)
 	{
 		INFO_LOG(DYNAREC, "null RBI: from %08X to %08X -- unlinked stale block -- code %p next %p", rbi->vaddr, next_pc, code, rv);
 	}

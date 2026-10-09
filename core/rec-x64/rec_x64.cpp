@@ -345,10 +345,30 @@ extern "C" __attribute__((used)) void *ngen_link(u8 *after, u32 pc)
 {
 	u8 *const site_rx = after - 5;
 	RuntimeBlockInfoPtr from = bm_GetBlock2(site_rx);
+	const bool mmu = mmu_enabled();
+	// where @pc is, for the block manager
+	u32 addr = pc;
+	DynarecCodeEntryPtr code;
 
-	DynarecCodeEntryPtr code = bm_GetCodeByVAddr(pc);
+	if (mmu)
+	{
+		/* With the MMU on a block has a link site only for an address
+		 * that is where it is whatever the TLB says (rdv_MmuSamePlace()),
+		 * and the context has the address as well: GenGoOn(). So nothing
+		 * is translated here - and no exception raised in passing. */
+		if (from == NULL || !rdv_MmuSamePlace(from.get(), pc, &addr))
+			return (void *)&ngen_block_return;
+		code = (DynarecCodeEntryPtr)p_sh4rcb->fpcb[(addr >> 1) & FPCB_MASK];
+	}
+	else
+		code = bm_GetCodeByVAddr(pc);
 	if (code == ngen_FailedToFindBlock)
+	{
 		code = rdv_FailedToFindBlock(pc);
+		// (compiling it was an exception instead: the context says where to)
+		if (mmu && next_pc != pc)
+			return (void *)&ngen_block_return;
+	}
 	/* No block to be had there: to the main loop, which goes by the pc in
 	 * the context. (The compile stub, which is what there is in a block's
 	 * place then, wants the address in edx, and this has used edx.) */
@@ -361,25 +381,28 @@ extern "C" __attribute__((used)) void *ngen_link(u8 *after, u32 pc)
 	/* Compiling may have emptied the cache, and the block that asked with
 	 * it; or the block was thrown away before it got here (it wrote over
 	 * its own code), and is not found at all. Nothing is linked then. */
-	if (from == NULL || mmu_enabled() || bm_GetBlock2(site_rx) != from)
+	if (from == NULL || bm_GetBlock2(site_rx) != from)
 		return (void *)code;
 
 	DynaRBI *const block = (DynaRBI *)from.get();
 	u8 *const site = (u8 *)CC_RX2RW(site_rx);
 	const u32 at = (u32)(site - (u8 *)block->code);
 	const int which = at == block->link_at[0] ? 0 : at == block->link_at[1] ? 1 : -1;
-	RuntimeBlockInfoPtr to = bm_GetBlock(pc);
+	RuntimeBlockInfoPtr to = bm_GetBlock(addr);
 
 	if (which < 0 || pc != (which == 0 ? block->BranchBlock : block->NextBlock))
 		return (void *)code;		// not a site of this block's: left as it is
-	if (to == NULL || to->addr != pc || (DynarecCodeEntryPtr)CC_RW2RX(to->code) != code)
+	if (to == NULL || to->addr != addr || (DynarecCodeEntryPtr)CC_RW2RX(to->code) != code)
 		return (void *)code;		// nothing to link to (yet)
+	// (with the MMU on a block is compiled for the address it was first run at)
+	if (mmu && to->vaddr != pc)
+		return (void *)code;
 
 	if (to->temp_block)
 	{
 		/* Not linked, ever: through the table from now on.
 		 * jmp qword [r15 + disp32] */
-		const s32 disp = fpcb_at((pc >> 1) & FPCB_MASK);
+		const s32 disp = fpcb_at((addr >> 1) & FPCB_MASK);
 
 		site[0] = 0x41;
 		site[1] = 0xFF;
@@ -1445,9 +1468,15 @@ public:
 		 * first, so that whatever is jumped to starts as if the main loop
 		 * had called it.
 		 *
-		 * Not with the MMU on: an address then has to be translated before
-		 * it means a place in the table, and the lookup function does that. */
+		 * With the MMU on an address has to be translated before it means a
+		 * place in the table, and the lookup function does that - but for
+		 * the addresses that are where they are whatever the TLB says: see
+		 * rdv_MmuMayGoOn(). */
 		const bool go_on = !mmu_enabled();
+		u32 place;
+		const bool mmu_go_on = !go_on && block->mmu_go_on;
+		const bool go_on_branch = go_on || (mmu_go_on && rdv_MmuSamePlace(block, block->BranchBlock, &place));
+		const bool go_on_next = go_on || (mmu_go_on && rdv_MmuSamePlace(block, block->NextBlock, &place));
 		// see wait_site.h
 		const bool watch = go_on && settings.dynarec.AccurateTiming && block->BranchBlock <= block->vaddr;
 
@@ -1462,7 +1491,7 @@ public:
 		case BET_StaticJump:
 		case BET_StaticCall:
 			//next_pc = block->BranchBlock;
-			if (go_on)
+			if (go_on_branch)
 			{
 				if (watch)
 					GenWaitCheck(block);
@@ -1483,7 +1512,7 @@ public:
 				Xbyak::Label branch_not_taken;
 
 				jne(branch_not_taken, T_NEAR);
-				if (go_on)
+				if (go_on_branch)
 				{
 					if (watch)
 						GenWaitCheck(block);
@@ -1495,7 +1524,7 @@ public:
 					jmp(exit_block, T_NEAR);
 				}
 				L(branch_not_taken);
-				if (go_on)
+				if (go_on_next)
 					GenGoOn(block, 1);
 				else
 					mov(Ctx(&next_pc), block->NextBlock);
@@ -1641,12 +1670,22 @@ public:
 	void GenGoOn(RuntimeBlockInfo *block, int which)
 	{
 		const u32 target = which == 0 ? block->BranchBlock : block->NextBlock;
+		// where the target is, for the table of blocks
+		u32 place = target;
 
 		mov(edx, target);
+		if (mmu_enabled())
+		{
+			/* With the MMU on the context has the address as well: a
+			 * block that checks its code goes by it, and so does whatever
+			 * finds that there is an exception to raise instead. */
+			mov(Ctx(&next_pc), edx);
+			rdv_MmuSamePlace(block, target, &place);
+		}
 		GenSliceCheck();
 		if (block->temp_block || target == block->vaddr || link_stub == NULL)
 		{
-			jmp(qword[r15 + FpcbAt((target >> 1) & FPCB_MASK)]);
+			jmp(qword[r15 + FpcbAt((place >> 1) & FPCB_MASK)]);
 			return;
 		}
 		((DynaRBI *)block)->link_at[which] = (u32)getSize();

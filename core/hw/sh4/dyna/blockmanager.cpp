@@ -50,10 +50,12 @@ static DynarecCodeEntryPtr DYNACALL bm_GetCode(u32 addr)
 	return rv;
 }
 
-/* With the MMU on no block goes straight on into the next: each one comes
- * back to the main loop, which asks here for the code of the address that
- * is next - 200 to 250 thousand times a frame in Sega Rally 2. Each time
- * the address was translated and the code for where it is looked up.
+/* With the MMU on a block goes straight on into the next only where the
+ * next one's address is where it is whatever the TLB says (ngen.h). From
+ * the others it is back to the main loop, which asks here for the code of
+ * the address that is next - 200 to 250 thousand times a frame in Sega
+ * Rally 2, when no block went straight on - and each time the address was
+ * translated and the code for where it is looked up.
  *
  * So where the code for an address was found is kept: by the address and
  * the address space, so that going over to another address space and

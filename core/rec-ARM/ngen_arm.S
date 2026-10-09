@@ -97,6 +97,10 @@ CSYM(ngen_LinkBlock_Shared_stub):
 	mov r0,lr
     sub r0,#4                  @go before the call
     bl CSYM(rdv_LinkBlock)
+	@ What comes back may be the routine that compiles what is at r4: with
+	@ the MMU on, when there was an exception to raise instead of a block
+	@ to find. The context has the address either way.
+	ldr r4,[r8,#-184]          @ pc
     bx r0
 
 @@@@@@@@@@ ngen_FailedToFindBlock_ @@@@@@@@@@

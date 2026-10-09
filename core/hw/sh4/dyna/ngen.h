@@ -85,6 +85,24 @@ DynarecCodeEntryPtr rdv_FindOrCompile();
 //code -> pointer to code of block, dpc -> if dynamic block, pc. if cond, 0 for next, 1 for branch
 void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc);
 
+/* With the MMU on a block does not, as a rule, go straight on into the
+ * next: where the next one's address is depends on what the TLB says by
+ * then. Two kinds of address do not: one in P1 or P2, which the MMU does
+ * not translate; and one in the same page as the block that is leaving
+ * for it, which is in the same page of memory as that block whatever page
+ * that is - and a block is only ever entered by an address that has just
+ * been translated to where it is, or from a block of its page. Most of a
+ * Windows CE game's blocks end that way.
+ *
+ * rdv_MmuMayGoOn(): whether @block may go on at all - the MMU is on, and
+ * not the strict way (where nothing is to be left to chance), and the page
+ * the block is in is not one of 1K, of which four different ones make up
+ * what is called the same page here.
+ * rdv_MmuSamePlace(): whether @target is such an address for @block, and
+ * if it is, where it is: @addr, which is what the block manager goes by. */
+bool rdv_MmuMayGoOn(const RuntimeBlockInfo *block);
+bool rdv_MmuSamePlace(const RuntimeBlockInfo *block, u32 target, u32 *addr);
+
 u32 DYNACALL rdv_DoInterrupts(void* block_cpde);
 u32 DYNACALL rdv_DoInterrupts_pc(u32 pc);
 

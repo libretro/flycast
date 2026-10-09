@@ -47,6 +47,8 @@ struct RuntimeBlockInfo: RuntimeBlockInfo_Core
 	bool has_fpu_op;
 	u32 blockcheck_failures;
 	bool temp_block;
+	// with the MMU on: may go straight on into another block (rdv_MmuMayGoOn())
+	bool mmu_go_on;
 
 	u32 BranchBlock; /* if not 0xFFFFFFFF then jump target */
 	u32 NextBlock;   /* if not 0xFFFFFFFF then next block (by position) */

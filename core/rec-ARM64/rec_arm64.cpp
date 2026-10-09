@@ -1224,6 +1224,35 @@ public:
 		EnsureCodeSize(start_instruction, write_memory_rewrite_size);
 	}
 
+	/* The end of a block that goes to @target and nowhere else: to the
+	 * block that is there, @linked, once it is known - until then to
+	 * @stub, which finds it or has it compiled, and has this written again
+	 * (rdv_LinkBlock()).
+	 *
+	 * With the MMU on that is for a target that is where it is whatever
+	 * the TLB says (ngen.h); for any other, the main loop, which looks the
+	 * address up. Either way the context has the address by then: a block
+	 * begins by seeing that it is the one for it. */
+	void GenStaticTail(RuntimeBlockInfo *block, u32 target, RuntimeBlockInfo *linked, void (*stub)())
+	{
+		if (mmu_enabled())
+		{
+			u32 place;
+
+			Mov(w29, target);
+			Str(w29, sh4_context_mem_operand(&next_pc));
+			if (!block->mmu_go_on || !rdv_MmuSamePlace(block, target, &place))
+			{
+				GenBranch(*arm64_no_update);
+				return;
+			}
+		}
+		if (linked != NULL)
+			GenBranch(linked->code);
+		else
+			GenCallRuntime(stub);
+	}
+
 	u32 RelinkBlock(RuntimeBlockInfo *block)
 	{
 		ptrdiff_t start_offset = GetBuffer()->GetCursorOffset();
@@ -1234,19 +1263,7 @@ public:
 		case BET_StaticJump:
 		case BET_StaticCall:
 			// next_pc = block->BranchBlock;
-			if (block->pBranchBlock == NULL)
-			{
-				if (!mmu_enabled())
-					GenCallRuntime(ngen_LinkBlock_Generic_stub);
-				else
-				{
-					Mov(w29, block->BranchBlock);
-					Str(w29, sh4_context_mem_operand(&next_pc));
-					GenBranch(*arm64_no_update);
-				}
-			}
-			else
-				GenBranch(block->pBranchBlock->code);
+			GenStaticTail(block, block->BranchBlock, block->pBranchBlock, ngen_LinkBlock_Generic_stub);
 			break;
 
 		case BET_Cond_0:
@@ -1266,35 +1283,11 @@ public:
 				Label branch_not_taken;
 
 				B(ne, &branch_not_taken);
-				if (block->pBranchBlock != NULL)
-					GenBranch(block->pBranchBlock->code);
-				else
-				{
-					if (!mmu_enabled())
-						GenCallRuntime(ngen_LinkBlock_cond_Branch_stub);
-					else
-					{
-						Mov(w29, block->BranchBlock);
-						Str(w29, sh4_context_mem_operand(&next_pc));
-						GenBranch(*arm64_no_update);
-					}
-				}
+				GenStaticTail(block, block->BranchBlock, block->pBranchBlock, ngen_LinkBlock_cond_Branch_stub);
 
 				Bind(&branch_not_taken);
 
-				if (block->pNextBlock != NULL)
-					GenBranch(block->pNextBlock->code);
-				else
-				{
-					if (!mmu_enabled())
-						GenCallRuntime(ngen_LinkBlock_cond_Next_stub);
-					else
-					{
-						Mov(w29, block->NextBlock);
-						Str(w29, sh4_context_mem_operand(&next_pc));
-						GenBranch(*arm64_no_update);
-					}
-				}
+				GenStaticTail(block, block->NextBlock, block->pNextBlock, ngen_LinkBlock_cond_Next_stub);
 			}
 			break;
 

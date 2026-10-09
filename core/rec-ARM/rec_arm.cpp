@@ -302,9 +302,11 @@ std::map<shilop,ConditionCode> ccnmap;
  * writing through the host's own mapping, since a 32-bit host has no room
  * to lay out a translated address space the way the 64-bit ones do.
  *
- * It ends by handing its next PC to no_update_mmu, never by jumping to
- * another block: which block a virtual address means depends on the
- * mapping in force.
+ * It ends by handing its next PC to no_update_mmu rather than by jumping
+ * to another block: which block a virtual address means depends on the
+ * mapping in force. Not so for an address in P1 or P2, or in the page the
+ * block is in itself (rdv_MmuMayGoOn() in ngen.h), and to those it does
+ * jump - with the PC put in the context first, for the check below.
  *
  * And it begins by checking that the PC is its own, for the same reason,
  * and that the FPU is on if it uses it. */
@@ -486,11 +488,33 @@ u32 DynaRBI::Relink()
 #ifndef NO_MMU
 		if (mmu_enabled())
 		{
-			// the next PC to the main loop, either way: see "With the MMU on"
+			/* The next PC to the main loop, either way - but for one that
+			 * is where it is whatever the TLB says, which is gone straight
+			 * on to like any other time: see "With the MMU on". */
+			u32 place;
+
 			MOV32(r4, BranchBlock, CC);
-			JUMP((u32)no_update_mmu, CC);
+			if (mmu_go_on && rdv_MmuSamePlace(this, BranchBlock, &place))
+			{
+				StoreSh4Reg_mem(r4, reg_nextpc, CC);
+				if (pBranchBlock)
+					JUMP((u32)pBranchBlock->code, CC);
+				else
+					CALL((u32)ngen_LinkBlock_cond_Branch_stub, CC);
+			}
+			else
+				JUMP((u32)no_update_mmu, CC);
 			MOV32(r4, NextBlock);
-			JUMP((u32)no_update_mmu);
+			if (mmu_go_on && rdv_MmuSamePlace(this, NextBlock, &place))
+			{
+				StoreSh4Reg_mem(r4, reg_nextpc);
+				if (pNextBlock)
+					JUMP((u32)pNextBlock->code);
+				else
+					CALL((u32)ngen_LinkBlock_cond_Next_stub);
+			}
+			else
+				JUMP((u32)no_update_mmu);
 			break;
 		}
 #endif
@@ -600,8 +624,19 @@ u32 DynaRBI::Relink()
 #ifndef NO_MMU
 		if (mmu_enabled())
 		{
+			u32 place;
+
 			MOV32(r4, BranchBlock);
-			JUMP((u32)no_update_mmu);
+			if (mmu_go_on && rdv_MmuSamePlace(this, BranchBlock, &place))
+			{
+				StoreSh4Reg_mem(r4, reg_nextpc);
+				if (pBranchBlock == 0)
+					CALL((u32)ngen_LinkBlock_Generic_stub);
+				else
+					JUMP((u32)pBranchBlock->code);
+			}
+			else
+				JUMP((u32)no_update_mmu);
 			break;
 		}
 #endif
