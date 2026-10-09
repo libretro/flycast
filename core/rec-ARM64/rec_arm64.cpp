@@ -64,6 +64,86 @@ struct DynaRBI : RuntimeBlockInfo
 static jmp_buf jmp_env;
 static u32 cycle_counter;
 
+/* The kinds of fast memory access there are (Arm64Assembler::GenFastAccess()):
+ * a load or a store, of 1, 2, 4 or 8 bytes, the 4 from or to a general
+ * register or a floating-point one. */
+enum
+{
+	MEM_LOAD8, MEM_LOAD16, MEM_LOAD32, MEM_LOAD32F, MEM_LOAD64,
+	MEM_STORE8, MEM_STORE16, MEM_STORE32, MEM_STORE32F, MEM_STORE64,
+	MEM_KINDS
+};
+// (whether a kind's data is in a floating-point register)
+#define MEM_KIND_F(kind) ((kind) == MEM_LOAD32F || (kind) == MEM_STORE32F)
+
+/* What a fast access that faulted is written over with a call to
+ * (ngen_Rewrite()): a routine that does the access by asking. A fast
+ * access has its address and its data in whatever registers the block has
+ * them in, so there is a routine for each kind of access, each register
+ * the address can be in and each the data can be in - 528 of them, a few
+ * instructions each, written after the main loop each time that is.
+ *
+ * The registers, by number: for the address and for data in a general
+ * register, 0 is the one a call has it in (w0; w1 for what is stored) and
+ * 1 on are the block's own, alloc_regs; for data in a floating-point
+ * register, 0 on are the block's, alloc_fregs. 64 bits are always in x0
+ * or x1. */
+#define MEM_REGS 8
+static u8 *mem_stubs[MEM_KINDS][MEM_REGS][MEM_REGS];
+
+// (signed char and short by name: s8 and s16 are registers as well here)
+static s32 mem_load8(u32 addr)  { return (signed char)ReadMem8(addr); }
+static s32 mem_load16(u32 addr) { return (short)ReadMem16(addr); }
+static u32 mem_load32(u32 addr) { return ReadMem32(addr); }
+static u64 mem_load64(u32 addr) { return ReadMem64(addr); }
+static void mem_store8(u32 addr, u32 data)  { WriteMem8(addr, (u8)data); }
+static void mem_store16(u32 addr, u32 data) { WriteMem16(addr, (u16)data); }
+static void mem_store32(u32 addr, u32 data) { WriteMem32(addr, data); }
+static void mem_store64(u32 addr, u64 data) { WriteMem64(addr, data); }
+
+static int mem_block_regs()
+{
+	int count = 0;
+
+	while (alloc_regs[count] != (eReg)-1)
+		count++;
+	return count;
+}
+
+static int mem_block_fregs()
+{
+	int count = 0;
+
+	while (alloc_fregs[count] != (eFReg)-1)
+		count++;
+	return count;
+}
+
+/* The number a general register goes by here: 0 if it is @first, 1 on for
+ * the block's own, -1 for any other. */
+static int mem_reg_number(int reg, int first)
+{
+	if (reg == first)
+		return 0;
+	for (int i = 0; alloc_regs[i] != (eReg)-1; i++)
+		if ((int)alloc_regs[i] == reg)
+			return i + 1;
+	return -1;
+}
+
+// The same for a floating-point register, which is one of the block's or nothing
+static int mem_freg_number(int reg)
+{
+	for (int i = 0; alloc_fregs[i] != (eFReg)-1; i++)
+		if ((int)alloc_fregs[i] == reg)
+			return i;
+	return -1;
+}
+
+// The register of the SH4's memory as the host has it mapped: see arm64_regalloc.h
+#define MEM_BASE x26
+#define MEM_BASE_CODE 26
+
 static void (*mainloop)(void *context);
 static int (*arm64_intc_sched)();
 static void (*arm64_no_update)();
@@ -1139,13 +1219,8 @@ public:
 		return MemOperand(x28, offset);
 	}
 
-	/* @rewrite: over a fast access that faulted (ngen_Rewrite()), which it
-	 * has to cover to the last instruction. Anywhere else it is as long as
-	 * it is: it used to be filled up to a fast access's length there too. */
-	void GenReadMemorySlow(u32 size, bool rewrite = false)
+	void GenReadMemorySlow(u32 size)
 	{
-		Instruction *start_instruction = GetCursorAddress<Instruction *>();
-
 		switch (size)
 		{
 		case 1:
@@ -1182,14 +1257,10 @@ public:
 			die("1..8 bytes");
 			break;
 		}
-		if (rewrite)
-			EnsureCodeSize(start_instruction, FastAccessSize());
 	}
 
-	void GenWriteMemorySlow(u32 size, bool rewrite = false)
+	void GenWriteMemorySlow(u32 size)
 	{
-		Instruction *start_instruction = GetCursorAddress<Instruction *>();
-
 		switch (size)
 		{
 		case 1:
@@ -1224,8 +1295,6 @@ public:
 			die("1..8 bytes");
 			break;
 		}
-		if (rewrite)
-			EnsureCodeSize(start_instruction, FastAccessSize());
 	}
 
 	/* The end of a block that goes to @target and nowhere else: to the
@@ -1455,6 +1524,8 @@ public:
 			// Use x27 as cycle_counter
 			Mov(w27, SH4_TIMESLICE);
 		}
+		// the SH4's memory, where the host has it mapped, comes straight after its context
+		Add(MEM_BASE, x28, sizeof(Sh4Context));
 		Label do_interrupts;
 
 		// w29 is next_pc
@@ -1505,6 +1576,8 @@ public:
 		Ldp(x21, x22, MemOperand(sp, 16));
 		Ldp(x19, x20, MemOperand(sp, 160, PostIndex));
 		Ret();
+
+		GenMemStubs();
 
 		FinalizeCode();
 		emit_Skip(GetBuffer()->GetSizeInBytes());
@@ -1573,13 +1646,15 @@ private:
 	{
 		if (GenReadMemoryImmediate(op))
 			return;
+		// one instruction, with whatever registers the block has things in; or what follows
+		if (optimise && GenReadMemoryFast(op))
+			return;
 
 		GenMemAddr(op, call_regs[0]);
 		if (mmu_enabled())
 			Mov(*call_regs[2], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));	// pc
 
 		u32 size = op.flags & 0x7f;
-		if (!optimise || !GenReadMemoryFast(op, opid))
 		{
 			Label lut_miss, lut_done;
 
@@ -1773,53 +1848,83 @@ private:
 		return true;
 	}
 
-	bool GenReadMemoryFast(const shil_opcode& op, size_t opid)
+	/* A fast access of @kind: one instruction on the SH4's memory as the
+	 * host has it mapped, which x26 has the address of. The SH4's address
+	 * is in the general register @addr, as 32 bits, and the data in, or
+	 * wanted in, @data - a general register, or a floating-point one for
+	 * the two kinds that are. (Where the host has only 512 MB of the SH4's
+	 * addresses mapped, the address is cut to that first: two instructions.)
+	 *
+	 * It used to take the address from w0 and the data from w0 or w1, with
+	 * moves around it, and add the context's size to the address first.
+	 *
+	 * One that faults - an address that is not memory - is written over
+	 * with a call: ngen_Rewrite(), which knows it by what it is. */
+	void GenFastAccess(int kind, const Register& addr, const CPURegister& data)
 	{
-		// Direct memory access. Need to handle SIGSEGV and rewrite block as needed. See ngen_Rewrite()
-		if (!_nvmem_enabled() || mmu_enabled())
-			return false;
+		MemOperand at(MEM_BASE, Register::GetWRegFromCode(addr.GetCode()), UXTW);
 
-		Instruction *start_instruction = GetCursorAddress<Instruction *>();
-
-		// WARNING: the rewrite code relies on having 1 or 2 ops before the memory access
-		// Update ngen_Rewrite (and perhaps FastAccessSize()) if adding or removing code
 		if (!_nvmem_4gb_space())
 		{
-			Ubfx(x1, *call_regs64[0], 0, 29);
-			Add(x1, x1, sizeof(Sh4Context), LeaveFlags);
+			Ubfx(x9, Register::GetXRegFromCode(addr.GetCode()), 0, 29);
+			at = MemOperand(MEM_BASE, x9);
 		}
+		switch (kind)
+		{
+		case MEM_LOAD8:    Ldrsb(Register::GetWRegFromCode(data.GetCode()), at); break;
+		case MEM_LOAD16:   Ldrsh(Register::GetWRegFromCode(data.GetCode()), at); break;
+		case MEM_LOAD32:   Ldr(Register::GetWRegFromCode(data.GetCode()), at); break;
+		case MEM_LOAD32F:  Ldr(VRegister::GetSRegFromCode(data.GetCode()), at); break;
+		case MEM_LOAD64:   Ldr(Register::GetXRegFromCode(data.GetCode()), at); break;
+		case MEM_STORE8:   Strb(Register::GetWRegFromCode(data.GetCode()), at); break;
+		case MEM_STORE16:  Strh(Register::GetWRegFromCode(data.GetCode()), at); break;
+		case MEM_STORE32:  Str(Register::GetWRegFromCode(data.GetCode()), at); break;
+		case MEM_STORE32F: Str(VRegister::GetSRegFromCode(data.GetCode()), at); break;
+		case MEM_STORE64:  Str(Register::GetXRegFromCode(data.GetCode()), at); break;
+		default:           die("no such access");
+		}
+	}
+
+	/* A load as a fast access, straight into the register the block wants
+	 * it in. False if that is not to be had - no mapping, or the MMU on -
+	 * and nothing written. */
+	bool GenReadMemoryFast(const shil_opcode& op)
+	{
+		const u32 size = op.flags & 0x7f;
+
+		if (!_nvmem_enabled() || mmu_enabled())
+			return false;
+#ifdef EXPLODE_SPANS
+		if (size == 8)
+			return false;
+#endif
+		// the register the block has the address in, or w0 with it worked out
+		const Register& addr = GenMemAddr(op);
+
+		if (size == 8)
+		{
+			GenFastAccess(MEM_LOAD64, addr, x0);
+			Str(x0, sh4_context_mem_operand(op.rd.reg_ptr()));
+			return true;
+		}
+		const int kind = size == 1 ? MEM_LOAD8 : size == 2 ? MEM_LOAD16 : MEM_LOAD32;
+		if (regalloc.IsAllocg(op.rd))
+			GenFastAccess(kind, addr, regalloc.MapRegister(op.rd));
+		else if (size == 4 && regalloc.IsAllocf(op.rd))
+			GenFastAccess(MEM_LOAD32F, addr, regalloc.MapVRegister(op.rd));
 		else
 		{
-			Add(x1, *call_regs64[0], sizeof(Sh4Context), LeaveFlags);
+			GenFastAccess(kind, addr, w0);
+			host_reg_to_shil_param(op.rd, w0);
 		}
-
-		u32 size = op.flags & 0x7f;
-		switch(size)
-		{
-		case 1:
-			Ldrsb(w0, MemOperand(x28, x1));
-			break;
-
-		case 2:
-			Ldrsh(w0, MemOperand(x28, x1));
-			break;
-
-		case 4:
-			Ldr(w0, MemOperand(x28, x1));
-			break;
-
-		case 8:
-			Ldr(x0, MemOperand(x28, x1));
-			break;
-		}
-		EnsureCodeSize(start_instruction, FastAccessSize());
-
 		return true;
 	}
 
 	void GenWriteMemory(const shil_opcode& op, size_t opid, bool optimise)
 	{
 		if (GenWriteMemoryImmediate(op))
+			return;
+		if (optimise && GenWriteMemoryFast(op))
 			return;
 
 		GenMemAddr(op, call_regs[0]);
@@ -1841,9 +1946,6 @@ private:
 			shil_param_to_host_reg(op.rs2, *call_regs64[1]);
 #endif
 		}
-		if (optimise && GenWriteMemoryFast(op, opid))
-			return;
-
 		Label lut_miss, lut_done;
 
 		if (GenMmuLookup(mmu_write_lut, size, lut_miss))
@@ -2042,55 +2144,90 @@ private:
 		return true;
 	}
 
-	bool GenWriteMemoryFast(const shil_opcode& op, size_t opid)
+	// A store, likewise
+	bool GenWriteMemoryFast(const shil_opcode& op)
 	{
-		// Direct memory access. Need to handle SIGSEGV and rewrite block as needed. See ngen_Rewrite()
+		const u32 size = op.flags & 0x7f;
+
 		if (!_nvmem_enabled() || mmu_enabled())
 			return false;
+#ifdef EXPLODE_SPANS
+		if (size == 8)
+			return false;
+#endif
+		const Register& addr = GenMemAddr(op);
 
-		Instruction *start_instruction = GetCursorAddress<Instruction *>();
-
-		// WARNING: the rewrite code relies on having 1 or 2 ops before the memory access
-		// Update ngen_Rewrite (and perhaps FastAccessSize()) if adding or removing code
-		if (!_nvmem_4gb_space())
+		if (size == 8)
 		{
-			Ubfx(x7, *call_regs64[0], 0, 29);
-			Add(x7, x7, sizeof(Sh4Context), LeaveFlags);
+			shil_param_to_host_reg(op.rs2, x1);
+			GenFastAccess(MEM_STORE64, addr, x1);
+			return true;
 		}
+		const int kind = size == 1 ? MEM_STORE8 : size == 2 ? MEM_STORE16 : MEM_STORE32;
+		if (op.rs2.is_reg() && !op.rs2.is_r32f() && regalloc.IsAllocg(op.rs2))
+			GenFastAccess(kind, addr, regalloc.MapRegister(op.rs2));
+		else if (size == 4 && op.rs2.is_r32f() && regalloc.IsAllocf(op.rs2))
+			GenFastAccess(MEM_STORE32F, addr, regalloc.MapVRegister(op.rs2));
 		else
 		{
-			Add(x7, *call_regs64[0], sizeof(Sh4Context), LeaveFlags);
+			shil_param_to_host_reg(op.rs2, w1);
+			GenFastAccess(kind, addr, w1);
 		}
-
-		u32 size = op.flags & 0x7f;
-		switch(size)
-		{
-		case 1:
-			Strb(w1, MemOperand(x28, x7));
-			break;
-
-		case 2:
-			Strh(w1, MemOperand(x28, x7));
-			break;
-
-		case 4:
-			Str(w1, MemOperand(x28, x7));
-			break;
-
-		case 8:
-			Str(x1, MemOperand(x28, x7));
-			break;
-		}
-		EnsureCodeSize(start_instruction, FastAccessSize());
-
 		return true;
 	}
 
-	void EnsureCodeSize(Instruction *start_instruction, int code_size)
+	/* The routines a fast access that faulted is written over with a call
+	 * to: see mem_stubs. Each puts the address and what is stored where a
+	 * function takes them, calls the one that does the access by asking,
+	 * and puts what was loaded where the access had it - or, where there
+	 * is nothing to do afterwards, goes to the function and lets it return
+	 * for it. */
+	void GenMemStubs()
 	{
-		while (GetCursorAddress<Instruction *>() - start_instruction < code_size * kInstructionSize)
-			Nop();
-		verify (GetCursorAddress<Instruction *>() - start_instruction == code_size * kInstructionSize);
+		static void (*const routines[MEM_KINDS])() = {
+			(void (*)())&mem_load8, (void (*)())&mem_load16, (void (*)())&mem_load32, (void (*)())&mem_load32,
+			(void (*)())&mem_load64,
+			(void (*)())&mem_store8, (void (*)())&mem_store16, (void (*)())&mem_store32, (void (*)())&mem_store32,
+			(void (*)())&mem_store64,
+		};
+		const int regs = 1 + mem_block_regs(), fregs = mem_block_fregs();
+
+		verify(regs <= MEM_REGS && fregs <= MEM_REGS);
+		memset(mem_stubs, 0, sizeof(mem_stubs));
+		for (int kind = 0; kind < MEM_KINDS; kind++)
+			for (int addr = 0; addr < regs; addr++)
+			{
+				const bool load = kind < MEM_STORE8;
+				const int datas = MEM_KIND_F(kind) ? fregs : kind == MEM_LOAD64 || kind == MEM_STORE64 ? 1 : regs;
+
+				for (int data = 0; data < datas; data++)
+				{
+					const bool after = load && (MEM_KIND_F(kind) || data != 0);
+
+					mem_stubs[kind][addr][data] = GetCursorAddress<u8 *>();
+					if (after)
+						Str(x30, MemOperand(sp, -16, PreIndex));
+					// (neither the address nor what is stored is ever in the other's place)
+					if (addr != 0)
+						Mov(w0, Register::GetWRegFromCode(alloc_regs[addr - 1]));
+					if (!load && MEM_KIND_F(kind))
+						Fmov(w1, VRegister::GetSRegFromCode(alloc_fregs[data]));
+					else if (!load && data != 0)
+						Mov(w1, Register::GetWRegFromCode(alloc_regs[data - 1]));
+					if (!after)
+					{
+						GenBranchRuntime(routines[kind]);
+						continue;
+					}
+					GenCallRuntime(routines[kind]);
+					if (MEM_KIND_F(kind))
+						Fmov(VRegister::GetSRegFromCode(alloc_fregs[data]), w0);
+					else
+						Mov(Register::GetWRegFromCode(alloc_regs[data - 1]), w0);
+					Ldr(x30, MemOperand(sp, 16, PostIndex));
+					Ret();
+				}
+			}
 	}
 
 	void CheckBlock(bool force_checks, RuntimeBlockInfo* block)
@@ -2238,17 +2375,6 @@ private:
 	std::vector<const VRegister*> call_fregs;
 	Arm64RegAlloc regalloc;
 	RuntimeBlockInfo* block = NULL;
-
-	/* How many instructions a fast access is: the add and the move where
-	 * the host has all 4 GB of the SH4's addresses mapped, a ubfx ahead of
-	 * them where it has 512 MB. The call written over one that faulted is
-	 * one instruction, or two for a load that has its sign to extend, so
-	 * either is room enough. (It was three for both, and where two do, the
-	 * third was a nop that every access ran.) */
-	static int FastAccessSize()
-	{
-		return _nvmem_4gb_space() ? 2 : 3;
-	}
 };
 
 static Arm64Assembler* compiler;
@@ -2285,70 +2411,76 @@ void ngen_CC_Finish(shil_opcode* op)
 
 }
 
-#define STR_LDR_MASK   0xFFE0EC00
+/* Whether what is at @site is a fast access as GenFastAccess() writes
+ * them, and if so which kind and with which registers (as mem_stubs
+ * numbers them). A fast access is told by what it is: a load or store
+ * with a register for its offset and x26 for its base, which nothing else
+ * a block has. Where the host has 512 MB mapped the offset is x9, which
+ * the instruction before made from the register the address is in. */
+static bool mem_access_at(const u32 *site, int *kind, int *addr, int *data)
+{
+	const u32 insn = *site;
 
-static const u32 armv8_mem_ops[] = {
-		0x38E06800,		// Ldrsb
-		0x78E06800,		// Ldrsh
-		0xB8606800,		// Ldr w
-		0xF8606800,		// Ldr x
-		0x38206800,		// Strb
-		0x78206800,		// Strh
-		0xB8206800,		// Str w
-		0xF8206800,		// Str x
-};
-static const bool read_ops[] = {
-		true,
-		true,
-		true,
-		true,
-		false,
-		false,
-		false,
-		false,
-};
-static const u32 op_sizes[] = {
-		1,
-		2,
-		4,
-		8,
-		1,
-		2,
-		4,
-		8,
-};
+	// size 111 V 00 opc 1 Rm option S 10 Rn Rt, with x26 the base and nothing shifted
+	if ((insn & 0x3B200C00) != 0x38200800 || ((insn >> 5) & 31) != MEM_BASE_CODE || (insn & 0x1000) != 0)
+		return false;
+	const u32 size = insn >> 30, opc = (insn >> 22) & 3, option = (insn >> 13) & 7;
+	const bool fp = (insn & 0x04000000) != 0;
+	int reg = (insn >> 16) & 31;
+
+	if (_nvmem_4gb_space())
+	{
+		// the address as it is, 32 bits of it
+		if (option != 2)
+			return false;
+	}
+	else
+	{
+		// ubfx x9, <the address>, #0, #29 before it
+		if (option != 3 || reg != 9 || (site[-1] & 0xFFFFFC1F) != 0xD3407009)
+			return false;
+		reg = (site[-1] >> 5) & 31;
+	}
+	if (fp)
+	{
+		if (size != 2 || opc > 1)
+			return false;
+		*kind = opc == 0 ? MEM_STORE32F : MEM_LOAD32F;
+	}
+	else if (opc == 0)
+		*kind = size == 0 ? MEM_STORE8 : size == 1 ? MEM_STORE16 : size == 2 ? MEM_STORE32 : MEM_STORE64;
+	else if (opc == 1 && size >= 2)
+		*kind = size == 2 ? MEM_LOAD32 : MEM_LOAD64;
+	else if (opc == 3 && size <= 1)
+		*kind = size == 0 ? MEM_LOAD8 : MEM_LOAD16;
+	else
+		return false;
+
+	*addr = mem_reg_number(reg, 0);
+	*data = fp ? mem_freg_number(insn & 31) : mem_reg_number(insn & 31, *kind < MEM_STORE8 ? 0 : 1);
+	if ((*kind == MEM_LOAD64 || *kind == MEM_STORE64) && *data != 0)
+		return false;
+	return *addr >= 0 && *data >= 0;
+}
+
+/* A fast memory access faulted: it is written over with a call to the
+ * routine that does such an access by asking, with the registers this one
+ * has (mem_stubs), and run again. */
 bool ngen_Rewrite(unat& host_pc, unat, unat)
 {
-	//LOGI("ngen_Rewrite pc %zx\n", host_pc);
-	u32 *code_ptr = (u32 *)CC_RX2RW(host_pc);
-	u32 armv8_op = *code_ptr;
-	bool is_read;
-	u32 size;
-	bool found = false;
-	u32 masked = armv8_op & STR_LDR_MASK;
-	for (int i = 0; i < ARRAY_SIZE(armv8_mem_ops); i++)
-	{
-		if (masked == armv8_mem_ops[i])
-		{
-			size = op_sizes[i];
-			is_read = read_ops[i];
-			found = true;
-			break;
-		}
-	}
-	verify(found);
+	u32 *const site = (u32 *)CC_RX2RW(host_pc);
+	int kind, addr, data;
 
-	// Skip the preceding ops (add, ubfx)
-	u32 *code_rewrite = code_ptr - 1 - (!_nvmem_4gb_space() ? 1 : 0);
-	Arm64Assembler *assembler = new Arm64Assembler(code_rewrite);
-	if (is_read)
-		assembler->GenReadMemorySlow(size, true);
-	else
-		assembler->GenWriteMemorySlow(size, true);
-	assembler->Finalize(true);
-	delete assembler;
-	host_pc = (unat)CC_RW2RX(code_rewrite);
+	if (!_nvmem_enabled() || mmu_enabled())
+		return false;
+	if (!mem_access_at(site, &kind, &addr, &data) || mem_stubs[kind][addr][data] == NULL)
+		return false;
 
+	// bl, to where the routine is from where this is run
+	const ptrdiff_t offset = mem_stubs[kind][addr][data] - (u8 *)site;
+	verify(offset >= -128 * 1024 * 1024 && offset < 128 * 1024 * 1024 && (offset & 3) == 0);
+	*site = 0x94000000 | (u32)((offset >> 2) & 0x03FFFFFF);
+	vmem_platform_flush_cache((void *)host_pc, (void *)(host_pc + 4), site, site + 1);
 	return true;
 }
 

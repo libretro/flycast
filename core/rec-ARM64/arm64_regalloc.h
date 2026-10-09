@@ -37,7 +37,11 @@ enum eFReg {
 	S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28, S29, S30, S31
 };
 
-static eReg alloc_regs[] = { W19, W20, W21, W22, W23, W24, W25, W26, (eReg)-1 };
+/* x26 is not handed out: recompiled code keeps the address of the SH4's
+ * memory, as the host has it mapped, in it - a load or store is then one
+ * instruction (GenFastAccess() in rec_arm64.cpp). x27 has what is left of
+ * the time slice and x28 the address of the SH4's context. */
+static eReg alloc_regs[] = { W19, W20, W21, W22, W23, W24, W25, (eReg)-1 };
 static eFReg alloc_fregs[] = { S8, S9, S10, S11, S12, S13, S14, S15, (eFReg)-1 };
 
 class Arm64Assembler;
