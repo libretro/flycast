@@ -109,7 +109,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       CORE_OPTION_NAME "_use_real_bios",
       "Use Real BIOS (If Available)",
       NULL,
-      "Start with the BIOS files in the system directory: the Dreamcast's, or naomi.zip (naomi2.zip) for a NAOMI game loaded as a single image (.bin or .dat, loose or alone in a zip, 7z or rar archive). When this is disabled, or the BIOS is not found, the built-in replacement (HLE) BIOS is used instead: it is less compatible, and for NAOMI it has no test menu and keeps the default coin settings. 'Boot to BIOS' and NAOMI games in romset form always need the real BIOS. Restart required.",
+      "Start with the BIOS files in the system directory: the Dreamcast's, or naomi.zip (naomi2.zip) for a NAOMI game. When this is disabled, or the BIOS is not found, the built-in replacement (HLE) BIOS is used instead: it is less compatible, and for NAOMI it opens a game's own test menu but has no system menu of its own and keeps the default coin settings. 'Boot to BIOS' and Atomiswave games always need the real BIOS. Restart required.",
       NULL,
       NULL,
       {
