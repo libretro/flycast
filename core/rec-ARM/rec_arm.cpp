@@ -409,7 +409,18 @@ static void arm_mmu_sqw(u32 addr, u32 pc)
 
 u32 DynaRBI::Relink()
 {
-	verify(emit_ptr==0);
+	/* The end of the block is written where the block's end is, with the
+	 * emitter pointed there for the while - and pointed back afterwards to
+	 * wherever it was. It used to be left at nothing, which is where it is
+	 * when a block of the main cache is being compiled or none is. But a
+	 * block of the temporary cache is compiled with the emitter pointing
+	 * into that cache, and this is called as the last of compiling it: the
+	 * block's length then came out as the distance between the two caches,
+	 * its end was counted off the main cache, and the temporary cache was
+	 * never moved on - the next block was compiled on top of it. Such a
+	 * block could not be found by its code, and the first one that asked to
+	 * be linked brought the core down. */
+	u32 *const emit_ptr_before = emit_ptr;
 	u8* code_start=(u8*)code+relink_offset;
 	emit_ptr=(u32*)code_start;
 
@@ -626,7 +637,7 @@ u32 DynaRBI::Relink()
 
 	u32 sz=(u8*)emit_ptr-code_start;
 
-	emit_ptr=0;
+	emit_ptr=emit_ptr_before;
 	return sz;
 }
 
