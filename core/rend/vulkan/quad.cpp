@@ -134,13 +134,20 @@ void QuadPipeline::Init(ShaderManager *shaderManager, vk::RenderPass renderPass,
 	}
 	if (!linearSampler)
 	{
+		/* What is drawn with this one is a whole picture at another size:
+		 * the screen as it was before the renderer changed size, or before
+		 * the frontend took the context away, under a render that covers
+		 * part of it. Past its edge there is nothing: the edge is repeated.
+		 * With a black border there instead, a picture made larger had its
+		 * outermost pixels mixed with black - a dark line around the screen
+		 * that stayed for as long as the game did not draw there. */
 		linearSampler = GetContext()->GetDevice().createSamplerUnique(
 				vk::SamplerCreateInfo(vk::SamplerCreateFlags(),
 						vk::Filter::eLinear, vk::Filter::eLinear,
 						vk::SamplerMipmapMode::eLinear,
-						vk::SamplerAddressMode::eClampToBorder,
-						vk::SamplerAddressMode::eClampToBorder,
-						vk::SamplerAddressMode::eClampToBorder, 0.0f, false,
+						vk::SamplerAddressMode::eClampToEdge,
+						vk::SamplerAddressMode::eClampToEdge,
+						vk::SamplerAddressMode::eClampToEdge, 0.0f, false,
 						16.0f, false, vk::CompareOp::eNever, 0.0f, 0.0f,
 						vk::BorderColor::eFloatOpaqueBlack));
 	}
