@@ -62,6 +62,8 @@ extern int vmem_fd;
 static const u64 VMEM32_SIZE = 0x100000000L;
 static const u64 USER_SPACE = 0x80000000L;
 static const u64 AREA7_ADDRESS = 0x7C000000L;
+static const u64 P3_START = 0xC0000000L;
+static const u64 P3_END = 0xE0000000L;
 
 static std::unordered_set<u32> vram_mapped_pages;
 /* Main memory: a bit for each 4K of the SH4's addresses, set where a page
@@ -80,6 +82,8 @@ static inline void sram_page_set_mapped(u32 address)
 }
 
 bool vmem32_inited;
+// something is mapped in P3: the MMU's pages, or what is there while it is off
+static bool p3_mapped = true;
 
 // stats
 //u64 vmem32_page_faults;
@@ -212,6 +216,8 @@ static u32 vmem32_map_mmu(u32 address, bool write)
 	u32 rc = mmu_full_lookup<false>(address, &entry, pa);
 	if (rc == MMU_ERROR_NONE)
 	{
+		if (address >= P3_START)
+			p3_mapped = true;
 		//0X  & User mode-> protection violation
 		//if ((entry->Data.PR >> 1) == 0 && p_sh4rcb->cntx.sr.MD == 0)
 		//	return MMU_ERROR_PROTECTED;
@@ -388,20 +394,33 @@ bool vmem32_handle_signal(void *fault_addr, bool write, u32 exception_pc)
 }
 #endif
 
+/* Everything the MMU's pages were mapped as goes: P0, and P3, which the
+ * MMU translates as well. (P3 used to be left - "TODO flush P3?" - and
+ * with the memory it has while the MMU is off still mapped there: an
+ * address in it that the program had mapped was read and written at the
+ * wrong place if that was one of those, and at the place it had first
+ * been mapped to ever after if it was not.) */
 void vmem32_flush_mmu()
 {
 	//vmem32_flush++;
 	vram_mapped_pages.clear();
-	// (as far as what is unmapped: P3 stays as it is)
 	memset(sram_mapped_pages, 0, USER_SPACE / PAGE_SIZE / 8);
 	vmem32_unmap_buffer(0, USER_SPACE);
-	// TODO flush P3?
+	// (P3 if there is anything in it: this is done at every change of address space)
+	if (p3_mapped)
+	{
+		memset(sram_mapped_pages + P3_START / PAGE_SIZE / 8, 0, (P3_END - P3_START) / PAGE_SIZE / 8);
+		vmem32_unmap_buffer(P3_START, P3_END);
+		p3_mapped = false;
+	}
 }
 
 void vmem32_forget(u32 va, u32 size)
 {
-	// (a page of 1K is not mapped at all; P3 is left as vmem32_flush_mmu() leaves it)
-	if (!vmem32_inited || size < PAGE_SIZE || va >= USER_SPACE)
+	// (a page of 1K is not mapped at all)
+	if (!vmem32_inited || size < PAGE_SIZE)
+		return;
+	if (!(va < USER_SPACE || (va >= P3_START && va < P3_END)))
 		return;
 	vram_mapped_pages.erase(va);
 	for (u32 sub = 0; sub < size; sub += PAGE_SIZE)
@@ -418,6 +437,7 @@ bool vmem32_init()
 		return false;
 
 	vmem32_inited = true;
+	p3_mapped = true;
 	vmem32_flush_mmu();
 	return true;
 #endif

@@ -258,7 +258,15 @@ void bm_Reset()
 		// Windows cannot lock/unlock a region spanning more than one VirtualAlloc or MapViewOfFile
 		// so we have to unlock each region individually
 		// No need for this mess in 4GB mode since windows doesn't use it
-		if (RAM_SIZE == 16 * 1024 * 1024)
+		/* (P0 and P3 are not this file's while the host maps the MMU's
+		 * pages there: nothing in them was protected from here, and to
+		 * unprotect an address that nothing is mapped at is to have the
+		 * host put memory there.) */
+		const bool mmu_has_them = vmem32_enabled();
+
+		if (mmu_has_them)
+			;
+		else if (RAM_SIZE == 16 * 1024 * 1024)
 		{
 			mem_region_unlock(virt_ram_base + 0x0C000000, RAM_SIZE);
 			mem_region_unlock(virt_ram_base + 0x0D000000, RAM_SIZE);
@@ -274,7 +282,8 @@ void bm_Reset()
 		{
 			mem_region_unlock(virt_ram_base + 0x8C000000, 0x90000000 - 0x8C000000);
 			mem_region_unlock(virt_ram_base + 0xAC000000, 0xB0000000 - 0xAC000000);
-			mem_region_unlock(virt_ram_base + 0xCC000000, 0xD0000000 - 0xCC000000);
+			if (!mmu_has_them)
+				mem_region_unlock(virt_ram_base + 0xCC000000, 0xD0000000 - 0xCC000000);
 		}
 	}
 	else
@@ -309,10 +318,10 @@ static void bm_ProtectPage(u32 addr, bool protect)
 	count = _nvmem_4gb_space() ? ARRAY_SIZE(regions) : 1;
 	for (i = 0; i < count; i++)
 	{
-		/* with the MMU on, P0 is what it says it is: what the host has
-		 * mapped there is vmem32's business, which asks before it maps
-		 * (bm_IsRamPageProtected()) */
-		if (i == 0 && mmu_enabled() && _nvmem_4gb_space())
+		/* with the MMU on, P0 and P3 are what it says they are: what the
+		 * host has mapped there is vmem32's business, which asks before
+		 * it maps (bm_IsRamPageProtected()) */
+		if ((i == 0 || i == 3) && mmu_enabled() && _nvmem_4gb_space())
 			continue;
 		for (mirror = 0; mirror < 0x04000000; mirror += RAM_SIZE)
 		{
@@ -668,8 +677,8 @@ bool bm_RamWriteAccess(void *p)
 				return false;
 		}
 		u32 addr = (u8*)p - virt_ram_base;
-		if (mmu_enabled() && _nvmem_4gb_space() && (addr & 0x80000000) == 0)
-			// If mmu enabled, let vmem32 manage user space
+		if (mmu_enabled() && _nvmem_4gb_space() && ((addr & 0x80000000) == 0 || (addr >> 29) == 6))
+			// If mmu enabled, let vmem32 manage user space, and P3
 			// shouldn't be necessary since it's called first
 			return false;
 		if (!IsOnRam(addr) || ((addr >> 29) > 0 && (addr >> 29) < 4))	// system RAM is not mapped to 20, 40 and 60 because of laziness

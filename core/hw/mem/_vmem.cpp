@@ -469,6 +469,29 @@ static void _vmem_set_p0_mappings()
 	vmem_platform_create_mappings(&mem_mappings[0], ARRAY_SIZE(mem_mappings));
 }
 
+/* P3, where the whole 4 GB is laid out: the same memory again while the
+ * MMU is off. With it on P3 is the MMU's, like P0, and what is mapped
+ * there is whatever the MMU says (vmem32); this is to put it back. */
+static void _vmem_set_p3_mappings()
+{
+	const vmem_mapping mem_mappings[] = {
+		{0xC0000000, 0xC0800000,                               0,         0, false},  // Area 0 -> unused
+		{0xC0800000, 0xC1000000,            MAP_ARAM_START_OFFSET, ARAM_SIZE, true},  // Aica
+		{0xC1000000, 0xC2800000,                               0,         0, false},  // unused
+		{0xC2800000, 0xC3000000,            MAP_ARAM_START_OFFSET, ARAM_SIZE, true},  // Aica mirror
+		{0xC3000000, 0xC4000000,                               0,         0, false},  // unused
+		{0xC4000000, 0xC5000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // Area 1 (vram, 16MB, wrapped on DC as 2x8MB)
+		{0xC5000000, 0xC6000000,                               0,         0, false},  // 32 bit path (unused)
+		{0xC6000000, 0xC7000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
+		{0xC7000000, 0xC8000000,                               0,         0, false},  // 32 bit path (unused) mirror
+		{0xC8000000, 0xCA000000,                               0,         0, false},  // Area 2
+		{0xCA000000, 0xCC000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
+		{0xCC000000, 0xD0000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
+		{0xD0000000, 0xE0000000,                               0,         0, false},  // Area 4-7 (unused)
+	};
+	vmem_platform_create_mappings(&mem_mappings[0], ARRAY_SIZE(mem_mappings));
+}
+
 u8 *_vmem_elan_ram;
 
 bool _vmem_reserve(void)
@@ -568,22 +591,11 @@ bool _vmem_reserve(void)
 				{0xAA000000, 0xAC000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
 				{0xAC000000, 0xB0000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
 				{0xB0000000, 0xC0000000,                               0,         0, false},  // Area 4-7 (unused)
-				// P3
-				{0xC0000000, 0xC0800000,                               0,         0, false},  // Area 0 -> unused
-				{0xC0800000, 0xC1000000,            MAP_ARAM_START_OFFSET, ARAM_SIZE, true},  // Aica
-				{0xC1000000, 0xC2800000,                               0,         0, false},  // unused
-				{0xC2800000, 0xC3000000,            MAP_ARAM_START_OFFSET, ARAM_SIZE, true},  // Aica mirror
-				{0xC3000000, 0xC4000000,                               0,         0, false},  // unused
-				{0xC4000000, 0xC5000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // Area 1 (vram, 16MB, wrapped on DC as 2x8MB)
-				{0xC5000000, 0xC6000000,                               0,         0, false},  // 32 bit path (unused)
-				{0xC6000000, 0xC7000000,           MAP_VRAM_START_OFFSET, VRAM_SIZE,  true},  // VRAM mirror
-				{0xC7000000, 0xC8000000,                               0,         0, false},  // 32 bit path (unused) mirror
-				{0xC8000000, 0xCA000000,                               0,         0, false},  // Area 2
-				{0xCA000000, 0xCC000000,           MAP_ERAM_START_OFFSET, ERAM_SIZE,  true},  // a NAOMI 2's geometry chip (nothing elsewhere)
-				{0xCC000000, 0xD0000000,            MAP_RAM_START_OFFSET,  RAM_SIZE,  true},  // Area 3 (main RAM + 3 mirrors)
-				{0xD0000000, 0x100000000L,                             0,         0, false},  // Area 4-7 (unused)
+				// (P3: _vmem_set_p3_mappings())
+				{0xE0000000, 0x100000000L,                             0,         0, false},  // P4
 			};
 			vmem_platform_create_mappings(&mem_mappings[0], ARRAY_SIZE(mem_mappings));
+			_vmem_set_p3_mappings();
 
 			// Point buffers to actual data pointers
 			aica_ram.data = &virt_ram_base[0x80800000];  // Points to the first AICA addrspace in P1
@@ -631,10 +643,16 @@ void _vmem_enable_mmu(bool enable)
 	}
 	else
 	{
-		// Restore P0/U0 mem mappings
+		// Restore P0/U0 mem mappings, and P3's if the MMU had those
+		const bool p3_too = vmem32_enabled();
+
 		vmem32_term();
 		if (_nvmem_4gb_space())
+		{
 			_vmem_set_p0_mappings();
+			if (p3_too)
+				_vmem_set_p3_mappings();
+		}
 	}
 }
 
