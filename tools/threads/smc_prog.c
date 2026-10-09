@@ -65,8 +65,13 @@
  *     other; and it is in a page of 64K, not in the first 4K of it (step
  *     17);
  *   - it is rewritten at 0x2C000000 and on, where the host has nothing
- *     mapped and the write goes the long way round (step 23: the last,
- *     because the recompiled write is not the same one afterwards).
+ *     mapped and the write goes the long way round (step 23: the last
+ *     of these, because the recompiled write is not the same one
+ *     afterwards).
+ *
+ * Step 24 is not about memory at all: an instruction, NEGC, that a
+ * recompiler which takes addresses straight from its registers has to
+ * leave those registers right after.
  *
  * And with the MMU on, what is not rewritten code but goes wrong the same
  * way - something kept of how things were, that is used after they have
@@ -167,8 +172,16 @@ __asm__(".text\n.align 2\n.global smc_move64\nsmc_move64:\n"
         "  .word 0x426A\n"                           /* lds r2, fpscr */
         "  rts\n  nop\n  .align 2\n"
         "1: .long 0x00140001\n");
+/* smc_negc_twice(x, p): 0 - x with the borrow out, and 0 - that with the
+ * borrow in, both in the same register - the high half of a 64-bit number
+ * being negated, whose low half had a borrow. What is left of x goes to
+ * @p, and the last borrow is returned. */
+__asm__(".text\n.align 2\n.global smc_negc_twice\nsmc_negc_twice:\n"
+        "  clrt\n  negc r4, r4\n  negc r4, r4\n  movt r0\n"
+        "  rts\n  mov.l r4, @r5\n");
 extern char smc_vbr[];
 extern const u32 smc_own_tlb;
+extern u32 smc_negc_twice(u32 x, volatile u32 *to);
 extern void smc_move64(u32 from, u32 to);
 extern u32 smc_enter_user(u32 where, u32 what);
 
@@ -1236,6 +1249,22 @@ void cmain(void)
    *VERDICT = 23;
    if ((r = rewritten(0x8c000000, 0x8c000000, 0x2c000000)) != 0)
       fail(23, r);
+
+   /* Not memory, but what a recompiler that takes an address straight
+    * from the register it keeps it in has to be sure of: that there is
+    * nothing in that register but the 32 bits. NEGC done twice on one
+    * register is 0 - (0 - 1) - 1 here, which is 0 with a borrow; a host
+    * that did the first in 64 bits to have the borrow, and left the 64
+    * there, takes the second one's borrow from what it left. */
+   *VERDICT = 24;
+   {
+      static volatile u32 left;
+
+      if (smc_negc_twice(1, &left) != 1)
+         fail(24, 1);
+      if (left != 0)
+         fail(24, 2);
+   }
 
    /* And for ever, for whoever saves a state and loads it later. */
    *VERDICT = mmu == 2 ? 0x600D5AC5 : mmu ? 0x600D5ACE : 0x600D5AC0;
