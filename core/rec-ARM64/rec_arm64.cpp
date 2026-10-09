@@ -1139,7 +1139,10 @@ public:
 		return MemOperand(x28, offset);
 	}
 
-	void GenReadMemorySlow(u32 size)
+	/* @rewrite: over a fast access that faulted (ngen_Rewrite()), which it
+	 * has to cover to the last instruction. Anywhere else it is as long as
+	 * it is: it used to be filled up to a fast access's length there too. */
+	void GenReadMemorySlow(u32 size, bool rewrite = false)
 	{
 		Instruction *start_instruction = GetCursorAddress<Instruction *>();
 
@@ -1179,10 +1182,11 @@ public:
 			die("1..8 bytes");
 			break;
 		}
-		EnsureCodeSize(start_instruction, read_memory_rewrite_size);
+		if (rewrite)
+			EnsureCodeSize(start_instruction, FastAccessSize());
 	}
 
-	void GenWriteMemorySlow(u32 size)
+	void GenWriteMemorySlow(u32 size, bool rewrite = false)
 	{
 		Instruction *start_instruction = GetCursorAddress<Instruction *>();
 
@@ -1220,7 +1224,8 @@ public:
 			die("1..8 bytes");
 			break;
 		}
-		EnsureCodeSize(start_instruction, write_memory_rewrite_size);
+		if (rewrite)
+			EnsureCodeSize(start_instruction, FastAccessSize());
 	}
 
 	/* The end of a block that goes to @target and nowhere else: to the
@@ -1777,7 +1782,7 @@ private:
 		Instruction *start_instruction = GetCursorAddress<Instruction *>();
 
 		// WARNING: the rewrite code relies on having 1 or 2 ops before the memory access
-		// Update ngen_Rewrite (and perhaps read_memory_rewrite_size) if adding or removing code
+		// Update ngen_Rewrite (and perhaps FastAccessSize()) if adding or removing code
 		if (!_nvmem_4gb_space())
 		{
 			Ubfx(x1, *call_regs64[0], 0, 29);
@@ -1807,7 +1812,7 @@ private:
 			Ldr(x0, MemOperand(x28, x1));
 			break;
 		}
-		EnsureCodeSize(start_instruction, read_memory_rewrite_size);
+		EnsureCodeSize(start_instruction, FastAccessSize());
 
 		return true;
 	}
@@ -2046,7 +2051,7 @@ private:
 		Instruction *start_instruction = GetCursorAddress<Instruction *>();
 
 		// WARNING: the rewrite code relies on having 1 or 2 ops before the memory access
-		// Update ngen_Rewrite (and perhaps write_memory_rewrite_size) if adding or removing code
+		// Update ngen_Rewrite (and perhaps FastAccessSize()) if adding or removing code
 		if (!_nvmem_4gb_space())
 		{
 			Ubfx(x7, *call_regs64[0], 0, 29);
@@ -2076,7 +2081,7 @@ private:
 			Str(x1, MemOperand(x28, x7));
 			break;
 		}
-		EnsureCodeSize(start_instruction, write_memory_rewrite_size);
+		EnsureCodeSize(start_instruction, FastAccessSize());
 
 		return true;
 	}
@@ -2233,8 +2238,17 @@ private:
 	std::vector<const VRegister*> call_fregs;
 	Arm64RegAlloc regalloc;
 	RuntimeBlockInfo* block = NULL;
-	const int read_memory_rewrite_size = 3;	// ubfx, add, ldr
-	const int write_memory_rewrite_size = 3; // ubfx, add, str
+
+	/* How many instructions a fast access is: the add and the move where
+	 * the host has all 4 GB of the SH4's addresses mapped, a ubfx ahead of
+	 * them where it has 512 MB. The call written over one that faulted is
+	 * one instruction, or two for a load that has its sign to extend, so
+	 * either is room enough. (It was three for both, and where two do, the
+	 * third was a nop that every access ran.) */
+	static int FastAccessSize()
+	{
+		return _nvmem_4gb_space() ? 2 : 3;
+	}
 };
 
 static Arm64Assembler* compiler;
@@ -2328,9 +2342,9 @@ bool ngen_Rewrite(unat& host_pc, unat, unat)
 	u32 *code_rewrite = code_ptr - 1 - (!_nvmem_4gb_space() ? 1 : 0);
 	Arm64Assembler *assembler = new Arm64Assembler(code_rewrite);
 	if (is_read)
-		assembler->GenReadMemorySlow(size);
+		assembler->GenReadMemorySlow(size, true);
 	else
-		assembler->GenWriteMemorySlow(size);
+		assembler->GenWriteMemorySlow(size, true);
 	assembler->Finalize(true);
 	delete assembler;
 	host_pc = (unat)CC_RW2RX(code_rewrite);
