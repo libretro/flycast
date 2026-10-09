@@ -64,6 +64,17 @@ struct DynaRBI : RuntimeBlockInfo
    }
 };
 
+/* What is left of the time slice. Recompiled code has it in r14, where
+ * taking a block's cycles off it is one instruction on a register; it was
+ * this word, read, changed and written back by every block.
+ *
+ * The word is still what the main loop starts from - at its beginning,
+ * and when an exception has come back to it by longjmp(), which puts r14
+ * back to what it was at the setjmp(). So a block that can raise one - a
+ * block compiled with the MMU on - also writes the word, once, when it has
+ * taken its cycles off; and the routines that raise one add theirs to the
+ * word. With the MMU off nothing comes back that way and nothing writes
+ * it. */
 extern "C" {
    int cycle_counter;
 }
@@ -149,6 +160,8 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
 #else
                         "call " _U "setjmp@PLT						\n\t"
 #endif
+                        // (here at the start, and again after every longjmp)
+                        "movl " _U "cycle_counter(%rip), %r14d  \n\t"
 
                 "1:															\n\t"   // run_loop
                         "movq " _U "p_sh4rcb(%rip), %rax       \n\t"
@@ -177,12 +190,10 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
                         "jmp *%rax                                              \n\t"
                         ".globl " _U "ngen_block_return         \n"
                 _U "ngen_block_return:                                  \n\t"
-                        "movl " _U "cycle_counter(%rip), %ecx \n\t"
-                        "testl %ecx, %ecx                                       \n\t"
+                        "testl %r14d, %r14d                                     \n\t"
                         "jg 2b                                                          \n\t"   // slice_loop
 
-                        "addl $" _S(SH4_TIMESLICE) ", %ecx              \n\t"
-                        "movl %ecx, " _U "cycle_counter(%rip)   \n\t"
+                        "addl $" _S(SH4_TIMESLICE) ", %r14d             \n\t"
                         "call " _U "UpdateSystem_INTC           \n\t"
                         "jmp 1b                                                         \n"             // run_loop
 
@@ -306,8 +317,8 @@ enum
  *
  * A fast access has its address and its data in whatever registers the
  * block has them in, so there is a routine for each kind of access, each
- * register the address can be in and each the data can be in: 324 of
- * them on Linux and macOS and 560 on Windows, a few instructions each,
+ * register the address can be in and each the data can be in: 240 of
+ * them on Linux and macOS and 448 on Windows, a few instructions each,
  * written once. They are in the code cache, like the link stub, so that a
  * near call reaches them. The access they stand in for changes nothing
  * but its data, so they keep the block's floating-point registers: by
@@ -1742,31 +1753,32 @@ public:
 		if (charge_at_tail)
 			GenCharge();		// leaves the flags of the counter against 0
 		else
-		{
-#ifdef FEAT_NO_RWX_PAGES
-			mov(rcx, (uintptr_t)&cycle_counter);
-			cmp(dword[rcx], 0);
-#else
-			cmp(dword[rip + &cycle_counter], 0);
-#endif
-		}
+			test(r14d, r14d);
 		jle(slice_out, T_NEAR);
 		slice_out_used = true;
 	}
 
 	// A block going back: every so often, see whether it is only waiting, and
 	// give up the rest of the time slice if it is. See wait_site.h.
-	// Takes what the block costs off the cycle counter
+	/* Takes what the block costs off the cycle counter, which is r14. A
+	 * block that pays at its start - one compiled with the MMU on, which
+	 * can leave by an exception - leaves a copy where the main loop finds
+	 * it afterwards: see cycle_counter. (Neither changes the flags of the
+	 * subtraction.) */
 	void GenCharge()
 	{
+		sub(r14d, block_cycles);
+		if (!charge_at_tail)
+		{
 #ifdef FEAT_NO_RWX_PAGES
-		// Use absolute addressing for this one
-		// TODO(davidgfnet) remove the ifsef using CC_RX2RW/CC_RW2RX
-		mov(rcx, (uintptr_t)&cycle_counter);
-		sub(dword[rcx], block_cycles);
+			// Use absolute addressing for this one
+			// TODO(davidgfnet) remove the ifsef using CC_RX2RW/CC_RW2RX
+			mov(rcx, (uintptr_t)&cycle_counter);
+			mov(dword[rcx], r14d);
 #else
-		sub(dword[rip + &cycle_counter], block_cycles);
+			mov(dword[rip + &cycle_counter], r14d);
 #endif
+		}
 	}
 
 	void GenWaitCheck(const RuntimeBlockInfo *block)
@@ -1784,12 +1796,7 @@ public:
 		test(eax, eax);
 		jz(over, T_NEAR);
 		// the block has yet to pay: this leaves the counter at 0 when it has
-#ifdef FEAT_NO_RWX_PAGES
-		mov(rax, (uintptr_t)&cycle_counter);
-		mov(dword[rax], charge_at_tail ? block_cycles : 0);
-#else
-		mov(dword[rip + &cycle_counter], charge_at_tail ? block_cycles : 0);
-#endif
+		mov(r14d, charge_at_tail ? block_cycles : 0);
 		L(over);
 	}
 
