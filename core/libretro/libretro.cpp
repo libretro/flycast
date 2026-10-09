@@ -1877,13 +1877,24 @@ static void set_input_descriptors()
    environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
 }
 
+/* The file's name without its directories. On Windows a path comes with
+ * backslashes or with forward slashes - a frontend passes on what it was
+ * given, from a command line or a playlist - or with both: after the last
+ * of either. (Only the backslash was looked for there: a path with forward
+ * slashes was all name, and the files named after the content - a
+ * cabinet's EEPROM and its other memories, a memory card of the game's
+ * own - got a name that no file can have, and were never written.) */
 static void extract_basename(char *buf, const char *path, size_t size)
 {
    const char *base = strrchr(path, slash);
+#ifdef _WIN32
+   const char *forward = strrchr(path, '/');
+   if (forward && (!base || forward > base))
+      base = forward;
+#endif
    if (!base)
       base = path;
-
-   if (*base == slash)
+   else
       base++;
 
    strncpy(buf, base, size - 1);
