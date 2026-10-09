@@ -1589,6 +1589,9 @@ private:
 				case 2:
 					Ldrsh(w0, MemOperand(x4, w0, UXTW));
 					break;
+				case 8:
+					Ldr(x0, MemOperand(x4, w0, UXTW));
+					break;
 				default:
 					Ldr(w0, MemOperand(x4, w0, UXTW));
 					break;
@@ -1849,6 +1852,9 @@ private:
 			case 2:
 				Strh(w1, MemOperand(x4, w0, UXTW));
 				break;
+			case 8:
+				Str(x1, MemOperand(x4, w0, UXTW));
+				break;
 			default:
 				Str(w1, MemOperand(x4, w0, UXTW));
 				break;
@@ -1868,20 +1874,27 @@ private:
 	 * the host - x4 is then what to add to the address, which is in x0, to
 	 * be there. The call is for a miss, and fills the table in. Not for an
 	 * address that is not a multiple of the access's size, which is an
-	 * address error and the call's to raise, nor for 64 bits, which can run
-	 * over the end of a page. x3 and x4 belong to nobody here.
+	 * address error and the call's to raise; 64 bits are two accesses of 32
+	 * to the SH4, so a multiple of 4 will do for them, but then the second
+	 * half must not be in the next page. x3 and x4 belong to nobody here.
 	 *
 	 * (This recompiler had the host's mapping of the MMU's pages, vmem32,
 	 * or a call each time.) */
 	bool GenMmuLookup(const uintptr_t *table, u32 size, Label& miss)
 	{
 #ifdef MMU_HOST_PAGE_LUT
-		if (!mmu_enabled() || vmem32_enabled() || size == 8)
+		if (!mmu_enabled() || vmem32_enabled())
 			return false;
-		if (size == 2 || size == 4)
+		if (size == 2 || size == 4 || size == 8)
 		{
-			Tst(w0, size - 1);
+			Tst(w0, size == 2 ? 1 : 3);
 			B(&miss, ne);
+		}
+		if (size == 8)
+		{
+			Add(w3, w0, 4);
+			Tst(w3, 0xFFF);
+			B(&miss, eq);
 		}
 		Lsr(w3, w0, 12);
 		Ldr(x4, reinterpret_cast<uintptr_t>(table));

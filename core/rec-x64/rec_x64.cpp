@@ -1707,22 +1707,32 @@ public:
 	/* With the MMU on and no host mapping to do the translating (vmem32),
 	 * an access is a call. First, though, the table of translations kept
 	 * by (mmu.h): on a hit, rax is what to add to the address to be at the
-	 * page on the host; the call is for a miss, and fills the table in. Not
-	 * for 64 bits, which can run over the end of a page. The address is in
-	 * call_regs[0]; rax, r10 and r11 belong to nobody here. */
+	 * page on the host; the call is for a miss, and fills the table in. The
+	 * address is in call_regs[0]; rax, r10 and r11 belong to nobody here. */
 	bool GenMmuLookup(const uintptr_t *table, u32 size, Xbyak::Label& miss)
 	{
 #ifdef MMU_HOST_PAGE_LUT
-		if (!mmu_enabled() || vmem32_enabled() || size == 8)
+		if (!mmu_enabled() || vmem32_enabled())
 			return false;
-		/* Not for an address that is not a multiple of the access's size
-		 * either: that is an address error, which the call raises - and
-		 * which a page already in the table used to get past, reading
-		 * on into the next page of the host's memory at the end of one. */
-		if (size == 2 || size == 4)
+		/* Not for an address that is not a multiple of the access's size:
+		 * that is an address error, which the call raises - and which a
+		 * page already in the table used to get past, reading on into the
+		 * next page of the host's memory at the end of one. 64 bits are
+		 * two accesses of 32 to the SH4, so a multiple of 4 will do for
+		 * them - but then the second half must not be in the next page,
+		 * which is another page altogether: the call's again. (They used
+		 * all to be the call's. A game moves its vertices 64 bits at a
+		 * time.) */
+		if (size == 2 || size == 4 || size == 8)
 		{
-			test(call_regs[0], size - 1);
+			test(call_regs[0], size == 2 ? 1 : 3);
 			jnz(miss);
+		}
+		if (size == 8)
+		{
+			lea(eax, ptr[call_regs64[0] + 4]);
+			test(eax, 0xFFF);
+			jz(miss);
 		}
 		mov(eax, call_regs[0]);
 		shr(eax, 12);
@@ -1754,6 +1764,9 @@ public:
 				break;
 			case 2:
 				movsx(eax, word[rax + call_regs64[0]]);
+				break;
+			case 8:
+				mov(rax, qword[rax + call_regs64[0]]);
 				break;
 			default:
 				mov(eax, dword[rax + call_regs64[0]]);
@@ -1831,6 +1844,9 @@ public:
 				break;
 			case 2:
 				mov(word[rax + call_regs64[0]], call_regs[1].cvt16());
+				break;
+			case 8:
+				mov(qword[rax + call_regs64[0]], call_regs64[1]);
 				break;
 			default:
 				mov(dword[rax + call_regs64[0]], call_regs[1]);

@@ -1060,20 +1060,30 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 
 	/* First the table of translations kept by (mmu.h): on a hit, straight
 	 * to the page on the host. The call below is for a miss, and fills
-	 * the table in. Not for 64 bits, which can run over the end of a
-	 * page. r1 to r3 are free here but for the data of a store, which can
-	 * be in r2. */
-	u32 *miss = nullptr, *hit = nullptr, *unaligned = nullptr;
-	if (optp != SZ_64F)
+	 * the table in. r1 to r3 are free here but for the data of a store,
+	 * which can be in r2. */
+	u32 *miss = nullptr, *hit = nullptr, *unaligned = nullptr, *crosses = nullptr;
 	{
-		/* Nor for an address that is not a multiple of the access's size:
+		/* Not for an address that is not a multiple of the access's size:
 		 * that is an address error, which the call raises - and which a
-		 * page already in the table used to get past. */
+		 * page already in the table used to get past. 64 bits are two
+		 * accesses of 32 to the SH4, so a multiple of 4 will do for them -
+		 * but then the second half must not be in the next page, which is
+		 * another page altogether: the call's again. (They used all to be
+		 * the call's.) */
 		if (optp != SZ_8)
 		{
 			TST(raddr, optp == SZ_16 ? 1 : 3);
 			unaligned = (u32 *)EMIT_GET_PTR();
 			MOV(r0, r0);				// "bne" to the call
+		}
+		if (optp == SZ_64F)
+		{
+			ADD(r1, raddr, 4);
+			UBFX(r1, r1, 0, 12);
+			CMP(r1, 0);
+			crosses = (u32 *)EMIT_GET_PTR();
+			MOV(r0, r0);				// "beq" to the call
 		}
 		MOV32(r3, (u32)(read ? mmu_read_lut : mmu_write_lut));
 		LSR(r1, raddr, 12);
@@ -1089,6 +1099,7 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 			case SZ_8:   LDRSB(rt, r1, raddr, true); break;
 			case SZ_16:  LDRSH(rt, r1, raddr, true); break;
 			case SZ_32I: LDR(rt, r1, raddr, Offset, true); break;
+			case SZ_64F: ADD(r1, r1, raddr); VLDR(fd, r1, 0); break;
 			default:     ADD(r1, r1, raddr); VLDR(ft, r1, 0); break;
 			}
 		}
@@ -1099,6 +1110,7 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 			case SZ_8:   STRB(rt, r1, raddr, Offset, true); break;
 			case SZ_16:  STRH(rt, r1, raddr, true); break;
 			case SZ_32I: STR(rt, r1, raddr, Offset, true); break;
+			case SZ_64F: ADD(r1, r1, raddr); VSTR(fd, r1, 0); break;
 			default:     ADD(r1, r1, raddr); VSTR(ft, r1, 0); break;
 			}
 		}
@@ -1107,6 +1119,8 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 		*miss = 0x0A000000 | ((u32)((u32 *)EMIT_GET_PTR() - miss - 2) & 0x00FFFFFF);
 		if (unaligned)
 			*unaligned = 0x1A000000 | ((u32)((u32 *)EMIT_GET_PTR() - unaligned - 2) & 0x00FFFFFF);
+		if (crosses)
+			*crosses = 0x0A000000 | ((u32)((u32 *)EMIT_GET_PTR() - crosses - 2) & 0x00FFFFFF);
 	}
 
 	if (raddr != r0)
