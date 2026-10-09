@@ -64,7 +64,20 @@ static const u64 USER_SPACE = 0x80000000L;
 static const u64 AREA7_ADDRESS = 0x7C000000L;
 
 static std::unordered_set<u32> vram_mapped_pages;
-static u8 sram_mapped_pages[USER_SPACE / PAGE_SIZE / 8];	// bit set to 1 if page is mapped
+/* Main memory: a bit for each 4K of the SH4's addresses, set where a page
+ * that may be written to has been mapped. (It was kept by where the page
+ * is in main memory, which is another thing: see vmem32_map_mmu().) */
+static u8 sram_mapped_pages[VMEM32_SIZE / PAGE_SIZE / 8];
+
+static inline bool sram_page_mapped(u32 address)
+{
+	return (sram_mapped_pages[address >> 15] & (1 << ((address >> 12) & 7))) != 0;
+}
+
+static inline void sram_page_set_mapped(u32 address)
+{
+	sram_mapped_pages[address >> 15] |= 1 << ((address >> 12) & 7);
+}
 
 bool vmem32_inited;
 
@@ -250,26 +263,71 @@ static u32 vmem32_map_mmu(u32 address, bool write)
 		else if (offset >= MAP_RAM_START_OFFSET && offset < MAP_RAM_START_OFFSET + RAM_SIZE)
 		{
 #if FEAT_SHREC != DYNAREC_NONE
-			// Check system RAM protected pages
-			u32 start = offset - MAP_RAM_START_OFFSET;
+			/* Main memory, which the recompiler may have compiled code
+			 * from. A page it counts on hearing of a write to
+			 * (bm_IsRamPageProtected()) is mapped so that it cannot be
+			 * written, and the write that then faults is where it hears.
+			 *
+			 * The recompiler's pages are of 4K and so are the host's; the
+			 * SH4's may be of 64K or a megabyte. All of the SH4's page is
+			 * mapped at once, and each 4K of it then protected or not as
+			 * the recompiler has it. Only the first 4K was asked about, and
+			 * only the first was reported written whichever was: code in
+			 * the rest of a large page could be written over unnoticed.
+			 *
+			 * What has been mapped is kept by the address it was mapped
+			 * at. It was kept by the page of main memory, so that a page
+			 * read at one address and then written at another - the same
+			 * memory in two of Windows CE's slots, say - was taken to be
+			 * mapped at the second: the fault was answered by making
+			 * writable what was there, which is no memory at all, and the
+			 * write and every one after it at that address went into
+			 * nothing, where reads then found them and nothing else. */
+			const u32 start = offset - MAP_RAM_START_OFFSET;
+			const u32 host_page = address & ~PAGE_MASK;
 
-			if (bm_IsRamPageProtected(start) && allow_write)
+			if (allow_write && sram_page_mapped(host_page))
 			{
-				if (sram_mapped_pages[start >> 15] & (1 << ((start >> 12) & 7)))
-				{
-					// Already mapped => write access
-					vmem32_unprotect_buffer(address & ~PAGE_MASK, PAGE_SIZE);
-					bm_RamWriteAccess(ppn);
-				}
-				else
-				{
-					sram_mapped_pages[start >> 15] |= (1 << ((start >> 12) & 7));
-					verify(vmem32_map_buffer(vpn, page_size, offset, page_size, false) != NULL);
-				}
+				// mapped, and it faults: a write to a page that is protected
+				const u32 sub = host_page & (page_size - 1);
+
+				vmem32_unprotect_buffer(host_page, PAGE_SIZE);
+				if (bm_IsRamPageProtected(start + sub))
+					bm_RamWriteAccess(ppn + sub);
 			}
 			else
+			{
+				u32 sub, run = 0, protect = 0;
+
+				for (sub = 0; sub < page_size; sub += PAGE_SIZE)
+					if (bm_IsRamPageProtected(start + sub))
+						protect += PAGE_SIZE;
+				// (all of it protected, which a 4K page is or is not: mapped so at once)
+				verify(vmem32_map_buffer(vpn, page_size, offset, page_size, allow_write && protect != page_size) != NULL);
+				if (allow_write)
+				{
+					for (sub = 0; sub < page_size; sub += PAGE_SIZE)
+						sram_page_set_mapped(vpn + sub);
+					if (protect != 0 && protect != page_size)
+					{
+						for (sub = 0; sub < page_size; sub += PAGE_SIZE)
+						{
+							if (bm_IsRamPageProtected(start + sub))
+								run += PAGE_SIZE;
+							else if (run != 0)
+							{
+								vmem32_protect_buffer(vpn + sub - run, run);
+								run = 0;
+							}
+						}
+						if (run != 0)
+							vmem32_protect_buffer(vpn + page_size - run, run);
+					}
+				}
+			}
+#else
+			verify(vmem32_map_buffer(vpn, page_size, offset, page_size, allow_write) != NULL);
 #endif
-				verify(vmem32_map_buffer(vpn, page_size, offset, page_size, allow_write) != NULL);
 		}
 		else
 			// Not vram or system ram
@@ -334,7 +392,8 @@ void vmem32_flush_mmu()
 {
 	//vmem32_flush++;
 	vram_mapped_pages.clear();
-	memset(sram_mapped_pages, 0, sizeof(sram_mapped_pages));
+	// (as far as what is unmapped: P3 stays as it is)
+	memset(sram_mapped_pages, 0, USER_SPACE / PAGE_SIZE / 8);
 	vmem32_unmap_buffer(0, USER_SPACE);
 	// TODO flush P3?
 }

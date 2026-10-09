@@ -12,6 +12,7 @@
 
 #include "../sh4_core.h"
 #include "hw/sh4/sh4_mem.h"
+#include "hw/mem/vmem32.h"
 #include "hw/sh4/sh4_sched.h"
 
 
@@ -361,7 +362,16 @@ void bm_ResetCache()
 	for (auto& block_list : blocks_per_page)
 		block_list.clear();
 
-	memset(unprotected_pages, 0, sizeof(unprotected_pages));
+	/* Every page may be protected again, when next something is compiled
+	 * from it - but not while the MMU's pages are mapped by the host
+	 * (vmem32): a page that has been written to is mapped to be written
+	 * there, at however many addresses, and stays so. Protected again, it
+	 * was protected everywhere but at the addresses the game uses, and
+	 * code written over through those went on being run as it had been.
+	 * Such a page stays as it is: its blocks look at their code before
+	 * they run. */
+	if (!vmem32_enabled())
+		memset(unprotected_pages, 0, sizeof(unprotected_pages));
 
 #ifdef DYNA_OPROF
 	if (oprofHandle)
