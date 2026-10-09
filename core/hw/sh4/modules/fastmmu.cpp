@@ -42,6 +42,100 @@ const TLB_Entry *lru_entry = NULL;
 static u32 lru_mask;
 static u32 lru_address;
 
+/* The strict way.
+ *
+ * What is below this - every translation kept until the program takes it
+ * back, Windows CE's page tables read for it, no "valid" bit, no rights
+ * but the one to write, no page that has yet to be written to - is made
+ * for Windows CE, which is nearly everything on a Dreamcast that turns the
+ * MMU on, and wants none of the rest. A program that works the TLB by hand
+ * does: one that fills the TLB and then turns translation on, and from
+ * there counts on an address being mapped while its entry is one of the 64
+ * and not a moment longer, on the exception for a page it may not touch in
+ * the mode it is in, on the one for the first write to a page. (Bleemcast
+ * is one, which runs a PlayStation's memory map and finds out what the
+ * game does to it that way. From flyinghead/flycast#2443, by Bruceleeto.)
+ *
+ * For such a program (mmu_detect_strict()) a translation is what the TLB's
+ * 64 entries say at that moment, found by going through them all, as the
+ * SH4 does; nothing of it goes into the recompilers' table of addresses,
+ * the host maps none of its pages, and every access comes here. What is
+ * found is kept by address and address space, since the 64 have to be
+ * gone through to the end each time - two that match are an exception of
+ * their own - until anything is written to the TLB or to MMUCR.
+ *
+ * Such programs also turn translation off and on again many times a
+ * second. For Windows CE that is the recompiler starting from nothing each
+ * time; here everything stays as it is, and while translation is off an
+ * address is itself. */
+bool mmu_strict;
+
+struct StrictKept
+{
+	u32 tag;			// 1 << 31 | address space << 22 | address >> 10; 0: nothing
+	u32 mask;
+	u32 base;
+	u32 entry;		// which of the 64, or STRICT_NONE, and when (strict_time) above that
+};
+#define STRICT_NONE 64
+#define STRICT_KEPT 4096
+static StrictKept strict_kept[STRICT_KEPT];
+// counted up to make all of strict_kept out of date at once
+static u32 strict_time;
+
+void mmu_strict_changed()
+{
+	if (!mmu_strict)
+		return;
+	if (++strict_time == (1u << 25))
+	{
+		strict_time = 0;
+		memset(strict_kept, 0, sizeof(strict_kept));
+	}
+}
+
+static u32 strict_lookup(u32 va, const TLB_Entry **tlb_entry_ret, u32& rv)
+{
+	const u32 asid = CCN_PTEH.ASID;
+	const u32 tag = 0x80000000u | (asid << 22) | (va >> 10);
+	StrictKept& kept = strict_kept[((va >> 10) ^ (asid << 5)) & (STRICT_KEPT - 1)];
+	const TLB_Entry *match = NULL;
+	u32 mask = 0;
+
+	if (kept.tag == tag && (kept.entry >> 7) == strict_time)
+	{
+		if ((kept.entry & 127) == STRICT_NONE)
+			return MMU_ERROR_TLB_MISS;
+		rv = kept.base | (va & ~kept.mask);
+		*tlb_entry_ret = &UTLB[kept.entry & 127];
+		return MMU_ERROR_NONE;
+	}
+
+	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
+	{
+		if (!mmu_match(va, UTLB[i].Address, UTLB[i].Data))
+			continue;
+		if (match != NULL)
+			return MMU_ERROR_TLB_MHIT;
+		match = &UTLB[i];
+		mask = mmu_mask[UTLB[i].Data.SZ1 * 2 + UTLB[i].Data.SZ0];
+		rv = ((UTLB[i].Data.PPN << 10) & mask) | (va & ~mask);
+	}
+	/* (Kept only while the address space counts: with MMUCR.SV on it does
+	 * not in privileged mode, and the mode changes with every exception.) */
+	if (CCN_MMUCR.SV == 0)
+	{
+		kept.tag = tag;
+		kept.mask = mask;
+		kept.base = rv & mask;
+		kept.entry = (strict_time << 7) | (match != NULL ? (u32)(match - UTLB) : STRICT_NONE);
+	}
+	if (match == NULL)
+		return MMU_ERROR_TLB_MISS;
+	*tlb_entry_ret = match;
+	return MMU_ERROR_NONE;
+}
+
 struct TLB_LinkedEntry {
 	TLB_Entry entry;
 	TLB_LinkedEntry *next_entry;
@@ -268,6 +362,8 @@ bool UTLB_Sync(u32 entry)
 	TLB_Entry& tlb_entry = UTLB[entry];
 	u32 sz = tlb_entry.Data.SZ1 * 2 + tlb_entry.Data.SZ0;
 
+	mmu_strict_changed();
+
 	lru_entry = &tlb_entry;
 	lru_mask = mmu_mask[sz];
 	lru_address = (tlb_entry.Address.VPN << 10) & lru_mask;
@@ -289,6 +385,8 @@ bool UTLB_Sync(u32 entry)
 void mmu_forget(u32 va)
 {
 	const bool any_asid = sr.MD == 1 && CCN_MMUCR.SV == 1;
+
+	mmu_strict_changed();
 
 	for (u32 size = 0; size < 4; size++)
 	{
@@ -323,6 +421,7 @@ void mmu_forget(u32 va)
  * no others. So nothing is kept beyond what the 64 now say. */
 void mmu_utlb_written(u32 entry)
 {
+	mmu_strict_changed();
 	forget_all();
 	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
 	{
@@ -342,6 +441,9 @@ void ITLB_Sync(u32 entry)
 template<bool internal>
 u32 mmu_full_lookup(u32 va, const TLB_Entry** tlb_entry_ret, u32& rv)
 {
+	if (mmu_strict)
+		return strict_lookup(va, tlb_entry_ret, rv);
+
 	if (lru_entry != NULL)
 	{
 		if (/*lru_entry->Data.V == 1 && */
@@ -444,7 +546,8 @@ u32 mmu_data_translation(u32 va, u32& rv)
 		return MMU_ERROR_NONE;
 	}
 
-	if (fast_reg_lut[va >> 29] != 0)
+	// (a strict program keeps all this while it has AT off: nothing is translated then)
+	if (fast_reg_lut[va >> 29] != 0 || CCN_MMUCR.AT == 0)
 	{
 		rv = va;
 		return MMU_ERROR_NONE;
@@ -452,6 +555,14 @@ u32 mmu_data_translation(u32 va, u32& rv)
 
 	const TLB_Entry *entry;
 	u32 lookup = mmu_full_lookup(va, &entry, rv);
+	if (lookup == MMU_ERROR_NONE && mmu_strict)
+	{
+		// a page for privileged mode only; the first write to a page
+		if ((entry->Data.PR >> 1) == 0 && sr.MD == 0)
+			return MMU_ERROR_PROTECTED;
+		if (translation_type == MMU_TT_DWRITE && (entry->Data.PR & 1) != 0 && entry->Data.D == 0)
+			return MMU_ERROR_FIRSTWRITE;
+	}
 	/* A page that may not be written. This had no test at all, and the
 	 * write was made; where the host's own mapping does the translating it
 	 * hung instead (vmem32.cpp). Either way no game can have been relying
@@ -488,8 +599,8 @@ template u32 mmu_data_translation<MMU_TT_DWRITE, u64>(u32 va, u32& rv);
 
 /* The TLB is emptied (MMUCR.TI): its entries are not valid any more, and
  * nothing is kept. The entries used to be left as they were, which nobody
- * saw while nothing looked at them; mmu_utlb_written() does, and took what
- * they still said for good. */
+ * saw while nothing looked at them; the strict way looks at nothing else,
+ * and mmu_utlb_written() took what they said for good. */
 void mmu_flush_table()
 {
 	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
@@ -499,5 +610,43 @@ void mmu_flush_table()
 	lru_entry = NULL;
 	flush_cache();
 	mmu_lut_flush();
+	mmu_strict_changed();
+}
+
+/* Is this a program for the strict way? One that turns translation on with
+ * the TLB already holding a page of its own - not the store queues' entries
+ * that every game loads, and not Windows CE, which is known by its disc
+ * (settings.dreamcast.FullMMU) and gets here the same way after a state is
+ * loaded. Asked when AT changes and when the machine's state is replaced
+ * or reset, where the answer is no: that is how it ends. (While it is
+ * such a program AT going off and on does not come here. And a state does
+ * not say which way it was saved in: one saved with AT off, or with the
+ * TLB just emptied, is not known for what it is until AT next comes on.) */
+static bool utlb_has_a_page()
+{
+	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
+	{
+		if (UTLB[i].Data.V == 0)
+			continue;
+		if ((UTLB[i].Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
+			continue;	// the store queues
+		if (UTLB[i].Address.VPN == 0x30040 || UTLB[i].Address.VPN == 0x30000)
+			continue;	// entries that mean nothing, in many arcade and Visual Concepts games (upstream's list)
+		return true;
+	}
+	return false;
+}
+
+void mmu_detect_strict()
+{
+	const bool strict = CCN_MMUCR.AT == 1 && !settings.dreamcast.FullMMU && utlb_has_a_page();
+
+	if (strict && !mmu_strict)
+	{
+		memset(strict_kept, 0, sizeof(strict_kept));
+		strict_time = 0;
+		NOTICE_LOG(SH4, "Enabling Full MMU support, the strict way: the TLB was loaded before AT");
+	}
+	mmu_strict = strict;
 }
 #endif 	// FAST_MMU

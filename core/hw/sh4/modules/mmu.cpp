@@ -702,6 +702,9 @@ void mmu_lut_fill(u32 va, u32 pa, bool write)
 		return;
 	if (va < 0x7C000000)
 	{
+		// the strict way: nothing of a translation is kept that the next access could go by
+		if (mmu_strict)
+			return;
 		// translated: a 1K page is finer than the tables
 		const TLB_Entry *entry;
 		u32 rv;
@@ -730,12 +733,15 @@ void mmu_lut_fill(u32 va, u32 pa, bool write)
 void mmu_set_state()
 {
 	mmu_lut_flush();
+	mmu_detect_strict();
+	mmu_strict_changed();
 	if (CCN_MMUCR.AT == 1 && settings.dreamcast.FullMMU)
 	{
 		NOTICE_LOG(SH4, "Enabling Full MMU support");
 		_vmem_enable_mmu(true);
 	}
 	else
+		// (the strict way has no use for the host's mapping: every access asks)
 		_vmem_enable_mmu(false);
 
 	SetMemoryHandlers();
@@ -828,7 +834,7 @@ template void mmu_WriteMem(u32 adr, u64 data);
 
 bool mmu_TranslateSQW(u32 adr, u32* out)
 {
-	if (!settings.dreamcast.FullMMU)
+	if (!mmu_enabled())
 	{
 		//This will only work for 1 mb pages .. hopefully nothing else is used
 		//*FIXME* to work for all page sizes ?

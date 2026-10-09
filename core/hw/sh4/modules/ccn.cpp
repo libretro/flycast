@@ -72,7 +72,8 @@ void CCN_PTEH_write(u32 addr, u32 value)
 {
 	CCN_PTEH_type temp;
 	temp.reg_data = value;
-	if (temp.ASID != CCN_PTEH.ASID)
+	// (the strict way keeps what it finds by address space, and nothing else)
+	if (temp.ASID != CCN_PTEH.ASID && !mmu_strict)
 	{
 		if (vmem32_enabled())
 			vmem32_flush_mmu();
@@ -99,12 +100,22 @@ void CCN_MMUCR_write(u32 addr, u32 value)
 		temp.TI=0;
 	}
 	CCN_MMUCR=temp;
+	// (SV has a say in which entries match)
+	mmu_strict_changed();
 
 	if (mmu_changed_state)
 	{
-		//printf("<*******>MMU Enabled , ONLY SQ remaps work<*******>\n");
-		sh4_cpu.ResetCache();
-		mmu_set_state();
+		/* A program with a TLB of its own making (mmu_detect_strict()) turns
+		 * translation off and on again all the time - some twenty times a
+		 * second - and everything compiled would go each time. For such a
+		 * one nothing changes here: what is compiled stays, made for the
+		 * MMU as it is, and while AT is off an address is itself. */
+		if (!mmu_strict)
+		{
+			mmu_detect_strict();
+			sh4_cpu.ResetCache();
+			mmu_set_state();
+		}
 	}
 }
 void CCN_CCR_write(u32 addr, u32 value)

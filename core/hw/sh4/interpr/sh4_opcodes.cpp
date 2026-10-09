@@ -1192,7 +1192,8 @@ INLINE void DYNACALL do_sqw(u32 Dest)
 	u32 Address;
 
 	//Translate the SQ addresses as needed
-	if (mmu_on)
+	// (with AT on: what is compiled for the MMU stays while a strict program has it off)
+	if (mmu_on && CCN_MMUCR.AT)
 	{
 		if (!mmu_TranslateSQW(Dest, &Address))
 			return;

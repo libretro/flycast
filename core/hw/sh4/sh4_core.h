@@ -90,7 +90,9 @@ struct SH4ThrownException {
 static INLINE void RaiseFPUDisableException()
 {
 #if !defined(NO_MMU)
-	if (settings.dreamcast.FullMMU)
+	extern bool mmu_strict;
+
+	if (settings.dreamcast.FullMMU || mmu_strict)
 	{
 		SH4ThrownException ex = { next_pc - 2, 0x800, 0x100 };
 		throw ex;

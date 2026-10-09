@@ -52,10 +52,19 @@ void mmu_set_state();
 void mmu_flush_table();
 void mmu_raise_exception(u32 mmu_error, u32 address, u32 am);
 
+/* A program that brings a TLB of its own making, and is not Windows CE:
+ * it has the MMU, done the strict way, from the moment it turns address
+ * translation on until the machine is reset. See fastmmu.cpp. */
+extern bool mmu_strict;
+// AT has come on or gone off: is this such a program?
+void mmu_detect_strict();
+// what the strict way keeps of its lookups is to go
+void mmu_strict_changed();
+
 static INLINE bool mmu_enabled()
 {
 #ifndef NO_MMU
-	return settings.dreamcast.FullMMU && CCN_MMUCR.AT == 1;
+	return mmu_strict || (settings.dreamcast.FullMMU && CCN_MMUCR.AT == 1);
 #else
 	return false;
 #endif
@@ -112,7 +121,8 @@ static INLINE u32 mmu_instruction_translation(u32 va, u32& rv)
 {
 	if (va & 1)
 		return MMU_ERROR_BADADDR;
-	if (fast_reg_lut[va >> 29] != 0)
+	// (a strict program keeps all this while it has AT off: nothing is translated then)
+	if (fast_reg_lut[va >> 29] != 0 || CCN_MMUCR.AT == 0)
 	{
 		rv = va;
 		return MMU_ERROR_NONE;
