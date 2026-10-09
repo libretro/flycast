@@ -273,6 +273,7 @@ void bm_Reset()
 		{
 			mem_region_unlock(virt_ram_base + 0x8C000000, 0x90000000 - 0x8C000000);
 			mem_region_unlock(virt_ram_base + 0xAC000000, 0xB0000000 - 0xAC000000);
+			mem_region_unlock(virt_ram_base + 0xCC000000, 0xD0000000 - 0xCC000000);
 		}
 	}
 	else
@@ -281,44 +282,57 @@ void bm_Reset()
 	}
 }
 
-static void bm_LockPage(u32 addr)
+/* A page of main memory is to be written to or not, at every address the
+ * host has it at. Main memory answers all over area 3 - at 0x0C000000 and
+ * at 0x0D000000, 0x0E000000 and 0x0F000000 as well (twice over where there
+ * are 32 megabytes of it) - and that in each of the SH4's regions, and
+ * where the recompiled code reads and writes memory without asking, every
+ * one of those is there for it. Only the first of each region was
+ * protected ("TODO wraps"): code written over at another was not found to
+ * have been, and what had been compiled from it went on being run. */
+static void bm_ProtectPage(u32 addr, bool protect)
 {
+	// P0, P1, P2, P3
+	static const u32 regions[] = { 0x0C000000, 0x8C000000, 0xAC000000, 0xCC000000 };
+	u32 count, i, mirror;
+
 	addr = addr & (RAM_MASK - PAGE_MASK);
-	if (_nvmem_enabled())
+	if (!_nvmem_enabled())
 	{
-		if (!mmu_enabled() || !_nvmem_4gb_space())
-			mem_region_lock(virt_ram_base + 0x0C000000 + addr, PAGE_SIZE);
-		if (_nvmem_4gb_space())
+		if (protect)
+			mem_region_lock(&mem_b[addr], PAGE_SIZE);
+		else
+			mem_region_unlock(&mem_b[addr], PAGE_SIZE);
+		return;
+	}
+	count = _nvmem_4gb_space() ? ARRAY_SIZE(regions) : 1;
+	for (i = 0; i < count; i++)
+	{
+		/* with the MMU on, P0 is what it says it is: what the host has
+		 * mapped there is vmem32's business, which asks before it maps
+		 * (bm_IsRamPageProtected()) */
+		if (i == 0 && mmu_enabled() && _nvmem_4gb_space())
+			continue;
+		for (mirror = 0; mirror < 0x04000000; mirror += RAM_SIZE)
 		{
-			mem_region_lock(virt_ram_base + 0x8C000000 + addr, PAGE_SIZE);
-			mem_region_lock(virt_ram_base + 0xAC000000 + addr, PAGE_SIZE);
-			// TODO wraps
+			u8 *page = virt_ram_base + regions[i] + mirror + addr;
+
+			if (protect)
+				mem_region_lock(page, PAGE_SIZE);
+			else
+				mem_region_unlock(page, PAGE_SIZE);
 		}
 	}
-	else
-	{
-		mem_region_lock(&mem_b[addr], PAGE_SIZE);
-	}
+}
+
+static void bm_LockPage(u32 addr)
+{
+	bm_ProtectPage(addr, true);
 }
 
 static void bm_UnlockPage(u32 addr)
 {
-	addr = addr & (RAM_MASK - PAGE_MASK);
-	if (_nvmem_enabled())
-	{
-		if (!mmu_enabled() || !_nvmem_4gb_space())
-			mem_region_unlock(virt_ram_base + 0x0C000000 + addr, PAGE_SIZE);
-		if (_nvmem_4gb_space())
-		{
-			mem_region_unlock(virt_ram_base + 0x8C000000 + addr, PAGE_SIZE);
-			mem_region_unlock(virt_ram_base + 0xAC000000 + addr, PAGE_SIZE);
-			// TODO wraps
-		}
-	}
-	else
-	{
-		mem_region_unlock(&mem_b[addr], PAGE_SIZE);
-	}
+	bm_ProtectPage(addr, false);
 }
 
 void bm_ResetCache()
