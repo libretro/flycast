@@ -486,8 +486,16 @@ template u32 mmu_data_translation<MMU_TT_DWRITE, u16>(u32 va, u32& rv);
 template u32 mmu_data_translation<MMU_TT_DWRITE, u32>(u32 va, u32& rv);
 template u32 mmu_data_translation<MMU_TT_DWRITE, u64>(u32 va, u32& rv);
 
+/* The TLB is emptied (MMUCR.TI): its entries are not valid any more, and
+ * nothing is kept. The entries used to be left as they were, which nobody
+ * saw while nothing looked at them; mmu_utlb_written() does, and took what
+ * they still said for good. */
 void mmu_flush_table()
 {
+	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
+		UTLB[i].Data.V = 0;
+	for (u32 i = 0; i < ARRAY_SIZE(ITLB); i++)
+		ITLB[i].Data.V = 0;
 	lru_entry = NULL;
 	flush_cache();
 	mmu_lut_flush();
