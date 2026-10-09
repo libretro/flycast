@@ -544,30 +544,94 @@ HANDLE mem_handle = INVALID_HANDLE_VALUE;
 static HANDLE mem_handle2 = INVALID_HANDLE_VALUE;
 static char * base_alloc = NULL;
 
+/* What vmem_platform_create_mappings() has put into the address space
+ * reserved at base_alloc, piece by piece: reservations and views of the
+ * memory file. Windows gives none of it back unless asked piece by piece
+ * (the reservation itself is gone once they are made) - and nothing asked:
+ * each time a game was closed the views stayed, and the memory behind
+ * them with them. */
+struct vmem_piece
+{
+	void *at;
+	bool view;
+};
+#define VMEM_PIECES_MAX 256
+static vmem_piece vmem_pieces[VMEM_PIECES_MAX];
+static unsigned vmem_piece_count;
+
+static void vmem_piece_add(void *at, bool view)
+{
+	if (vmem_piece_count < VMEM_PIECES_MAX)
+	{
+		vmem_pieces[vmem_piece_count].at = at;
+		vmem_pieces[vmem_piece_count].view = view;
+		vmem_piece_count++;
+	}
+}
+
+static void vmem_pieces_release(void)
+{
+	for (unsigned i = 0; i < vmem_piece_count; i++)
+	{
+		if (vmem_pieces[i].view)
+			UnmapViewOfFile(vmem_pieces[i].at);
+		else
+			VirtualFree(vmem_pieces[i].at, 0, MEM_RELEASE);
+	}
+	vmem_piece_count = 0;
+}
+
 // Implement vmem initialization for RAM, ARAM, VRAM and SH4 context, fpcb etc.
 // The function supports allocating 512MB or 4GB addr spaces.
 
 // Plase read the POSIX implementation for more information. On Windows this is
 // rather straightforward.
 VMemType vmem_platform_init(void **vmem_base_addr, void **sh4rcb_addr) {
+	VMemType rv = MemType512MB;
+
 	// Firt let's try to allocate the in-memory file
 	mem_handle = CreateFileMapping(INVALID_HANDLE_VALUE, 0, PAGE_READWRITE, 0, RAM_SIZE_MAX + VRAM_SIZE_MAX + ARAM_SIZE_MAX + ERAM_SIZE, 0);
 
 	// Now allocate the actual address space (it will be 64KB aligned on windows).
-	unsigned memsize = 512*1024*1024 + sizeof(Sh4RCB) + ARAM_SIZE_MAX;
-	base_alloc = (char*)mem_region_reserve(NULL, memsize);
+	base_alloc = NULL;
+#ifdef _WIN64
+	/* All 4 GB of the SH4's addresses, where there is room for that: a
+	 * recompiler then reads and writes memory at any of its addresses
+	 * with one instruction, as on the other 64-bit hosts. (It used to be
+	 * the 512 MB here whatever the host, and the x86-64 recompiler, which
+	 * goes by the 4 GB, called a function for every load and store.) */
+	base_alloc = (char*)mem_region_reserve(NULL, (size_t)0x100000000ull + sizeof(Sh4RCB));
+	if (base_alloc != NULL)
+		rv = MemType4GB;
+#endif
+	if (base_alloc == NULL)
+	{
+		unsigned memsize = 512*1024*1024 + sizeof(Sh4RCB) + ARAM_SIZE_MAX;
+		base_alloc = (char*)mem_region_reserve(NULL, memsize);
+	}
+	if (base_alloc == NULL)
+	{
+		CloseHandle(mem_handle);
+		mem_handle = INVALID_HANDLE_VALUE;
+		return MemTypeError;
+	}
 
 	// Calculate pointers now
 	*sh4rcb_addr = &base_alloc[0];
 	*vmem_base_addr = &base_alloc[sizeof(Sh4RCB)];
 
-	return MemType512MB;
+	return rv;
 }
 
-// Just tries to wipe as much as possible in the relevant area.
+// Gives back the whole of it: what was reserved, or the pieces it has become
 void vmem_platform_destroy() {
-	VirtualFree(base_alloc, 0, MEM_RELEASE);
+	if (vmem_piece_count != 0)
+		vmem_pieces_release();
+	else
+		VirtualFree(base_alloc, 0, MEM_RELEASE);
+	base_alloc = NULL;
 	CloseHandle(mem_handle);
+	mem_handle = INVALID_HANDLE_VALUE;
 }
 
 // Resets a chunk of memory by deleting its data and setting its protection back.
@@ -586,35 +650,43 @@ void vmem_platform_create_mappings(const vmem_mapping *vmem_maps, unsigned numma
 	// we unmap the whole thing only to remap it later.
 
 	// Unmap the whole section
-	VirtualFree(base_alloc, 0, MEM_RELEASE);
+	if (vmem_piece_count != 0)
+		vmem_pieces_release();
+	else
+		VirtualFree(base_alloc, 0, MEM_RELEASE);
 
 	// Map the SH4CB block too
 	void *base_ptr = VirtualAlloc(base_alloc, sizeof(Sh4RCB), MEM_RESERVE, PAGE_NOACCESS);
 	verify(base_ptr == base_alloc);
+	vmem_piece_add(base_ptr, false);
 	void *cntx_ptr = VirtualAlloc((u8*)p_sh4rcb + sizeof(p_sh4rcb->fpcb), sizeof(Sh4RCB) - sizeof(p_sh4rcb->fpcb), MEM_COMMIT, PAGE_READWRITE);
 	verify(cntx_ptr == (u8*)p_sh4rcb + sizeof(p_sh4rcb->fpcb));
 
 	for (unsigned i = 0; i < nummaps; i++) {
-		unsigned address_range_size = vmem_maps[i].end_address - vmem_maps[i].start_address;
+		size_t address_range_size = (size_t)(vmem_maps[i].end_address - vmem_maps[i].start_address);
 		DWORD protection = vmem_maps[i].allow_writes ? (FILE_MAP_READ | FILE_MAP_WRITE) : FILE_MAP_READ;
 
 		if (!vmem_maps[i].memsize) {
 			// Unmapped stuff goes with a protected area or memory. Prevent anything from allocating here
 			void *ptr = VirtualAlloc(&virt_ram_base[vmem_maps[i].start_address], address_range_size, MEM_RESERVE, PAGE_NOACCESS);
 			verify(ptr == &virt_ram_base[vmem_maps[i].start_address]);
+			if (ptr != NULL)
+				vmem_piece_add(ptr, false);
 		}
 		else {
 			// Calculate the number of mirrors
-			unsigned num_mirrors = (address_range_size) / vmem_maps[i].memsize;
+			unsigned num_mirrors = (unsigned)(address_range_size / vmem_maps[i].memsize);
 			verify((address_range_size % vmem_maps[i].memsize) == 0 && num_mirrors >= 1);
 
 			// Remap the views one by one
 			for (unsigned j = 0; j < num_mirrors; j++) {
-				unsigned offset = vmem_maps[i].start_address + j * vmem_maps[i].memsize;
+				size_t offset = (size_t)vmem_maps[i].start_address + (size_t)j * vmem_maps[i].memsize;
 
 				void *ptr = MapViewOfFileEx(mem_handle, protection, 0, vmem_maps[i].memoffset,
 				                    vmem_maps[i].memsize, &virt_ram_base[offset]);
 				verify(ptr == &virt_ram_base[offset]);
+				if (ptr != NULL)
+					vmem_piece_add(ptr, true);
 			}
 		}
 	}

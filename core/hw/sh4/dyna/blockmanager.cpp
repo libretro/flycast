@@ -314,27 +314,16 @@ void bm_Reset()
 
 	if (_nvmem_enabled())
 	{
-		// Windows cannot lock/unlock a region spanning more than one VirtualAlloc or MapViewOfFile
-		// so we have to unlock each region individually
-		// No need for this mess in 4GB mode since windows doesn't use it
-		if (RAM_SIZE == 16 * 1024 * 1024)
-		{
-			mem_region_unlock(virt_ram_base + 0x0C000000, RAM_SIZE);
-			mem_region_unlock(virt_ram_base + 0x0D000000, RAM_SIZE);
-			mem_region_unlock(virt_ram_base + 0x0E000000, RAM_SIZE);
-			mem_region_unlock(virt_ram_base + 0x0F000000, RAM_SIZE);
-		}
-		else
-		{
-			mem_region_unlock(virt_ram_base + 0x0C000000, RAM_SIZE);
-			mem_region_unlock(virt_ram_base + 0x0E000000, RAM_SIZE);
-		}
-		if (_nvmem_4gb_space())
-		{
-			mem_region_unlock(virt_ram_base + 0x8C000000, 0x90000000 - 0x8C000000);
-			mem_region_unlock(virt_ram_base + 0xAC000000, 0xB0000000 - 0xAC000000);
-			mem_region_unlock(virt_ram_base + 0xCC000000, 0xD0000000 - 0xCC000000);
-		}
+		/* Windows cannot lock/unlock a region spanning more than one
+		 * VirtualAlloc or MapViewOfFile, so each of main memory's mirrors
+		 * is unlocked on its own: in P0, and in P1, P2 and P3 as well where
+		 * the whole 4 GB is laid out (which it is on Windows too now). */
+		static const u32 regions[] = { 0x0C000000, 0x8C000000, 0xAC000000, 0xCC000000 };
+		const u32 count = _nvmem_4gb_space() ? 4 : 1;
+
+		for (u32 i = 0; i < count; i++)
+			for (u32 mirror = 0; mirror < 0x04000000; mirror += RAM_SIZE)
+				mem_region_unlock(virt_ram_base + regions[i] + mirror, RAM_SIZE);
 	}
 	else
 	{
