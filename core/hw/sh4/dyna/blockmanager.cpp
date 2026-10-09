@@ -204,6 +204,19 @@ void bm_DiscardBlock(RuntimeBlockInfo* block)
 
 	blkmap.erase(it);
 
+	/* It jumps to its neighbours no longer, and they are told: a block
+	 * that goes has those that are linked to it linked again (Discard(),
+	 * below), and this one must not be among them when its neighbour goes.
+	 * It was left there. Its code would then be patched - "unlinked" - long
+	 * after it was gone: no harm where its code is still its own, in the
+	 * main cache, which is only ever emptied whole; but the temporary cache
+	 * is filled again from the start, and the patch landed in the code of
+	 * whatever block was there by then. (And the neighbour kept it from
+	 * being freed for as long as the neighbour lived.) */
+	if (block_ptr->pNextBlock != NULL)
+		block_ptr->pNextBlock->RemRef(block_ptr);
+	if (block_ptr->pBranchBlock != NULL)
+		block_ptr->pBranchBlock->RemRef(block_ptr);
 	block_ptr->pNextBlock = NULL;
 	block_ptr->pBranchBlock = NULL;
 	block_ptr->Relink();
@@ -350,15 +363,28 @@ void bm_ResetCache()
 #endif
 }
 
+/* The temporary cache is emptied: because it is full (@full false: its
+ * blocks go, the others stay), or with everything else (@full true: after
+ * bm_ResetCache(), which has dealt with every block there is).
+ *
+ * When only the temporary blocks go they go as any block does, one by
+ * one: unlinked from the blocks they jump to and from the blocks that
+ * jump to them. They used to be taken out of the tables and no more. A
+ * block of the main cache that was linked to one went on jumping to where
+ * it had been, which is where the next blocks to be compiled are put: it
+ * ran another block's code, or the middle of one. That was of no
+ * consequence while the temporary cache was only used with the MMU on,
+ * when nothing is linked; since 355f8028 it is used without, for code
+ * that a game keeps rewriting. */
 void bm_ResetTempCache(bool full)
 {
 	if (!full)
 	{
-		for (const auto& block : all_temp_blocks)
-		{
-			FPCA(block->addr) = ngen_FailedToFindBlock;
-			blkmap.erase((void*)block->code);
-		}
+		// (bm_DiscardBlock() takes them out of all_temp_blocks as it goes)
+		const bm_List blocks(all_temp_blocks.begin(), all_temp_blocks.end());
+
+		for (const auto& block : blocks)
+			bm_DiscardBlock(block.get());
 	}
 	del_blocks.insert(del_blocks.begin(),all_temp_blocks.begin(),all_temp_blocks.end());
 	all_temp_blocks.clear();

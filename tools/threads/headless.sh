@@ -5,9 +5,10 @@
 # reaches about itself - its instruction tests, the length and evenness of
 # its frames by the processor's timer, what it read back from the disc -
 # and the sound, sample for sample. Both SH4 timings are run, and the
-# first of them again with the MMU on. A NAOMI cartridge comes last, for
-# the built-in BIOS's way into a game's test program, and romsets for the
-# loader's way with a merged one.
+# first of them again with the MMU on. Then a program that rewrites its
+# own code, for the recompilers' links between blocks; a NAOMI cartridge,
+# for the built-in BIOS's way into a game's test program; and romsets, for
+# the loader's way with a merged one.
 #
 # It is for cores that cannot be run any other way on the machine at hand,
 # which is to say a core built for another processor, under qemu:
@@ -274,6 +275,36 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       }
    fi
 done
+
+# And a program that keeps rewriting its own code (smc_elf.py, smc_prog.c),
+# run as content: a recompiler that jumps from one block of compiled code
+# straight into the next has to take those jumps back when blocks go, and
+# rewritten code is compiled into a cache that is emptied and filled again
+# from the start all the time. Wrong, and a block runs another block's code
+# or code that has been patched under it - which may also be the end of the
+# run, or a run that does not end.
+echo "== headless: code that is rewritten while it is in use"
+unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+python3 "$T/smc_elf.py" "$WORK/smc.elf"
+if [ -n "$WINDOWS" ]; then
+   :
+elif [ -z "$GLES" ]; then
+   LD_PRELOAD=$WORK/libGLESv2.so.2
+   export LD_PRELOAD
+fi
+HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/smc_elf.py" --verdict) \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/smc.elf" 60 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/smc.out" 2> "$WORK/smc.log" || {
+   echo "FAIL: the run ended badly" >&2
+   tail -n 20 "$WORK/smc.log" >&2
+   exit 1
+}
+unset LD_PRELOAD
+tr -d '\r' < "$WORK/smc.out" | grep -q "= 600d5ac0\$" || {
+   echo "FAIL: rewritten code did not run as it was written: $(cat "$WORK/smc.out")" >&2
+   exit 1
+}
 
 # And a NAOMI cartridge (naomi_cart.py), started without a BIOS: its program
 # asks the built-in one for the system menu, as a game does when the

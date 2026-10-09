@@ -374,6 +374,13 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 
 	DynarecCodeEntryPtr rv = rdv_FindOrCompile();  // Returns rx ptr
 
+	/* Compiling may have emptied the cache the block was in - the whole
+	 * one, or the temporary one if it was there. It is gone then, and is
+	 * not to be linked: its code is no longer its own, and what would be
+	 * patched is the block just compiled, if that is where it was put. */
+	if (!stale_block && bm_GetBlock2((void*)code) != rbi)
+		stale_block = true;
+
 	if (!mmu_enabled() && !stale_block)
 	{
 		if (bcls == BET_CLS_Dynamic)
