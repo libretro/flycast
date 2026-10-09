@@ -38,6 +38,15 @@ void ITLB_Sync(u32 entry)
 	INFO_LOG(SH4, "ITLB MEM remap %d : 0x%X to 0x%X",entry,ITLB[entry].Address.VPN<<10,ITLB[entry].Data.PPN<<10);
 }
 
+void mmu_forget(u32 va)
+{
+}
+
+void mmu_utlb_written(u32 entry)
+{
+	UTLB_Sync(entry);
+}
+
 void mmu_set_state()
 {
 }
@@ -135,6 +144,17 @@ bool UTLB_Sync(u32 entry)
 		return false;
 	}
 }
+void mmu_forget(u32 va)
+{
+	mmu_lut_forget(va & ~0xFFFFFu, 0x100000);
+}
+
+void mmu_utlb_written(u32 entry)
+{
+	mmu_lut_flush();
+	UTLB_Sync(entry);
+}
+
 //sync mem mapping to mmu , suspend compiled blocks if needed.entry is a ITLB entry # , -1 is for full sync
 void ITLB_Sync(u32 entry)
 {

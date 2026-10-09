@@ -304,13 +304,16 @@ void DYNACALL WriteMem_P4(u32 addr,T data)
 				u32 va=t.VPN<<10;
 
 #ifndef NO_MMU
+					const u32 valid = ((u32)data >> 8) & 1;
+
 					for (int i=0;i<64;i++)
 					{
 						if (mmu_match(va,UTLB[i].Address,UTLB[i].Data))
 						{
-							UTLB[i].Data.V=((u32)data>>8)&1;
+							UTLB[i].Data.V=valid;
 							UTLB[i].Data.D=((u32)data>>9)&1;
-							UTLB_Sync(i);
+							if (valid)
+								UTLB_Sync(i);
 						}
 					}
 
@@ -318,22 +321,27 @@ void DYNACALL WriteMem_P4(u32 addr,T data)
 					{
 						if (mmu_match(va,ITLB[i].Address,ITLB[i].Data))
 						{
-							ITLB[i].Data.V=((u32)data>>8)&1;
+							ITLB[i].Data.V=valid;
 							ITLB[i].Data.D=((u32)data>>9)&1;
 							ITLB_Sync(i);
 						}
 					}
+					/* Not valid: the page is taken out of the TLB, which is
+					 * how a program does that for one page. It has to be
+					 * gone from what is kept beyond the 64 entries as well,
+					 * and from everything that was made of it. */
+					if (!valid)
+						mmu_forget(va);
 #endif
 			}
 			else
 			{
 				u32 entry=(addr>>8)&63;
-				// whatever page the entry was for before goes with it
-				mmu_lut_flush();
 				UTLB[entry].Address.reg_data=data & 0xFFFFFCFF;
 				UTLB[entry].Data.D=(data>>9)&1;
 				UTLB[entry].Data.V=(data>>8)&1;
-				UTLB_Sync(entry);
+				// whatever page the entry was for before goes with it
+				mmu_utlb_written(entry);
 			}
 			return;
 		}
@@ -350,7 +358,7 @@ void DYNACALL WriteMem_P4(u32 addr,T data)
 			{
 				UTLB[entry].Data.reg_data=data;
 			}
-			UTLB_Sync(entry);
+			mmu_utlb_written(entry);
 
 			return;
 		}

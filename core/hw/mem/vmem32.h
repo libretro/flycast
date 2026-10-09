@@ -24,6 +24,8 @@ bool vmem32_init();
 void vmem32_term();
 bool vmem32_handle_signal(void *fault_addr, bool write, u32 exception_pc);
 void vmem32_flush_mmu();
+// what is mapped for the SH4's page of @size at @va: the page is something else now
+void vmem32_forget(u32 va, u32 size);
 
 extern bool vmem32_inited;
 static inline bool vmem32_enabled() {

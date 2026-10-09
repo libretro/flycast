@@ -47,9 +47,22 @@ struct TLB_LinkedEntry {
 	TLB_LinkedEntry *next_entry;
 };
 #define NBUCKETS 65536
+/* Every translation the program has given, kept until it takes it back:
+ * the TLB of the real thing has 64 entries, and a program has to give one
+ * again every time it has fallen out; here it is asked once.
+ *
+ * So what a program does to take a translation back has to reach the ones
+ * kept here, and what follows from them (mmu_forget()): the table of
+ * addresses a recompiler keeps, and the pages the host has mapped. It
+ * reached neither. Emptying the whole TLB did (MMUCR.TI); writing to the
+ * TLB's entries, one by address or one by number, did not, and a page
+ * that had been taken away and given again for somewhere else stayed
+ * where it was. */
 static TLB_LinkedEntry full_table[65536];
 static u32 full_table_size;
 static TLB_LinkedEntry *entry_buckets[NBUCKETS];
+// those of full_table that have been given back
+static TLB_LinkedEntry *free_entries;
 
 static u16 bucket_index(u32 address, int size)
 {
@@ -59,7 +72,7 @@ static u16 bucket_index(u32 address, int size)
 static void flush_cache()
 {
 	/* (half a megabyte of buckets: when little is kept, only the ones it
-	 * is kept in) */
+	 * is kept in. A slot that was given back still says which was its.) */
 	if (full_table_size < NBUCKETS / 64)
 	{
 		for (u32 i = 0; i < full_table_size; i++)
@@ -69,6 +82,7 @@ static void flush_cache()
 	else
 		memset(entry_buckets, 0, sizeof(entry_buckets));
 	full_table_size = 0;
+	free_entries = NULL;
 }
 
 static void forget_all();
@@ -93,13 +107,21 @@ static void cache_entry(const TLB_Entry &entry)
 			return;
 		}
 	}
-	if (full_table_size == ARRAY_SIZE(full_table))
+	if (free_entries != NULL)
 	{
-		// more pages than there is room for: all of them are asked for again
-		forget_all();
-		bucket = bucket_index(entry.Address.VPN << 10, size);
+		slot = free_entries;
+		free_entries = slot->next_entry;
 	}
-	slot = &full_table[full_table_size++];
+	else
+	{
+		if (full_table_size == ARRAY_SIZE(full_table))
+		{
+			// more pages than there is room for: all of them are asked for again
+			forget_all();
+			bucket = bucket_index(entry.Address.VPN << 10, size);
+		}
+		slot = &full_table[full_table_size++];
+	}
 	slot->entry = entry;
 	slot->next_entry = entry_buckets[bucket];
 	entry_buckets[bucket] = slot;
@@ -212,8 +234,15 @@ int main(int argc, char *argv[])
 }
 #endif
 
-/* Everything that is kept goes, and what was made of it: the recompilers'
- * table of addresses, and what the host has mapped for the pages. */
+/* What follows from a translation goes with it: the recompilers' table of
+ * addresses, and what the host has mapped for the page. */
+static void forget_page(u32 va, u32 size)
+{
+	mmu_lut_forget(va, size);
+	if (vmem32_enabled())
+		vmem32_forget(va, size);
+}
+
 static void forget_all()
 {
 	lru_entry = NULL;
@@ -223,6 +252,17 @@ static void forget_all()
 		vmem32_flush_mmu();
 }
 
+static void sq_remap_entry(const TLB_Entry& tlb_entry)
+{
+	if (!mmu_enabled() && (tlb_entry.Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
+	{
+		// Used when FullMMU is off
+		u32 vpn_sq = ((tlb_entry.Address.VPN & 0x7FFFF) >> 10) & 0x3F;//upper bits are always known [0xE0/E1/E2/E3]
+		sq_remap[vpn_sq] = tlb_entry.Data.PPN << 10;
+	}
+}
+
+// An entry has been loaded (LDTLB), or one that was there is valid again.
 bool UTLB_Sync(u32 entry)
 {
 	TLB_Entry& tlb_entry = UTLB[entry];
@@ -235,15 +275,63 @@ bool UTLB_Sync(u32 entry)
 	tlb_entry.Address.VPN = lru_address >> 10;
 	cache_entry(tlb_entry);
 	// the page it is for means what this entry says from now on, or nothing
-	mmu_lut_forget(lru_address, ~lru_mask + 1);
+	forget_page(lru_address, ~lru_mask + 1);
 
-	if (!mmu_enabled() && (tlb_entry.Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
-	{
-		// Used when FullMMU is off
-		u32 vpn_sq = ((tlb_entry.Address.VPN & 0x7FFFF) >> 10) & 0x3F;//upper bits are always known [0xE0/E1/E2/E3]
-		sq_remap[vpn_sq] = tlb_entry.Data.PPN << 10;
-	}
+	sq_remap_entry(tlb_entry);
 	return true;
+}
+
+/* The page @va is in has been taken out of the TLB: its address written
+ * to the TLB with the "valid" bit off, which finds the entry for it if
+ * there is one. Here there may be one kept that the TLB's 64 no longer
+ * hold; whichever size of page it is for; for the address space that is
+ * current, or shared by all, or any if the program is one that sees all. */
+void mmu_forget(u32 va)
+{
+	const bool any_asid = sr.MD == 1 && CCN_MMUCR.SV == 1;
+
+	for (u32 size = 0; size < 4; size++)
+	{
+		const u32 mask = mmu_mask[size];
+		const u32 vpn = (va & mask) >> 10;
+		TLB_LinkedEntry **link = &entry_buckets[bucket_index(va & mask, size)];
+
+		while (*link != NULL)
+		{
+			TLB_LinkedEntry *slot = *link;
+
+			if (slot->entry.Address.VPN == vpn
+					&& (u32)(slot->entry.Data.SZ1 * 2 + slot->entry.Data.SZ0) == size
+					&& (any_asid || slot->entry.Data.SH == 1 || slot->entry.Address.ASID == CCN_PTEH.ASID))
+			{
+				*link = slot->next_entry;
+				slot->next_entry = free_entries;
+				free_entries = slot;
+				forget_page(va & mask, ~mask + 1);
+			}
+			else
+				link = &slot->next_entry;
+		}
+	}
+	lru_entry = NULL;
+}
+
+/* One of the TLB's entries has been written to by its number, the address
+ * half of it or the data half. What it was for before is gone; and a
+ * program that goes through the entries by number - to empty the TLB, as
+ * some do, with the "valid" bit off in each - is counting on there being
+ * no others. So nothing is kept beyond what the 64 now say. */
+void mmu_utlb_written(u32 entry)
+{
+	forget_all();
+	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
+	{
+		if (UTLB[i].Data.V == 0)
+			continue;
+		UTLB[i].Address.VPN = ((UTLB[i].Address.VPN << 10) & mmu_mask[UTLB[i].Data.SZ1 * 2 + UTLB[i].Data.SZ0]) >> 10;
+		cache_entry(UTLB[i]);
+	}
+	sq_remap_entry(UTLB[entry]);
 }
 
 void ITLB_Sync(u32 entry)

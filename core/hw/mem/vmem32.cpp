@@ -398,6 +398,17 @@ void vmem32_flush_mmu()
 	// TODO flush P3?
 }
 
+void vmem32_forget(u32 va, u32 size)
+{
+	// (a page of 1K is not mapped at all; P3 is left as vmem32_flush_mmu() leaves it)
+	if (!vmem32_inited || size < PAGE_SIZE || va >= USER_SPACE)
+		return;
+	vram_mapped_pages.erase(va);
+	for (u32 sub = 0; sub < size; sub += PAGE_SIZE)
+		sram_mapped_pages[(va + sub) >> 15] &= ~(1 << (((va + sub) >> 12) & 7));
+	vmem32_unmap_buffer(va, (u64)va + size);
+}
+
 bool vmem32_init()
 {
 #ifdef _WIN32
