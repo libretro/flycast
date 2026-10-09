@@ -647,4 +647,128 @@ InputDescriptors vf4_inputs = {
 	  },
 };
 
+InputDescriptors vs2_2k_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "LONG PASS" },
+			{ NAOMI_BTN1_KEY, "SHOOT" },
+			{ NAOMI_BTN2_KEY, "SHORT PASS" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ NULL },
+	  },
+};
+
+InputDescriptors beachspi_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "A" },
+			{ NAOMI_BTN1_KEY, "B" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ NULL },
+	  },
+};
+
+InputDescriptors initd_inputs = {
+	  {
+			{ NAOMI_DOWN_KEY, "VIEW" },
+			{ NAOMI_BTN0_KEY, "GEAR UP", NAOMI_UP_KEY },		// This button uses P2 inputs for P1
+			{ NAOMI_BTN1_KEY, "GEAR DOWN", NAOMI_DOWN_KEY },	// This button uses P2 inputs for P1
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "HANDLE", Full, 0 },
+			{ "ACCEL", Half, 4 },
+			{ "BRAKE", Half, 5 },
+			{ NULL },
+	  },
+};
+
+InputDescriptors clubkart_inputs = {
+	  {
+			{ NAOMI_DOWN_KEY, "VIEW" },	// not the prize versions (they use START)
+			{ NAOMI_BTN1_KEY, "BET" },	// the prize versions only
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "HANDLE", Full, 0 },
+			{ "ACCEL", Half, 4 },
+			{ "BRAKE", Half, 5 },
+			{ NULL },
+	  },
+};
+
+InputDescriptors kingrt66_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "HORN" },
+			{ NAOMI_BTN1_KEY, "WIPER" },
+			{ NAOMI_DOWN_KEY, "VIEW" },
+			{ NAOMI_BTN2_KEY, "SHIFT L", NAOMI_DOWN_KEY },		// This button uses P2 inputs for P1
+			{ NAOMI_BTN3_KEY, "SHIFT H", NAOMI_UP_KEY },		// This button uses P2 inputs for P1
+			{ NAOMI_BTN4_KEY, "SHIFT R", NAOMI_LEFT_KEY | NAOMI_DOWN_KEY },
+															// This button uses P2 inputs for P1
+			{ NAOMI_BTN5_KEY, "MIC SWITCH", 0, NAOMI_BTN2_KEY },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "HANDLE", Full, 0 },
+			{ "ACCEL", Half, 4 },
+			{ "BRAKE", Half, 5 },
+			{ NULL },
+	  },
+};
+
+InputDescriptors wldrider_inputs = {
+	  {
+			{ NAOMI_UP_KEY, "PUSH", 0, NAOMI_LEFT_KEY },
+			{ NAOMI_DOWN_KEY, "PULL", 0, NAOMI_RIGHT_KEY },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "HANDLEBAR", Full, 0 },
+			{ "ACCELERATOR", Half, 4 },
+			{ "FRONT BRAKE", Half, 5 },
+			{ "REAR BRAKE", Half, 6 },	// nothing is mapped to it: let go
+			{ NULL },
+	  },
+};
+
+InputDescriptors soulsurfer_inputs = {
+	  {
+			{ NAOMI_LEFT_KEY, "LEFT", 0, NAOMI_BTN0_KEY },
+			{ NAOMI_RIGHT_KEY, "RIGHT", 0, NAOMI_BTN1_KEY },
+			{ NAOMI_BTN4_KEY, "FLOORMAT", 0, 0xffffffff },		// always on
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "SWING", Full, 2 },
+			{ "ROLL", Full, 0 },
+			{ "PITCH", Full, 1, true },
+			{ NULL },
+	  },
+};
+
 #endif /* CORE_HW_NAOMI_NAOMI_ROMS_INPUT_H_ */

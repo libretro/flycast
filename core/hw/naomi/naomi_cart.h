@@ -114,7 +114,11 @@ struct ButtonDescriptor
 {
    u32 mask;
    const char *name;
-   u32 p2_mask;
+   u32 p2_mask;     /* read as these of the second player's switches */
+   /* Read as this other switch of the player's own; or, 0xffffffff, a
+    * switch of the cabinet's that no button is for and that is always on
+    * (the player's own, or the second player's p2_mask if there is one). */
+   u32 target;
 };
 
 enum AxisType {

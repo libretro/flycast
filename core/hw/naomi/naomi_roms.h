@@ -6688,7 +6688,7 @@ Games[] =
 			{ "mpr-23662.ic11", 0xa800000, 0x0800000, 0xd6ef7d68 },
         },
 		NULL,
-		NULL,
+		&vs2_2k_inputs,
     },
 	{
 		"vstrik3c",
@@ -6715,7 +6715,7 @@ Games[] =
 			{ "mpr-23662.ic11",  0xa800000, 0x0800000, 0xd6ef7d68 },
 		},
 		NULL,
-		NULL,
+		&vs2_2k_inputs,
 	},
     {
 		"wldrider",
@@ -6741,7 +6741,7 @@ Games[] =
 			{ "mpr-23620.ic10", 0x9800000, 0x1000000, 0x67aa15a9 },
         },
 		NULL,
-		NULL,
+		&wldrider_inputs,
     },
     {
 		"vf4cart",
@@ -6794,7 +6794,7 @@ Games[] =
 			{ "mpr-23817.ic10", 0x09800000,  0x01000000, 0xe179cfb6 },
         },
 		NULL,
-		NULL,
+		&kingrt66_inputs,
 		kingrt66_eeprom_dump,
     },
     {
@@ -6821,7 +6821,7 @@ Games[] =
 			{ "mpr-23817.ic10", 0x09800000,  0x01000000, 0xe179cfb6 },
         },
 		NULL,
-		NULL,
+		&kingrt66_inputs,
     },
     {
 		"soulsurf",
@@ -6858,7 +6858,7 @@ Games[] =
 			{ "rom21.ic21s", 0xa800000, 0x800000, 0x1477c064 },
         },
 		NULL,
-		NULL,
+		&soulsurfer_inputs,
     },
     {
 		"vf4evoct",
@@ -6923,7 +6923,7 @@ Games[] =
 			{ "mpr-23703.ic11", 0xa800000, 0x1000000, 0x702b8b4a },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkrt_eeprom_dump,
     },
 	{
@@ -6951,7 +6951,7 @@ Games[] =
 			{ "mpr-23703.ic11", 0xa800000, 0x1000000, 0x702b8b4a },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkrt_eeprom_dump,
     },
     {
@@ -6979,7 +6979,7 @@ Games[] =
 			{ "mpr-23703.ic11", 0xa800000, 0x1000000, 0x702b8b4a },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkrt_eeprom_dump,
     },
     {
@@ -7007,7 +7007,7 @@ Games[] =
 			{ "mpr-23703.ic11", 0xa800000, 0x1000000, 0x702b8b4a },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkrt_eeprom_dump,
     },
     {
@@ -7041,7 +7041,7 @@ Games[] =
             { "copy",          0x400000,  0xc00000, 0x00000000, Copy, 0x1000000 },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkprz_eeprom_dump,
     },
     {
@@ -7075,7 +7075,7 @@ Games[] =
             { "copy",            0x400000,  0xc00000, 0x00000000, Copy, 0x1000000 },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkprz_eeprom_dump,
     },
     {
@@ -7108,7 +7108,7 @@ Games[] =
 			{ "rom17.ic17s", 0x8800000, 0x800000, 0xfbff0538 },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubkprz_eeprom_dump,
     },
     {
@@ -7144,7 +7144,7 @@ Games[] =
             { "copy",            0x400000,  0xc00000, 0x00000000, Copy, 0x1000000 },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubk2k3_eeprom_dump,
     },
     {
@@ -7180,7 +7180,7 @@ Games[] =
 			{ "rom19.ic19s", 0x9800000, 0x800000, 0x7ee9743b },
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubk2k3_eeprom_dump,
     },
     {
@@ -7219,7 +7219,7 @@ Games[] =
 			{ "rom21.ic21s", 0xa800000, 0x800000, 0x21bd0a9c }, // not used by game, garbage
         },
 		NULL,
-		NULL,
+		&clubkart_inputs,
 		clubk2k3_eeprom_dump,
     },
 #ifdef NAOMI_MULTIBOARD
@@ -7267,7 +7267,7 @@ Games[] =
 			{ "317-0304-com.bin", 0, 0x4000, 0x8e82d17a },
 		},
 		"gds-0006",
-		NULL,
+		&vs2_2k_inputs,
     },
     {
 		"vf4o",
@@ -7334,7 +7334,7 @@ Games[] =
 			{ "317-0317-com.pic", 0, 0x4000, 0xef65fe73 },
 		},
 		"gds-0014",
-		NULL,
+		&beachspi_inputs,
     },
     {
 		"initd",
@@ -7350,7 +7350,7 @@ Games[] =
 			{ "317-0331-jpn.pic", 0, 0x4000, 0x0a3bf606 },
 		},
 		"gds-0020b",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdo",
@@ -7366,7 +7366,7 @@ Games[] =
 			{ "317-0331-jpn.pic", 0, 0x4000, 0x0a3bf606 },
 		},
 		"gds-0020",
-		NULL,
+		&initd_inputs,
     },
     {
 		"vf4evo",
@@ -7433,7 +7433,7 @@ Games[] =
 			{ "317-0343-com.pic", 0, 0x4000, 0x80eea4eb },
 		},
 		"gds-0025a",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdexpo",
@@ -7449,7 +7449,7 @@ Games[] =
 			{ "317-0343-com.pic", 0, 0x4000, 0x80eea4eb },
 		},
 		"gds-0025",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdv2j",
@@ -7465,7 +7465,7 @@ Games[] =
 			{ "317-0345-jpn.pic", 0, 0x4000, 0x56e1274a },
 		},
 		"gds-0026b",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdv2jo",
@@ -7481,7 +7481,7 @@ Games[] =
 			{ "317-0345-jpn.pic", 0, 0x4000, 0x56e1274a },
 		},
 		"gds-0026",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdv2ja",
@@ -7497,7 +7497,7 @@ Games[] =
 			{ "317-0345-jpn.pic", 0, 0x4000, 0x56e1274a },
 		},
 		"gds-0026a",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdv2e",
@@ -7513,7 +7513,7 @@ Games[] =
 			{ "317-0357-exp.pic", 0, 0x4000, 0x38f84b4d },
 		},
 		"gds-0027",
-		NULL,
+		&initd_inputs,
     },
     {
 		"clubkcyco",
@@ -7529,7 +7529,7 @@ Games[] =
 			{ "317-0358-com.pic", 0, 0x4000, 0xdd33e50f },
 		},
 		"gds-0029",
-		NULL,
+		&clubkart_inputs,
     },
     {
 		"clubkcyc",
@@ -7545,7 +7545,7 @@ Games[] =
 			{ "317-0358-com.pic", 0, 0x4000, 0xdd33e50f },
 		},
 		"gds-0029a",
-		NULL,
+		&clubkart_inputs,
     },
     {
 		"initdv3j",
@@ -7561,7 +7561,7 @@ Games[] =
 			{ "317-0379-jpn.pic", 0, 0x4000, 0x7f024ff6 },
 		},
 		"gds-0032c",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdv3jb",
@@ -7577,7 +7577,7 @@ Games[] =
 			{ "317-0379-jpn.pic", 0, 0x4000, 0x7f024ff6 },
 		},
 		"gds-0032b",
-		NULL,
+		&initd_inputs,
     },
     {
 		"initdv3e",
@@ -7593,7 +7593,7 @@ Games[] =
 			{ "317-0384-com.pic", 0, 0x4000, 0x081ccd51 },
 		},
 		"gds-0033",
-		NULL,
+		&initd_inputs,
     },
     {
 		"vf4tuned",
@@ -7660,7 +7660,7 @@ Games[] =
 			{ "317-0406-com.pic", 0, 0x4000, 0xfe91a7af },
 		},
 		"gds-0039b",
-		NULL,
+		&initd_inputs,
     },
     {
 		"inidv3ca",
@@ -7676,7 +7676,7 @@ Games[] =
 			{ "317-0406-com.pic", 0, 0x4000, 0xfe91a7af },
 		},
 		"gds-0039a",
-		NULL,
+		&initd_inputs,
     },
     {
         NULL

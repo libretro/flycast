@@ -2924,15 +2924,31 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						   if (naomi_game_inputs != NULL)
 						   {
 							  u32 new_keycode = 0;
+							  u32 own_keycode = 0;	// switches read as others of the player's own
 							  for (int i = 0; naomi_game_inputs->buttons[i].mask != 0; i++)
 							  {
-								 if ((naomi_game_inputs->buttons[i].mask & keycode) != 0
-									   && naomi_game_inputs->buttons[i].p2_mask != 0)
+								 const ButtonDescriptor& button = naomi_game_inputs->buttons[i];
+
+								 if (button.target == 0xffffffff)
 								 {
-									new_keycode |= naomi_game_inputs->buttons[i].p2_mask;
-									keycode &= ~naomi_game_inputs->buttons[i].mask;
+									// a switch that is always on
+									if (button.p2_mask == 0)
+									   keycode |= button.mask;
+									else if (first_player + player == 0)
+									   new_keycode |= button.p2_mask;
+								 }
+								 else if ((button.mask & keycode) != 0 && button.p2_mask != 0)
+								 {
+									new_keycode |= button.p2_mask;
+									keycode &= ~button.mask;
+								 }
+								 else if ((button.mask & keycode) != 0 && button.target != 0)
+								 {
+									own_keycode |= button.target;
+									keycode &= ~button.mask;
 								 }
 							  }
+							  keycode |= own_keycode;
 							  keycode |= next_keycode;
 							  next_keycode = new_keycode;
 						   }
@@ -3039,12 +3055,16 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						   if (player_num < 4)
 						   {
 						   	bool inverted = false;
+						   	bool unmapped_half = false;
 						   	if (naomi_game_inputs != NULL)
 						   	{
-						   		inverted = naomi_game_inputs->axes[player_axis].inverted;
-						   		player_axis = naomi_game_inputs->axes[player_axis].axis;
+						   		const AxisDescriptor& desc = naomi_game_inputs->axes[player_axis];
+						   		inverted = desc.inverted;
+						   		// a pedal or lever no stick or trigger is for is let go, not half way
+						   		unmapped_half = desc.name != NULL && desc.type == Half && desc.axis > 5;
+						   		player_axis = desc.axis;
 						   	}
-						   	axis_value = read_analog_axis(player_num, player_axis, inverted);
+						   	axis_value = unmapped_half ? 0 : read_analog_axis(player_num, player_axis, inverted);
 						   }
 						   LOGJVS("P%d.%d:%4x ", player_num + 1, player_axis + 1, axis_value);
 						   JVS_OUT(axis_value >> 8);
