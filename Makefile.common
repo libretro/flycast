@@ -399,6 +399,7 @@ SOURCES_CXX += $(CORE_DIR)/core/libretro/libretro.cpp \
 					$(CORE_DIR)/core/libretro/vmem_utils.cpp
 
 SOURCES_C += $(DEPS_DIR)/coreio/coreio.c
+SOURCES_C += $(CORE_DIR)/core/savewriter.c
 
 # When statically linked into RetroArch (e.g. libnx), the frontend already
 # compiles these libretro-common sources; building them again would duplicate

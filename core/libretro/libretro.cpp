@@ -56,6 +56,7 @@ char* strdup(const char *str)
 #include "hw/maple/maple_cfg.h"
 #include "../hw/pvr/spg.h"
 #include "../hw/naomi/naomi_cart.h"
+#include "../savewriter.h"
 #include "../archive/archive.h"
 #include "../imgread/common.h"
 #include "../hw/aica/dsp.h"
@@ -2442,6 +2443,9 @@ void retro_unload_game(void)
 	   dc_stop();
 	   dc_term();
    }
+   /* The devices have handed over the last of what they had to save and
+    * waited for it to be written: the writer's thread goes too. */
+   save_writer_stop();
 }
 
 

@@ -194,6 +194,33 @@ static u32 maple_test(void)
       if (reply[29] != ('V' | ('e' << 8) | ('r' << 16) | ('s' << 24)))
          return 5;
    }
+
+   /* The memory card in the controller's first slot is written to: a
+    * quarter of a block (a card takes a block in four parts), block 100,
+    * which is the middle of where a game's files go. The card says it has
+    * them. Whether they then reach the card's file is for whoever runs
+    * this to look at (headless.sh): the core writes them out behind the
+    * machine's back, from a thread of its own. With no card in the slot
+    * nobody answers, and there is nothing to tell by. */
+   {
+      volatile u32 *frame = (volatile u32 *)0xAC00E000;
+      u32 i;
+
+      reply[0] = 0x12345678;
+      frame[0] = 0x80000000 | 34;                      /* last frame, port A, 35 words */
+      frame[1] = 0x0C00E100;
+      frame[2] = 0x0C | (0x01 << 8) | (34 << 24);      /* block write, to A1 */
+      frame[3] = 0x02000000;                           /* function: storage */
+      frame[4] = 100u << 24;                           /* partition 0, part 0, block 100 */
+      for (i = 0; i < 32; i++)
+         frame[5 + i] = 0xC0DE0000 + i;
+      SB(0xC04) = 0x0C00E000;
+      SB(0xC18) = 1;
+      for (guard = 0; guard < 2000000 && (SB(0xC18) & 1); guard++)
+         ;
+      if (reply[0] != 0xFFFFFFFF && (reply[0] & 0xFF) != 7)
+         return 6;
+   }
    return 0;
 }
 

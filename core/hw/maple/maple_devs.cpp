@@ -6,6 +6,7 @@
 #include "maple_cfg.h"
 #include "hw/pvr/spg.h"
 #include "hw/naomi/naomi_cart.h"
+#include "savewriter.h"
 #include <math.h>
 #include <time.h>
 
@@ -564,6 +565,34 @@ static bool vmu_inflate_default(u8 *dst, size_t dst_len)
    return rv == RDEFLATE_PROCESS_END && wr == dst_len;
 }
 
+/* How the writes a device hands to the save writer are getting on. */
+struct MapleSaveState
+{
+	retro_atomic_int_t failed;	// set by the writer: a write did not go through
+	u32 wait;					// frames until the next try, after one that failed
+
+	MapleSaveState() : wait(0)
+	{
+		retro_atomic_int_init(&failed, 0);
+	}
+	// Whether a write has failed since this was last asked; a while before the next try
+	bool Failed()
+	{
+		if (!retro_atomic_load_acquire_int(&failed) || !retro_atomic_exchange_int(&failed, 0))
+			return false;
+		wait = 60;
+		return true;
+	}
+	// Whether it is still too soon after a failure to try again
+	bool Waiting()
+	{
+		if (wait == 0)
+			return false;
+		wait--;
+		return true;
+	}
+};
+
 struct maple_sega_vmu: maple_base
 {
 	RFILE* file;
@@ -571,6 +600,7 @@ struct maple_sega_vmu: maple_base
 	u32 dirty_lo;
 	u32 dirty_hi;
 	bool full_save_needed = false;
+	MapleSaveState save_state;	// of the writes handed over: see FlushSave()
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[VMU_SCREEN_WIDTH*VMU_SCREEN_HEIGHT];
@@ -595,6 +625,7 @@ struct maple_sega_vmu: maple_base
 		 * next thing the game writes cannot be patched into the file, which
 		 * would leave a card that is part one and part the other - a broken
 		 * file system. The whole card is written then. */
+		save_state.wait = 0;
 		FlushSave();
 		full_save_needed = true;
 		LIBRETRO_USA(flash_data,128*1024);
@@ -641,15 +672,31 @@ struct maple_sega_vmu: maple_base
 			NOTICE_LOG(MAPLE, "Loaded VMU from file \"%s\"", apath.c_str());
 		}
 	}
+	/* What the game wrote to the card since the last time goes to the
+	 * card's file: handed to the writer's thread (savewriter.h), which
+	 * does the waiting for the disk. The file is the writer's from the
+	 * first hand-over on.
+	 *
+	 * A write that fails is found out later: the whole card is then
+	 * written again, since which part of the file is not what it should
+	 * be is no longer known, a second or so later and for as long as it
+	 * goes on failing. It used to be forgotten - what was to be written
+	 * counted as written whatever the write said. */
 	virtual void FlushSave()
 	{
-		if (dirty_lo >= dirty_hi)
+		if (save_state.Failed())
+		{
+			WARN_LOG(MAPLE, "VMU %s: a write to its file failed. The card will be written again", logical_port);
+			dirty_lo = 0;
+			dirty_hi = sizeof(flash_data);
+		}
+		if (dirty_lo >= dirty_hi || save_state.Waiting())
 			return;
 		if (file)
 		{
-			filestream_seek(file, dirty_lo, RETRO_VFS_SEEK_POSITION_START);
-			filestream_write(file, &flash_data[dirty_lo], dirty_hi - dirty_lo);
-			filestream_flush(file);
+			// (not taken: too much is waiting to be written. Next frame.)
+			if (!save_writer_put(file, dirty_lo, &flash_data[dirty_lo], dirty_hi - dirty_lo, &save_state.failed))
+				return;
 		}
 		else
 			INFO_LOG(MAPLE, "Failed to save VMU %s data", logical_port);
@@ -658,7 +705,12 @@ struct maple_sega_vmu: maple_base
 	}
 	virtual ~maple_sega_vmu()
 	{
+		save_state.wait = 0;
 		FlushSave();
+		// the writer has the file, and the flag that is this card's
+		save_writer_drain();
+		if (file && save_state.Failed())
+			WARN_LOG(MAPLE, "VMU %s: the last write to its file failed", logical_port);
 		if (file) filestream_close(file);
 	}
 	virtual u32 dma(u32 cmd)
@@ -2069,30 +2121,36 @@ struct maple_naomi_jamma : maple_sega_controller
 	u8 jvs_receive_buffer[32][258];
 	u32 jvs_receive_length[32] = { 0 };
 	bool eeprom_dirty = false;
+	MapleSaveState save_state;
 
 	maple_naomi_jamma()
 	{
 	}
 	virtual ~maple_naomi_jamma()
 	{
+		save_state.wait = 0;
 		FlushSave();
+		// (the flag is this device's: the writer is done with it first)
+		save_writer_drain();
+		if (save_state.Failed())
+			WARN_LOG(MAPLE, "Cannot save EEPROM to file %s", eeprom_file);
 		EEPROM_loaded = false;
 	}
 
+	/* The EEPROM, when the game has written to it, to its file: made
+	 * anew each time, by the writer's thread (savewriter.h). Tried again
+	 * later if that fails, as a memory card's is. */
 	virtual void FlushSave()
 	{
-		RFILE* f;
-		if (!eeprom_dirty)
-			return;
-		eeprom_dirty = false;
-		f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-		if (f)
+		if (save_state.Failed())
 		{
-			filestream_write(f, EEPROM, 0x80);
-			filestream_close(f);
+			WARN_LOG(MAPLE, "Cannot save EEPROM to file %s. It will be tried again", eeprom_file);
+			eeprom_dirty = true;
 		}
-		else
-			WARN_LOG(MAPLE, "Cannot save EEPROM to file %s", eeprom_file);
+		if (!eeprom_dirty || save_state.Waiting())
+			return;
+		if (save_writer_put_file(eeprom_file, EEPROM, 0x80, &save_state.failed))
+			eeprom_dirty = false;
 	}
 
 	void create_io_boards()

@@ -213,6 +213,8 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
    fi
    SOUND=$WORK/sound.pcm
    [ "$NAME" != legacy ] || SOUND=$WORK/sound-plain.pcm
+   # (the memory card the program writes to: a new one each run, see below)
+   rm -f "$WORK/dir/dc/vmu_save_A1.bin"
    HEADLESS_DIR=$WORK/dir HEADLESS_SOUND=$SOUND HEADLESS_PEEK=$VERDICT \
       $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" $FRAMES \
       reicast_use_real_bios=disabled reicast_threaded_rendering=disabled \
@@ -249,6 +251,14 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
    fi
    tr -d '\r' < "$WORK/$NAME.out" | grep -q "= $GOOD\$" || {
       echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
+      exit 1
+   }
+   # The program wrote to the memory card in the controller, and the card
+   # said it had it. The core writes that to the card's file from a thread
+   # of its own (core/savewriter.c), not while the machine waits: it has to
+   # be in the file all the same.
+   python3 "$T/live_disc.py" --card "$WORK/dir/dc/vmu_save_A1.bin" || {
+      echo "FAIL: what the program wrote to the memory card is not in the card's file" >&2
       exit 1
    }
    # (the sound of a run with a reset or a disc change in it is not the plain one: not looked at)
