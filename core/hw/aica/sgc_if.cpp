@@ -22,6 +22,7 @@
 #include "dsp.h"
 #include "aica_mem.h"
 #include "aica_if.h"
+#include <compat/intrinsics.h>
 #include <math.h>
 #include <algorithm>
 #undef FAR
@@ -610,13 +611,17 @@ struct ChannelEx
 	 * to anything, and going to all 64 to find that out - a load, and an
 	 * add of zero into its DSP input - was most of what this cost with a
 	 * handful of them playing. A channel may switch itself off as it is
-	 * stepped; that changes the set, not this pass over a copy of it. */
+	 * stepped; that changes the set, not this pass over a copy of it.
+	 *
+	 * From one that is on straight to the next, lowest first as before:
+	 * not past every number in between. Games do not use the low ones
+	 * first - Virtua Fighter 4 has one or two channels on with numbers up
+	 * to 35, Dead or Alive 2 a dozen spread over forty. */
 	__forceinline static void StepAll(SampleType& mixl, SampleType& mixr)
 	{
 		u64 on = active;
-		for (int i = 0; on != 0; i++, on >>= 1)
-			if (on & 1)
-				Chans[i].Step(mixl, mixr);
+		for (; on != 0; on &= on - 1)
+			Chans[compat_ctz_u64(on)].Step(mixl, mixr);
 	}
 	void SetAegState(_EG_state newstate)
 	{
