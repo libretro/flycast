@@ -25,11 +25,40 @@
 #include "x64_regalloc.h"
 #include "x64_vector.h"
 
+/* One block goes on to the next with a jump straight to its code.
+ *
+ * Where a block ends in a jump whose target is known as it is compiled -
+ * an unconditional one, or either way out of a conditional one - there is
+ * a link site: seven bytes that are one of three things.
+ *
+ *   call the link stub   as compiled. The first time the block leaves
+ *                        that way, ngen_link() has the target found or
+ *                        compiled and makes the site one of the other two.
+ *   jmp target           linked: the next block's code, directly.
+ *   jmp [table]          through the table of blocks, as every block went
+ *                        on before: for a way out that is not to be
+ *                        linked - into or out of a block in the temporary
+ *                        cache, which is thrown away without its
+ *                        neighbours being told.
+ *
+ * A jump through the table is a load and an indirect jump, at the end of
+ * every block; in a loop that is one block - half a dozen instructions
+ * that jump back to their own start - they were a good part of what a turn
+ * cost.
+ *
+ * When a block is thrown away the block manager goes through the blocks
+ * that are linked to it (pre_refs), takes it out of them and has them
+ * linked again (Relink()): their sites go back to calling the stub, which
+ * finds the new block that is compiled in its place. A block that is
+ * thrown away is unlinked the same way, since it may still be running -
+ * it may be what wrote over the code - and has yet to leave. */
 struct DynaRBI : RuntimeBlockInfo
 {
-   virtual u32 Relink() {
-      return 0;
-   }
+   /* Where in the block's code its link sites are, 0 where there is none:
+    * the way out to BranchBlock, and the one to NextBlock. */
+   u32 link_at[2] = { 0, 0 };
+
+   virtual u32 Relink();
 
    virtual void Relocate(void* dst) {
       verify(false);
@@ -261,9 +290,142 @@ static struct CompileStubInit
 	CompileStubInit() { ngen_FailedToFindBlock = &ngen_compile_stub; }
 } compile_stub_init;
 
+/* The link stub, which is in the code cache so that every block reaches
+ * it with a near call: see DynaRBI. In the cache's writable mapping; a
+ * block is the same distance from it in the executable one. */
+static u8 *link_stub;
+
+// Where entry @index of the table of blocks is from r15: see BlockCompiler::FpcbAt()
+static int fpcb_at(u32 index)
+{
+	return (int)((ptrdiff_t)(offsetof(Sh4RCB, fpcb) + (size_t)index * sizeof(void *)) - (ptrdiff_t)CTX_BASE);
+}
+
+static void link_site_call_stub(u8 *site)
+{
+	const s32 rel = (s32)(link_stub - (site + 5));
+
+	site[0] = 0xE8;		// call rel32
+	memcpy(site + 1, &rel, 4);
+	site[5] = 0xCC;
+	site[6] = 0xCC;
+}
+
+static void link_site_jump(u8 *site, const u8 *code)
+{
+	const s32 rel = (s32)(code - (site + 5));
+
+	site[0] = 0xE9;		// jmp rel32
+	memcpy(site + 1, &rel, 4);
+	site[5] = 0xCC;
+	site[6] = 0xCC;
+}
+
+u32 DynaRBI::Relink()
+{
+	for (int i = 0; i < 2; i++)
+	{
+		const RuntimeBlockInfo *to = i == 0 ? pBranchBlock : pNextBlock;
+
+		if (link_at[i] == 0)
+			continue;
+		if (to != NULL)
+			link_site_jump((u8 *)code + link_at[i], (const u8 *)to->code);
+		else
+			link_site_call_stub((u8 *)code + link_at[i]);
+	}
+	return 0;
+}
+
+/* From the link stub: the block whose link site returns to @after is
+ * leaving for @pc for the first time. The block there is found or
+ * compiled, the site is made a jump to it if the two may be linked, and
+ * its code is where the stub goes. */
+extern "C" __attribute__((used)) void *ngen_link(u8 *after, u32 pc)
+{
+	u8 *const site_rx = after - 5;
+	RuntimeBlockInfoPtr from = bm_GetBlock2(site_rx);
+
+	DynarecCodeEntryPtr code = bm_GetCodeByVAddr(pc);
+	if (code == ngen_FailedToFindBlock)
+		code = rdv_FailedToFindBlock(pc);
+	/* No block to be had there: to the main loop, which goes by the pc in
+	 * the context. (The compile stub, which is what there is in a block's
+	 * place then, wants the address in edx, and this has used edx.) */
+	if (code == ngen_FailedToFindBlock)
+	{
+		next_pc = pc;
+		return (void *)&ngen_block_return;
+	}
+
+	/* Compiling may have emptied the cache, and the block that asked with
+	 * it; or the block was thrown away before it got here (it wrote over
+	 * its own code), and is not found at all. Nothing is linked then. */
+	if (from == NULL || mmu_enabled() || bm_GetBlock2(site_rx) != from)
+		return (void *)code;
+
+	DynaRBI *const block = (DynaRBI *)from.get();
+	u8 *const site = (u8 *)CC_RX2RW(site_rx);
+	const u32 at = (u32)(site - (u8 *)block->code);
+	const int which = at == block->link_at[0] ? 0 : at == block->link_at[1] ? 1 : -1;
+	RuntimeBlockInfoPtr to = bm_GetBlock(pc);
+
+	if (which < 0 || pc != (which == 0 ? block->BranchBlock : block->NextBlock))
+		return (void *)code;		// not a site of this block's: left as it is
+	if (to == NULL || to->addr != pc || (DynarecCodeEntryPtr)CC_RW2RX(to->code) != code)
+		return (void *)code;		// nothing to link to (yet)
+
+	if (to->temp_block)
+	{
+		/* Not linked, ever: through the table from now on.
+		 * jmp qword [r15 + disp32] */
+		const s32 disp = fpcb_at((pc >> 1) & FPCB_MASK);
+
+		site[0] = 0x41;
+		site[1] = 0xFF;
+		site[2] = 0xA7;
+		memcpy(site + 3, &disp, 4);
+		block->link_at[which] = 0;
+		return (void *)code;
+	}
+
+	if (which == 0)
+		block->pBranchBlock = to.get();
+	else
+		block->pNextBlock = to.get();
+	to->AddRef(from);
+	block->Relink();
+	return (void *)code;
+}
+
 void ngen_init()
 {
 	ngen_FailedToFindBlock = &ngen_compile_stub;
+
+	/* The link stub, ahead of the blocks, where emptying the cache leaves
+	 * it. It is called from a link site with the address the block is
+	 * leaving for in edx, as every block is left: the site's return
+	 * address and that address are ngen_link()'s arguments, and what it
+	 * returns is jumped to. (The stack is the main loop's, as it is for
+	 * any call a block makes, once the return address is off it.) */
+	{
+		Xbyak::CodeGenerator stub(64, emit_GetCCPtr());
+
+		link_stub = (u8 *)stub.getCode();
+#ifdef _WIN32
+		stub.pop(stub.rcx);
+		// (edx is the second argument already)
+#else
+		stub.pop(stub.rdi);
+		stub.mov(stub.esi, stub.edx);
+#endif
+		stub.mov(stub.rax, (uintptr_t)&ngen_link);
+		stub.call(stub.rax);
+		stub.jmp(stub.rax);
+		stub.ready();
+		emit_Skip((stub.getSize() + 15) & ~15u);
+		emit_SetBaseAddr();
+	}
 }
 
 void ngen_ResetBlocks()
@@ -1290,7 +1452,7 @@ public:
 			{
 				if (watch)
 					GenWaitCheck(block);
-				GenGoOn(block->BranchBlock);
+				GenGoOn(block, 0);
 			}
 			else
 				mov(Ctx(&next_pc), block->BranchBlock);
@@ -1311,7 +1473,7 @@ public:
 				{
 					if (watch)
 						GenWaitCheck(block);
-					GenGoOn(block->BranchBlock);
+					GenGoOn(block, 0);
 				}
 				else
 				{
@@ -1320,7 +1482,7 @@ public:
 				}
 				L(branch_not_taken);
 				if (go_on)
-					GenGoOn(block->NextBlock);
+					GenGoOn(block, 1);
 				else
 					mov(Ctx(&next_pc), block->NextBlock);
 			}
@@ -1454,12 +1616,29 @@ public:
 		L(over);
 	}
 
-	// On to the block at @target, through its place in the table
-	void GenGoOn(u32 target)
+	/* On to the block at @target: by a link site (see DynaRBI), which is
+	 * the block's way out to its BranchBlock (@which 0) or its NextBlock
+	 * (1). A block in the temporary cache is not linked: it goes through
+	 * the target's place in the table. So does a block that goes round to
+	 * its own start. Linked to itself, such a loop came out faster or
+	 * slower by the loop - one of shifts and adds a twelfth faster, one of
+	 * stores to memory a twelfth slower, on the one processor it was tried
+	 * on - and two games slower rather than faster: left as it was. */
+	void GenGoOn(RuntimeBlockInfo *block, int which)
 	{
+		const u32 target = which == 0 ? block->BranchBlock : block->NextBlock;
+
 		mov(edx, target);
 		GenSliceCheck();
-		jmp(qword[r15 + FpcbAt((target >> 1) & FPCB_MASK)]);
+		if (block->temp_block || target == block->vaddr || link_stub == NULL)
+		{
+			jmp(qword[r15 + FpcbAt((target >> 1) & FPCB_MASK)]);
+			return;
+		}
+		((DynaRBI *)block)->link_at[which] = (u32)getSize();
+		call((const void *)link_stub);
+		db(0xCC);
+		db(0xCC);
 	}
 
 	/* Where entry @index of the table of blocks is from r15. The table is
@@ -1469,7 +1648,7 @@ public:
 	 * every way out of a block. */
 	static int FpcbAt(u32 index)
 	{
-		return (int)((ptrdiff_t)(offsetof(Sh4RCB, fpcb) + (size_t)index * sizeof(void *)) - (ptrdiff_t)CTX_BASE);
+		return fpcb_at(index);
 	}
 
 	/* With the MMU on and no host mapping to do the translating (vmem32),
