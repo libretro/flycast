@@ -65,8 +65,26 @@
  *     other; and it is in a page of 64K, not in the first 4K of it (step
  *     17);
  *   - it is rewritten at 0x2C000000 and on, where the host has nothing
- *     mapped and the write goes the long way round (step 18: the last,
+ *     mapped and the write goes the long way round (step 21: the last,
  *     because the recompiled write is not the same one afterwards).
+ *
+ * And with the MMU on, what is not rewritten code but goes wrong the same
+ * way - something kept of how things were, that is used after they have
+ * changed:
+ *
+ *   - a page is taken out of the TLB and mapped again for other memory:
+ *     taken out by its address (the write to the TLB that finds the entry
+ *     for it), by the number of its entry, by a write of the other memory
+ *     into its entry, or with everything else; while its entry is still
+ *     one of the TLB's 64, and after another page has taken that entry's
+ *     place. Data, and code. Then one page is given to the TLB seventy
+ *     thousand times over, taken out and given back as many times, and
+ *     seventy thousand pages are given once each: more than an emulator
+ *     that keeps what it is given may have room for (step 18);
+ *   - the same in P3, 0xC0000000 and on, which the MMU translates like
+ *     the addresses below 0x80000000: where the same address without the
+ *     MMU is main memory (step 19), where it is nothing, and where it
+ *     is video memory (step 20).
  *
  * After that it goes on for ever, a hundred or so times a frame: T, one of
  * the Gs and Y rewritten and run and W run, each looked at. That is for a
@@ -104,13 +122,18 @@ __asm__(".section .text.start,\"ax\"\n.global _start\n_start:\n"
          * the address's low 24 bits (0x10200000 is 0x0C200000, and so is
          * 0x11200000), to be read and written, in the TLB entry that the
          * page's number chooses. Pages are of 4K, but from 0x12000000 on,
-         * where they are of 64K. */
+         * where they are of 64K. And from 0x13000000, 0xC9000000 and
+         * 0xCD000000 on they are mapped smc_shift further up than that. */
         ".text\n.align 2\n.global smc_vbr\nsmc_vbr:\n  .fill 0x400, 1, 0\n"
         "  mov.l 1f, r0\n  mov.l @r0, r1\n  mov.l 2f, r2\n  and r2, r1\n"
         "  mov.l @r0, r4\n  shlr16 r4\n  shlr8 r4\n"
         "  mov.l 3f, r3\n  mov #0x12, r6\n  cmp/eq r6, r4\n  bf 5f\n"
         "  mov.l 6f, r3\n"
-        "5: or r3, r1\n  mov.l r1, @(4,r0)\n"                                /* PTEL */
+        "5: mov #0x13, r6\n  cmp/eq r6, r4\n  bt 7f\n"
+        "  mov.l 8f, r6\n  cmp/eq r6, r4\n  bt 7f\n"
+        "  mov.l 9f, r6\n  cmp/eq r6, r4\n  bf 10f\n"
+        "7: mov.l 11f, r5\n  mov.l @r5, r5\n  add r5, r1\n"
+        "10: or r3, r1\n  mov.l r1, @(4,r0)\n"                               /* PTEL */
         "  mov.l @r0, r1\n  shlr8 r1\n  shlr2 r1\n  shlr2 r1\n"
         "  mov #0x3F, r2\n  and r2, r1\n  shll8 r1\n  shll2 r1\n"            /* the entry */
         "  mov.l @(16,r0), r2\n  mov.l 4f, r3\n  and r3, r2\n  or r1, r2\n"
@@ -118,7 +141,9 @@ __asm__(".section .text.start,\"ax\"\n.global _start\n_start:\n"
         "  .word 0x0038\n  rte\n  nop\n"                                     /* ldtlb */
         "  .align 2\n1: .long 0xFF000000\n2: .long 0x00FFF000\n"
         /* main memory; valid, read and write in any mode, dirty, shared: of 4K, of 64K */
-        "3: .long 0x0C000176\n4: .long 0xFFFF03FF\n6: .long 0x0C0001E6\n");
+        "3: .long 0x0C000176\n4: .long 0xFFFF03FF\n6: .long 0x0C0001E6\n"
+        "8: .long 0xC9\n9: .long 0xCD\n11: .long smc_shift\n");
+u32 smc_shift;
 extern char smc_vbr[];
 
 #define VERDICT  ((volatile u32 *)0x8c00f800)
@@ -519,6 +544,116 @@ static u32 __attribute__((noinline)) in_a_large_page(u32 first)
    return 0;
 }
 
+/* The TLB, written to as memory: an entry's address half and its data half
+ * by the entry's number, and the address that finds the entry for a page. */
+#define TLB_ADDRESS(n)  ((volatile u32 *)(0xF6000000 | ((n) << 8)))
+#define TLB_DATA(n)     ((volatile u32 *)(0xF7000000 | ((n) << 8)))
+#define TLB_FIND        ((volatile u32 *)0xF6000080)
+#define MMUCR           ((volatile u32 *)0xFF000010)
+#define WORD(at)        ((volatile u32 *)(at))
+
+enum { BY_ADDRESS, BY_NUMBER, BY_REWRITING, WITH_ALL, HOW_MASK = 3, FALLEN_OUT = 4 };
+
+/* The page at @va is taken out of the TLB, @how. (@va + 0x40000 goes into
+ * the same entry: that is how the handler chooses.) */
+static void __attribute__((noinline)) take_out(u32 va, u32 how, u32 other)
+{
+   const u32 entry = (va >> 12) & 0x3F;
+
+   if (how & FALLEN_OUT)
+      (void)*WORD(va + 0x40000);
+   switch (how & HOW_MASK)
+   {
+      case BY_ADDRESS:
+         *TLB_FIND = va & 0xFFFFF000;               /* and not valid */
+         break;
+      case BY_NUMBER:
+         *TLB_ADDRESS(entry) = 0;
+         *TLB_DATA(entry) = 0;
+         break;
+      case BY_REWRITING:
+         /* the page's address as well, in case the entry is another's by now */
+         *TLB_ADDRESS(entry) = (va & 0xFFFFF000) | 0x300;   /* written to, valid */
+         *TLB_DATA(entry) = (other & 0x00FFF000) | 0x0C000176;
+         break;
+      default:
+         *MMUCR = 0x00000005;                       /* on, and the TLB emptied */
+         break;
+   }
+}
+
+/* Two pages of main memory, one after the other, that say which they are;
+ * an address that is the first, and after it has been taken out of the TLB
+ * the second, and after that the first again. @code: they say it as
+ * functions. */
+static u32 __attribute__((noinline)) moved(u32 to, u32 how, u32 code)
+{
+   const u32 at = page(), va = to + at;
+   const u32 first = code ? 0xE011000B : 0xAAAA0001, second = code ? 0xE022000B : 0xBBBB0001;
+   u32 turn;
+
+   *WORD(0x8c000000 + at) = first;                  /* rts ; mov #0x11,r0 */
+   *WORD(0x8c000000 + at + 0x1000) = second;
+   smc_shift = 0;
+   take_out(va, WITH_ALL, 0);
+   for (turn = 0; turn < 4; turn++)
+   {
+      const u32 now = (turn & 1) ? at + 0x1000 : at;
+
+      if (turn)
+      {
+         smc_shift = now - at;
+         take_out(va, how, now);
+      }
+      if (*WORD(va) != ((turn & 1) ? second : first))
+         return 1 + turn * 3;
+      if (code && call(va) != ((turn & 1) ? 0x22u : 0x11u))
+         return 2 + turn * 3;
+      /* written to as well, and what is written is in the page it is now */
+      *WORD(va + 8) = 0xD00D0000 + turn;
+      if (*WORD(0x8c000000 + now + 8) != 0xD00D0000 + turn)
+         return 3 + turn * 3;
+   }
+   smc_shift = 0;
+   take_out(va, WITH_ALL, 0);
+   return 0;
+}
+
+/* More than an emulator that keeps what the TLB is given may have room
+ * for: one page given seventy thousand times, taken out and asked for
+ * again as many times, and seventy thousand pages asked for once. */
+static u32 __attribute__((noinline)) many(void)
+{
+   const u32 at = page(), va = 0x10000000 + at;
+   u32 i, sum = 0;
+
+   *WORD(0x8c000000 + at) = 0x5EED0001;
+   for (i = 0; i < 70000; i++)
+   {
+      *WORD(0xFF000000) = va;                       /* PTEH */
+      *WORD(0xFF000004) = (at & 0x00FFF000) | 0x0C000176;   /* PTEL */
+      *MMUCR = (*MMUCR & 0xFFFF03FF) | (((va >> 12) & 0x3F) << 10);
+      __asm__ volatile (".word 0x0038");            /* ldtlb */
+   }
+   if (*WORD(va) != 0x5EED0001)
+      return 1;
+   for (i = 0; i < 70000; i++)
+   {
+      *TLB_FIND = va;
+      sum += *WORD(va);
+   }
+   if (sum != 0x5EED0001u * 70000u)
+      return 2;
+   /* (from 0x14000000 to 0x25170000: all of main memory, four times over) */
+   for (i = 0, sum = 0; i < 70000; i++)
+      sum += *(volatile unsigned char *)(0x14000000 + i * 0x1000 + (at & 0xFFF));
+   (void)sum;
+   if (*WORD(va) != 0x5EED0001)
+      return 3;
+   *MMUCR = 0x00000005;
+   return 0;
+}
+
 void cmain(void)
 {
    /* where main memory is, beside 0x8c000000 */
@@ -693,9 +828,53 @@ void cmain(void)
          fail(17, 0xA0 | r);
    }
 
+   /* Pages taken out of the TLB and mapped again for other memory. */
    *VERDICT = 18;
+   if (mmu)
+   {
+      for (i = 0; i < 8; i++)
+         for (j = 0; j < 2; j++)
+            if ((r = moved(0x13000000, i, j)) != 0)
+               fail(18, (i << 5) | (j << 4) | r);
+      if ((r = many()) != 0)
+         fail(18, 0xF0 | r);
+   }
+
+   /* The same in P3: where the address without the MMU is main memory
+    * (0xCD000000), where it is nothing (0xC9000000) - and at 0xC4000000,
+    * where it is video memory, which has to be main memory now, as the
+    * handler maps it. Then a function rewritten there. */
+   *VERDICT = 19;
+   if (mmu)
+      for (i = 0; i < 8; i++)
+         for (j = 0; j < 2; j++)
+            if ((r = moved(0xCD000000, i, j)) != 0)
+               fail(19, (i << 5) | (j << 4) | r);
+   *VERDICT = 20;
+   if (mmu)
+   {
+      const u32 at = page();
+
+      for (i = 0; i < 8; i++)
+         for (j = 0; j < 2; j++)
+            if ((r = moved(0xC9000000, i, j)) != 0)
+               fail(20, (i << 5) | (j << 4) | r);
+      *WORD(0xa4000000 + at) = 0xCCCC0001;
+      *WORD(0x8c000000 + at) = 0xAAAA0001;
+      if (*WORD(0xC4000000 + at) != 0xAAAA0001)
+         fail(20, 0x0D);
+      *WORD(0xC4000000 + at + 4) = 0xAAAA0002;
+      if (*WORD(0x8c000000 + at + 4) != 0xAAAA0002)
+         fail(20, 0x0E);
+      if ((r = rewritten(0x8c000000, 0x8c000000, 0xC9000000)) != 0)
+         fail(20, 0x1C | r);
+      if ((r = rewritten(0xCD000000, 0xCD000000, 0xCD000000)) != 0)
+         fail(20, 0x3C | r);
+   }
+
+   *VERDICT = 21;
    if ((r = rewritten(0x8c000000, 0x8c000000, 0x2c000000)) != 0)
-      fail(18, r);
+      fail(21, r);
 
    /* And for ever, for whoever saves a state and loads it later. */
    *VERDICT = mmu ? 0x600D5ACE : 0x600D5AC0;
