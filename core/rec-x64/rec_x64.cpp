@@ -768,10 +768,8 @@ public:
 				  movss(regalloc.MapXRegister(op.rd, 0), regalloc.MapXRegister(op.rs1, 0));
 				  movss(regalloc.MapXRegister(op.rd, 1), regalloc.MapXRegister(op.rs1, 1));
 #else
-				  lea(rax, Ctx(op.rs1.reg_ptr()));
-				  mov(rax, qword[rax]);
-				  lea(rcx, Ctx(op.rd.reg_ptr()));
-				  mov(qword[rcx], rax);
+				  mov(rax, qword[CtxAt(op.rs1.reg_ptr())]);
+				  mov(qword[CtxAt(op.rd.reg_ptr())], rax);
 #endif
                }
                break;
@@ -810,8 +808,7 @@ public:
 							else
 #endif
 							{
-								lea(rcx, Ctx(op.rd.reg_ptr()));
-								mov(qword[rcx], rax);
+								mov(qword[CtxAt(op.rd.reg_ptr())], rax);
 							}
 						}
                }
@@ -850,8 +847,7 @@ public:
 								else
 #endif
 								{
-									lea(rax, Ctx(op.rs2.reg_ptr()));
-									mov(call_regs64[1], qword[rax]);
+									mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
 								}
 							}
 							if (!optimise || !GenWriteMemoryFast(op, block))
@@ -1996,12 +1992,17 @@ public:
 		GenCall((void (*)())function);
 	}
 
-	// Something in the SH4's context, from r15
-	Xbyak::Address Ctx(const void *p)
+	// Something in the SH4's context, from r15: where it is, and 32 bits of it
+	Xbyak::RegExp CtxAt(const void *p)
 	{
 		const ptrdiff_t at = (const u8*)p - (const u8*)&p_sh4rcb->cntx;
 		verify(at >= 0 && at < (ptrdiff_t)sizeof(Sh4Context));
-		return dword[r15 + ((int)at - CTX_BIAS)];
+		return r15 + ((int)at - CTX_BIAS);
+	}
+
+	Xbyak::Address Ctx(const void *p)
+	{
+		return dword[CtxAt(p)];
 	}
 
 	void RegPreload(u32 reg, Xbyak::Operand::Code nreg)
@@ -2626,7 +2627,7 @@ public:
 #endif
 	}
 
-	// uses eax/rax
+	// uses eax/rax for an immediate into a floating-point register
 	void shil_param_to_host_reg(const shil_param& param, const Xbyak::Reg& reg)
 	{
 		if (param.is_imm())
@@ -2653,9 +2654,8 @@ public:
 				}
 	   		else
 	   		{
-	   			lea(rax, Ctx(param.reg_ptr()));
 					verify(!reg.isXMM());
-					mov((const Xbyak::Reg32 &)reg, dword[rax]);
+					mov((const Xbyak::Reg32 &)reg, Ctx(param.reg_ptr()));
 				}
 			}
 			else
@@ -2670,11 +2670,10 @@ public:
 				}
 				else
 				{
-					lea(rax, Ctx(param.reg_ptr()));
 					if (!reg.isXMM())
-						mov((const Xbyak::Reg32 &)reg, dword[rax]);
+						mov((const Xbyak::Reg32 &)reg, Ctx(param.reg_ptr()));
 					else
-						movss((const Xbyak::Xmm &)reg, dword[rax]);
+						movss((const Xbyak::Xmm &)reg, Ctx(param.reg_ptr()));
 				}
 			}
 		}
@@ -2684,7 +2683,6 @@ public:
 	   }
 	}
 
-	// uses rax
 	void host_reg_to_shil_param(const shil_param& param, const Xbyak::Reg& reg)
 	{
 	   if (regalloc.IsAllocg(param))
@@ -2705,11 +2703,11 @@ public:
 	   }
 		else
 		{
-			lea(rax, Ctx(param.reg_ptr()));
+			// (straight there: by way of rax, it was lost if it was in rax)
 			if (!reg.isXMM())
-				mov(dword[rax], (const Xbyak::Reg32 &)reg);
+				mov(Ctx(param.reg_ptr()), (const Xbyak::Reg32 &)reg);
 			else
-				movss(dword[rax], (const Xbyak::Xmm &)reg);
+				movss(Ctx(param.reg_ptr()), (const Xbyak::Xmm &)reg);
 		}
 	}
 
