@@ -22,6 +22,9 @@
 #include <cmath>
 #include <algorithm>
 #include "xform.h"
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#endif
 
 #include "types.h"
 #include "hw/pvr/Renderer_if.h"
@@ -69,15 +72,62 @@ static inline ScreenBounds ModVolBounds(int first, int count)
 	return b;
 }
 
+/* Whether a polygon reaches into the part of the screen the volumes cover:
+ * whether the rectangle around its vertices overlaps that one.
+ *
+ * The rectangle only grows as vertices are added, so once it overlaps it
+ * always will: the walk over the vertices stops there, which with volumes
+ * that cover much of the picture is early for most polygons. It is looked
+ * at every eight vertices. And the two corners are kept as pairs, a
+ * minimum and a maximum taken of x and y at once, where the processor has
+ * that. (A coordinate that is not a number still changes nothing: the
+ * corner is the operand that such a minimum or maximum hands back.) */
 static inline bool PolyOverlaps(const PolyParam *gp, const ScreenBounds& area)
 {
-	ScreenBounds b = { 1e30f, 1e30f, -1e30f, -1e30f };
 	const u32 *idx = &pvrrc.idx.head()[gp->first];
 	const Vertex *verts = pvrrc.verts.head();
+	u32 n = gp->count;
 
-	for (u32 n = gp->count; n != 0; n--, idx++)
-		b.add(verts[*idx].x, verts[*idx].y);
-	return b.overlaps(area);
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+	const __m128 area_min = _mm_setr_ps(area.min_x, area.min_y, 0.f, 0.f);
+	const __m128 area_max = _mm_setr_ps(area.max_x, area.max_y, 0.f, 0.f);
+	__m128 lo = _mm_set1_ps(1e30f);
+	__m128 hi = _mm_set1_ps(-1e30f);
+
+	while (n != 0)
+	{
+		u32 run = n < 8 ? n : 8;
+
+		n -= run;
+		do
+		{
+			// x and y, which are next to each other in a vertex
+			const __m128 xy = _mm_castpd_ps(_mm_load_sd((const double *)&verts[*idx++].x));
+			lo = _mm_min_ps(xy, lo);
+			hi = _mm_max_ps(xy, hi);
+		} while (--run != 0);
+		if ((_mm_movemask_ps(_mm_and_ps(_mm_cmple_ps(lo, area_max), _mm_cmpge_ps(hi, area_min))) & 3) == 3)
+			return true;
+	}
+	return false;
+#else
+	ScreenBounds b = { 1e30f, 1e30f, -1e30f, -1e30f };
+
+	while (n != 0)
+	{
+		u32 run = n < 8 ? n : 8;
+
+		n -= run;
+		do
+		{
+			b.add(verts[*idx].x, verts[*idx].y);
+			idx++;
+		} while (--run != 0);
+		if (b.overlaps(area))
+			return true;
+	}
+	return false;
+#endif
 }
 
 // Bounds to a scissor rectangle (x, y, width, height), a pixel wider all round
