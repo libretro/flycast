@@ -39,6 +39,7 @@ HIDDEN(TAWriteSQ)
 @r0: addr
 @r1: sq_both
 CSYM(TAWriteSQ):
+MOV     R2, R0					@the address as it came, for a write to video memory
 BIC     R3, R0, #0xFE000000		@clear unused bits
 AND     R0, R0, #0x20			@SQ#, isolate
 CMP     R3, #0x800000			@TA write?
@@ -51,19 +52,15 @@ BCS     CSYM(TAWriteSQ_vram)
 MOV     R1, #1
 B       CSYM(_Z8YUV_dataPjj)
 
-CSYM(TAWriteSQ_vram):				@vram write ..
-#ifdef TARGET_IPHONE
-bkpt #0
-#else
-bkpt
-#endif
-ubfx r0,r3,#5,#18		@ get vram offset
-add r3,r1,#0x04000000	@ get vram ptr from r1, part 1
-add r3,#512				@ get ram ptr from r1, part 2
-add r3,r0,lsl #5		@ ram + offset
-vldm r1,{d0-d3}
-vstm r3,{d0-d3}
-bx lr
+@ To video memory, which is what Windows CE games do. There was a
+@ breakpoint here, and after it a copy that took the first queue whichever
+@ was meant, straight into the 64-bit view of video memory whichever was
+@ asked for, at where that is when the host maps the SH4's memory: the
+@ first write ended the core. The C routine the other hosts have does it.
+CSYM(TAWriteSQ_vram):
+MOV     R1, R0					@the queue
+MOV     R0, R2					@the address
+B       CSYM(TAWriteSQ_to_vram)
 
 
 #if FEAT_SHREC != DYNAREC_NONE

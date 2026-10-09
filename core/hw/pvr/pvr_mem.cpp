@@ -230,6 +230,28 @@ void TAWrite(u32 address, u32* data, u32 count)
       YUV_data(data, count);
 }
 
+/* A store queue written out to video memory: @sq is the queue, @address
+ * where it goes. Used by WinCE. (On its own so that the 32-bit ARM build,
+ * whose TAWriteSQ is in assembly, has it as well: ngen_arm.S.) */
+extern "C" void TAWriteSQ_to_vram(u32 address, u8* sq)
+{
+   u32 address_w = address & 0x01FFFFE0;
+   bool path64b = (address & 0x02000000 ? SB_LMMODE1 : SB_LMMODE0) == 0;
+
+   DEBUG_LOG(MEMORY, "Vram TAWriteSQ 0x%X SB_LMMODE0 %d", address, SB_LMMODE0);
+   if (path64b)
+   {
+      // 64b path
+      memcpy(&vram[address_w & VRAM_MASK], sq, 32);
+   }
+   else
+   {
+      // 32b path
+      for (int i = 0; i < 8; i++, address_w += 4)
+         pvr_write_area1<u32>(address_w, ((u32 *)sq)[i]);
+   }
+}
+
 #if HOST_CPU!=CPU_ARM
 extern "C" void DYNACALL TAWriteSQ(u32 address,u8* sqb)
 {
@@ -245,22 +267,7 @@ extern "C" void DYNACALL TAWriteSQ(u32 address,u8* sqb)
       YUV_data((u32*)sq, 1);
    }
    else //Vram Writef
-   {
-		// Used by WinCE
-		DEBUG_LOG(MEMORY, "Vram TAWriteSQ 0x%X SB_LMMODE0 %d", address, SB_LMMODE0);
-      bool path64b = (address & 0x02000000 ? SB_LMMODE1 : SB_LMMODE0) == 0;
-		if (path64b)
-		{
-			// 64b path
-         memcpy(&vram[address_w & VRAM_MASK], sq, 32);
-		}
-		else
-		{
-			// 32b path
-			for (int i = 0; i < 8; i++, address_w += 4)
-            pvr_write_area1<u32>(address_w, ((u32 *)sq)[i]);
-		}
-   }
+      TAWriteSQ_to_vram(address, sq);
 }
 #endif
 
