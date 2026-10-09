@@ -62,7 +62,6 @@ struct DynaRBI : RuntimeBlockInfo
 };
 
 static jmp_buf jmp_env;
-static u32 cycle_counter;
 
 /* The kinds of fast memory access there are (Arm64Assembler::GenFastAccess()):
  * a load or a store, of 1, 2, 4 or 8 bytes, the 4 from or to a general
@@ -394,18 +393,15 @@ public:
 		// run register allocator
 		regalloc.DoAlloc(block);
 
-		// scheduler
+		/* scheduler: what is left of the time slice is w27. With the MMU
+		 * on a block can be left by an exception, which comes back to the
+		 * main loop by longjmp() with w27 as it was at the setjmp(): so
+		 * there is a copy in the main loop's stack frame, written here,
+		 * for it to start again from. (With the MMU on it used to be a
+		 * word in memory only: seven instructions here, for these two.) */
+		Subs(w27, w27, block->guest_cycles);
 		if (mmu_enabled())
-		{
-			Mov(x1, reinterpret_cast<uintptr_t>(&cycle_counter));
-			Ldr(w0, MemOperand(x1));
-			Subs(w0, w0, block->guest_cycles);
-			Str(w0, MemOperand(x1));
-		}
-		else
-		{
-			Subs(w27, w27, block->guest_cycles);
-		}
+			Str(w27, MemOperand(sp, 8));
 		Label cycles_remaining;
 		B(&cycles_remaining, pl);
 		GenCall(*arm64_intc_sched);
@@ -1505,17 +1501,17 @@ public:
 		Sub(x0, x0, sizeof(Sh4Context));
 		if (mmu_enabled())
 		{
-			Ldr(x1, reinterpret_cast<uintptr_t>(&cycle_counter));
-			// Push context, cycle_counter address
+			// Push context, and what is left of the time slice (see ngen_Compile())
+			Mov(x1, SH4_TIMESLICE);
 			Stp(x0, x1, MemOperand(sp, -16, PreIndex));
-			Mov(w0, SH4_TIMESLICE);
-			Str(w0, MemOperand(x1));
 
 			Ldr(x0, reinterpret_cast<uintptr_t>(jmp_env));
 			Ldr(x1, reinterpret_cast<uintptr_t>(&setjmp));
 			Blr(x1);
 
+			// (here at the start, and again after every longjmp)
 			Ldr(x28, MemOperand(sp));	// Set context
+			Ldr(w27, MemOperand(sp, 8));
 		}
 		else
 		{
@@ -1534,18 +1530,10 @@ public:
 
 		Bind(&intc_sched);
 
-		// Add timeslice to cycle counter
-		if (!mmu_enabled())
-		{
-			Add(w27, w27, SH4_TIMESLICE);
-		}
-		else
-		{
-			Ldr(x1, MemOperand(sp, 8));	// &cycle_counter
-			Ldr(w0, MemOperand(x1));	// cycle_counter
-			Add(w0, w0, SH4_TIMESLICE);
-			Str(w0, MemOperand(x1));
-		}
+		// Add timeslice to cycle counter, and to the copy of it if there is one
+		Add(w27, w27, SH4_TIMESLICE);
+		if (mmu_enabled())
+			Str(w27, MemOperand(sp, 8));
 		Mov(x29, lr);				// Trashing pc here but it will be reset at the end of the block or in DoInterrupts
 		GenCallRuntime(UpdateSystem);
 		Mov(lr, x29);
