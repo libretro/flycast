@@ -12,7 +12,6 @@
 
 #include "../sh4_core.h"
 #include "hw/sh4/sh4_mem.h"
-#include "hw/mem/vmem32.h"
 #include "hw/sh4/sh4_sched.h"
 
 
@@ -31,7 +30,7 @@ typedef std::map<void*, RuntimeBlockInfoPtr> bm_Map;
 static bm_Set all_temp_blocks;
 static bm_List del_blocks;
 
-bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
+static bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
 static std::set<RuntimeBlockInfo*> blocks_per_page[RAM_SIZE_MAX/PAGE_SIZE];
 
 static bm_Map blkmap;
@@ -318,15 +317,7 @@ void bm_Reset()
 		// Windows cannot lock/unlock a region spanning more than one VirtualAlloc or MapViewOfFile
 		// so we have to unlock each region individually
 		// No need for this mess in 4GB mode since windows doesn't use it
-		/* (P0 and P3 are not this file's while the host maps the MMU's
-		 * pages there: nothing in them was protected from here, and to
-		 * unprotect an address that nothing is mapped at is to have the
-		 * host put memory there.) */
-		const bool mmu_has_them = vmem32_enabled();
-
-		if (mmu_has_them)
-			;
-		else if (RAM_SIZE == 16 * 1024 * 1024)
+		if (RAM_SIZE == 16 * 1024 * 1024)
 		{
 			mem_region_unlock(virt_ram_base + 0x0C000000, RAM_SIZE);
 			mem_region_unlock(virt_ram_base + 0x0D000000, RAM_SIZE);
@@ -342,8 +333,7 @@ void bm_Reset()
 		{
 			mem_region_unlock(virt_ram_base + 0x8C000000, 0x90000000 - 0x8C000000);
 			mem_region_unlock(virt_ram_base + 0xAC000000, 0xB0000000 - 0xAC000000);
-			if (!mmu_has_them)
-				mem_region_unlock(virt_ram_base + 0xCC000000, 0xD0000000 - 0xCC000000);
+			mem_region_unlock(virt_ram_base + 0xCC000000, 0xD0000000 - 0xCC000000);
 		}
 	}
 	else
@@ -378,9 +368,10 @@ static void bm_ProtectPage(u32 addr, bool protect)
 	count = _nvmem_4gb_space() ? ARRAY_SIZE(regions) : 1;
 	for (i = 0; i < count; i++)
 	{
-		/* with the MMU on, P0 and P3 are what it says they are: what the
-		 * host has mapped there is vmem32's business, which asks before
-		 * it maps (bm_IsRamPageProtected()) */
+		/* with the MMU on, P0 and P3 are what it says they are, and
+		 * nothing reads or writes them as the host has them: recompiled
+		 * code asks the table of pages or the MMU, and both go by where
+		 * memory is in P1 */
 		if ((i == 0 || i == 3) && mmu_enabled() && _nvmem_4gb_space())
 			continue;
 		for (mirror = 0; mirror < 0x04000000; mirror += RAM_SIZE)
@@ -432,16 +423,8 @@ void bm_ResetCache()
 	for (auto& block_list : blocks_per_page)
 		block_list.clear();
 
-	/* Every page may be protected again, when next something is compiled
-	 * from it - but not while the MMU's pages are mapped by the host
-	 * (vmem32): a page that has been written to is mapped to be written
-	 * there, at however many addresses, and stays so. Protected again, it
-	 * was protected everywhere but at the addresses the game uses, and
-	 * code written over through those went on being run as it had been.
-	 * Such a page stays as it is: its blocks look at their code before
-	 * they run. */
-	if (!vmem32_enabled())
-		memset(unprotected_pages, 0, sizeof(unprotected_pages));
+	// every page may be protected again, when next something is compiled from it
+	memset(unprotected_pages, 0, sizeof(unprotected_pages));
 
 #ifdef DYNA_OPROF
 	if (oprofHandle)
@@ -743,8 +726,7 @@ bool bm_RamWriteAccess(void *p)
 		}
 		u32 addr = (u8*)p - virt_ram_base;
 		if (mmu_enabled() && _nvmem_4gb_space() && ((addr & 0x80000000) == 0 || (addr >> 29) == 6))
-			// If mmu enabled, let vmem32 manage user space, and P3
-			// shouldn't be necessary since it's called first
+			// (nothing is protected there with the MMU on: bm_ProtectPage())
 			return false;
 		if (!IsOnRam(addr) || ((addr >> 29) > 0 && (addr >> 29) < 4))	// system RAM is not mapped to 20, 40 and 60 because of laziness
 			return false;

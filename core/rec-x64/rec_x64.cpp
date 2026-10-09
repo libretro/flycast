@@ -20,7 +20,6 @@
 #include "hw/sh4/sh4_core.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_rom.h"
-#include "hw/mem/vmem32.h"
 #include "hw/sh4/dyna/wait_site.h"
 #include "x64_regalloc.h"
 #include "x64_vector.h"
@@ -1704,15 +1703,15 @@ public:
 		return fpcb_at(index);
 	}
 
-	/* With the MMU on and no host mapping to do the translating (vmem32),
-	 * an access is a call. First, though, the table of translations kept
-	 * by (mmu.h): on a hit, rax is what to add to the address to be at the
-	 * page on the host; the call is for a miss, and fills the table in. The
-	 * address is in call_regs[0]; rax, r10 and r11 belong to nobody here. */
+	/* With the MMU on an access is a call. First, though, the table of
+	 * translations kept by (mmu.h): on a hit, rax is what to add to the
+	 * address to be at the page on the host; the call is for a miss, and
+	 * fills the table in. The address is in call_regs[0]; rax, r10 and r11
+	 * belong to nobody here. */
 	bool GenMmuLookup(const uintptr_t *table, u32 size, Xbyak::Label& miss)
 	{
 #ifdef MMU_HOST_PAGE_LUT
-		if (!mmu_enabled() || vmem32_enabled())
+		if (!mmu_enabled())
 			return false;
 		/* Not for an address that is not a multiple of the access's size:
 		 * that is an address error, which the call raises - and which a
@@ -2291,12 +2290,10 @@ private:
 
 public:
 	/* Whether a load or store can be done as one move from or to the
-	 * guest's memory as the host has it mapped, in place of a call. With
-	 * the MMU on that is the mapping of the guest's virtual addresses,
-	 * where there is one. With it off - every game but the Windows CE ones -
-	 * it is the mapping of the whole 4 GB the SH4 can address, where the
-	 * host has room for that; this used to be for the MMU case only, and
-	 * everything else called a function for every load and store.
+	 * guest's memory as the host has it mapped, in place of a call: with
+	 * the MMU off - every game but the Windows CE ones - and where the
+	 * host has room to map the whole 4 GB the SH4 can address. (With the
+	 * MMU on it is the table of pages: GenMmuLookup().)
 	 *
 	 * What is not memory - registers, the BIOS, the store queues - is not
 	 * mapped. A move there faults, and ngen_Rewrite() turns it into the
@@ -2306,14 +2303,13 @@ public:
 	 * the handlers that watch. */
 	static bool FastMemory()
 	{
-		return mmu_enabled() ? vmem32_enabled() : _nvmem_4gb_space();
+		return !mmu_enabled() && _nvmem_4gb_space();
 	}
 
-	// How far into its code a fast access's move is: with the MMU on there
-	// is more in front of it
+	// How far into its code a fast access's move is
 	static u32& MemAccessOffset()
 	{
-		return mmu_enabled() ? mem_access_offset : mem_access_offset_direct;
+		return mem_access_offset;
 	}
 
 	bool GenReadMemoryFast(const shil_opcode& op, RuntimeBlockInfo* block)
@@ -2321,12 +2317,6 @@ public:
 		if (!FastMemory())
 			return false;
 		const u8 *start_addr = getCurr();
-
-		if (mmu_enabled())
-		{
-			mov(rax, (uintptr_t)&p_sh4rcb->cntx.exception_pc);
-			mov(dword[rax], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));
-		}
 
 		mov(rax, (uintptr_t)virt_ram_base);
 
@@ -2373,12 +2363,6 @@ public:
 		if (!FastMemory())
 			return false;
 		const u8 *start_addr = getCurr();
-
-		if (mmu_enabled())
-		{
-			mov(rax, (uintptr_t)&p_sh4rcb->cntx.exception_pc);
-			mov(dword[rax], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));
-		}
 
 		mov(rax, (uintptr_t)virt_ram_base);
 
@@ -2546,12 +2530,13 @@ public:
 	void GenCall(Ret(*function)(Params...), bool skip_floats = false)
 	{
 #ifndef _WIN32
-		if (rewriting && !mmu_enabled())
+		if (rewriting)
 		{
-			/* Written over a fast memory access that faulted. Which of the
-			 * floating-point registers are in use here is not known any
-			 * more, and with the MMU off they are not written back before
-			 * a memory access as they are with it on: all eight are kept. */
+			/* Written over a fast memory access that faulted - which there
+			 * only are with the MMU off. Which of the floating-point
+			 * registers are in use here is not known any more, and with
+			 * the MMU off they are not written back before a memory access
+			 * as they are with it on: all eight are kept. */
 			mov(rax, (uintptr_t)function);
 			call((const void*)ngen_call_keep_xmm);
 			return;
@@ -2699,13 +2684,11 @@ public:
 	static const u32 write_mem_op_size;
 public:
 	static u32 mem_access_offset;
-	static u32 mem_access_offset_direct;
 };
 
 const u32 BlockCompiler::read_mem_op_size = 30;
 const u32 BlockCompiler::write_mem_op_size = 30;
 u32 BlockCompiler::mem_access_offset = 0;
-u32 BlockCompiler::mem_access_offset_direct = 0;
 
 void X64RegAlloc::Preload(u32 reg, Xbyak::Operand::Code nreg)
 {

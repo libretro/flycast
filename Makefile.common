@@ -40,7 +40,6 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/hw/maple/maple_cfg.cpp \
 					\
 					$(CORE_DIR)/core/hw/mem/_vmem.cpp \
-					$(CORE_DIR)/core/hw/mem/vmem32.cpp \
 					\
 					$(CORE_DIR)/core/hw/pvr/drkPvr.cpp \
 					$(CORE_DIR)/core/hw/pvr/elan_host.cpp \

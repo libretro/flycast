@@ -56,7 +56,7 @@
 #
 # Every core translates addresses through a table when the MMU is on (the
 # 64-bit ones on Linux used to map the pages into the host's memory
-# instead: vmem32.cpp says why not any more). A table has to be asked
+# instead: mmu.h says why not any more). A table has to be asked
 # whether the address is a multiple of the access's size - a misaligned
 # access is an address error, and a table that is not asked lets it read on
 # past the page - so the disc has the build of the test program that tries

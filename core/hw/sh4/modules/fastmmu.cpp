@@ -26,7 +26,6 @@
 #ifdef FAST_MMU
 
 #include "hw/mem/_vmem.h"
-#include "hw/mem/vmem32.h"
 #include "hw/sh4/dyna/blockmanager.h"
 
 #include "mmu_impl.h"
@@ -334,13 +333,11 @@ int main(int argc, char *argv[])
 #endif
 
 /* What follows from a translation goes with it: the recompilers' table of
- * addresses, and what the host has mapped for the page. */
+ * addresses, and where the code for an address is. */
 static void forget_page(u32 va, u32 size)
 {
 	bm_ForgetVaddrs();
 	mmu_lut_forget(va, size);
-	if (vmem32_enabled())
-		vmem32_forget(va, size);
 }
 
 static void forget_all()
@@ -348,8 +345,6 @@ static void forget_all()
 	lru_entry = NULL;
 	flush_cache();
 	mmu_lut_flush();
-	if (vmem32_enabled())
-		vmem32_flush_mmu();
 }
 
 static void sq_remap_entry(const TLB_Entry& tlb_entry)
@@ -570,9 +565,8 @@ u32 mmu_data_translation(u32 va, u32& rv)
 			return MMU_ERROR_FIRSTWRITE;
 	}
 	/* A page that may not be written. This had no test at all, and the
-	 * write was made; where the host's own mapping does the translating it
-	 * hung instead (vmem32.cpp). Either way no game can have been relying
-	 * on it. The other protections - by mode, and the first write to a
+	 * write was made; where the host's own mapping did the translating it
+	 * hung instead. Either way no game can have been relying on it. The other protections - by mode, and the first write to a
 	 * clean page - are not made here, as they never were and are not
 	 * upstream. */
 	if (lookup == MMU_ERROR_NONE && translation_type == MMU_TT_DWRITE && (entry->Data.PR & 1) == 0)

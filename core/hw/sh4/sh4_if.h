@@ -348,7 +348,7 @@ struct Sh4Context
 			int sh4_sched_next;
 			u32 interrupt_pend;
 
-			u32 exception_pc;
+			u32 exception_pc;	// not used any more; here so that what follows is where it was
 			u32 temp_reg;
 		};
 		u64 raw[64-8];

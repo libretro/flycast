@@ -9,7 +9,6 @@
 #endif
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/_vmem.h"
-#include "hw/mem/vmem32.h"
 #include "hw/sh4/modules/mmu.h"
 
 #include <algorithm>

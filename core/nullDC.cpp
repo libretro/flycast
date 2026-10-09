@@ -5,7 +5,6 @@
 #include <retro_atomic.h>
 #include "types.h"
 #include "hw/mem/_vmem.h"
-#include "hw/mem/vmem32.h"
 #include "stdclass.h"
 
 #include "types.h"

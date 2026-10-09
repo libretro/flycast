@@ -73,11 +73,19 @@ static INLINE bool mmu_enabled()
 template<bool internal = false>
 u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
 
-/* Translations kept by, for a recompiler that has to translate every
- * address itself: one on a 32-bit host, which has no room to lay out a
- * translated address space and let its own MMU do the work, and the x86-64
- * one where that is not done either (vmem32: Windows, and games it is
- * switched off for).
+/* Translations kept by, for the recompilers, which have to translate every
+ * address themselves.
+ *
+ * (The 64-bit ones on Linux and Android used to have the host's MMU do
+ * it: each page a Windows CE game touched was mapped on the host where
+ * the game has it, and code read and wrote with no translating at all.
+ * But such a mapping is for one address space, and all of it went
+ * whenever the game changed to another - seventeen times a frame in Sega
+ * Rally 2, which had 1.2 million pages mapped a minute that way, 87 in 100
+ * of them a page it had mapped before for the same address space. Of the
+ * 27 seconds of processor that minute took on x86-64 Linux, 10 were the
+ * kernel's; with what follows it was under 16, and the kernel's a fifth of
+ * one.)
  *
  * Two tables, one for reads and one for writes, each with an entry for
  * every 4K page of the SH4's address space: what to add to an address in
@@ -93,7 +101,7 @@ u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
  * (Upstream's table, which this is after, has one entry for both.)
  *
  * What it does not know is who is asking: an entry made in privileged mode
- * is found in user mode too. The 64-bit hosts' mapping is the same.
+ * is found in user mode too.
  *
  * It is emptied whenever what an address means can have changed: the TLB
  * flushed, another address space, the MMU or its single-space mode switched,

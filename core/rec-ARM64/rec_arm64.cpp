@@ -39,7 +39,6 @@ using namespace vixl::aarch64;
 #include "hw/sh4/dyna/ngen.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_rom.h"
-#include "hw/mem/vmem32.h"
 #include "arm64_regalloc.h"
 
 #undef do_sqw_nommu
@@ -1772,7 +1771,7 @@ private:
 	bool GenReadMemoryFast(const shil_opcode& op, size_t opid)
 	{
 		// Direct memory access. Need to handle SIGSEGV and rewrite block as needed. See ngen_Rewrite()
-		if (!_nvmem_enabled() || (mmu_enabled() && !vmem32_enabled()))
+		if (!_nvmem_enabled() || mmu_enabled())
 			return false;
 
 		Instruction *start_instruction = GetCursorAddress<Instruction *>();
@@ -1876,14 +1875,11 @@ private:
 	 * address that is not a multiple of the access's size, which is an
 	 * address error and the call's to raise; 64 bits are two accesses of 32
 	 * to the SH4, so a multiple of 4 will do for them, but then the second
-	 * half must not be in the next page. x3 and x4 belong to nobody here.
-	 *
-	 * (This recompiler had the host's mapping of the MMU's pages, vmem32,
-	 * or a call each time.) */
+	 * half must not be in the next page. x3 and x4 belong to nobody here. */
 	bool GenMmuLookup(const uintptr_t *table, u32 size, Label& miss)
 	{
 #ifdef MMU_HOST_PAGE_LUT
-		if (!mmu_enabled() || vmem32_enabled())
+		if (!mmu_enabled())
 			return false;
 		if (size == 2 || size == 4 || size == 8)
 		{
@@ -2044,7 +2040,7 @@ private:
 	bool GenWriteMemoryFast(const shil_opcode& op, size_t opid)
 	{
 		// Direct memory access. Need to handle SIGSEGV and rewrite block as needed. See ngen_Rewrite()
-		if (!_nvmem_enabled() || (mmu_enabled() && !vmem32_enabled()))
+		if (!_nvmem_enabled() || mmu_enabled())
 			return false;
 
 		Instruction *start_instruction = GetCursorAddress<Instruction *>();

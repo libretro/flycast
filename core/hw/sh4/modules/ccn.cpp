@@ -9,7 +9,6 @@
 #include "hw/sh4/sh4_cache.h"
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/_vmem.h"
-#include "hw/mem/vmem32.h"
 #include "hw/sh4/dyna/blockmanager.h"
 #include "mmu.h"
 
@@ -75,11 +74,7 @@ void CCN_PTEH_write(u32 addr, u32 value)
 	temp.reg_data = value;
 	// (the strict way keeps what it finds by address space, and nothing else)
 	if (temp.ASID != CCN_PTEH.ASID && !mmu_strict)
-	{
-		if (vmem32_enabled())
-			vmem32_flush_mmu();
 		mmu_lut_flush();
-	}
 
 	CCN_PTEH = temp;
 }
@@ -96,8 +91,6 @@ void CCN_MMUCR_write(u32 addr, u32 value)
 	if (temp.TI != 0)
 	{
 		mmu_flush_table();
-		if (vmem32_enabled())
-			vmem32_flush_mmu();
 		temp.TI=0;
 	}
 	CCN_MMUCR=temp;

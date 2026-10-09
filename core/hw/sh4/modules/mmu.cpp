@@ -1,6 +1,5 @@
 #include <algorithm>
 #include "mmu.h"
-#include "hw/mem/vmem32.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_interrupts.h"
 #include "hw/sh4/sh4_core.h"
@@ -692,9 +691,6 @@ void mmu_lut_forget(u32 va, u32 size)
 
 void mmu_lut_fill(u32 va, u32 pa, bool write)
 {
-	// the host's mapping does it all, and nothing reads the tables
-	if (vmem32_enabled())
-		return;
 	// main memory only
 	if ((pa & 0x1C000000) != 0x0C000000)
 		return;
@@ -738,13 +734,7 @@ void mmu_set_state()
 	mmu_detect_strict();
 	mmu_strict_changed();
 	if (CCN_MMUCR.AT == 1 && settings.dreamcast.FullMMU)
-	{
 		NOTICE_LOG(SH4, "Enabling Full MMU support");
-		_vmem_enable_mmu(true);
-	}
-	else
-		// (the strict way has no use for the host's mapping: every access asks)
-		_vmem_enable_mmu(false);
 
 	SetMemoryHandlers();
 }
