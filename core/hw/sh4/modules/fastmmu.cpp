@@ -26,6 +26,7 @@
 #ifdef FAST_MMU
 
 #include "hw/mem/_vmem.h"
+#include "hw/mem/vmem32.h"
 
 #include "mmu_impl.h"
 #include "ccn.h"
@@ -55,20 +56,53 @@ static u16 bucket_index(u32 address, int size)
 	return ((address >> 16) ^ ((address & 0xFC00) | size)) & (NBUCKETS - 1);
 }
 
-static void cache_entry(const TLB_Entry &entry)
-{
-	verify(full_table_size < ARRAY_SIZE(full_table));
-	u16 bucket = bucket_index(entry.Address.VPN << 10, entry.Data.SZ1 * 2 + entry.Data.SZ0);
-	full_table[full_table_size].entry = entry;
-	full_table[full_table_size].next_entry = entry_buckets[bucket];
-	entry_buckets[bucket] = &full_table[full_table_size];
-	full_table_size++;
-}
-
 static void flush_cache()
 {
+	/* (half a megabyte of buckets: when little is kept, only the ones it
+	 * is kept in) */
+	if (full_table_size < NBUCKETS / 64)
+	{
+		for (u32 i = 0; i < full_table_size; i++)
+			entry_buckets[bucket_index(full_table[i].entry.Address.VPN << 10,
+					full_table[i].entry.Data.SZ1 * 2 + full_table[i].entry.Data.SZ0)] = NULL;
+	}
+	else
+		memset(entry_buckets, 0, sizeof(entry_buckets));
 	full_table_size = 0;
-	memset(entry_buckets, 0, sizeof(entry_buckets));
+}
+
+static void forget_all();
+
+static void cache_entry(const TLB_Entry &entry)
+{
+	const u32 size = entry.Data.SZ1 * 2 + entry.Data.SZ0;
+	u16 bucket = bucket_index(entry.Address.VPN << 10, size);
+	TLB_LinkedEntry *slot;
+
+	/* The page it is given for again - with the bit for a page that has
+	 * been written to, say - takes the place of what was kept for it. Each
+	 * time used to be kept as well, with nothing to stop the table from
+	 * running over its end but a check that is not built in. */
+	for (slot = entry_buckets[bucket]; slot != NULL; slot = slot->next_entry)
+	{
+		if (slot->entry.Address.VPN == entry.Address.VPN
+				&& slot->entry.Address.ASID == entry.Address.ASID
+				&& slot->entry.Data.SZ1 == entry.Data.SZ1 && slot->entry.Data.SZ0 == entry.Data.SZ0)
+		{
+			slot->entry = entry;
+			return;
+		}
+	}
+	if (full_table_size == ARRAY_SIZE(full_table))
+	{
+		// more pages than there is room for: all of them are asked for again
+		forget_all();
+		bucket = bucket_index(entry.Address.VPN << 10, size);
+	}
+	slot = &full_table[full_table_size++];
+	slot->entry = entry;
+	slot->next_entry = entry_buckets[bucket];
+	entry_buckets[bucket] = slot;
 }
 
 template<u32 size>
@@ -177,6 +211,17 @@ int main(int argc, char *argv[])
 	printf("Lookup time: %f ms. Success rate %f max_len %d\n", (end - start) * 1000.0 / addrs.size(), (double)success / addrs.size() / loops, 0/*max_length*/);
 }
 #endif
+
+/* Everything that is kept goes, and what was made of it: the recompilers'
+ * table of addresses, and what the host has mapped for the pages. */
+static void forget_all()
+{
+	lru_entry = NULL;
+	flush_cache();
+	mmu_lut_flush();
+	if (vmem32_enabled())
+		vmem32_flush_mmu();
+}
 
 bool UTLB_Sync(u32 entry)
 {
