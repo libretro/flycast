@@ -275,6 +275,94 @@ static int naomi_find_game(const char *path)
 	return gameid;
 }
 
+/* Whether @archive is a merged set with the clone @clone of the game
+ * @parent in it: every ROM of the clone's is there, and one of them at
+ * least is the clone's own - in the clone's folder, or under a name (a
+ * checksum, where the table has one) that no ROM of the parent's has. A
+ * clone with no ROM of its own to show - one that differs from its parent
+ * in its disc alone - is in every set of the parent's by that count, and
+ * is not taken to be. */
+static bool naomi_clone_in(const archive_t *archive, int clone, int parent)
+{
+	bool own = false;
+
+	for (int romid = 0; Games[clone].blobs[romid].filename != NULL; romid++)
+	{
+		const char *filename = Games[clone].blobs[romid].filename;
+		const u32 crc = Games[clone].blobs[romid].crc;
+		bool parents = false;
+
+		if (Games[clone].blobs[romid].blob_type == Copy)
+			continue;
+		if (crc != 0)
+		{
+			if (archive_find_crc(archive, crc) < 0)
+				return false;
+			for (int i = 0; Games[parent].blobs[i].filename != NULL && !parents; i++)
+				parents = Games[parent].blobs[i].crc == crc;
+		}
+		else
+		{
+			const int idx = naomi_find_named(archive, Games[clone].name, filename);
+
+			if (idx < 0)
+				return false;
+			for (int i = 0; Games[parent].blobs[i].filename != NULL && !parents; i++)
+				parents = Games[parent].blobs[i].blob_type != Copy
+					&& !stricmp(Games[parent].blobs[i].filename, filename);
+			/* (named as one of the parent's, and the very same member?) */
+			if (parents && naomi_find_named(archive, Games[parent].name, filename) != idx)
+				parents = false;
+		}
+		if (!parents)
+			own = true;
+	}
+	return own;
+}
+
+/* The game the core option asks for from a merged set: see
+ * naomi_cart_MergedSets(). */
+static char naomi_set_wanted[64];
+
+void naomi_cart_WantSet(const char *name)
+{
+	strncpy(naomi_set_wanted, name ? name : "", sizeof(naomi_set_wanted) - 1);
+	naomi_set_wanted[sizeof(naomi_set_wanted) - 1] = '\0';
+}
+
+/* The games that can be started from the romset at @path, when it is a
+ * merged set under its game's name or under no set's: the game first,
+ * then each of its clones that is in it. Up to @max of them to @sets;
+ * how many. 0 for anything else - a set of one game, a set named for a
+ * clone (which is that clone's), a file that is no romset.
+ *
+ * A file named for a clone says which game is wanted; a merged set under
+ * the game's own name cannot, and for that there is a core option, which
+ * the frontend is given these to choose from. */
+int naomi_cart_MergedSets(const char *path, NaomiSet *sets, int max)
+{
+	const int gameid = naomi_find_game(path);
+	archive_t *archive;
+	int count = 0;
+
+	if (gameid < 0 || Games[gameid].parent_name != NULL || max < 2)
+		return 0;
+	if ((archive = archive_open(path)) == NULL)
+		return 0;
+	sets[count].name          = Games[gameid].name;
+	sets[count++].description = Games[gameid].description;
+	for (int g = 0; Games[g].name != NULL && count < max; g++)
+	{
+		if (Games[g].parent_name == NULL || stricmp(Games[g].parent_name, Games[gameid].name)
+				|| !naomi_clone_in(archive, g, gameid))
+			continue;
+		sets[count].name          = Games[g].name;
+		sets[count++].description = Games[g].description;
+	}
+	archive_close(archive);
+	return count > 1 ? count : 0;
+}
+
 /* That blob's bytes, which belong to its archive. */
 static const u8 *naomi_find_blob(archive_t *const *archives, int count,
       u32 crc, const char *set, const char *filename, size_t *len)
@@ -418,14 +506,34 @@ static bool naomi_cart_LoadZip(const char *filename)
 
 	struct Game *game = &Games[gameid];
 
+	archive_t *archive = archive_open(filename);
+	if (archive != NULL)
+		INFO_LOG(NAOMI, "Opened %s", filename);
+
+	/* A merged set under its game's name: the clone the core option asks
+	 * for, if it is one of this game's and is in the set. (An option left
+	 * at another romset's choice is not, and is the game.) */
+	if (archive != NULL && game->parent_name == NULL && naomi_set_wanted[0] != '\0'
+			&& stricmp(naomi_set_wanted, game->name))
+	{
+		for (int g = 0; Games[g].name != NULL; g++)
+		{
+			if (stricmp(Games[g].name, naomi_set_wanted))
+				continue;
+			if (Games[g].parent_name != NULL && !stricmp(Games[g].parent_name, game->name)
+					&& naomi_clone_in(archive, g, gameid))
+			{
+				NOTICE_LOG(NAOMI, "%s is a merged set: %s is asked for, by the core option", game->name, Games[g].name);
+				game = &Games[g];
+			}
+			break;
+		}
+	}
+
 	if (game->parent_name != NULL)
 		NOTICE_LOG(NAOMI, "The set is %s (%s), a clone of %s", game->name, game->description, game->parent_name);
 	else
 		NOTICE_LOG(NAOMI, "The set is %s (%s)", game->name, game->description);
-
-	archive_t *archive = archive_open(filename);
-	if (archive != NULL)
-		INFO_LOG(NAOMI, "Opened %s", filename);
 
 	archive_t *parent_archive = NULL;
 	if (game->parent_name != NULL)

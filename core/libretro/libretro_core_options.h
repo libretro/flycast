@@ -1408,6 +1408,10 @@ static INLINE void libretro_set_core_options(retro_environment_t environ_cb,
 #ifndef HAVE_NO_LANGEXTRA
    unsigned language = 0;
 #endif
+   /* The definitions options_us has, which are not always the table of
+    * that name: libretro.cpp puts an option of its own making among them
+    * for a merged romset (merged_set_option()). */
+   struct retro_core_option_v2_definition *option_defs_us = options_us.definitions;
 
    if (!environ_cb || !categories_supported)
       return;

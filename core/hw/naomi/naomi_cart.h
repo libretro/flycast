@@ -102,6 +102,15 @@ bool naomi_cart_SelectFile();
 /* The platform of the romset at @file, or -1 for an archive that is not
  * a known Naomi or AtomisWave romset. */
 int naomi_cart_GetSystemType(const char* file);
+/* A merged romset's games, for the core option that chooses among them,
+ * and the choice: naomi_cart.cpp has the particulars. */
+struct NaomiSet
+{
+   const char *name;          /* the set's, which is the option's value */
+   const char *description;   /* the game's, which is what the option shows */
+};
+int naomi_cart_MergedSets(const char *path, NaomiSet *sets, int max);
+void naomi_cart_WantSet(const char *name);
 int naomi_cart_GetRotation();
 void naomi_cart_Close();
 

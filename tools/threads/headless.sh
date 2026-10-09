@@ -301,21 +301,36 @@ tr -d '\r' < "$WORK/naomi.out" | grep -q "= 600d7e57\$" || {
 # beside the set. And a set whose ROMs are all inside a folder, their names
 # in capitals, has to be found. Which program ROM was started is read from
 # the serial in the header, of which the BIOS keeps a copy in main memory.
+#
+# Under the game's name the clone is chosen with a core option, which the
+# core has to declare for such a set - with the sets in it for values - and
+# for no other; a choice that is not one of the set's (another romset's,
+# left in the frontend's file) starts the game, and a file named for a
+# clone is that clone whatever the option says.
 echo "== headless: NAOMI romsets, a merged one and its clones"
 python3 "$T/naomi_cart.py" --merged "$WORK/sets"
-for SET in "doa2m.zip 30535442" "doa2.zip 31535442" "doa2a.zip 32535442" \
-      "Dead or Alive 2.zip 30535442" "folder/doa2m.zip 30535442"; do
-   GOOD=${SET##* }
-   SET=${SET% *}
+OPTION=reicast_naomi_merged_set
+DECLARED="option Game to Start From This Merged Romset; doa2m|doa2|doa2a"
+# (the file, the option's value, the serial to find, whether the option is to be declared)
+for SET in "doa2m.zip - 30535442 yes" "doa2m.zip doa2a 32535442 yes" "doa2m.zip doa2 31535442 yes" \
+      "doa2m.zip vf4 30535442 yes" "doa2.zip doa2a 31535442 no" "doa2a.zip - 32535442 no" \
+      "Dead_or_Alive_2.zip doa2a 32535442 yes" "folder/doa2m.zip doa2a 30535442 no"; do
+   set -- $SET
+   SET=$1
+   # (the one with spaces in its name)
+   [ "$SET" != Dead_or_Alive_2.zip ] || SET="Dead or Alive 2.zip"
+   CHOICE=
+   [ "$2" = - ] || CHOICE=$OPTION=$2
+   GOOD=$3
    if [ -n "$WINDOWS" ]; then
       :
    elif [ -z "$GLES" ]; then
       LD_PRELOAD=$WORK/libGLESv2.so.2
       export LD_PRELOAD
    fi
-   HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/naomi_cart.py" --serial) \
+   HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/naomi_cart.py" --serial) HEADLESS_SHOW=$OPTION \
       $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/sets/$SET" 3 \
-      reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+      reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $CHOICE $EXTRA \
       > "$WORK/sets.out" 2> "$WORK/sets.log" || {
       echo "FAIL: $SET was not started" >&2
       tail -n 20 "$WORK/sets.log" >&2
@@ -323,8 +338,17 @@ for SET in "doa2m.zip 30535442" "doa2.zip 31535442" "doa2a.zip 32535442" \
    }
    unset LD_PRELOAD
    tr -d '\r' < "$WORK/sets.out" | grep -q "= $GOOD\$" || {
-      echo "FAIL: $SET started another set's program ROM: $(cat "$WORK/sets.out")" >&2
+      echo "FAIL: $SET${CHOICE:+ with $CHOICE} started another set's program ROM: $(cat "$WORK/sets.out")" >&2
       exit 1
    }
+   if [ "$4" = yes ]; then
+      tr -d '\r' < "$WORK/sets.out" | grep -qxF "$DECLARED" || {
+         echo "FAIL: $SET: the option was not declared with the set's games: $(cat "$WORK/sets.out")" >&2
+         exit 1
+      }
+   elif grep -q "^option " "$WORK/sets.out"; then
+      echo "FAIL: $SET: the option was declared for a set it is not for: $(cat "$WORK/sets.out")" >&2
+      exit 1
+   fi
 done
 echo "headless test passed"

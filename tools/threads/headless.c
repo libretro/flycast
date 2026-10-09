@@ -32,6 +32,10 @@
  *                    RETRO_DEVICE_ID_JOYPAD_ one: 14 is a cabinet's TEST
  *                    switch, 15 its SERVICE switch) held from that frame for
  *                    ten frames, or as many as are given. Up to 64 of them.
+ *   HEADLESS_SHOW    an option's key: what the core declares for it is printed,
+ *                    "option DESCRIPTION; VALUE|VALUE...", each time it declares
+ *                    its options (the plain list of them, which is the form a
+ *                    frontend that answers no more than this one is given).
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -218,6 +222,16 @@ static bool environment(unsigned cmd, void *data)
             }
          var->value = NULL;
          return false;
+      }
+      case RETRO_ENVIRONMENT_SET_VARIABLES:
+      {
+         /* HEADLESS_SHOW: the option of that key, as the core declares it */
+         const struct retro_variable *var = (const struct retro_variable *)data;
+         const char *show = getenv("HEADLESS_SHOW");
+         for (; show && var && var->key; var++)
+            if (!strcmp(var->key, show))
+               printf("option %s\n", var->value);
+         return true;
       }
       case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:
          disk = *(const struct retro_disk_control_callback *)data;

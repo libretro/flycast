@@ -2057,6 +2057,84 @@ static bool set_opengl_hw_render(u32 preferred)
 }
 
 // Loading/unloading games
+/* The game to start from a merged romset: a core option made for the
+ * romset that is being loaded.
+ *
+ * A merged set is a game and its clones - other versions of it - in one
+ * archive. A file named for a clone says which is wanted; the set under
+ * the game's own name, which is how such a set comes, cannot, so there is
+ * an option for it. Its values are the sets in the archive and what it
+ * shows are their games' names, and both are the romset's: it cannot be
+ * in the table the options are declared from. So the options are declared
+ * again, with it among them, when the content turns out to be such a set
+ * - and once more without it when the next content is not, should the
+ * frontend not have asked for them in between.
+ *
+ * The frontend keeps the choice like any option's. One made for a romset
+ * means nothing to another: the value is not in that one's list, and the
+ * game is started. (Saved as a game option it stays with its romset.) It
+ * is read here once, before the romset is loaded: changing it takes
+ * effect when the content is started again.
+ *
+ * Before update_variables(), which says which options are to be shown: a
+ * new declaration shows them all. */
+#define MERGED_SET_KEY CORE_OPTION_NAME "_naomi_merged_set"
+
+static void merged_set_option(const char *content_path)
+{
+   static struct retro_core_option_v2_definition *defs_with;
+   static bool declared_with;
+   struct retro_core_option_v2_definition *const defs = option_defs_us;
+   NaomiSet sets[RETRO_NUM_CORE_OPTION_VALUES_MAX - 1];
+   struct retro_variable var = { MERGED_SET_KEY, NULL };
+   const char *ext = path_get_extension(content_path);
+   int count = 0;
+   size_t options, at, i;
+
+   naomi_cart_WantSet(NULL);
+   if (!path_get_archive_delim(content_path)
+         && (!strcasecmp(ext, "zip") || !strcasecmp(ext, "7z") || !strcasecmp(ext, "rar")))
+      count = naomi_cart_MergedSets(content_path, sets, (int)(sizeof(sets) / sizeof(sets[0])));
+
+   if (count == 0)
+   {
+      if (declared_with)
+      {
+         declared_with = false;
+         libretro_set_core_options(environ_cb, &categoriesSupported);
+      }
+      return;
+   }
+
+   /* after the option that chooses the BIOS, with the machine's others */
+   for (options = 0, at = 0; defs[options].key != NULL; options++)
+      if (!strcmp(defs[options].key, CORE_OPTION_NAME "_use_real_bios"))
+         at = options + 1;
+   free(defs_with);
+   defs_with = (struct retro_core_option_v2_definition *)calloc(options + 2, sizeof(*defs_with));
+   if (defs_with == NULL)
+      return;
+   memcpy(defs_with, defs, at * sizeof(*defs));
+   memcpy(defs_with + at + 1, defs + at, (options - at) * sizeof(*defs));
+   defs_with[at].key  = MERGED_SET_KEY;
+   defs_with[at].desc = "Game to Start From This Merged Romset";
+   defs_with[at].info = "This romset has a game and other versions of it. Choose the one to start; the change takes effect when the content is started again (Close Content, then load it). 'Save Game Options' keeps the choice with this romset.";
+   for (i = 0; i < (size_t)count; i++)
+   {
+      defs_with[at].values[i].value = sets[i].name;
+      defs_with[at].values[i].label = sets[i].description;
+   }
+   defs_with[at].default_value = sets[0].name;
+
+   options_us.definitions = defs_with;
+   libretro_set_core_options(environ_cb, &categoriesSupported);
+   options_us.definitions = defs;
+   declared_with = true;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      naomi_cart_WantSet(var.value);
+}
+
 bool retro_load_game(const struct retro_game_info *game)
 {
    const char *dir = NULL;
@@ -2136,6 +2214,7 @@ bool retro_load_game(const struct retro_game_info *game)
    else
       settings.reios.ElfFile.clear();
 
+   merged_set_option(content_path);
    update_variables(true);
 
    {
