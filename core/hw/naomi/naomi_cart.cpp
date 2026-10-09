@@ -79,11 +79,71 @@ InputDescriptors *naomi_game_inputs;
 u8 *naomi_default_eeprom;
 static RotationType game_rotation = ROT0;
 
+/* Which member of @a is the ROM @filename of the set @set; -1 if none.
+ *
+ * In a set of one game the ROMs lie at the top of the archive under their
+ * names. In a merged set - a game and its clones in one archive - the
+ * clones' own ROMs are each in a folder of the clone's name
+ * ("doa2a/epr-22121a.ic22"), since a clone's ROM may be named as the
+ * parent's is and differ; and an archive made by hand often has everything
+ * inside one folder, named as its owner liked. So: the member of that name
+ * in the folder named for the set, wherever that folder is; failing that
+ * the one nearest the top, if there is only one that near. Capitals are
+ * not told from small letters, in a name or a folder's. */
+static int naomi_find_named(const archive_t *a, const char *set, const char *filename)
+{
+   const size_t name_len = strlen(filename);
+   const size_t set_len  = strlen(set);
+   const unsigned count  = archive_num_entries(a);
+   unsigned best_depth   = ~0u, best_count = 0;
+   int best              = -1;
+   unsigned i;
+
+   for (i = 0; i < count; i++)
+   {
+      const archive_entry_t *e = archive_entry(a, i);
+      const char *name, *c;
+      size_t len;
+      unsigned depth = 0;
+
+      if (e->is_dir)
+         continue;
+      name = e->name;
+      len  = strlen(name);
+      if (len < name_len || strcasecmp(name + len - name_len, filename))
+         continue;
+      if (len > name_len)
+      {
+         const size_t dir_len = len - name_len - 1;   /* without its '/' */
+
+         if (name[dir_len] != '/')
+            continue;                                 /* a longer name that ends the same */
+         /* the set's own folder? */
+         if (dir_len >= set_len && !strncasecmp(name + dir_len - set_len, set, set_len)
+               && (dir_len == set_len || name[dir_len - set_len - 1] == '/'))
+            return (int)i;
+         for (c = name; c < name + dir_len + 1; c++)
+            if (*c == '/')
+               depth++;
+      }
+      if (depth < best_depth)
+      {
+         best_depth = depth;
+         best_count = 1;
+         best       = (int)i;
+      }
+      else if (depth == best_depth)
+         best_count++;
+   }
+   return best_count == 1 ? best : -1;
+}
+
 /* Where the blob is: the one with CRC @crc in the first of @archives
- * that has one, else the one named @filename in the first that has it.
- * Its index, with its archive in @in; -1 if there is none. */
+ * that has one, else the one that is @filename of the set @set in the
+ * first that has it. Its index, with its archive in @in; -1 if there is
+ * none. */
 static int naomi_find_member(archive_t *const *archives, int count,
-      u32 crc, const char *filename, archive_t **in)
+      u32 crc, const char *set, const char *filename, archive_t **in)
 {
    int i;
    int idx;
@@ -98,13 +158,39 @@ static int naomi_find_member(archive_t *const *archives, int count,
    }
    for (i = 0; i < count; i++)
    {
-      if (archives[i] && (idx = archive_find(archives[i], filename)) >= 0)
+      if (archives[i] && (idx = naomi_find_named(archives[i], set, filename)) >= 0)
       {
          *in = archives[i];
          return idx;
       }
    }
    return -1;
+}
+
+/* How many of the game @g's ROMs @archive has, of how many (@files), and
+ * whether the first of them, the program ROM, is among them (@first). */
+static int naomi_count_roms(const archive_t *archive, int g, int *files, bool *first)
+{
+	int found = 0;
+
+	*files = 0;
+	*first = false;
+	for (int romid = 0; Games[g].blobs[romid].filename != NULL; romid++)
+	{
+		const u32 crc = Games[g].blobs[romid].crc;
+
+		if (Games[g].blobs[romid].blob_type == Copy)
+			continue;
+		(*files)++;
+		if (crc != 0 ? archive_find_crc(archive, crc) >= 0
+				: naomi_find_named(archive, Games[g].name, Games[g].blobs[romid].filename) >= 0)
+		{
+			found++;
+			if (romid == 0)
+				*first = true;
+		}
+	}
+	return found;
 }
 
 /* Which game of the table the romset at @path is; -1 if none.
@@ -115,7 +201,13 @@ static int naomi_find_member(archive_t *const *archives, int count,
  * the game most of whose ROMs the archive has, by checksum where the table
  * has one and by file name where it has not. A set that has under half of
  * a game's ROMs has to have its first one, the program ROM, which is what
- * tells a game from the others that share its data ROMs. */
+ * tells a game from the others that share its data ROMs.
+ *
+ * A merged set has all of a game's ROMs and all of its clones': it is the
+ * game's, the parent's, whichever of them has the most ROMs. (A clone is
+ * asked for by name: a file named for it - the merged set itself, or
+ * anything at all, an empty file - with the merged set under the parent's
+ * name beside it. naomi_cart_LoadZip() looks in both.) */
 static std::string found_path;
 static int found_game = -1;
 
@@ -143,28 +235,32 @@ static int naomi_find_game(const char *path)
 		{
 			for (int g = 0; Games[g].name != NULL; g++)
 			{
-				int files = 0, found = 0;
-				bool first = false;
+				int files;
+				bool first;
+				const int found = naomi_count_roms(archive, g, &files, &first);
 
-				for (int romid = 0; Games[g].blobs[romid].filename != NULL; romid++)
-				{
-					const u32 crc = Games[g].blobs[romid].crc;
-
-					if (Games[g].blobs[romid].blob_type == Copy)
-						continue;
-					files++;
-					if (crc != 0 ? archive_find_crc(archive, crc) >= 0
-							: archive_find(archive, Games[g].blobs[romid].filename) >= 0)
-					{
-						found++;
-						if (romid == 0)
-							first = true;
-					}
-				}
 				if (found > best_found && (first || found * 2 >= files))
 				{
 					best = g;
 					best_found = found;
+				}
+			}
+			if (best >= 0 && Games[best].parent_name != NULL)
+			{
+				/* a clone: of a parent that is all there too? */
+				for (int g = 0; Games[g].name != NULL; g++)
+				{
+					int files;
+					bool first;
+
+					if (stricmp(Games[g].name, Games[best].parent_name))
+						continue;
+					if (naomi_count_roms(archive, g, &files, &first) == files)
+					{
+						best = g;
+						best_found = files;
+					}
+					break;
 				}
 			}
 			archive_close(archive);
@@ -181,10 +277,10 @@ static int naomi_find_game(const char *path)
 
 /* That blob's bytes, which belong to its archive. */
 static const u8 *naomi_find_blob(archive_t *const *archives, int count,
-      u32 crc, const char *filename, size_t *len)
+      u32 crc, const char *set, const char *filename, size_t *len)
 {
    archive_t *in = NULL;
-   int idx = naomi_find_member(archives, count, crc, filename, &in);
+   int idx = naomi_find_member(archives, count, crc, set, filename, &in);
 
    return idx >= 0 ? archive_entry_data(in, (unsigned)idx, len) : NULL;
 }
@@ -277,7 +373,7 @@ static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archi
 		{
 			size_t blob_len = 0;
 			const u8 *blob = naomi_find_blob(archives, 3, bios->blobs[romid].crc,
-					bios->blobs[romid].filename, &blob_len);
+					bios->name, bios->blobs[romid].filename, &blob_len);
 			if (!blob) {
 				WARN_LOG(NAOMI, "%s: Cannot open %s", filename, bios->blobs[romid].filename);
 				goto error;
@@ -321,6 +417,11 @@ static bool naomi_cart_LoadZip(const char *filename)
 	}
 
 	struct Game *game = &Games[gameid];
+
+	if (game->parent_name != NULL)
+		NOTICE_LOG(NAOMI, "The set is %s (%s), a clone of %s", game->name, game->description, game->parent_name);
+	else
+		NOTICE_LOG(NAOMI, "The set is %s (%s)", game->name, game->description);
 
 	archive_t *archive = archive_open(filename);
 	if (archive != NULL)
@@ -439,7 +540,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 				 * copied across. */
 				archive_t *in = NULL;
 				const int idx = naomi_find_member(archives, 2, game->blobs[romid].crc,
-						game->blobs[romid].filename, &in);
+						game->name, game->blobs[romid].filename, &in);
 				const archive_entry_t *entry = idx >= 0 ? archive_entry(in, (unsigned)idx) : NULL;
 
 				if (entry && entry->usable && entry->size <= len)
@@ -463,7 +564,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 				 * there. */
 				archive_t *in = NULL;
 				const int idx = naomi_find_member(archives, 2, game->blobs[romid].crc,
-						game->blobs[romid].filename, &in);
+						game->name, game->blobs[romid].filename, &in);
 				const archive_entry_t *entry = idx >= 0 ? archive_entry(in, (unsigned)idx) : NULL;
 
 				if (entry && entry->usable && entry->size <= len)
@@ -486,7 +587,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 				}
 			}
 			const u8 *blob = naomi_find_blob(archives, 2, game->blobs[romid].crc,
-					game->blobs[romid].filename, &blob_len);
+					game->name, game->blobs[romid].filename, &blob_len);
 			if (!blob) {
 				WARN_LOG(NAOMI, "%s: Cannot open %s", filename, game->blobs[romid].filename);
 				if (game->blobs[romid].blob_type != Eeprom)

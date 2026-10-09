@@ -6,7 +6,8 @@
 # its frames by the processor's timer, what it read back from the disc -
 # and the sound, sample for sample. Both SH4 timings are run, and the
 # first of them again with the MMU on. A NAOMI cartridge comes last, for
-# the built-in BIOS's way into a game's test program.
+# the built-in BIOS's way into a game's test program, and romsets for the
+# loader's way with a merged one.
 #
 # It is for cores that cannot be run any other way on the machine at hand,
 # which is to say a core built for another processor, under qemu:
@@ -292,4 +293,38 @@ tr -d '\r' < "$WORK/naomi.out" | grep -q "= 600d7e57\$" || {
    echo "FAIL: the cartridge's program found something wrong: $(cat "$WORK/naomi.out")" >&2
    exit 1
 }
+
+# And romsets (naomi_cart.py --merged): a merged set - a game and its
+# clones in one archive, the clones' own ROMs in folders - has to start the
+# game under its own name and under no set's name, and a clone under the
+# clone's: as the set itself renamed, and as an empty file of that name
+# beside the set. And a set whose ROMs are all inside a folder, their names
+# in capitals, has to be found. Which program ROM was started is read from
+# the serial in the header, of which the BIOS keeps a copy in main memory.
+echo "== headless: NAOMI romsets, a merged one and its clones"
+python3 "$T/naomi_cart.py" --merged "$WORK/sets"
+for SET in "doa2m.zip 30535442" "doa2.zip 31535442" "doa2a.zip 32535442" \
+      "Dead or Alive 2.zip 30535442" "folder/doa2m.zip 30535442"; do
+   GOOD=${SET##* }
+   SET=${SET% *}
+   if [ -n "$WINDOWS" ]; then
+      :
+   elif [ -z "$GLES" ]; then
+      LD_PRELOAD=$WORK/libGLESv2.so.2
+      export LD_PRELOAD
+   fi
+   HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/naomi_cart.py" --serial) \
+      $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/sets/$SET" 3 \
+      reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+      > "$WORK/sets.out" 2> "$WORK/sets.log" || {
+      echo "FAIL: $SET was not started" >&2
+      tail -n 20 "$WORK/sets.log" >&2
+      exit 1
+   }
+   unset LD_PRELOAD
+   tr -d '\r' < "$WORK/sets.out" | grep -q "= $GOOD\$" || {
+      echo "FAIL: $SET started another set's program ROM: $(cat "$WORK/sets.out")" >&2
+      exit 1
+   }
+done
 echo "headless test passed"
