@@ -5,7 +5,8 @@
 # reaches about itself - its instruction tests, the length and evenness of
 # its frames by the processor's timer, what it read back from the disc -
 # and the sound, sample for sample. Both SH4 timings are run, and the
-# first of them again with the MMU on.
+# first of them again with the MMU on. A NAOMI cartridge comes last, for
+# the built-in BIOS's way into a game's test program.
 #
 # It is for cores that cannot be run any other way on the machine at hand,
 # which is to say a core built for another processor, under qemu:
@@ -262,4 +263,33 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       }
    fi
 done
+
+# And a NAOMI cartridge (naomi_cart.py), started without a BIOS: its program
+# asks the built-in one for the system menu, as a game does when the
+# cabinet's TEST switch is pressed. It has to be started again as the
+# cartridge's test program, and from there - a test program's way out is
+# the same routine - as the game once more, each time as the real BIOS
+# starts them. naomi_prog.c has what it looks at.
+echo "== headless: a NAOMI cartridge, into its test program and back"
+unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+python3 "$T/naomi_cart.py" "$WORK/naomi-test.bin"
+if [ -n "$WINDOWS" ]; then
+   :
+elif [ -z "$GLES" ]; then
+   LD_PRELOAD=$WORK/libGLESv2.so.2
+   export LD_PRELOAD
+fi
+HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/naomi_cart.py" --verdict) \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/naomi-test.bin" 120 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/naomi.out" 2> "$WORK/naomi.log" || {
+   echo "FAIL: the run ended badly" >&2
+   tail -n 20 "$WORK/naomi.log" >&2
+   exit 1
+}
+unset LD_PRELOAD
+tr -d '\r' < "$WORK/naomi.out" | grep -q "= 600d7e57\$" || {
+   echo "FAIL: the cartridge's program found something wrong: $(cat "$WORK/naomi.out")" >&2
+   exit 1
+}
 echo "headless test passed"

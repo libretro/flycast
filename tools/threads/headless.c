@@ -27,6 +27,11 @@
  *                    Whatever size the core then tells the frontend is printed,
  *                    "size WxH".
  *   HEADLESS_OPTION2 the same, for a second change at another frame
+ *   HEADLESS_PRESS   "frame:button[:frames][,frame:button[:frames]...]": the
+ *                    first pad's button of that number (a
+ *                    RETRO_DEVICE_ID_JOYPAD_ one: 14 is a cabinet's TEST
+ *                    switch, 15 its SERVICE switch) held from that frame for
+ *                    ten frames, or as many as are given. Up to 64 of them.
  *
  * It has to be started with the do-nothing OpenGL library preloaded:
  * headless.sh does all of it.
@@ -267,10 +272,43 @@ static size_t audio_sample_batch(const int16_t *data, size_t frames)
 
 static void input_poll(void) { }
 
+/* HEADLESS_PRESS: what is held, and when */
+static struct { int from, button, frames; } presses[64];
+static int press_count;
+static int frame_now;
+
+static void presses_read(const char *spec)
+{
+   while (spec && *spec && press_count < 64)
+   {
+      int from = 0, button = 0, frames = 10;
+      if (sscanf(spec, "%d:%d:%d", &from, &button, &frames) >= 2)
+      {
+         presses[press_count].from   = from;
+         presses[press_count].button = button;
+         presses[press_count].frames = frames;
+         press_count++;
+      }
+      spec = strchr(spec, ',');
+      if (spec)
+         spec++;
+   }
+}
+
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
-   (void)port; (void)device; (void)index; (void)id;
-   return 0;
+   int16_t held = 0;
+   int i;
+
+   (void)index;
+   if (port != 0 || device != RETRO_DEVICE_JOYPAD)
+      return 0;
+   for (i = 0; i < press_count; i++)
+      if (frame_now >= presses[i].from && frame_now < presses[i].from + presses[i].frames)
+         held |= (int16_t)(1 << presses[i].button);
+   if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
+      return held;
+   return id < 16 ? (held >> id) & 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -350,6 +388,7 @@ int main(int argc, char **argv)
             ? strtoul(getenv("HEADLESS_STAGE"), NULL, 0) : 0;
          uint32_t last = 0, word = 0;
          int reset_at = getenv("HEADLESS_RESET") ? atoi(getenv("HEADLESS_RESET")) : -1;
+         presses_read(getenv("HEADLESS_PRESS"));
          int swap_at = getenv("HEADLESS_SWAP") ? atoi(getenv("HEADLESS_SWAP")) : -1;
          int save_at = getenv("HEADLESS_SAVE") ? atoi(getenv("HEADLESS_SAVE")) : -1;
          int load_at = getenv("HEADLESS_LOAD") ? atoi(getenv("HEADLESS_LOAD")) : -1;
@@ -361,6 +400,8 @@ int main(int argc, char **argv)
          {
             uint8_t *ram;
             size_t size;
+
+            frame_now = i;
 
             if (i == reset_at)
                retro_reset();

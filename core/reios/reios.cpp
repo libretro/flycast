@@ -23,6 +23,7 @@
 #include "hw/sh4/sh4_mem.h"
 #include "hw/holly/sb_mem.h"
 #include "hw/naomi/naomi_cart.h"
+#include "emulator.h"
 #include "hw/pvr/pvr_regs.h"
 #include "hw/pvr/pvr_mem.h"
 #include "hw/aica/aica_if.h"
@@ -582,7 +583,7 @@ static void reios_setup_state(u32 boot_addr)
 	old_fpscr.full = 0x00040001;
 }
 
-static void reios_setup_naomi(u32 boot_addr, u32 load_end, u32 now) {
+static void reios_setup_naomi(u32 boot_addr, u32 load_end, u32 now, bool test) {
 	/*
 		SR 0x60000000 0x00000001
 		FPSRC 0x00040001
@@ -668,7 +669,7 @@ static void reios_setup_naomi(u32 boot_addr, u32 load_end, u32 now) {
 
 	//Setup registers to imitate a normal boot
 	r[0] = boot_addr;
-	r[1] = 0x0c01f820;		// the header's copy, at its entry points
+	r[1] = test ? 0x0c01f824 : 0x0c01f820;		// the header's copy, at the entry point taken
 	r[2] = 0xa0710004;
 	r[3] = 0x0c01f130;		// where the time is
 	r[4] = now;
@@ -731,9 +732,10 @@ static u8 *reios_rom;       /* the boot ROM's memory, which reios fills */
  *  10  the board: region, the game's serial
  *  11  the operator's settings
  *  13  whether a service credit is for one player
+ *  17  the system menu: see nb_sys_menu()
  *  20  whether a cartridge answers
  *
- * 12, 16 to 19 and 21 to 25 are for the GD-ROM's DIMM board and the
+ * 12, 16, 18, 19 and 21 to 25 are for the GD-ROM's DIMM board and the
  * network board; no cartridge game seen calls them, and they answer 0.
  *
  * The settings (17 words at 0c01f000, which routine 11 hands out):
@@ -765,6 +767,7 @@ static u8 *reios_rom;       /* the boot ROM's memory, which reios fills */
 #define NB_SETTINGS     0x0c01f000
 #define NB_BOARD        0x0c01f100
 #define NB_GAME_WORD    0x0c01f120
+#define NB_PROGRAM      0x0c01ff00      /* which of the cartridge's programs runs: see nb_sys_menu() */
 #define NB_CREDITS_AT   0x0c01ff04
 #define NB_BLOCK_SIZE   0x7000
 
@@ -1173,6 +1176,53 @@ static void nb_sys_cartridge()
 		r[0] = ReadMem16(0xa05f703c) == 0xffff ? (u32)-1 : 1;
 }
 
+/* The test switch, and a game's test menu.
+ *
+ * A game watches the cabinet's TEST switch itself, and when it is pressed
+ * calls routine 17: the BIOS's system menu, which does not return. One of
+ * the menu's items, "GAME TEST MODE", is the game's own test program: the
+ * BIOS loads it from a load list of its own in the cartridge's header (at
+ * 0x3c0, where the game's is at 0x360) and starts it at an entry point of
+ * its own (0x424, the game's at 0x420), with 1 in the word it keeps for
+ * the game (routine 2) - which is how a game whose two lists name the same
+ * program knows it is to be the test. That program's way out ("EXIT") is
+ * routine 17 again, back to the system menu, whose own "EXIT" starts the
+ * machine again with the game.
+ *
+ * There is no system menu here - its other items are the BIOS's own tests
+ * and the cabinet's settings, of which these routines hand out the
+ * defaults - so routine 17 goes straight to where the menu would have
+ * led: from the game to its test program, and from the test program back
+ * to the game. Either is a restart of the machine, at which
+ * reios_boot_naomi() finds what was asked for in the word the BIOS keeps
+ * for it. That word is in the machine's memory, which a restart asked for
+ * from inside the machine leaves as it is and one from the frontend
+ * clears: the frontend's always starts the game.
+ *
+ * (All of it found by watching epr-21576h run Dead or Alive 2: the switch
+ * pressed in the game, the menu's item chosen, the test program left.) */
+#define NB_PROGRAM_GAME   1            /* as the BIOS has it while each runs */
+#define NB_PROGRAM_TEST   2
+#define NB_WANT_TEST      0x54534554   /* asked for: the next start is the test program's */
+#define NB_WANT_GAME      0x454d4147   /* asked for: the next start is the game's */
+
+static void nb_sys_menu()
+{
+	const u32 program = nb_rd(NB_PROGRAM);
+
+	if (program != NB_WANT_TEST && program != NB_WANT_GAME)
+	{
+		const bool to_test = program != NB_PROGRAM_TEST;
+
+		NOTICE_LOG(REIOS, "NAOMI: the system menu is asked for (from %08x): restarting with %s", pr,
+				to_test ? "the game's test program" : "the game");
+		nb_wr(NB_PROGRAM, to_test ? NB_WANT_TEST : NB_WANT_GAME);
+		dc_request_reset();
+	}
+	/* it does not return: here again, until the restart */
+	next_pc -= 2;
+}
+
 static void nb_sys_none()
 {
 	static bool said;
@@ -1187,7 +1237,7 @@ static hook_fp* const nb_routines[26] = {
 	nb_sys_check_settings, nb_sys_coin_setting, nb_sys_start, nb_sys_limit_credits,
 	nb_sys_status, nb_sys_frame, nb_sys_board, nb_sys_settings,
 	nb_sys_none, nb_sys_one_player, NULL, NULL,
-	nb_sys_none, nb_sys_none, nb_sys_none, nb_sys_none,
+	nb_sys_none, nb_sys_menu, nb_sys_none, nb_sys_none,
 	nb_sys_cartridge, nb_sys_none, nb_sys_none, nb_sys_none,
 	nb_sys_none, nb_sys_none,
 };
@@ -1382,6 +1432,11 @@ static void reios_boot_naomi()
 	};
 	u8 header[0x500];
 	u32 entry, load_end = 0, now;
+	u32 list = 0x360;
+	/* the test program, if routine 17 asked for it before this restart:
+	 * see nb_sys_menu() */
+	const u32 asked = ReadMem32(NB_PROGRAM);
+	bool test = asked == NB_WANT_TEST;
 
 	if (CurrentCartridge == NULL || !CurrentCartridge->Read(0, sizeof(header), header))
 	{
@@ -1389,9 +1444,28 @@ static void reios_boot_naomi()
 		return;
 	}
 
+	entry = header[0x420] | header[0x421] << 8 | header[0x422] << 16 | (u32)header[0x423] << 24;
+	if (test)
+	{
+		const u8 *e = header + 0x3c0;
+		const u32 first = e[0] | e[1] << 8 | e[2] << 16 | (u32)e[3] << 24;
+		const u32 test_entry = header[0x424] | header[0x425] << 8 | header[0x426] << 16 | (u32)header[0x427] << 24;
+
+		if (first == 0xffffffff || test_entry == 0 || test_entry == 0xffffffff)
+		{
+			NOTICE_LOG(REIOS, "NAOMI boot: the cartridge has no test program");
+			test = false;
+		}
+		else
+		{
+			list  = 0x3c0;
+			entry = test_entry;
+		}
+	}
+
 	for (u32 i = 0; i < 8; i++)
 	{
-		const u8 *e = header + 0x360 + i * 12;
+		const u8 *e = header + list + i * 12;
 		u32 offset = e[0] | e[1] << 8 | e[2] << 16 | (u32)e[3] << 24;
 		u32 addr   = e[4] | e[5] << 8 | e[6] << 16 | (u32)e[7] << 24;
 		u32 size   = e[8] | e[9] << 8 | e[10] << 16 | (u32)e[11] << 24;
@@ -1409,7 +1483,6 @@ static void reios_boot_naomi()
 		NOTICE_LOG(REIOS, "NAOMI boot: %x bytes at %08x, from %x", size, addr, offset);
 		load_end = (addr & 0x1fffffff) + size;
 	}
-	entry = header[0x420] | header[0x421] << 8 | header[0x422] << 16 | (u32)header[0x423] << 24;
 
 	/* the header's copy, and the time */
 	memcpy(GetMemPtr(0x8c01f400, sizeof(header)), header, sizeof(header));
@@ -1460,13 +1533,30 @@ static void reios_boot_naomi()
 		WriteMem32(0x8c01f108, 0);
 		WriteMem32(0x8c01f10c, 1);
 		memcpy(GetMemPtr(0x8c01f110, 4), header + 0x134, 4);
+		WriteMem32(NB_GAME_WORD, test ? 1 : 0);
+		WriteMem32(NB_PROGRAM, test ? NB_PROGRAM_TEST : NB_PROGRAM_GAME);
 	}
 
 	for (u32 i = 0; i < sizeof(video) / sizeof(video[0]); i++)
 		pvr_WriteReg(0x005f8000 + video[i][0], video[i][1]);
 
-	NOTICE_LOG(REIOS, "NAOMI boot: starting at %08x", entry);
-	reios_setup_naomi(entry, load_end, now);
+	/* No interrupt gets through until the program asks for it: the BIOS
+	 * hands over with every mask of the interrupt controller at 0. From
+	 * power-on they are; after a restart from inside the machine (routine
+	 * 17) they are as the last program had them, and the first interrupt
+	 * would find the handlers of a program that is no longer there -
+	 * nobody's, and so for ever. */
+	for (u32 reg = 0x005f6910; reg <= 0x005f6938; reg += (reg & 0xf) == 8 ? 8 : 4)
+		WriteMem32(0xa0000000 | reg, 0);
+	WriteMem32(0xa05f6908, 0xffffffff);		// and no error left standing
+	/* Nor is there sound: after such a restart the sound chip is still
+	 * playing what the last program had it playing, and would until the
+	 * next one got round to it. As at power-on. */
+	if (asked == NB_WANT_TEST || asked == NB_WANT_GAME)
+		libAICA_Reset(true);
+
+	NOTICE_LOG(REIOS, "NAOMI boot: starting %s at %08x", test ? "the test program" : "the game", entry);
+	reios_setup_naomi(entry, load_end, now, test);
 }
 
 static void reios_boot()
