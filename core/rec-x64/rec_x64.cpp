@@ -289,13 +289,37 @@ static struct CompileStubInit
 	CompileStubInit() { ngen_FailedToFindBlock = &ngen_compile_stub; }
 } compile_stub_init;
 
+/* The kinds of fast memory access there are (BlockCompiler::FastMemory()):
+ * a load or a store, of 1, 2, 4 or 8 bytes, the 4 from or to a general
+ * register or a floating-point one. */
+enum
+{
+	MEM_LOAD8, MEM_LOAD16, MEM_LOAD32, MEM_LOAD32F, MEM_LOAD64,
+	MEM_STORE8, MEM_STORE16, MEM_STORE32, MEM_STORE32F, MEM_STORE64,
+	MEM_KINDS
+};
+// (whether a kind's data is in a floating-point register)
+#define MEM_KIND_F(kind) ((kind) == MEM_LOAD32F || (kind) == MEM_STORE32F)
+
 #ifndef _WIN32
 /* What a fast memory access that faulted is written over with a call to
- * (ngen_Rewrite()): a routine for each of loading and storing 1, 2, 4 and
- * 8 bytes, with the address and the data where the access had them and
- * the result where it left it. In the code cache, like the link stub, so
- * that a near call reaches them. They go through ngen_call_keep_xmm. */
-static u8 *mem_stubs[8];
+ * (ngen_Rewrite()): a routine that does the access by asking.
+ *
+ * A fast access has its address and its data in whatever registers the
+ * block has them in, so there is a routine for each kind of access, each
+ * register the address can be in and each the data can be in: 324 of
+ * them, a few instructions each, written once. They are in the code
+ * cache, like the link stub, so that a near call reaches them, and they
+ * go through ngen_call_keep_xmm: the access they stand in for changes
+ * nothing but its data.
+ *
+ * The registers, by number: for the address and for data in a general
+ * register, 0 is the one a call has it in (rdi; rax for what is loaded,
+ * rsi for what is stored) and 1 on are the block's own, alloc_regs; for
+ * data in a floating-point register, 0 on are xmm8 on. 64 bits are always
+ * in rax or rsi. */
+#define MEM_REGS 8
+static u8 *mem_stubs[MEM_KINDS][MEM_REGS][MEM_REGS];
 
 static s32 mem_load8(u32 addr)  { return (s8)ReadMem8(addr); }
 static s32 mem_load16(u32 addr) { return (s16)ReadMem16(addr); }
@@ -305,6 +329,67 @@ static void mem_store8(u32 addr, u32 data)  { WriteMem8(addr, (u8)data); }
 static void mem_store16(u32 addr, u32 data) { WriteMem16(addr, (u16)data); }
 static void mem_store32(u32 addr, u32 data) { WriteMem32(addr, data); }
 static void mem_store64(u32 addr, u64 data) { WriteMem64(addr, data); }
+
+// How many registers a block is given of its own, and which is number @n of them
+static int mem_block_regs()
+{
+	int count = 0;
+
+	while (alloc_regs[count] != (Xbyak::Operand::Code)-1)
+		count++;
+	return count;
+}
+
+/* The number a general register goes by here: 0 if it is @first, 1 on for
+ * the block's own, -1 for any other. */
+static int mem_reg_number(int reg, int first)
+{
+	if (reg == first)
+		return 0;
+	for (int i = 0; alloc_regs[i] != (Xbyak::Operand::Code)-1; i++)
+		if ((int)alloc_regs[i] == reg)
+			return i + 1;
+	return -1;
+}
+
+static void mem_stub_make(int kind, int addr, int data)
+{
+	static const void *const routines[MEM_KINDS] = {
+		(const void *)&mem_load8, (const void *)&mem_load16, (const void *)&mem_load32, (const void *)&mem_load32,
+		(const void *)&mem_load64,
+		(const void *)&mem_store8, (const void *)&mem_store16, (const void *)&mem_store32, (const void *)&mem_store32,
+		(const void *)&mem_store64,
+	};
+	const bool load = kind < MEM_STORE8;
+	Xbyak::CodeGenerator stub(64, emit_GetCCPtr());
+
+	mem_stubs[kind][addr][data] = (u8 *)stub.getCode();
+	// the address and what is stored to where a function takes them (neither is ever in the other's place)
+	if (addr != 0)
+		stub.mov(stub.edi, Xbyak::Reg32(alloc_regs[addr - 1]));
+	if (!load && MEM_KIND_F(kind))
+		stub.movd(stub.esi, Xbyak::Xmm(8 + data));
+	else if (!load && data != 0)
+		stub.mov(stub.esi, Xbyak::Reg32(alloc_regs[data - 1]));
+	stub.mov(stub.rax, (uintptr_t)routines[kind]);
+	stub.mov(stub.r11, (uintptr_t)&ngen_call_keep_xmm);
+	if (load && (MEM_KIND_F(kind) || data != 0))
+	{
+		// what was loaded to where the access had it
+		stub.sub(stub.rsp, 8);
+		stub.call(stub.r11);
+		stub.add(stub.rsp, 8);
+		if (MEM_KIND_F(kind))
+			stub.movd(Xbyak::Xmm(8 + data), stub.eax);
+		else
+			stub.mov(Xbyak::Reg32(alloc_regs[data - 1]), stub.eax);
+		stub.ret();
+	}
+	else
+		stub.jmp(stub.r11);
+	stub.ready();
+	emit_Skip((stub.getSize() + 15) & ~15u);
+}
 #endif
 
 /* The link stub, which is in the code cache so that every block reaches
@@ -467,22 +552,17 @@ void ngen_init()
 	}
 #ifndef _WIN32
 	{
-		static const void *const routines[8] = {
-			(const void *)&mem_load8, (const void *)&mem_load16, (const void *)&mem_load32, (const void *)&mem_load64,
-			(const void *)&mem_store8, (const void *)&mem_store16, (const void *)&mem_store32, (const void *)&mem_store64,
-		};
+		const int regs = 1 + mem_block_regs();
 
-		for (int i = 0; i < 8; i++)
-		{
-			Xbyak::CodeGenerator stub(32, emit_GetCCPtr());
+		verify(regs <= MEM_REGS);
+		for (int kind = 0; kind < MEM_KINDS; kind++)
+			for (int addr = 0; addr < regs; addr++)
+			{
+				const int datas = MEM_KIND_F(kind) ? 8 : kind == MEM_LOAD64 || kind == MEM_STORE64 ? 1 : regs;
 
-			mem_stubs[i] = (u8 *)stub.getCode();
-			stub.mov(stub.rax, (uintptr_t)routines[i]);
-			stub.mov(stub.r11, (uintptr_t)&ngen_call_keep_xmm);
-			stub.jmp(stub.r11);
-			stub.ready();
-			emit_Skip(32);
-		}
+				for (int data = 0; data < datas; data++)
+					mem_stub_make(kind, addr, data);
+			}
 	}
 #endif
 	emit_SetBaseAddr();
@@ -775,24 +855,11 @@ public:
                break;
 
             case shop_readm:
-            	if (!GenReadMemImmediate(op, block))
+				// Not an immediate address: one instruction, or the call
+				if (!GenReadMemImmediate(op, block) && (!optimise || !GenReadMemoryFast(op)))
                {
-						// Not an immediate address
-            		shil_param_to_host_reg(op.rs1, call_regs[0]);
-						if (!op.rs3.is_null())
-						{
-							if (op.rs3.is_imm())
-								add(call_regs[0], op.rs3._imm);
-							else if (regalloc.IsAllocg(op.rs3))
-								add(call_regs[0], regalloc.MapRegister(op.rs3));
-							else
-							{
-								lea(rax, Ctx(op.rs3.reg_ptr()));
-								add(call_regs[0], dword[rax]);
-							}
-						}
-						if (!optimise || !GenReadMemoryFast(op, block))
-							GenReadMemorySlow(op, block);
+						GenMemAddr(op);
+						GenReadMemorySlow(op, block);
 
 						u32 size = op.flags & 0x7f;
 						if (size != 8)
@@ -816,21 +883,9 @@ public:
 
             case shop_writem:
                {
-						if (!GenWriteMemImmediate(op, block))
+						if (!GenWriteMemImmediate(op, block) && (!optimise || !GenWriteMemoryFast(op)))
 						{
-							shil_param_to_host_reg(op.rs1, call_regs[0]);
-							if (!op.rs3.is_null())
-							{
-								if (op.rs3.is_imm())
-									add(call_regs[0], op.rs3._imm);
-								else if (regalloc.IsAllocg(op.rs3))
-									add(call_regs[0], regalloc.MapRegister(op.rs3));
-								else
-								{
-									lea(rax, Ctx(op.rs3.reg_ptr()));
-									add(call_regs[0], dword[rax]);
-								}
-							}
+							GenMemAddr(op);
 
 							u32 size = op.flags & 0x7f;
 							if (size != 8)
@@ -850,8 +905,7 @@ public:
 									mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
 								}
 							}
-							if (!optimise || !GenWriteMemoryFast(op, block))
-								GenWriteMemorySlow(op, block);
+							GenWriteMemorySlow(op, block);
 						}
                }
                break;
@@ -985,7 +1039,8 @@ public:
 						shr(rd2_64, 63);
 						/* Nothing is left above the low 32 bits of the result:
 						 * this very instruction, done again on it, would take
-						 * the borrow from what was there. */
+						 * the borrow from what was there, and a register of
+						 * the block's is an address as it is (GenFastAddr()). */
 						mov(rd, rd);
    				}
    				break;
@@ -2327,54 +2382,63 @@ public:
 		return (int)((ptrdiff_t)sizeof(Sh4RCB) - (ptrdiff_t)CTX_BASE);
 	}
 
-	/* Whether what is at @code is a fast access as the two functions below
-	 * write them, and if so which - 0 to 3 a load of 1, 2, 4, 8 bytes, 4 to
-	 * 7 a store - and how long it is. A fast access is told by what it is,
-	 * so nothing has to be kept about where in a block they are: the
-	 * address in rdi, the data in rax or rsi, the base r15, the distance
-	 * MemFromCtx(). Nothing else a block has looks like that. */
-	static bool FastAccessAt(const u8 *code, int *which, int *length)
+	/* Whether what is at @code is a fast access as GenFastAccess() writes
+	 * them, and if so which kind, with which registers (as mem_stubs
+	 * numbers them) and how long it is. A fast access is told by what it
+	 * is, so nothing has to be kept about where in a block they are: one
+	 * of ten moves, to or from [r15 + a register + MemFromCtx()]. Nothing
+	 * else a block has looks like that. */
+	static bool FastAccessAt(const u8 *code, int *kind, int *addr, int *data, int *length)
 	{
+#ifdef _WIN32
+		return false;
+#else
 		const u8 *p = code;
-		const bool word = *p == 0x66;
-		bool store;
-		int size;
+		u8 prefix = 0;
 
-		if (word)
-			p++;
-		// REX, with B for r15 and nothing else but W
-		if ((*p & 0xF7) != 0x41)
+		if (*p == 0x66 || *p == 0xF3)
+			prefix = *p++;
+		// REX, with B for r15
+		const u8 rex = *p++;
+		if ((rex & 0xF1) != 0x41)
 			return false;
-		const bool wide = (*p++ & 8) != 0;
-		if (p[0] == 0x0F && (p[1] == 0xBE || p[1] == 0xBF) && !word && !wide)
+		const bool wide = (rex & 8) != 0;
+		if (p[0] == 0x0F && !wide)
 		{
-			store = false;
-			size = p[1] == 0xBE ? 1 : 2;
+			if (p[1] == 0xBE && prefix == 0)
+				*kind = MEM_LOAD8;
+			else if (p[1] == 0xBF && prefix == 0)
+				*kind = MEM_LOAD16;
+			else if (p[1] == 0x10 && prefix == 0xF3)
+				*kind = MEM_LOAD32F;
+			else if (p[1] == 0x11 && prefix == 0xF3)
+				*kind = MEM_STORE32F;
+			else
+				return false;
 			p += 2;
 		}
-		else if (*p == 0x8B && !word)
+		else if (*p == 0x8B && prefix == 0)
 		{
-			store = false;
-			size = wide ? 8 : 4;
+			*kind = wide ? MEM_LOAD64 : MEM_LOAD32;
 			p++;
 		}
-		else if (*p == 0x88 && !word && !wide)
+		else if (*p == 0x88 && prefix == 0 && !wide)
 		{
-			store = true;
-			size = 1;
+			*kind = MEM_STORE8;
 			p++;
 		}
-		else if (*p == 0x89 && !(word && wide))
+		else if (*p == 0x89 && prefix != 0xF3 && !(prefix != 0 && wide))
 		{
-			store = true;
-			size = word ? 2 : wide ? 8 : 4;
+			*kind = prefix != 0 ? MEM_STORE16 : wide ? MEM_STORE64 : MEM_STORE32;
 			p++;
 		}
 		else
 			return false;
-		// rax or rsi, [base + index + a distance]; rdi and r15, times one
+
+		// [base + index + a distance]: r15, a register times one, and that distance
 		const u8 modrm = *p++;
-		if ((modrm & 7) != 4 || ((modrm >> 3) & 7) != (store ? 6 : 0) || *p++ != 0x3F)
+		const u8 sib = *p++;
+		if ((modrm & 7) != 4 || (sib & 0xC7) != 0x07)
 			return false;
 		if ((modrm >> 6) == 2)
 		{
@@ -2391,81 +2455,161 @@ public:
 		}
 		else
 			return false;
-		*which = (store ? 4 : 0) + (size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3);
+
+		const int index = ((sib >> 3) & 7) | ((rex & 2) != 0 ? 8 : 0);
+		const int reg = ((modrm >> 3) & 7) | ((rex & 4) != 0 ? 8 : 0);
+		const bool load = *kind < MEM_STORE8;
+
+		*addr = mem_reg_number(index, Xbyak::Operand::RDI);
+		if (MEM_KIND_F(*kind))
+			*data = reg >= 8 ? reg - 8 : -1;
+		else
+		{
+			*data = mem_reg_number(reg, load ? Xbyak::Operand::RAX : Xbyak::Operand::RSI);
+			if ((*kind == MEM_LOAD64 || *kind == MEM_STORE64) && *data != 0)
+				return false;
+		}
+		if (*addr < 0 || *data < 0)
+			return false;
 		*length = (int)(p - code);
 		return true;
+#endif
 	}
 
-	bool GenReadMemoryFast(const shil_opcode& op, RuntimeBlockInfo* block)
+	/* A fast access of @kind: the SH4's address is in the general register
+	 * @addr, and the data in, or wanted in, register @data - a general
+	 * one, or a floating-point one for the two kinds that are. */
+	void GenFastAccess(int kind, int addr, int data)
 	{
-		if (!FastMemory())
-			return false;
 		const u8 *start_addr = getCurr();
-		const Xbyak::RegExp at = r15 + call_regs64[0] + MemFromCtx();
-		u32 size = op.flags & 0x7f;
+		const Xbyak::RegExp at = r15 + Xbyak::Reg64(addr) * 1 + MemFromCtx();
 
-		switch (size)
+		switch (kind)
 		{
-		case 1:
-			movsx(eax, byte[at]);
-			break;
-
-		case 2:
-			movsx(eax, word[at]);
-			break;
-
-		case 4:
-			mov(eax, dword[at]);
-			break;
-
-		case 8:
-			mov(rax, qword[at]);
-			break;
-
-		default:
-			die("1..8 bytes");
+		case MEM_LOAD8:    movsx(Xbyak::Reg32(data), byte[at]); break;
+		case MEM_LOAD16:   movsx(Xbyak::Reg32(data), word[at]); break;
+		case MEM_LOAD32:   mov(Xbyak::Reg32(data), dword[at]); break;
+		case MEM_LOAD32F:  movss(Xbyak::Xmm(data), dword[at]); break;
+		case MEM_LOAD64:   mov(Xbyak::Reg64(data), qword[at]); break;
+		case MEM_STORE8:   mov(byte[at], Xbyak::Reg32(data).cvt8()); break;
+		case MEM_STORE16:  mov(word[at], Xbyak::Reg32(data).cvt16()); break;
+		case MEM_STORE32:  mov(dword[at], Xbyak::Reg32(data)); break;
+		case MEM_STORE32F: movss(dword[at], Xbyak::Xmm(data)); break;
+		case MEM_STORE64:  mov(qword[at], Xbyak::Reg64(data)); break;
+		default:           die("no such access");
 		}
 		// ngen_Rewrite() has to know it again, and needs five bytes for its call
-		int which, length;
-		verify(FastAccessAt(start_addr, &which, &length) && which < 4
+		int k, a, d, length;
+		verify(FastAccessAt(start_addr, &k, &a, &d, &length) && k == kind
 				&& length == (int)(getCurr() - start_addr) && length >= 5);
+	}
 
+	// The address of a load or store, into call_regs[0]
+	void GenMemAddr(const shil_opcode& op)
+	{
+		if (!op.rs3.is_null() && op.rs1.is_reg() && regalloc.IsAllocg(op.rs1))
+		{
+			// one instruction for the two of them, where both are to hand
+			const Xbyak::Reg64 base = regalloc.MapRegister(op.rs1).cvt64();
+
+			if (op.rs3.is_imm())
+			{
+				lea(call_regs[0], ptr[base + (int)(s32)op.rs3._imm]);
+				return;
+			}
+			if (regalloc.IsAllocg(op.rs3))
+			{
+				lea(call_regs[0], ptr[base + regalloc.MapRegister(op.rs3).cvt64()]);
+				return;
+			}
+		}
+		shil_param_to_host_reg(op.rs1, call_regs[0]);
+		if (!op.rs3.is_null())
+		{
+			if (op.rs3.is_imm())
+				add(call_regs[0], op.rs3._imm);
+			else if (regalloc.IsAllocg(op.rs3))
+				add(call_regs[0], regalloc.MapRegister(op.rs3));
+			else
+				add(call_regs[0], Ctx(op.rs3.reg_ptr()));
+		}
+	}
+
+	/* The same for a fast access, which takes it from any register: the
+	 * one the block has it in, where there is nothing to add to it. (A
+	 * register of the block's has nothing above its low 32 bits: every
+	 * instruction that writes one writes 32.) */
+	int GenFastAddr(const shil_opcode& op)
+	{
+		if (op.rs3.is_null() && op.rs1.is_reg() && regalloc.IsAllocg(op.rs1))
+			return regalloc.MapRegister(op.rs1).getIdx();
+		GenMemAddr(op);
+		return call_regs[0].getIdx();
+	}
+
+	/* A load as one instruction, from the SH4's memory as the host has it
+	 * mapped straight into the register the block wants it in. False if
+	 * that is not to be had (FastMemory()), and nothing written. */
+	bool GenReadMemoryFast(const shil_opcode& op)
+	{
+		const u32 size = op.flags & 0x7f;
+
+		if (!FastMemory())
+			return false;
+#ifdef EXPLODE_SPANS
+		if (size == 8)
+			return false;
+#endif
+		const int addr = GenFastAddr(op);
+
+		if (size == 8)
+		{
+			GenFastAccess(MEM_LOAD64, addr, Xbyak::Operand::RAX);
+			mov(qword[CtxAt(op.rd.reg_ptr())], rax);
+			return true;
+		}
+		const int kind = size == 1 ? MEM_LOAD8 : size == 2 ? MEM_LOAD16 : MEM_LOAD32;
+		if (regalloc.IsAllocg(op.rd))
+			GenFastAccess(kind, addr, regalloc.MapRegister(op.rd).getIdx());
+		else if (size == 4 && regalloc.IsAllocf(op.rd))
+			GenFastAccess(MEM_LOAD32F, addr, regalloc.MapXRegister(op.rd).getIdx());
+		else
+		{
+			GenFastAccess(kind, addr, Xbyak::Operand::RAX);
+			host_reg_to_shil_param(op.rd, eax);
+		}
 		return true;
 	}
 
-	bool GenWriteMemoryFast(const shil_opcode& op, RuntimeBlockInfo* block)
+	// A store, likewise
+	bool GenWriteMemoryFast(const shil_opcode& op)
 	{
+		const u32 size = op.flags & 0x7f;
+
 		if (!FastMemory())
 			return false;
-		const u8 *start_addr = getCurr();
-		const Xbyak::RegExp at = r15 + call_regs64[0] + MemFromCtx();
-		u32 size = op.flags & 0x7f;
+#ifdef EXPLODE_SPANS
+		if (size == 8)
+			return false;
+#endif
+		const int addr = GenFastAddr(op);
 
-		switch (size)
+		if (size == 8)
 		{
-		case 1:
-			mov(byte[at], call_regs[1].cvt8());
-			break;
-
-		case 2:
-			mov(word[at], call_regs[1].cvt16());
-			break;
-
-		case 4:
-			mov(dword[at], call_regs[1]);
-			break;
-
-		case 8:
-			mov(qword[at], call_regs64[1]);
-			break;
-
-		default:
-			die("1..8 bytes");
+			mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
+			GenFastAccess(MEM_STORE64, addr, call_regs64[1].getIdx());
+			return true;
 		}
-		int which, length;
-		verify(FastAccessAt(start_addr, &which, &length) && which >= 4
-				&& length == (int)(getCurr() - start_addr) && length >= 5);
-
+		const int kind = size == 1 ? MEM_STORE8 : size == 2 ? MEM_STORE16 : MEM_STORE32;
+		if (op.rs2.is_reg() && regalloc.IsAllocg(op.rs2))
+			GenFastAccess(kind, addr, regalloc.MapRegister(op.rs2).getIdx());
+		else if (size == 4 && op.rs2.is_reg() && regalloc.IsAllocf(op.rs2))
+			GenFastAccess(MEM_STORE32F, addr, regalloc.MapXRegister(op.rs2).getIdx());
+		else
+		{
+			shil_param_to_host_reg(op.rs2, call_regs[1]);
+			GenFastAccess(kind, addr, call_regs[1].getIdx());
+		}
 		return true;
 	}
 
@@ -2792,24 +2936,26 @@ void ngen_CC_Finish(shil_opcode* op)
 
 /* A fast memory access (BlockCompiler::FastMemory()) faulted: it is
  * written over with a call to the routine that does such an access by
- * asking (mem_stubs), and run again from where it was. It is five bytes
- * or more, which is what a call takes, so there is no room kept after it
- * for this; what is left of it is filled in. */
+ * asking, with the registers this one has (mem_stubs), and run again from
+ * where it was. It is five bytes or more, which is what a call takes, so
+ * there is no room kept after it for this; what is left of it is filled
+ * in. */
 bool ngen_Rewrite(unat& host_pc, unat, unat)
 {
 #ifdef _WIN32
 	return false;
 #else
-	int which, length;
+	int kind, addr, data, length;
 
-	if (!BlockCompiler::FastMemory() || mem_stubs[0] == NULL)
+	if (!BlockCompiler::FastMemory())
 		return false;
 	if (bm_GetBlock2((void *)host_pc) == NULL)
 	{
 		WARN_LOG(DYNAREC, "ngen_Rewrite: Block at %p not found", (void *)host_pc);
 		return false;
 	}
-	if (!BlockCompiler::FastAccessAt((const u8 *)host_pc, &which, &length))
+	if (!BlockCompiler::FastAccessAt((const u8 *)host_pc, &kind, &addr, &data, &length)
+			|| mem_stubs[kind][addr][data] == NULL)
 	{
 		WARN_LOG(DYNAREC, "ngen_Rewrite: no memory access at %p", (void *)host_pc);
 		return false;
@@ -2817,9 +2963,11 @@ bool ngen_Rewrite(unat& host_pc, unat, unat)
 
 	// (a block is as far from the stubs where it is run as where it is written)
 	u8 *const site = (u8 *)CC_RX2RW((u8 *)host_pc);
-	const s32 rel = (s32)(mem_stubs[which] - (site + 5));
-	static const u8 fill[5][4] = { { 0 }, { 0x90 }, { 0x66, 0x90 }, { 0x0F, 0x1F, 0x00 }, { 0x0F, 0x1F, 0x40, 0x00 } };
+	const s32 rel = (s32)(mem_stubs[kind][addr][data] - (site + 5));
+	static const u8 fill[6][5] = { { 0 }, { 0x90 }, { 0x66, 0x90 }, { 0x0F, 0x1F, 0x00 }, { 0x0F, 0x1F, 0x40, 0x00 },
+		{ 0x0F, 0x1F, 0x44, 0x00, 0x00 } };
 
+	verify(length >= 5 && length <= 10);
 	site[0] = 0xE8;
 	memcpy(site + 1, &rel, 4);
 	memcpy(site + 5, fill[length - 5], length - 5);
