@@ -336,6 +336,13 @@ __attribute__((used)) void *rec_arm_code_mmu(u32 pc)
 template<typename T>
 static T arm_mmu_read(u32 addr, u32 pc)
 {
+	// (two accesses, each translated: mmu.h)
+	if (sizeof(T) == 8 && mmu_in_two_pages(addr))
+	{
+		const u32 low = arm_mmu_read<u32>(addr, pc);
+		return (T)(((u64)arm_mmu_read<u32>(addr + 4, pc) << 32) | low);
+	}
+
 	u32 paddr;
 	u32 rv = mmu_data_translation<MMU_TT_DREAD, T>(addr, paddr);
 	if (rv != MMU_ERROR_NONE)
@@ -358,6 +365,13 @@ static u64 arm_mmu_read64(u32 addr, u32 pc) { return arm_mmu_read<u64>(addr, pc)
 template<typename T>
 static void arm_mmu_write(u32 addr, T data, u32 pc)
 {
+	if (sizeof(T) == 8 && mmu_in_two_pages(addr))
+	{
+		arm_mmu_write<u32>(addr, (u32)data, pc);
+		arm_mmu_write<u32>(addr + 4, (u32)((u64)data >> 32), pc);
+		return;
+	}
+
 	u32 paddr;
 	u32 rv = mmu_data_translation<MMU_TT_DWRITE, T>(addr, paddr);
 	if (rv != MMU_ERROR_NONE)

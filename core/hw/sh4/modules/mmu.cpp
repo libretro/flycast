@@ -798,6 +798,12 @@ void mmu_flush_table()
 template<typename T>
 T DYNACALL mmu_ReadMem(u32 adr)
 {
+	if (sizeof(T) == 8 && mmu_in_two_pages(adr))
+	{
+		const u32 low = mmu_ReadMem<u32>(adr);
+		return (T)(((u64)mmu_ReadMem<u32>(adr + 4) << 32) | low);
+	}
+
 	u32 addr;
 	u32 rv = mmu_data_translation<MMU_TT_DREAD, T>(adr, addr);
 	if (rv != MMU_ERROR_NONE)
@@ -821,6 +827,13 @@ u16 DYNACALL mmu_IReadMem16(u32 vaddr)
 template<typename T>
 void DYNACALL mmu_WriteMem(u32 adr, T data)
 {
+	if (sizeof(T) == 8 && mmu_in_two_pages(adr))
+	{
+		mmu_WriteMem<u32>(adr, (u32)data);
+		mmu_WriteMem<u32>(adr + 4, (u32)((u64)data >> 32));
+		return;
+	}
+
 	u32 addr;
 	u32 rv = mmu_data_translation<MMU_TT_DWRITE, T>(adr, addr);
 	if (rv != MMU_ERROR_NONE)

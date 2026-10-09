@@ -137,6 +137,18 @@ u32 mmu_instruction_translation(u32 va, u32& rv);
 
 template<u32 translation_type, typename T>
 extern u32 mmu_data_translation(u32 va, u32& rv);
+
+/* 64 bits are read and written as two times 32 by the SH4, each at its own
+ * address: where the second is in another page than the first - at the
+ * last four bytes of a page, be it one of 1K or more - it is somewhere
+ * else altogether, and need not be there at all. Whoever translates one
+ * address and takes eight bytes from where it is has to do such an access
+ * as the two that it is. (None did, and such an access read and wrote four
+ * bytes of whatever comes next in memory.) */
+static INLINE bool mmu_in_two_pages(u32 va)
+{
+	return (va & 0x3FF) == 0x3FC;
+}
 void DoMMUException(u32 addr, u32 mmu_error, u32 access_type);
 
 template<u32 translation_type>
@@ -178,6 +190,17 @@ bool mmu_is_translated(u32 va, u32 size)
 	template<typename T>
 	T DYNACALL mmu_ReadMemNoEx(u32 adr, u32 *exception_occurred)
 	{
+		if (sizeof(T) == 8 && mmu_in_two_pages(adr))
+		{
+			const u32 low = mmu_ReadMemNoEx<u32>(adr, exception_occurred);
+			if (*exception_occurred)
+				return 0;
+			const u32 high = mmu_ReadMemNoEx<u32>(adr + 4, exception_occurred);
+			if (*exception_occurred)
+				return 0;
+			return (T)(((u64)high << 32) | low);
+		}
+
 		u32 addr;
 		u32 rv = mmu_data_translation<MMU_TT_DREAD, T>(adr, addr);
 		if (rv != MMU_ERROR_NONE)
@@ -196,6 +219,13 @@ bool mmu_is_translated(u32 va, u32 size)
 	template<typename T>
 	u32 DYNACALL mmu_WriteMemNoEx(u32 adr, T data)
 	{
+		if (sizeof(T) == 8 && mmu_in_two_pages(adr))
+		{
+			if (mmu_WriteMemNoEx<u32>(adr, (u32)data))
+				return 1;
+			return mmu_WriteMemNoEx<u32>(adr + 4, (u32)((u64)data >> 32));
+		}
+
 		u32 addr;
 		u32 rv = mmu_data_translation<MMU_TT_DWRITE, T>(adr, addr);
 		if (rv != MMU_ERROR_NONE)

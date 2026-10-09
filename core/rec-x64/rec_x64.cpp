@@ -465,6 +465,13 @@ template<typename T>
 static T ReadMemNoEx(u32 addr, u32 pc)
 {
 #ifndef NO_MMU
+	// (two accesses, each translated: mmu.h)
+	if (sizeof(T) == 8 && mmu_in_two_pages(addr))
+	{
+		const u32 low = ReadMemNoEx<u32>(addr, pc);
+		return (T)(((u64)ReadMemNoEx<u32>(addr + 4, pc) << 32) | low);
+	}
+
 	u32 paddr;
 	u32 rv = mmu_data_translation<MMU_TT_DREAD, T>(addr, paddr);
 	if (rv != MMU_ERROR_NONE)
@@ -487,6 +494,13 @@ template<typename T>
 static void WriteMemNoEx(u32 addr, T data, u32 pc)
 {
 #ifndef NO_MMU
+	if (sizeof(T) == 8 && mmu_in_two_pages(addr))
+	{
+		WriteMemNoEx<u32>(addr, (u32)data, pc);
+		WriteMemNoEx<u32>(addr + 4, (u32)((u64)data >> 32), pc);
+		return;
+	}
+
 	u32 paddr;
 	u32 rv = mmu_data_translation<MMU_TT_DWRITE, T>(addr, paddr);
 	if (rv != MMU_ERROR_NONE)
