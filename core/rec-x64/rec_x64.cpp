@@ -1308,8 +1308,7 @@ public:
 					}
 					else
 					{
-						lea(rax, Ctx(op.rs1.reg_ptr()));
-						mov(eax, dword[rax]);
+						mov(eax, Ctx(op.rs1.reg_ptr()));
 						rn = eax;
 					}
 					mov(ecx, rn);
@@ -1486,8 +1485,7 @@ public:
                movss(regalloc.MapXRegister(op.rd, 1), dword[rcx + (rax * 8) + 4]);
 #else
                mov(rcx, qword[rcx + rax * 8]);
-               lea(rdx, Ctx(op.rd.reg_ptr()));
-               mov(qword[rdx], rcx);
+               mov(qword[CtxAt(op.rd.reg_ptr())], rcx);
 #endif
                break;
 
@@ -2166,46 +2164,43 @@ private:
 		if (isram)
 		{
 			// Immediate pointer to RAM: super-duper fast access
-			mov(rax, reinterpret_cast<uintptr_t>(ptr));
+			const Xbyak::RegExp at = ConstMem(ptr);
 			switch (size)
 			{
 			case 1:
 				if (regalloc.IsAllocg(op.rd))
-					movsx(regalloc.MapRegister(op.rd), byte[rax]);
+					movsx(regalloc.MapRegister(op.rd), byte[at]);
 				else
 				{
-					movsx(eax, byte[rax]);
-					lea(rcx, Ctx(op.rd.reg_ptr()));
-					mov(dword[rcx], eax);
+					movsx(eax, byte[at]);
+					mov(Ctx(op.rd.reg_ptr()), eax);
 				}
 				break;
 
 			case 2:
 				if (regalloc.IsAllocg(op.rd))
-					movsx(regalloc.MapRegister(op.rd), word[rax]);
+					movsx(regalloc.MapRegister(op.rd), word[at]);
 				else
 				{
-					movsx(eax, word[rax]);
-					lea(rcx, Ctx(op.rd.reg_ptr()));
-					mov(dword[rcx], eax);
+					movsx(eax, word[at]);
+					mov(Ctx(op.rd.reg_ptr()), eax);
 				}
 				break;
 
 			case 4:
 				if (regalloc.IsAllocg(op.rd))
-					mov(regalloc.MapRegister(op.rd), dword[rax]);
+					mov(regalloc.MapRegister(op.rd), dword[at]);
 				else if (regalloc.IsAllocf(op.rd))
-					movd(regalloc.MapXRegister(op.rd), dword[rax]);
+					movd(regalloc.MapXRegister(op.rd), dword[at]);
 				else
 				{
-					mov(eax, dword[rax]);
-					lea(rcx, Ctx(op.rd.reg_ptr()));
-					mov(dword[rcx], eax);
+					mov(eax, dword[at]);
+					mov(Ctx(op.rd.reg_ptr()), eax);
 				}
 				break;
 
 			case 8:
-				mov(rcx, qword[rax]);
+				mov(rcx, qword[at]);
 #ifdef EXPLODE_SPANS
 				if (op.rd.count() == 2 && regalloc.IsAllocf(op.rd, 0) && regalloc.IsAllocf(op.rd, 1))
 				{
@@ -2216,8 +2211,7 @@ private:
 				else
 #endif
 				{
-					lea(rax, Ctx(op.rd.reg_ptr()));
-					mov(qword[rax], rcx);
+					mov(qword[CtxAt(op.rd.reg_ptr())], rcx);
 				}
 				break;
 
@@ -2236,13 +2230,11 @@ private:
 				// Need to call the handler twice
 			mov(call_regs[0], addr);
 				GenCall((void (*)())ptr);
-				lea(rcx, Ctx(op.rd.reg_ptr()));
-				mov(dword[rcx], eax);
+				mov(Ctx(op.rd.reg_ptr()), eax);
 
 				mov(call_regs[0], addr + 4);
 				GenCall((void (*)())ptr);
-				mov(rcx, (size_t)op.rd.reg_ptr() + 4);
-				mov(dword[rcx], eax);
+				mov(Ctx((const u8 *)op.rd.reg_ptr() + 4), eax);
 			}
 			else
 			{
@@ -2316,47 +2308,44 @@ private:
 		if (isram)
 		{
 			// Immediate pointer to RAM: super-duper fast access
-			mov(rax, reinterpret_cast<uintptr_t>(ptr));
+			const Xbyak::RegExp at = ConstMem(ptr);
 			switch (size)
 			{
 			case 1:
 				if (regalloc.IsAllocg(op.rs2))
-					mov(byte[rax], regalloc.MapRegister(op.rs2).cvt8());
+					mov(byte[at], regalloc.MapRegister(op.rs2).cvt8());
 				else if (op.rs2.is_imm())
-					mov(byte[rax], (u8)op.rs2._imm);
+					mov(byte[at], (u8)op.rs2._imm);
 				else
 				{
-					lea(rcx, Ctx(op.rs2.reg_ptr()));
-					mov(cl, byte[rcx]);
-					mov(byte[rax], cl);
+					mov(ecx, Ctx(op.rs2.reg_ptr()));
+					mov(byte[at], cl);
 				}
 				break;
 
 			case 2:
 				if (regalloc.IsAllocg(op.rs2))
-					mov(word[rax], regalloc.MapRegister(op.rs2).cvt16());
+					mov(word[at], regalloc.MapRegister(op.rs2).cvt16());
 				else if (op.rs2.is_imm())
-					mov(word[rax], (u16)op.rs2._imm);
+					mov(word[at], (u16)op.rs2._imm);
 				else
 				{
-					lea(rcx, Ctx(op.rs2.reg_ptr()));
-					mov(cx, word[rcx]);
-					mov(word[rax], cx);
+					mov(ecx, Ctx(op.rs2.reg_ptr()));
+					mov(word[at], cx);
 				}
 				break;
 
 			case 4:
 				if (regalloc.IsAllocg(op.rs2))
-					mov(dword[rax], regalloc.MapRegister(op.rs2));
+					mov(dword[at], regalloc.MapRegister(op.rs2));
 				else if (regalloc.IsAllocf(op.rs2))
-					movd(dword[rax], regalloc.MapXRegister(op.rs2));
+					movd(dword[at], regalloc.MapXRegister(op.rs2));
 				else if (op.rs2.is_imm())
-					mov(dword[rax], op.rs2._imm);
+					mov(dword[at], op.rs2._imm);
 				else
 				{
-					lea(rcx, Ctx(op.rs2.reg_ptr()));
-					mov(ecx, dword[rcx]);
-					mov(dword[rax], ecx);
+					mov(ecx, Ctx(op.rs2.reg_ptr()));
+					mov(dword[at], ecx);
 				}
 				break;
 
@@ -2372,9 +2361,8 @@ private:
 				else
 #endif
 				{
-					lea(rcx, Ctx(op.rs2.reg_ptr()));
-					mov(rcx, qword[rcx]);
-					mov(qword[rax], rcx);
+					mov(rcx, qword[CtxAt(op.rs2.reg_ptr())]);
+					mov(qword[at], rcx);
 				}
 				break;
 
@@ -2420,6 +2408,31 @@ public:
 	static int MemFromCtx()
 	{
 		return (int)((ptrdiff_t)sizeof(Sh4RCB) - (ptrdiff_t)CTX_BASE);
+	}
+
+	/* A place in memory that is known when the block is compiled, as an
+	 * instruction is to have it: from r15 where it is in the SH4's memory
+	 * as the host has it laid out and near enough - everything is there
+	 * again in the first 512 MB of it - and by way of rax, with its 64-bit
+	 * address, where not. (It used to be rax every time: ten bytes and an
+	 * instruction for every load and store at a constant address.)
+	 *
+	 * That first 512 MB is P0, which with the MMU on and all 4 GB laid out
+	 * is not where pages are protected (bm_ProtectPage()): then it is the
+	 * address as it comes. */
+	Xbyak::RegExp ConstMem(const void *ptr)
+	{
+		if (_nvmem_enabled() && (!mmu_enabled() || !_nvmem_4gb_space()))
+		{
+			u64 offset = (u64)((const u8 *)ptr - virt_ram_base);
+
+			if (_nvmem_4gb_space() && offset < 0xE0000000u)
+				offset &= 0x1FFFFFFF;
+			if (offset < 0x40000000u)
+				return r15 + (MemFromCtx() + (int)offset);
+		}
+		mov(rax, reinterpret_cast<uintptr_t>(ptr));
+		return Xbyak::RegExp(rax);
 	}
 
 	/* Whether what is at @code is a fast access as GenFastAccess() writes
