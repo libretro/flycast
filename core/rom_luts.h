@@ -14,7 +14,6 @@ struct game_type
    int translucentPolygonDepthMask; /* -1, make no decision */
    int disable_div;                 /* -1, make no decision */
    float extra_depth_scale;			/* 1, default */
-   int disable_vmem32;				/* 0 = normal, 1 = disable */
    int no_rgb_component;			/* 0 = normal, 1 = disable */
 };
 
@@ -33,52 +32,33 @@ struct game_type_naomi
 static struct game_type lut_games[] = 
 {
    /* Update mode fullspeed */
-   { "T1210N    ",  1, -1, -1,  -1, 1, 0, 0 },           /* Street Fighter III Double Impact */
+   { "T1210N    ",  1, -1, -1,  -1, 1, 0 },           /* Street Fighter III Double Impact */
 
    /* Alpha sort mode */
-   { "MK-5100050", -1,  1, -1,  -1, 1, 0, 0 },           /* Sonic Adventure */
+   { "MK-5100050", -1,  1, -1,  -1, 1, 0 },           /* Sonic Adventure */
 
    /* Translucent Polygon Depth Mask */
-   { "RDC-0057  ", -1, -1,  1,  -1, 1, 0, 0 },           /* Cosmic Smash */
-   { "HDR-0176  ", -1, -1,  1,  -1, 1, 0, 0 },           /* Cosmic Smash */
+   { "RDC-0057  ", -1, -1,  1,  -1, 1, 0 },           /* Cosmic Smash */
+   { "HDR-0176  ", -1, -1,  1,  -1, 1, 0 },           /* Cosmic Smash */
 
    /* Extra depth scaling */
-   { "T0002M    ", -1, -1, -1, -1, 1e26, 0, 0 },        /* Samurai Shodown 6 (Dreamcast port) */
-   { "MK-51182  ", -1, -1, -1, -1, 10000.f, 0, 0 },     /* NHL 2K2 */
-   { "T-8109N   ", -1, -1, -1, -1, 100.f, 0, 0 },       /* Re-Volt (US) */
-   { "T8107D  50", -1, -1, -1, -1, 100.f, 0, 0 },       /* Re-Volt (EU) */
-
-   /* Disable VMEM32 (WinCE) */
-   { "T0000M    ", -1, -1, -1, -1, 1,  1, 0 },           /* Heroes of Might and Magic III */
-   { "6107117   ", -1, -1, -1, -1, 1,  1, 0 },           /* WebTV */
-   { "610-7390  ", -1, -1, -1, -1, 1,  1, 0 },           /* WebTV */
-   { "610-7391  ", -1, -1, -1, -1, 1,  1, 0 },           /* WebTV */
-   { "T26702N   ", -1, -1, -1, -1, 1,  1, 0 },           /* PBA Bowling */
-   { "T14303M   ", -1, -1, -1, -1, 1,  1, 0 },           /* Super Producers */
-   { "T45401D 50", -1, -1, -1, -1, 1,  1, 0 },           /* Giant Killers */
-   { "T42101N 00", -1, -1, -1, -1, 1,  1, 0 },           /* Wild Metal (US) */
-   { "T40501D-50", -1, -1, -1, -1, 1,  1, 0 },           /* Wild Metal (EU) */
-   { "T1205N    ", -1, -1, -1, -1, 1,  1, 0 },           /* Resident Evil 2 (US) */
-   { "T7004D  50", -1, -1, -1, -1, 1,  1, 0 },           /* Resident Evil 2 (EU) */
-   { "T14304M   ", -1, -1, -1, -1, 1,  1, 0 },           /* Rune Jade */
-   { "T5202M    ", -1, -1, -1, -1, 1,  1, 0 },           /* Marionette Company */
-   { "T5203M    ", -1, -1, -1, -1, 1,  1, 0 },           /* Marionette Company 2 */
-   { "T11010N   ", -1, -1, -1, -1, 1,  1, 0 },           /* Maximum Pool (online support) */
-   { "T40209N   ", -1, -1, -1, -1, 1,  1, 0 },           /* StarLancer (US) (online support)  */
-   { "T17723D 05", -1, -1, -1, -1, 1,  1, 0 },           /* StarLancer (EU) (online support)  */
+   { "T0002M    ", -1, -1, -1, -1, 1e26, 0 },        /* Samurai Shodown 6 (Dreamcast port) */
+   { "MK-51182  ", -1, -1, -1, -1, 10000.f, 0 },     /* NHL 2K2 */
+   { "T-8109N   ", -1, -1, -1, -1, 100.f, 0 },       /* Re-Volt (US) */
+   { "T8107D  50", -1, -1, -1, -1, 100.f, 0 },       /* Re-Volt (EU) */
 
 	// Disable RGB Component
-	{ "T40602N   ", -1, -1, -1, -1, 1,  0, 1 },           /* Centipede */
-	{ "T9710N    ", -1, -1, -1, -1, 1,  0, 1 },           /* Gauntlet Legends (US) */
-	{ "MK-51152  ", -1, -1, -1, -1, 1,  0, 1 },           /* World Series Baseball 2K2 */
-	{ "T-9701N   ", -1, -1, -1, -1, 1,  0, 1 },           /* Mortal Kombat Gold (US) */
-	{ "T1203N    ", -1, -1, -1, -1, 1,  0, 1 },           /* Street Fighter Alpha 3 (US) */
-	{ "T1203M    ", -1, -1, -1, -1, 1,  0, 1 },           /* Street Fighter Zero 3 (JP) */
-	{ "T13002N   ", -1, -1, -1, -1, 1,  0, 1 },           /* Vigilante 8 (US) */
-	{ "T13003N   ", -1, -1, -1, -1, 1,  0, 1 },           /* Toy Story 2 (US) */
-	{ "T1209N    ", -1, -1, -1, -1, 1,  0, 1 },           /* Gigawing (US) */
-	{ "T1208M    ", -1, -1, -1, -1, 1,  0, 1 },           /* Gigawing (JP) */
-	{ "T1235M    ", -1, -1, -1, -1, 1,  0, 1 },           /* Vampire Chronicle for Matching Service */
+	{ "T40602N   ", -1, -1, -1, -1, 1, 1 },           /* Centipede */
+	{ "T9710N    ", -1, -1, -1, -1, 1, 1 },           /* Gauntlet Legends (US) */
+	{ "MK-51152  ", -1, -1, -1, -1, 1, 1 },           /* World Series Baseball 2K2 */
+	{ "T-9701N   ", -1, -1, -1, -1, 1, 1 },           /* Mortal Kombat Gold (US) */
+	{ "T1203N    ", -1, -1, -1, -1, 1, 1 },           /* Street Fighter Alpha 3 (US) */
+	{ "T1203M    ", -1, -1, -1, -1, 1, 1 },           /* Street Fighter Zero 3 (JP) */
+	{ "T13002N   ", -1, -1, -1, -1, 1, 1 },           /* Vigilante 8 (US) */
+	{ "T13003N   ", -1, -1, -1, -1, 1, 1 },           /* Toy Story 2 (US) */
+	{ "T1209N    ", -1, -1, -1, -1, 1, 1 },           /* Gigawing (US) */
+	{ "T1208M    ", -1, -1, -1, -1, 1, 1 },           /* Gigawing (JP) */
+	{ "T1235M    ", -1, -1, -1, -1, 1, 1 },           /* Vampire Chronicle for Matching Service */
 
 };
 

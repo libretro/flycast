@@ -197,11 +197,6 @@ static void LoadSpecialSettings(void)
          	NOTICE_LOG(BOOT, "[Hack]: Applying auto extra depth scale.");
          	settings.rend.ExtraDepthScale = lut_games[i].extra_depth_scale;
          }
-         if (lut_games[i].disable_vmem32 == 1)
-         {
-         	NOTICE_LOG(BOOT, "[Hack]: Disabling WinCE virtual memory.");
-            settings.dynarec.disable_vmem32 = true;
-         }
          if (lut_games[i].no_rgb_component == 1)
          {
          	NOTICE_LOG(BOOT, "Disabling RGB component output");
@@ -594,7 +589,6 @@ void LoadSettings(void)
 	settings.dynarec.Enable			= 1;
 	//settings.dynarec.DisableDivMatching       = 0;
 	//disable_nvmem can't be loaded, because nvmem init is before cfg load
-	settings.dynarec.disable_vmem32 = false;
 	settings.dreamcast.FullMMU		= false;
 	//settings.pvr.Emulation.AlphaSortMode= 0;
 	settings.rend.ExtraDepthScale        = 1.f;

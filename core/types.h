@@ -583,7 +583,6 @@ struct settings_t
 	{
 		bool Enable;
 		bool disable_nvmem;
-		bool disable_vmem32;
 		bool DisableDivMatching;
 		bool ForceDisableDivMatching;
 		bool PrecompileFpcb;	// eagerly commit the whole block-dispatch table
