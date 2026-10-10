@@ -311,7 +311,11 @@ private:
 				}
 				else if ((r2 & 0x1F) == 0)
 				{
-					if (op.op == shop_shl)
+					/* To the right by 32. (This asked whether the operation
+					 * was shop_shl, which it never is here, so a logical
+					 * shift by -32 was done as the arithmetic one and left
+					 * the sign in every bit.) */
+					if (op.op == shop_shld)
 						// rd = 0
 						ReplaceByMov32(op, 0);
 					else
@@ -610,10 +614,19 @@ private:
 					defnum = opnum;
 
 				// find alias redef
-				if (DefinesHigherVersion(op->rd, alias.second) && aliasdef == (size_t)-1)
-					aliasdef = opnum;
-				else if (DefinesHigherVersion(op->rd2, alias.second) && aliasdef == (size_t)-1)
-					aliasdef = opnum;
+				if (aliasdef == (size_t)-1)
+				{
+					if (DefinesHigherVersion(op->rd, alias.second))
+						aliasdef = opnum;
+					else if (DefinesHigherVersion(op->rd2, alias.second))
+						aliasdef = opnum;
+					/* An instruction left to the interpreter can change any
+					 * register, and none of them is down as written by it:
+					 * the register this one is a copy of may not be what
+					 * it was afterwards (upstream ec3ad9b32). */
+					else if (op->op == shop_ifb)
+						aliasdef = opnum;
+				}
 
 				// find last use
 				if (UsesRegValue(op->rs1, alias.first))
