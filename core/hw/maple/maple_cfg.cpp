@@ -66,6 +66,7 @@ Plugins:
 		ImageUpdate(data);
 */
 void UpdateInputState(u32 port);
+void UpdateInputStateArcade(void);
 extern InputLatch input_latch;
 void UpdateVibration(u32 port, u32 value, u32 max_duration);
 
@@ -222,18 +223,15 @@ struct MapleConfigMap : IMapleConfigMap
 	   else
 	   {
 	      /* A NAOMI's I/O board is one device, on the first port, and
-	       * answers for every player: all of them are read when it asks.
-	       * (Only its own port was, since "read only the requested port
-	       * on NAOMI/Atomiswave" - with threaded rendering off the second
-	       * to fourth players' buttons, sticks and coins never changed.
-	       * An Atomiswave has a device for each player and each asks.) */
-	      if (SYSTEM_IS_NAOMI())
-	      {
-	         for (u32 port = 0; port < MAPLE_PORTS; port++)
-	            UpdateInputState(port);
-	      }
-	      else
+	       * answers for every player; an Atomiswave's coins are read for
+	       * all four. An arcade machine's ports are read all together,
+	       * once a frame, whichever device asks first. (A NAOMI's were all
+	       * read each time a board was asked for its inputs, twice a frame
+	       * where there are two boards.) */
+	      if (settings.System == DC_PLATFORM_DREAMCAST)
 	         UpdateInputState(pnum);
+	      else
+	         UpdateInputStateArcade();
 
 	      pjs->kcode=kcode[pnum];
 	      x1=joyx[pnum];
@@ -270,7 +268,10 @@ struct MapleConfigMap : IMapleConfigMap
 	      input_latch.ReadMouse(pnum, buttons, delta_x, delta_y, delta_wheel);
 	      return;
 	   }
-	   UpdateInputState(pnum);
+	   if (settings.System == DC_PLATFORM_DREAMCAST)
+	      UpdateInputState(pnum);
+	   else
+	      UpdateInputStateArcade();
 	   *buttons = mo_buttons[pnum];
 	   *delta_x = mo_x_delta[pnum];
 	   *delta_y = mo_y_delta[pnum];

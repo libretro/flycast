@@ -190,6 +190,10 @@ void FlushCache();	// Arm dynarec (arm and x86 only)
 void ResetAudioBuffer(void);
 void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
+void UpdateInputStateArcade(void);
+/* Without threaded rendering: whether an arcade machine's ports have been
+ * read from the frontend since the last frame ended. */
+static bool arcade_input_read;
 bool rend_single_frame();
 
 static void refresh_devices(bool first_startup);
@@ -1479,14 +1483,14 @@ static void extract_directory(char *buf, const char *path, size_t size)
    strncpy(buf, path, size - 1);
    buf[size - 1] = '\0';
 
-   char *base = strrchr(buf, '/');
-   if (!base)
-      base = strrchr(buf, '\\');
+   /* The last separator of either kind, where there are two kinds: a path
+    * that has both ("C:\roms/naomi\game.zip") was cut at its last "/". */
+   char *base = find_last_slash(buf);
 
    if (base)
       *base = '\0';
    else
-      buf[0] = '\0';
+      strncpy(buf, ".", size - 1);
 }
 
 extern void dc_prepare_system(void);
@@ -2826,7 +2830,17 @@ void os_DoEvents(void)
 	/* In threaded rendering this is the emulation thread; retro_run polls. */
 	if (!settings.rend.ThreadedRendering)
 #endif
+	{
+		/* An arcade machine that did not ask for its inputs this frame has
+		 * them read all the same, before the next poll: every poll's mouse
+		 * motion is counted, once. */
+		if (settings.System != DC_PLATFORM_DREAMCAST)
+		{
+			UpdateInputStateArcade();
+			arcade_input_read = false;
+		}
 		poll_cb();
+	}
 
 	/* Always return control to retro_run here, at the vblank frame
 	 * boundary. Previously this was gated on the Framerate option: in
@@ -3013,8 +3027,10 @@ static uint16_t get_analog_trigger(
 
 static void updateMouseState(u32 port)
 {
-   mo_x_delta[port] = input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
-   mo_y_delta[port] = input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
+   /* Motion adds up until whoever reads it takes it: a frame in which the
+    * game does not ask would lose its own otherwise. */
+   mo_x_delta[port] += input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
+   mo_y_delta[port] += input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
 
    bool btn_state   = input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT);
    if (btn_state)
@@ -3227,7 +3243,9 @@ static void UpdateInputStateNaomi(u32 port)
  * lock (see input_latch.h).
  *
  * In non-threaded rendering the maple path samples live on the one thread
- * there is and reads the globals directly.
+ * there is and reads the globals directly: a Dreamcast's port when its
+ * device is asked, an arcade machine's four together once a frame
+ * (UpdateInputStateArcade).
  */
 InputLatch input_latch;
 
@@ -3238,6 +3256,10 @@ void CaptureInput(void)
    /* Mouse motion handed to the latch so far. */
    static u32 mo_x_total[MAPLE_PORTS], mo_y_total[MAPLE_PORTS], mo_wheel_total[MAPLE_PORTS];
    InputLatch::State& next = input_latch.Next();
+   /* An Atomiswave's trackball is a mouse on the bus whatever device the
+    * player's port is set to. (Its motion went to the latch only if that
+    * was "Mouse": set to anything else, the trackball never moved.) */
+   const bool trackball = settings.System == DC_PLATFORM_ATOMISWAVE;
 
    for (u32 port = 0; port < MAPLE_PORTS; port++)
    {
@@ -3245,13 +3267,16 @@ void CaptureInput(void)
 
       UpdateInputState(port);
 
-      if (maple_devices[port] == MDT_Mouse)
+      /* The latch takes the motion a mouse or a trackball reads from it. A
+       * NAOMI's rotary encoders take theirs from the globals themselves,
+       * where it stays until they do. */
+      if (maple_devices[port] == MDT_Mouse ? !SYSTEM_IS_NAOMI() : trackball)
       {
-         /* The globals hold this frame's motion; the wheel adds up until
-          * it is taken. */
          mo_x_total[port]     += (u32)(s32)mo_x_delta[port];
          mo_y_total[port]     += (u32)(s32)mo_y_delta[port];
          mo_wheel_total[port] += (u32)(s32)mo_wheel_delta[port];
+         mo_x_delta[port]      = 0;
+         mo_y_delta[port]      = 0;
          mo_wheel_delta[port]  = 0;
       }
 
@@ -3268,6 +3293,22 @@ void CaptureInput(void)
       s.mo_wheel   = mo_wheel_total[port];
    }
    input_latch.Publish();
+}
+
+/* Without threaded rendering, an arcade machine's ports are read from the
+ * frontend, all four, unless that is done: when the machine first asks
+ * for its inputs in a frame - no sooner, so with no more delay than when
+ * each device read its own - or at the end of a frame in which it did not
+ * (os_DoEvents). So each poll of the frontend's is read once, as
+ * CaptureInput() reads it with threaded rendering, and mouse motion can add
+ * up without being counted twice or left out. */
+void UpdateInputStateArcade(void)
+{
+   if (arcade_input_read)
+      return;
+   arcade_input_read = true;
+   for (u32 port = 0; port < MAPLE_PORTS; port++)
+      UpdateInputState(port);
 }
 
 void UpdateInputState(u32 port)
