@@ -885,6 +885,15 @@ static void tcp_parse_options(struct pico_frame *f)
         if (f->payload && ((opt + i) > f->payload))
             break;
 
+        /* An option's length counts its two bytes of type and length: one
+         * of less is no option, and the options end there. (Below, the
+         * place is moved on by the length less two - which for a length
+         * of 0 is where this option started, and it was read again and
+         * again for ever, on the network thread, for anyone on the other
+         * end of a connection to send. Upstream drops the segment.) */
+        if (type > 1 && len < 2)
+            break;
+
         tcp_dbg_options("Received option '%d', len = %d \n", type, len);
         switch (type) {
         case PICO_TCP_OPTION_NOOP:
