@@ -2475,6 +2475,17 @@ size_t retro_get_memory_size(unsigned type)
    return 0; //TODO
 }
 
+/* A frontend asks how large a state is once and keeps the answer - for
+ * run-ahead and for rewind it does - and a state is not the same size every
+ * time: the tile accelerator's part is a few bytes longer while a list is
+ * being sent to it than between two lists. Told the exact size of a moment
+ * between two, the frontend had no room for the state of the next frame,
+ * which was refused, and gave up run-ahead for good. So it is told a little
+ * more than is needed now, and what a state does not use of that is zeroes.
+ * (This is not yet a limit no state can pass: a list that was left half
+ * sent and is taken up again is in the state whole.) */
+#define STATE_HEADROOM 4096
+
 size_t retro_serialize_size (void)
 {
    unsigned int total_size = 0 ;
@@ -2482,7 +2493,7 @@ size_t retro_serialize_size (void)
 
    dc_serialize(&data, &total_size) ;
 
-   return total_size;
+   return (size_t)total_size + STATE_HEADROOM;
 }
 
 bool retro_serialize(void *data, size_t size)
@@ -2515,6 +2526,9 @@ bool retro_serialize(void *data, size_t size)
    }
 
    result = dc_serialize(&data_ptr, &total_size) ;
+   // (the same bytes for the same state, whatever was in the frontend's buffer)
+   if (total_size < size)
+      memset((u8 *)data + total_size, 0, size - total_size);
 
 #if !defined(TARGET_NO_THREADS)
    emu_release();
