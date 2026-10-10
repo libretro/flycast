@@ -13,15 +13,27 @@ struct List
 	__forceinline int used() const { return size-avail; }
 	__forceinline int bytes() const { return used()* sizeof(T); }
 
+	/* The list is full. The frame is marked, to be dropped, and the list
+	 * starts again at its beginning with the @n elements asked for taken
+	 * from there as by any other Append(): whatever the caller goes on to do
+	 * with them - write them all, come back to the last of them through
+	 * LastPtr(), give it back with PopLast() - is then inside the list, where
+	 * with nothing taken LastPtr() was the element below the buffer. (@n is
+	 * 1 or 4, and no list is smaller than that.) */
 	NOINLINE
-	T* sig_overrun() 
+	T* sig_overrun(int n)
 	{ 
+		T* rv;
+
 		*overrun |= true;
 		Clear();
       if (list_name != NULL)
 		   WARN_LOG(PVR, "List overrun for list %s", list_name);
 
-		return daty;
+		rv = daty;
+		daty += n;
+		avail -= n;
+		return rv;
 	}
 
 	__forceinline 
@@ -37,7 +49,7 @@ struct List
 			return rv;
 		}
 		else
-			return sig_overrun();
+			return sig_overrun(n);
 	}
 
 	__forceinline 

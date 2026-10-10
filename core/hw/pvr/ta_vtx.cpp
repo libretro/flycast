@@ -1679,7 +1679,7 @@ static NOINLINE u32 *make_index_overrun(rend_context* ctx, u32 **out_end)
 	u32 *start;
 	ctx->idx.daty = *out_end;
 	ctx->idx.avail = 0;
-	start = ctx->idx.sig_overrun();
+	start = ctx->idx.sig_overrun(0);	// (nothing taken: the caller keeps its own place)
 	*out_end = start + ctx->idx.avail;
 	return start;
 }
@@ -1736,6 +1736,7 @@ static void make_index(const List<PolyParam> *polys, int first, int end, bool me
 		bool dupe_next_vtx = false;
 		if (merge
 				&& last_poly != NULL
+				&& last_poly->count != 0	// (one that came to no indices has no last of them to repeat)
 				&& poly_same_state(poly, last_poly))
 		{
 			const u32 last_vtx = indices[last_poly->first + last_poly->count - 1];
