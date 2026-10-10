@@ -119,6 +119,9 @@ static pico_socket *pico_tcp_socket, *pico_udp_socket;
 
 static pico_ip4 afo_ip;
 
+/* The most a native socket may be owed before the connection is given up. */
+#define OUT_BUFFER_MAX (1024 * 1024)
+
 struct socket_pair
 {
 	socket_pair() : pico_sock(nullptr), native_sock(INVALID_SOCKET) {}
@@ -137,6 +140,41 @@ struct socket_pair
 	sock_t native_sock;
 	std::vector<char> in_buffer;
 	bool shutdown = false;
+	std::vector<char> out_buffer;	// from the Dreamcast, not yet taken by the native socket
+	bool shut_wr = false;			// the Dreamcast has closed its side: passed on once out_buffer has gone
+
+	/* Sends the native socket what it has not taken yet and then @len bytes
+	 * more. What it does not take now is kept, and the thread is woken when
+	 * the socket has room for it (see wait_for_work). False if the
+	 * connection is lost, or more is waiting than a live peer would leave. */
+	bool send_native(const char *data, size_t len)
+	{
+		const bool kept = !out_buffer.empty();
+
+		if (kept)
+		{
+			out_buffer.insert(out_buffer.end(), data, data + len);
+			data = &out_buffer[0];
+			len = out_buffer.size();
+		}
+		int r = (int)send(native_sock, data, len, 0);
+		if (r < 0)
+		{
+			if (get_last_error() != L_EAGAIN && get_last_error() != L_EWOULDBLOCK)
+				return false;
+			r = 0;
+		}
+		if (kept)
+			out_buffer.erase(out_buffer.begin(), out_buffer.begin() + r);
+		else
+			out_buffer.assign(data + r, data + len);
+		if (shut_wr && out_buffer.empty())
+		{
+			shut_wr = false;
+			::shutdown(native_sock, SHUT_WR);
+		}
+		return out_buffer.size() <= OUT_BUFFER_MAX;
+	}
 
 	void receive_native()
 	{
@@ -345,18 +383,17 @@ int read_pico()
 	return b;
 }
 
-static void read_from_dc_socket(pico_socket *pico_sock, sock_t nat_sock)
+static void read_from_dc_socket(socket_pair& pair)
 {
 	char buf[1510];
 
-	int r = pico_socket_read(pico_sock, buf, sizeof(buf));
-	if (r > 0)
+	int r = pico_socket_read(pair.pico_sock, buf, sizeof(buf));
+	if (r > 0 && !pair.send_native(buf, r))
 	{
-		if (send(nat_sock, buf, r, 0) < r)
-		{
-			perror("tcp_callback send");
-			tcp_sockets.erase(pico_sock);
-		}
+		pico_socket *pico_sock = pair.pico_sock;
+
+		perror("tcp_callback send");
+		tcp_sockets.erase(pico_sock);
 	}
 }
 
@@ -372,7 +409,7 @@ static void tcp_callback(uint16_t ev, pico_socket *s)
 		}
 		else
 		{
-			read_from_dc_socket(it->first, it->second.native_sock);
+			read_from_dc_socket(it->second);
 		}
 	}
 
@@ -483,7 +520,10 @@ static void tcp_callback(uint16_t ev, pico_socket *s)
 		}
 		else
 		{
-			if (it->second.native_sock != INVALID_SOCKET)
+			// Not before the bytes still waiting for the native socket have gone
+			if (!it->second.out_buffer.empty())
+				it->second.shut_wr = true;
+			else if (it->second.native_sock != INVALID_SOCKET)
 				shutdown(it->second.native_sock, SHUT_WR);
 			pico_socket_shutdown(s, PICO_SHUT_RD);
 		}
@@ -512,6 +552,22 @@ static sock_t find_udp_socket(uint16_t src_port)
 	u_long optl = 1;
 	ioctlsocket(sockfd, FIONBIO, &optl);
 #endif
+
+	// The port the Dreamcast sends from, when it can be had: a server may
+	// answer to the port the game is known to use and not to the one the
+	// datagram came from (Toy Racer). Otherwise any port the system has.
+	sockaddr_in saddr;
+	memset(&saddr, 0, sizeof(saddr));
+	saddr.sin_family = AF_INET;
+	saddr.sin_addr.s_addr = INADDR_ANY;
+	saddr.sin_port = src_port;
+	if (::bind(sockfd, (sockaddr *)&saddr, sizeof(saddr)) < 0)
+	{
+		INFO_LOG(MODEM, "UDP port %d cannot be had: using another", short_be(src_port));
+		saddr.sin_port = 0;
+		if (::bind(sockfd, (sockaddr *)&saddr, sizeof(saddr)) < 0)
+			perror("bind");
+	}
 
 	// FIXME Need to clean up at some point?
 	udp_sockets[src_port] = sockfd;
@@ -643,11 +699,11 @@ static void read_native_sockets()
 			{
 				set_tcp_nodelay(it->second);
 
-				tcp_sockets.emplace(std::piecewise_construct,
+				auto added = tcp_sockets.emplace(std::piecewise_construct,
 				              std::forward_as_tuple(it->first),
 				              std::forward_as_tuple(it->first, it->second));
 
-				read_from_dc_socket(it->first, it->second);
+				read_from_dc_socket(added.first->second);
 			}
 			it = tcp_connecting_sockets.erase(it);
 		}
@@ -687,6 +743,13 @@ static void read_native_sockets()
 	// Read TCP sockets
 	for (auto it = tcp_sockets.begin(); it != tcp_sockets.end(); )
 	{
+		if (!it->second.out_buffer.empty() && VALID(it->second.native_sock)
+				&& !it->second.send_native(nullptr, 0))
+		{
+			perror("tcp socket send");
+			it = tcp_sockets.erase(it);
+			continue;
+		}
 		it->second.receive_native();
 		if (it->second.pico_sock == nullptr)
 			it = tcp_sockets.erase(it);
@@ -969,12 +1032,20 @@ static void wait_for_work(int kicks)
 		max_fd = std::max(max_fd, (int)it.second);
 	}
 	for (auto& it : tcp_sockets)
+	{
 		// One with bytes the stack has not taken yet is not read until it has
 		if (VALID(it.second.native_sock) && it.second.in_buffer.empty())
 		{
 			FD_SET(it.second.native_sock, &readable);
 			max_fd = std::max(max_fd, (int)it.second.native_sock);
 		}
+		// One that is owed bytes: woken when it has room for them
+		if (VALID(it.second.native_sock) && !it.second.out_buffer.empty())
+		{
+			FD_SET(it.second.native_sock, &writable);
+			max_fd = std::max(max_fd, (int)it.second.native_sock);
+		}
+	}
 	for (auto& it : tcp_connecting_sockets)
 	{
 		FD_SET(it.second, &writable);
@@ -1148,19 +1219,8 @@ static void *pico_thread_func(void *)
 	{
 		for (u32 i = 0; i < ARRAY_SIZE(ports->udpPorts) && ports->udpPorts[i] != 0; i++)
 		{
-			uint16_t port = short_be(ports->udpPorts[i]);
-			sock_t sockfd = find_udp_socket(port);
-			saddr.sin_port = port;
-
-			if (::bind(sockfd, (sockaddr *)&saddr, saddr_len) < 0)
-			{
-				perror("bind");
-				closesocket(sockfd);
-				auto it = udp_sockets.find(port);
-				if (it != udp_sockets.end())
-					it->second = INVALID_SOCKET;
-				continue;
-			}
+			// Bound to the port by find_udp_socket
+			find_udp_socket(short_be(ports->udpPorts[i]));
 		}
 
 		for (u32 i = 0; i < ARRAY_SIZE(ports->tcpPorts) && ports->tcpPorts[i] != 0; i++)
