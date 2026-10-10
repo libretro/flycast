@@ -92,7 +92,8 @@ static TaListFP* TaCmd;
 	
 static u32 CurrentList;
 static TaListFP* VertexDataFP;
-static bool ListIsFinished[5];
+// (by list type as a parameter has it, three bits: 5 to 7 are no list, and can be asked for all the same)
+static bool ListIsFinished[8];
 
 static INLINE f32 f16(u16 v)
 {
@@ -476,6 +477,17 @@ strip_end:
 					group_EN();
 					//Yep , C++ IS lame & limited
 					#include "ta_const_df.h"
+					if (CurrentList == ListType_None && data->pcw.ListType > ListType_Punch_Through)
+					{
+						/* A list of a type there is none of (5 to 7): there
+						 * is nowhere for its polygons to go, and the first
+						 * of them used to be put there all the same -
+						 * through a null pointer. Passed over, as upstream
+						 * does (a0b50cd41, from a crash report). */
+						WARN_LOG(PVR, "Invalid TA list type %d", data->pcw.ListType);
+						data += SZ32;
+						break;
+					}
 					if (CurrentList==ListType_None)
 						ta_list_start(data->pcw.ListType);	//start a list ;)
 
@@ -531,6 +543,13 @@ strip_end:
 			case ParamType_Sprite:
 				{
 					group_EN();
+					if (CurrentList == ListType_None && data->pcw.ListType > ListType_Punch_Through)
+					{
+						// (as for a polygon)
+						WARN_LOG(PVR, "Invalid TA list type %d", data->pcw.ListType);
+						data += SZ32;
+						break;
+					}
 					if (CurrentList==ListType_None)
 						ta_list_start(data->pcw.ListType);	//start a list ;)
 
@@ -550,7 +569,9 @@ strip_end:
 			case 3:
 			case 6:
 				{
-					die("Unhandled parameter");
+					/* Passed over, which is what was meant: die() ended
+					 * the emulator before the line after it was reached. */
+					WARN_LOG(PVR, "Unhandled TA parameter %08x", data->pcw.full);
 					data+=SZ32;
 				}
 				break;

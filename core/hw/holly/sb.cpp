@@ -754,12 +754,17 @@ void sb_Reset(bool hard)
 	SB_ISTNRM = 0;
 	SB_FFST_rc = 0;
 	SB_FFST = 0;
-	if (settings.System == DC_PLATFORM_DREAMCAST)
 #ifdef ENABLE_MODEM
-   if (settings.network.EmulateBBA)
-		bba_Reset(hard);
-	else
-		ModemTerm();
+	/* (The condition used to be outside the #ifdef: a build without a modem
+	 * - the Switch's - had it on the line below, and an arcade board's
+	 * interrupt controller was never reset.) */
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+	{
+		if (settings.network.EmulateBBA)
+			bba_Reset(hard);
+		else
+			ModemTerm();
+	}
 #endif
 	asic_reg_Reset(hard);
 	if (settings.System == DC_PLATFORM_DREAMCAST)
