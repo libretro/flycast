@@ -290,6 +290,10 @@ static ArmOp decodeArmOp(u32 opcode, u32 arm_pc)
 				else
 				{
 					op.rd.getReg().armreg = R15_ARM_NEXT;
+					// (a constant for the program counter goes in without its
+					// low two bits; anything else loses them where it is made)
+					if (op.op_type == ArmOp::MOV && op.arg[0].isImmediate() && !op.arg[0].isShifted())
+						op.arg[0].setImmediate(op.arg[0].getImmediate() & ~3);
 					op.cycles++;
 				}
 				op.flags |= ArmOp::OP_SETS_PC;
@@ -621,7 +625,9 @@ void compile()
 	void* rv = icPtr;
 
 	//setup local pc counter
-	u32 pc = arm_Reg[R15_ARM_NEXT].I;
+	// (of whole words: the block is found by its address without the low
+	// two bits, and has to be the code for that address)
+	u32 pc = arm_Reg[R15_ARM_NEXT].I & ~3;
 
 	//update the block table
 	// Note that we mask with the max aica size (8 MB), which is

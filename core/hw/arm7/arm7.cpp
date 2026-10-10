@@ -1711,7 +1711,9 @@ extern "C" void CompileCode()
 	EntryPoints[(armNextPC & (ARAM_SIZE_MAX - 1)) / 4] = rv;
 
 	//setup local pc counter
-	u32 pc=armNextPC;
+	// (of whole words: the block is found by its address without the low
+	// two bits, and has to be the code for that address)
+	u32 pc=armNextPC & ~3;
 
 	//emitter/block setup
 	armv_setup();
@@ -1918,6 +1920,12 @@ extern "C" void CompileCode()
 					if (Rd==15)
 					{
 						verify(op_flags & OP_SETS_PC);
+						// the program counter has no low two bits
+#if HOST_CPU==CPU_X86
+						x86e->Emit(op_and32, &virt_arm_reg(0), 0xfffffffc);
+#else
+						armv_bic(r0, r0, 3);
+#endif
 						StoreReg(r0,R15_ARM_NEXT);
 					}
 					else

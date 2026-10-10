@@ -717,6 +717,8 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(e68k_reg_M) ;
 
 	LIBRETRO_USA(arm_Reg,RN_ARM_REG_COUNT);
+	// (the sound CPU fetches whole words: an address that is not one's is never in its pc)
+	arm_Reg[R15_ARM_NEXT].I &= ~3;
 	LIBRETRO_US(armIrqEnable);
 	LIBRETRO_US(armFiqEnable);
 	LIBRETRO_US(armMode);

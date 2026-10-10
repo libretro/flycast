@@ -5436,8 +5436,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
     }
     break;
@@ -5471,8 +5471,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
       if(!(opcode & (1 << base)))
         reg[base].I = temp;
@@ -5671,8 +5671,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
     }
   break;
@@ -5706,8 +5706,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
       if(!(opcode & (1 << base)))
         reg[base].I = temp;
@@ -5902,8 +5902,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
     }
     break;
@@ -5937,8 +5937,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
       if(!(opcode & (1 << base)))
         reg[base].I = temp;
@@ -6133,8 +6133,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
     }
     break;
@@ -6168,8 +6168,8 @@ if(cond_res) {
           clockTicks += 2 + CPUUpdateTicksAccess32(address);
         else
           clockTicks += 2 + CPUUpdateTicksAccessSeq32(address);
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        armNextPC = reg[15].I & 0xFFFFFFFC;
+        reg[15].I = armNextPC + 4;
       }
       if(!(opcode & (1 << base)))
         reg[base].I = temp;

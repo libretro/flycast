@@ -534,6 +534,13 @@ class Arm7Compiler : public Xbyak::CodeGenerator
 			die("invalid");
 			break;
 		}
+		/* A result that goes to the program counter loses its low two bits:
+		 * the ARM takes instructions from whole words only. (A constant put
+		 * there is the address of an instruction, and has none. None of
+		 * these sets the flags, so the host's are free.) */
+		if (op.rd.isReg() && op.rd.getReg().armreg == R15_ARM_NEXT
+				&& !(op.op_type == ArmOp::MOV && arg0.isNone()))
+			and_(rd, 0xfffffffc);
 
 		return save_v_flag;
 	}
@@ -619,7 +626,12 @@ class Arm7Compiler : public Xbyak::CodeGenerator
 		L(done);
 
 		if (op.op_type == ArmOp::LDR)
+		{
+			// the program counter has no low two bits
+			if (op.rd.getReg().armreg == R15_ARM_NEXT)
+				and_(eax, 0xfffffffc);
 			mov(regalloc->map(op.rd.getReg().armreg), eax);
+		}
 	}
 
 	void saveFlags(bool save_v_flag)
