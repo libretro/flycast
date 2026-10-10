@@ -199,9 +199,13 @@ RuntimeBlockInfoPtr bm_GetBlock2(void* dynarec_code)
 	return iter->second;
 }
 
+// where in del_blocks the blocks thrown out by the last bm_ResetCache() start, if they are still there
+static size_t reset_batch = (size_t)-1;
+
 static void bm_CleanupDeletedBlocks()
 {
 	del_blocks.clear();
+	reset_batch = (size_t)-1;
 }
 
 // Takes RX pointer and returns a RW pointer
@@ -385,12 +389,36 @@ static void bm_UnlockPage(u32 addr)
 	bm_ProtectPage(addr, false);
 }
 
-void bm_ResetCache()
+void bm_ResetCache(bool nothing_since)
 {
 	bm_ForgetVaddrs();
 	ngen_ResetBlocks();
 	sh4_wait_sites_reset();
 	_vmem_bm_reset();
+
+	/* Emptied again with nothing compiled since the last time (@nothing_since):
+	 * whatever block is still running is one of those thrown out then. It
+	 * is not in blkmap to be relinked below, but nothing has been written
+	 * over it, and it has to leave by the rules as they are now - back to
+	 * the main loop, if the MMU has just come on - like any block that is
+	 * running when this happens. Left as it was it went on by the rules of
+	 * the first time: into a block compiled for the MMU, under a main loop
+	 * made for a machine without one. (A program that turns translation
+	 * on and loads its TLB after does both in one block: two of these.) */
+	if (nothing_since && reset_batch <= del_blocks.size())
+	{
+		for (size_t i = reset_batch; i < del_blocks.size(); i++)
+		{
+			RuntimeBlockInfo *block = del_blocks[i].get();
+
+			block->relink_data = 0;
+			block->pNextBlock = 0;
+			block->pBranchBlock = 0;
+			block->Relink();
+		}
+	}
+	else
+		reset_batch = del_blocks.size();
 
 	for (const auto& it : blkmap)
 	{
@@ -452,6 +480,9 @@ void bm_ResetTempCache(bool full)
 		for (const auto& block : blocks)
 			bm_DiscardBlock(block.get());
 	}
+	// (put in front: what bm_ResetCache() keeps note of is that much further on)
+	if (reset_batch != (size_t)-1)
+		reset_batch += all_temp_blocks.size();
 	del_blocks.insert(del_blocks.begin(),all_temp_blocks.begin(),all_temp_blocks.end());
 	all_temp_blocks.clear();
 }

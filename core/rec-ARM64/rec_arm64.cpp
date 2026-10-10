@@ -1525,12 +1525,18 @@ public:
 		Stp(x29, x30, MemOperand(sp, 144));
 
 		Sub(x0, x0, sizeof(Sh4Context));
+		/* Push context, and what is left of the time slice (see
+		 * ngen_Compile()): what a block compiled with the MMU on goes by.
+		 * Whether the MMU is on or not, so that the stack is the same
+		 * either way - the MMU can come on while this is running, and
+		 * what is compiled and run before this is left then writes to
+		 * that place, and may leave by the end of a main loop made after
+		 * this one. (With the MMU off there was no such pair: the write
+		 * went into the register saved first, x20 of whoever called.) */
+		Mov(x1, SH4_TIMESLICE);
+		Stp(x0, x1, MemOperand(sp, -16, PreIndex));
 		if (mmu_enabled())
 		{
-			// Push context, and what is left of the time slice (see ngen_Compile())
-			Mov(x1, SH4_TIMESLICE);
-			Stp(x0, x1, MemOperand(sp, -16, PreIndex));
-
 			Ldr(x0, reinterpret_cast<uintptr_t>(jmp_env));
 			Ldr(x1, reinterpret_cast<uintptr_t>(&setjmp));
 			Blr(x1);
@@ -1575,9 +1581,8 @@ public:
 		B(&no_update);
 
 		Bind(&end_mainloop);
-		if (mmu_enabled())
-			// Pop context
-			Add(sp, sp, 16);
+		// Pop context
+		Add(sp, sp, 16);
 		// Restore registers
 		Ldp(x29, x30, MemOperand(sp, 144));
 		Ldp(s12, s13, MemOperand(sp, 128));

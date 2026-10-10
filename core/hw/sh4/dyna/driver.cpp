@@ -72,8 +72,10 @@ void clear_temp_cache(bool full)
 static void recSh4_ClearCache(void)
 {
 	INFO_LOG(DYNAREC, "recSh4:Dynarec Cache clear at %08X free space %d", next_pc, emit_FreeSpace());
+	// (see bm_ResetCache())
+	const bool nothing_since = LastAddr == LastAddr_min && TempLastAddr == 0;
 	LastAddr=LastAddr_min;
-	bm_ResetCache();
+	bm_ResetCache(nothing_since);
 	smc_hotspots.clear();
 	clear_temp_cache(true);
 }

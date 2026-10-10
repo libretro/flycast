@@ -112,7 +112,8 @@ RuntimeBlockInfoPtr DYNACALL bm_GetBlock(u32 addr);
 void bm_AddBlock(RuntimeBlockInfo* blk);
 void bm_DiscardBlock(RuntimeBlockInfo* block);
 void bm_Reset();
-void bm_ResetCache();
+// @nothing_since: no block has been compiled since the last time
+void bm_ResetCache(bool nothing_since = false);
 void bm_ResetTempCache(bool full);
 void bm_Periodical_1s();
 
