@@ -90,7 +90,25 @@ static void UpdateSh4Ints()
 
 AicaTimer timers[3];
 int aica_schid = -1;
-const int AICA_TICK = 145125;	// 44.1 KHz / 32
+/* 32 samples at 44100 Hz take 200,000,000 * 32 / 44100 SH4 cycles, which is
+ * 145124 and 31600/44100. A tick is the whole cycles of that, and the
+ * 44100ths left over are counted up in aica_tick_frac: every time they come
+ * to a whole cycle the next tick is one cycle longer, and in the long run
+ * the rate is 44100 Hz exactly. (Every tick used to be 145125 cycles, which
+ * is 44099.91 Hz.) */
+#define AICA_TICK_DEN 44100
+const int AICA_TICK = (int)((u64)SH4_MAIN_CLOCK * 32 / AICA_TICK_DEN);
+static const u32 AICA_TICK_REM = (u32)((u64)SH4_MAIN_CLOCK * 32 % AICA_TICK_DEN);
+/* What is left over after the tick that is on its way, 0 to 44099. */
+static u32 aica_tick_frac;
+
+/* How long the tick that is on its way is: the long one is the one that
+ * took a whole cycle out of the count, which leaves less in it than a tick
+ * adds. A count of 0 is a long one, as the first tick of a machine is. */
+static inline int aica_tick_cycles()
+{
+	return AICA_TICK + (aica_tick_frac < AICA_TICK_REM);
+}
 
 u32 sh4_sched_remaining(int id);
 
@@ -102,12 +120,13 @@ u32 libAICA_SamplesIntoTick()
 	if (aica_schid == -1)
 		return 0;
 
+	const u32 tick = (u32)aica_tick_cycles();
 	u32 remaining = sh4_sched_remaining(aica_schid);
-	if (remaining >= (u32)AICA_TICK)
+	if (remaining >= tick)
 		// not scheduled, or due this instant
 		return 0;
 
-	u32 samples = (u32)(((u64)(AICA_TICK - remaining) * 32) / AICA_TICK);
+	u32 samples = (u32)(((u64)(tick - remaining) * 32) / tick);
 	return samples > 31 ? 31 : samples;
 }
 
@@ -115,6 +134,12 @@ static int AicaUpdate(int tag, int c, int j)
 {
    aicaarm::run(32);
 
+	aica_tick_frac += AICA_TICK_REM;
+	if (aica_tick_frac >= AICA_TICK_DEN)
+	{
+		aica_tick_frac -= AICA_TICK_DEN;
+		return AICA_TICK + 1;
+	}
 	return AICA_TICK;
 }
 
@@ -335,11 +360,43 @@ void libAICA_Reset(bool hard)
 	 * way comes when it was going to. It is asked for here only when there
 	 * is none, which is the first reset of a machine. */
 	if (!sh4_sched_is_scheduled(aica_schid))
-		sh4_sched_request(aica_schid, AICA_TICK);
+	{
+		aica_tick_frac = 0;
+		sh4_sched_request(aica_schid, aica_tick_cycles());
+	}
 }
 
 void libAICA_Term()
 {
 	sgc_Term();
 	term_mem();
+}
+
+/* What a V21 save state has of the sound chip that the ones before it have
+ * not: the sample clock's count of 44100ths of a cycle, and the low bits of
+ * where each channel is between two samples. 66 bytes. They are read after
+ * the rest of the sound chip's state. */
+void aica_serialize_v21(void **data, unsigned int *total_size)
+{
+	u16 frac = (u16)aica_tick_frac;
+	LIBRETRO_S(frac);
+	channel_serialize_v21(data, total_size);
+}
+
+bool aica_unserialize_v21(void **data, unsigned int *total_size)
+{
+	u16 frac = 0;
+	LIBRETRO_US(frac);
+	// (one that is not a count starts again)
+	aica_tick_frac = frac < AICA_TICK_DEN ? frac : 0;
+	channel_unserialize_v21(data, total_size);
+	return true;
+}
+
+/* A state from before V21: its ticks were all 145125 cycles, which is what
+ * the one on its way is taken to be with the count at 0, and the channels'
+ * low bits are 0 as channel_unserialize() left them. */
+void aica_state_before_v21(void)
+{
+	aica_tick_frac = 0;
 }
