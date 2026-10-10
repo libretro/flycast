@@ -450,7 +450,22 @@ void Naomi_DmaStart(u32 addr, u32 data)
 			void* ptr = CurrentCartridge->GetDmaPtr(block_len);
 			if (block_len == 0)
 			{
+				// Nothing there to read: the rest of the transfer is zeroes,
+				// and it ends where it was asked to end. (A page at a time,
+				// so that no piece runs over the end of what it starts in.)
+				static u32 zeroes[1024];
+
 				INFO_LOG(NAOMI, "Aborted DMA transfer. Read past end of cart?");
+				while (len > 0)
+				{
+					block_len = (u32)sizeof(zeroes) - (start & ((u32)sizeof(zeroes) - 1));
+					if (block_len > len)
+						block_len = len;
+					WriteMemBlock_nommu_ptr(start, zeroes, block_len);
+					len -= block_len;
+					start += block_len;
+					SB_GDLEND += block_len;
+				}
 				break;
 			}
 			WriteMemBlock_nommu_ptr(start, (u32*)ptr, block_len);

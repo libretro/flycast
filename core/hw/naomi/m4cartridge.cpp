@@ -53,8 +53,16 @@ void M4Cartridge::device_start()
 		m4id = 0x5504;
 	}
 
-	subkey1 = (m_key_data[0x5e2] << 8) | m_key_data[0x5e0];
-	subkey2 = (m_key_data[0x5e6] << 8) | m_key_data[0x5e4];
+	if (m_key_data != NULL)
+	{
+		subkey1 = (m_key_data[0x5e2] << 8) | m_key_data[0x5e0];
+		subkey2 = (m_key_data[0x5e6] << 8) | m_key_data[0x5e4];
+	}
+	else
+	{
+		// a set without its key file
+		WARN_LOG(NAOMI, "Missing M4 key");
+	}
 
 	enc_init();
 }
@@ -115,7 +123,11 @@ bool M4Cartridge::Read(u32 offset, u32 size, void *dst) {
 		int fpr_num = m4id & 0x7f;
 
 		if (((offset >> 26) & 0x07) < fpr_num) {
-			*(u16 *)dst = *(u16 *)&cfidata[offset & 0xffff];
+			// (the table is all there is: zero past it)
+			if ((offset & 0xffff) + 2 <= sizeof(cfidata))
+				*(u16 *)dst = *(u16 *)&cfidata[offset & 0xffff];
+			else
+				*(u16 *)dst = 0;
 			return true;
 		}
 	}
@@ -157,9 +169,11 @@ void *M4Cartridge::GetDmaPtr(u32 &size)
 	if (cfi_mode) {
 		int fpr_num = m4id & 0x7f;
 
-		if (((rom_cur_address >> 26) & 0x07) < fpr_num) {
+		if (((DmaOffset >> 26) & 0x07) < fpr_num) {
 			size = std::min(size, 2u);
-			return &cfidata[rom_cur_address & 0xffff];
+			if ((DmaOffset & 0xffff) + 2 > sizeof(cfidata))
+				return retzero;
+			return &cfidata[DmaOffset & 0xffff];
 		}
 	}
 
@@ -189,7 +203,7 @@ void *M4Cartridge::GetDmaPtr(u32 &size)
 		}
 		else
 		{
-			size = 2;
+			size = std::min(size, 2u);
 			return retzero;
 		}
 	}
@@ -209,7 +223,7 @@ void M4Cartridge::AdvancePtr(u32 size)
 		enc_fill();
 	}
 	else
-		rom_cur_address += size;
+		NaomiCartridge::AdvancePtr(size);
 }
 
 void M4Cartridge::enc_reset()
@@ -226,10 +240,21 @@ u16 M4Cartridge::decrypt_one_round(u16 word, u16 subkey)
 
 void M4Cartridge::enc_fill()
 {
+	// The buffer is filled ahead of what is asked for, from an address that
+	// is the game's (or a save state's): past the end of the ROMs the words
+	// to decode are all ones, as Read() gives them.
+	const u32 left = rom_cur_address < RomSize ? RomSize - rom_cur_address : 0;
+	const bool inside = sizeof(buffer) - buffer_actual_size <= left;
 	const u8 *base = RomPtr + rom_cur_address;
 	while (buffer_actual_size < sizeof(buffer))
 	{
-		u16 enc = base[0] | (base[1] << 8);
+		u16 enc;
+		if (inside)
+			enc = base[0] | (base[1] << 8);
+		else if (rom_cur_address < RomSize && RomSize - rom_cur_address >= 2)
+			enc = RomPtr[rom_cur_address] | (RomPtr[rom_cur_address + 1] << 8);
+		else
+			enc = 0xffff;
 		u16 dec = iv;
 		iv = decrypt_one_round(enc ^ iv, subkey1);
 		dec ^= decrypt_one_round(iv, subkey2);
@@ -314,6 +339,10 @@ void M4Cartridge::Unserialize(void** data, unsigned int* total_size)
    LIBRETRO_US(buffer);
    LIBRETRO_US(rom_cur_address);
    LIBRETRO_US(buffer_actual_size);
+   // (never more than the buffer holds, and whole words)
+   if (buffer_actual_size > sizeof(buffer))
+      buffer_actual_size = sizeof(buffer);
+   buffer_actual_size &= ~1u;
    LIBRETRO_US(iv);
    LIBRETRO_US(counter);
    LIBRETRO_US(encryption);

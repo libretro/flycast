@@ -20,10 +20,11 @@ public:
 	M4Cartridge(u32 size) : NaomiCartridge(size) { }
 	~M4Cartridge();
 
-	virtual void Init() override
+	virtual bool Init() override
 	{
 		device_start();
 		device_reset();
+		return true;
 	}
 
 	virtual u32 ReadMem(u32 address, u32 size) override
@@ -63,7 +64,8 @@ private:
 
 	u16 m4id;
 	u8 *m_key_data = NULL;			// 2048 bytes
-	u16 subkey1, subkey2;
+	u16 subkey1 = 0;
+	u16 subkey2 = 0;
 	u16 one_round[0x10000];
 
 	u8 buffer[32768];

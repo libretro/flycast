@@ -442,7 +442,7 @@ void GDCartridge::read_gdrom(Disc *gdrom, u32 sector, u8* dst, u32 count)
 	gdrom->ReadSectors(sector + 150, count, dst, 2048);
 }
 
-void GDCartridge::device_start()
+bool GDCartridge::device_start()
 {
 	if (dimm_data != NULL)
 	{
@@ -509,7 +509,7 @@ void GDCartridge::device_start()
 		if (gdrom == NULL)
 		{
 		   ERROR_LOG(NAOMI, "Naomi GD-ROM: can't open %s", gdrom_path.c_str());
-		   return;
+		   return true;
 		}
 		// primary volume descriptor
 		// read frame 0xb06e (frame=sector+150)
@@ -565,10 +565,21 @@ void GDCartridge::device_start()
 
 		if (file_start) {
 			u32 file_rounded_size = (file_size + 2047) & -2048;
-			for (dimm_data_size = 4096; dimm_data_size < file_rounded_size; dimm_data_size <<= 1)
-				;
-			dimm_data = (u8 *)malloc(dimm_data_size);
-			verify(dimm_data != NULL);
+			// (a size the disc gives: one that no power of two holds is not
+			// a file of this board's, and would never end the loop below)
+			if (file_rounded_size <= 0x80000000u)
+			{
+				for (dimm_data_size = 4096; dimm_data_size < file_rounded_size; dimm_data_size <<= 1)
+					;
+				dimm_data = (u8 *)malloc(dimm_data_size);
+			}
+			if (dimm_data == NULL)
+			{
+				ERROR_LOG(NAOMI, "Naomi GDROM: no memory for a file of %u bytes", file_size);
+				dimm_data_size = 0;
+				delete gdrom;
+				return false;
+			}
 			if (dimm_data_size != file_rounded_size)
 				memset(dimm_data + file_rounded_size, 0, dimm_data_size - file_rounded_size);
 
@@ -589,6 +600,7 @@ void GDCartridge::device_start()
 		if (!dimm_data)
 			ERROR_LOG(NAOMI, "Naomi GDROM: Could not find the file to decrypt.");
 	}
+	return true;
 }
 
 void GDCartridge::device_reset()
@@ -606,13 +618,6 @@ void *GDCartridge::GetDmaPtr(u32 &size)
 	dimm_cur_address = DmaOffset & (dimm_data_size-1);
 	size = std::min(size, dimm_data_size - dimm_cur_address);
 	return dimm_data + dimm_cur_address;
-}
-
-void GDCartridge::AdvancePtr(u32 size)
-{
-	dimm_cur_address += size;
-	if(dimm_cur_address >= dimm_data_size)
-		dimm_cur_address %= dimm_data_size;
 }
 
 bool GDCartridge::Read(u32 offset, u32 size, void *dst)

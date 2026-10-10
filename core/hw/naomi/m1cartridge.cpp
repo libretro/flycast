@@ -114,11 +114,18 @@ void M1Cartridge::enc_fill()
 
 u32 M1Cartridge::get_decrypted_32b()
 {
-	u8* base = RomPtr + rom_cur_address;
-	u8 a = base[0];
-	u8 b = base[1];
-	u8 c = base[2];
-	u8 d = base[3];
+	// The stream is read until its own end mark, from an address that is
+	// the game's (or a save state's): past the end of the ROMs it is all
+	// ones, as Read() gives it.
+	u8 a = 0xff, b = 0xff, c = 0xff, d = 0xff;
+	if (rom_cur_address < RomSize && RomSize - rom_cur_address >= 4)
+	{
+		u8* base = RomPtr + rom_cur_address;
+		a = base[0];
+		b = base[1];
+		c = base[2];
+		d = base[3];
+	}
 	rom_cur_address += 4;
 
 	u32 swapped_key = (key >> 24) | ((key >> 8) & 0xFF00)
@@ -153,6 +160,10 @@ void M1Cartridge::Unserialize(void** data, unsigned int* total_size) {
 	LIBRETRO_US(stream_ended);
 	LIBRETRO_US(has_history);
 	LIBRETRO_US(encryption);
+	// (the buffer is full whenever the decoder is on: AdvancePtr() counts
+	// on it)
+	if (buffer_actual_size > sizeof(buffer) || (encryption && buffer_actual_size < 2))
+		buffer_actual_size = sizeof(buffer);
 
    NaomiCartridge::Unserialize(data, total_size);
 }

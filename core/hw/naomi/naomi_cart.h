@@ -10,7 +10,7 @@ public:
 	Cartridge(u32 size);
 	virtual ~Cartridge();
 
-	virtual void Init() {}
+	virtual bool Init() { return true; }
 	virtual u32 ReadMem(u32 address, u32 size) = 0;
 	virtual void WriteMem(u32 address, u32 data, u32 size) = 0;
 
@@ -24,8 +24,12 @@ public:
 	virtual void Unserialize(void **data, unsigned int *total_size) {}
 	virtual void SetKey(u32 key) { }
 	virtual void SetKeyData(u8 *key_data) { }
+	u32 GetSize() const { return RomSize; }
 
 protected:
+	// a cartridge that is memory someone else has: none is allocated for it
+	Cartridge(u8 *rom_ptr, u32 size) : RomPtr(rom_ptr), RomSize(size) {}
+
 	u8* RomPtr;
 	u32 RomSize;
 };
@@ -45,6 +49,8 @@ public:
 	void SetKey(u32 key) override { this->key = key; }
 
 protected:
+   NaomiCartridge(u8 *rom_ptr, u32 size) : Cartridge(rom_ptr, size), RomPioOffset(0), RomPioAutoIncrement(false), DmaOffset(0), DmaCount(0xffff) {}
+
 	virtual void DmaOffsetChanged(u32 dma_offset) {}
 	virtual void PioOffsetChanged(u32 pio_offset) {}
 	u32 RomPioOffset;
@@ -64,7 +70,9 @@ protected:
 class DecryptedCartridge : public NaomiCartridge
 {
 public:
-	DecryptedCartridge(u8 *rom_ptr, u32 size) : NaomiCartridge(size) { free(RomPtr); RomPtr = rom_ptr; }
+	/* (The image is the cartridge. One of its size used to be allocated,
+	 * filled and freed first, for nothing.) */
+	DecryptedCartridge(u8 *rom_ptr, u32 size) : NaomiCartridge(rom_ptr, size) {}
 	virtual ~DecryptedCartridge() override;
 };
 
@@ -74,7 +82,7 @@ class ArchivedCartridge : public NaomiCartridge
 {
 public:
 	ArchivedCartridge(const u8 *rom_ptr, u32 size, struct archive *archive)
-		: NaomiCartridge(size), archive(archive) { free(RomPtr); RomPtr = (u8 *)rom_ptr; }
+		: NaomiCartridge((u8 *)rom_ptr, size), archive(archive) {}
 	virtual ~ArchivedCartridge() override;
 
 private:

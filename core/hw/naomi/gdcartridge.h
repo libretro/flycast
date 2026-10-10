@@ -25,13 +25,14 @@ public:
 	{
 		free(dimm_data);
 	}
-	virtual void Init() override
+	virtual bool Init() override
 	{
-		device_start();
+		if (!device_start())
+			return false;
 		device_reset();
+		return true;
 	}
 	virtual void* GetDmaPtr(u32 &size) override;
-	virtual void AdvancePtr(u32 size) override;
 	virtual bool Read(u32 offset, u32 size, void* dst) override;
 	virtual std::string GetGameId() override;
 
@@ -60,7 +61,7 @@ private:
 	static const u32 DES_MASK_TABLE[];
 	static const u8 DES_ROTATE_TABLE[16];
 
-	void device_start();
+	bool device_start();
 	void device_reset();
 	void find_file(const char *name, const u8 *dir_sector, u32 &file_start, u32 &file_size);
 

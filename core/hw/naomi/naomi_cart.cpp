@@ -620,6 +620,11 @@ static bool naomi_cart_LoadZip(const char *filename)
 		die("Unsupported cartridge type");
 		break;
 	}
+	if (CurrentCartridge->GetSize() != game->size)
+	{
+		ERROR_LOG(NAOMI, "malloc failed");
+		goto error;
+	}
 	CurrentCartridge->SetKey(game->key);
 	naomi_game_inputs = game->inputs;
 
@@ -631,6 +636,8 @@ static bool naomi_cart_LoadZip(const char *filename)
 		{
 			u8 *dst = (u8 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
 			u8 *src = (u8 *)CurrentCartridge->GetPtr(game->blobs[romid].src_offset, len);
+			if (dst == NULL || src == NULL)
+				goto error;
 			memcpy(dst, src, game->blobs[romid].length);
 			DEBUG_LOG(NAOMI, "Copied: %x bytes from %07x to %07x", game->blobs[romid].length, game->blobs[romid].src_offset, game->blobs[romid].offset);
 		}
@@ -657,6 +664,8 @@ static bool naomi_cart_LoadZip(const char *filename)
 				{
 					u8 *dst = (u8 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
 
+					if (dst == NULL)
+						goto error;
 					if (!archive_entry_read(in, (unsigned)idx, dst, len, &blob_len))
 					{
 						WARN_LOG(NAOMI, "%s: Cannot open %s", filename, game->blobs[romid].filename);
@@ -691,6 +700,8 @@ static bool naomi_cart_LoadZip(const char *filename)
 						goto error;
 					}
 					u16 *to = (u16 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
+					if (to == NULL)
+						goto error;
 					naomi_copy_interleaved(to, scratch, (u32)blob_len);
 					DEBUG_LOG(NAOMI, "Mapped %s: %x bytes (interleaved word) at %07x", game->blobs[romid].filename, (u32)blob_len, game->blobs[romid].offset);
 					continue;
@@ -712,12 +723,16 @@ static bool naomi_cart_LoadZip(const char *filename)
 			if (game->blobs[romid].blob_type == Normal)
 			{
 				u8 *dst = (u8 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
+				if (dst == NULL)
+					goto error;
 				memcpy(dst, blob, read);
 				DEBUG_LOG(NAOMI, "Mapped %s: %x bytes at %07x", game->blobs[romid].filename, read, game->blobs[romid].offset);
 			}
 			else if (game->blobs[romid].blob_type == InterleavedWord)
 			{
 				u16 *to = (u16 *)CurrentCartridge->GetPtr(game->blobs[romid].offset, len);
+				if (to == NULL)
+					goto error;
 				naomi_copy_interleaved(to, blob, read);
 				DEBUG_LOG(NAOMI, "Mapped %s: %x bytes (interleaved word) at %07x", game->blobs[romid].filename, read, game->blobs[romid].offset);
 			}
@@ -756,7 +771,12 @@ static bool naomi_cart_LoadZip(const char *filename)
 	archive_close(archive);
 	archive_close(parent_archive);
 
-	CurrentCartridge->Init();
+	if (!CurrentCartridge->Init())
+	{
+		delete CurrentCartridge;
+		CurrentCartridge = NULL;
+		return false;
+	}
 
 	strcpy(naomi_game_id, CurrentCartridge->GetGameId().c_str());
 	if (naomi_game_id[0] == '\0')
@@ -1228,8 +1248,11 @@ bool naomi_cart_SelectFile()
 Cartridge::Cartridge(u32 size)
 {
 	RomPtr = (u8 *)malloc(size);
-	RomSize = size;
-	memset(RomPtr, 0xFF, RomSize);
+	// Without its memory the cartridge is empty, and every read of it is
+	// one past its end.
+	RomSize = RomPtr != NULL ? size : 0;
+	if (RomSize != 0)
+		memset(RomPtr, 0xFF, RomSize);
 }
 
 Cartridge::~Cartridge()
@@ -1267,8 +1290,12 @@ void* Cartridge::GetPtr(u32 offset, u32& size)
 {
 	offset &= 0x1FFFffff;
 
-	verify(offset < RomSize);
-	verify((offset + size) <= RomSize);
+	if (offset >= RomSize || size > RomSize - offset)
+	{
+		WARN_LOG(NAOMI, "Invalid naomi cart: offset %x size %x rom size %x", offset, size, RomSize);
+		size = 0;
+		return NULL;
+	}
 
 	return &RomPtr[offset];
 }
@@ -1623,7 +1650,8 @@ bool M2Cartridge::Write(u32 offset, u32 size, u32 data)
 		//printf("NAOMI CART CRYPT write: %08x data %x sz %d\n", offset, data, size);
 		if (offset & 0x00020000)
 		{
-			offset &= sizeof(naomi_cart_ram) - 1;
+			// (a word of it: an odd offset is the word's, not one past the RAM)
+			offset &= sizeof(naomi_cart_ram) - 2;
 			naomi_cart_ram[offset] = data;
 			naomi_cart_ram[offset + 1] = data >> 8;
 			return true;
@@ -1651,7 +1679,9 @@ u16 M2Cartridge::ReadCipheredData(u32 offset)
 		int base = 2 * (offset & 0x7fff);
 		return naomi_cart_ram[base + 1] | (naomi_cart_ram[base] << 8);
 	}
-	verify(2 * offset + 1 < RomSize);
+	// Past the end of the ROMs it reads as all ones, as Read() does.
+	if (offset >= RomSize / 2)
+		return 0xffff;
 	return RomPtr[2 * offset + 1] | (RomPtr[2 * offset] << 8);
 
 }

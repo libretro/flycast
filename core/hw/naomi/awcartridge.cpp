@@ -333,11 +333,12 @@ u16 AWCartridge::decrypt(u16 cipherText, u32 address, const u8 key)
 }
 
 
-void AWCartridge::Init()
+bool AWCartridge::Init()
 {
 	mpr_offset = decrypt16(0x58/2) | (decrypt16(0x5a/2) << 16);
 	INFO_LOG(NAOMI, "AWCartridge::SetKey rombd_key %02x mpr_offset %08x", rombd_key, mpr_offset);
 	device_reset();
+	return true;
 }
 
 void AWCartridge::SetKey(u32 key)
