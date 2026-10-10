@@ -137,8 +137,15 @@ void libAICA_TimeStep()
 
 static void AicaInternalDMA()
 {
-	if (!CommonData->DEXE)
+	/* A transfer to the registers can reach the register that starts one, and
+	 * set its start bit again: the transfer is already running, and that is
+	 * all the bit says. Starting another from inside this one, each of which
+	 * did the same, never came back. The bit reads 0 once this is done. */
+	static bool running;
+
+	if (!CommonData->DEXE || running)
 		return;
+	running = true;
 
 	// Start dma
 	DEBUG_LOG(AICA, "AICA internal DMA: DGATE %d DDIR %d DLG %x", CommonData->DGATE, CommonData->DDIR, CommonData->DLG);
@@ -180,6 +187,7 @@ static void AicaInternalDMA()
 				WriteMem_aica_reg(raddr, *(u32*)&aica_ram[waddr], 4);
 		}
 	}
+	running = false;
 	CommonData->DEXE = 0;
 	MCIPD->DMA_END = 1;
 	UpdateSh4Ints();
@@ -193,8 +201,11 @@ void WriteAicaReg(u32 reg,u32 data)
 {
 	switch (reg)
 	{
+	/* These four are written a byte at a time as well as whole. The low
+	 * byte of a register is at its own address and is handled as the whole
+	 * register is: a byte has nothing above bit 7. The high byte is at the
+	 * address after, which only a byte write gets to. */
 	case SCIPD_addr:
-		verify(sz!=1);
 		if (data & (1<<5))
 		{
 			SCIPD->SCPU=1;
@@ -203,19 +214,27 @@ void WriteAicaReg(u32 reg,u32 data)
 		//Read only
 		return;
 
+	case SCIPD_addr + 1:
+	case MCIPD_addr + 1:
+		//Read only, and bit 5 is in the other byte
+		return;
+
 	case SCIRE_addr:
 		{
-			verify(sz!=1);
 			SCIPD->full&=~(data /*& SCIEB->full*/ );	//is the & SCIEB->full needed ? doesn't seem like it
 			data=0;//Write only
 			update_arm_interrupts();
 		}
 		break;
 
+	case SCIRE_addr + 1:
+		SCIPD->full &= ~(data << 8);
+		update_arm_interrupts();
+		break;
+
 	case MCIPD_addr:
 		if (data & (1<<5))
 		{
-			verify(sz!=1);
 			MCIPD->SCPU=1;
 			UpdateSh4Ints();
 		}
@@ -224,24 +243,32 @@ void WriteAicaReg(u32 reg,u32 data)
 
 	case MCIRE_addr:
 		{
-			verify(sz!=1);
 			MCIPD->full&=~data;
 			UpdateSh4Ints();
 			//Write only
 		}
 		break;
 
+	case MCIRE_addr + 1:
+		MCIPD->full &= ~(data << 8);
+		UpdateSh4Ints();
+		break;
+
+	// (the prescaler is in a timer's high byte)
 	case TIMER_A:
+	case TIMER_A + 1:
 		WriteMemArr<sz>(aica_reg, reg, data);
 		timers[0].RegisterWrite();
 		break;
 
 	case TIMER_B:
+	case TIMER_B + 1:
 		WriteMemArr<sz>(aica_reg, reg, data);
 		timers[1].RegisterWrite();
 		break;
 
 	case TIMER_C:
+	case TIMER_C + 1:
 		WriteMemArr<sz>(aica_reg, reg, data);
 		timers[2].RegisterWrite();
 		break;

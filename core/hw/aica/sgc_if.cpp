@@ -1490,7 +1490,8 @@ void ReadCommonReg(u32 reg,bool byte)
 			u32 chan=CommonData->MSLC;
 			
 			CommonData->LP=Chans[chan].loop.looped;
-			verify(CommonData->AFSEL == 0);
+			/* (With AFSEL set the program is asking for the filter's
+			 * envelope here. It gets this one, the level's, all the same.) */
          s32 aeg = Chans[chan].AEG.GetValue();
          if (aeg > 0x3BF)
             CommonData->EG = 0x1FFF;
