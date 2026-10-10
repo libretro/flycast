@@ -74,3 +74,5 @@ void WriteCommonReg8(u32 reg,u32 data);
 #define clip16(x) clip(x,-32768,32767)
 bool channel_serialize(void **data, unsigned int *total_size);
 bool channel_unserialize(void **data, unsigned int *total_size, serialize_version_enum version);
+void channel_serialize_v21(void **data, unsigned int *total_size);
+void channel_unserialize_v21(void **data, unsigned int *total_size);

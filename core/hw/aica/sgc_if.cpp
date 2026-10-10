@@ -77,7 +77,20 @@ static const double AEG_DSR_Time[64] =
 	28.0,25.0,22.0,18.0,14.0,12.0,11.0,8.5,7.1,6.1,5.4,4.3,3.6,3.1
 };
 static const float PLFOS_Scale[8] = { 0.f, 3.61f, 7.22f, 14.44f, 28.88f, 57.75f, 115.5f, 231.f };
+/* What the pitch LFO multiplies the pitch by, with PLFO_BITS bits below 1.
+ * (There were 10, which is steps of 1.7 cents, and the values were cut down
+ * to them: every one below the middle of the wave was up to a step flat.) */
+#define PLFO_BITS 20
 static int PLFO_Scales[8][256];
+
+/* A channel's place between two samples, and what it moves on by for every
+ * sample put out, have 18 bits below a whole sample, as the chip's phase
+ * has: the pitch is (1024 + FNS) << (OCT + 8) of them, OCT from -8 to 7,
+ * and no bit of FNS is lost in any octave. (There were 10, and the pitch
+ * was shifted down into them: a note was flat by up to 1.7 cents an octave
+ * down, 5 two down, 12 three down.) */
+#define STEP_BITS 18
+#define STEP_ONE (1u << STEP_BITS)
 
 #define EG_STEP_BITS (16)
 #define AEG_ATTACK_SHIFT 16
@@ -326,8 +339,9 @@ struct ChannelEx
 
 	u8* SA;
 	u32 CA;
-	fp_22_10 step;
-	u32 update_rate;
+	u32 step;			// below a sample: STEP_BITS bits
+	u32 update_rate;	// the pitch, from OCT and FNS
+	u32 step_inc;		// and with the pitch LFO: see UpdateStep()
 
 	SampleType s0,s1;
 
@@ -421,7 +435,7 @@ struct ChannelEx
 		u8 state;
 		u8 alfo;
 		u8 alfo_shft;
-		fp_22_10 plfo_step;
+		u32 plfo_step;
 		int *plfo_scale;
 		void (* alfo_calc)(ChannelEx* ch);
 		void (* plfo_calc)(ChannelEx* ch);
@@ -475,12 +489,15 @@ struct ChannelEx
 	 * equal samples it could come out one below either - before a single
 	 * zero was shifted in for the other four. Exactly on a sample, which is
 	 * every sample of a sound played at the rate it was made for, the two
-	 * ways give the same. */
+	 * ways give the same.
+	 *
+	 * The top 14 bits of the place between the two are used, which with
+	 * samples of 16 stays well inside 32. */
 	__forceinline SampleType InterpolateSample()
 	{
-		const s32 fp = step.fp;
+		const s32 fp = step >> (STEP_BITS - 14);
 
-		return (s0 * (1024 - fp) + s1 * fp) >> 6;
+		return (s0 * (16384 - fp) + s1 * fp) >> 10;
 	}
 	/* The channel's low-pass filter, on a 20-bit sample: two poles, with
 	 * resonance.
@@ -675,7 +692,7 @@ struct ChannelEx
 
       //Reset sampling state
       CA=0;
-      step.full=0;
+      step=0;
 
       loop.looped=false;
 
@@ -684,7 +701,7 @@ struct ChannelEx
       StepStreamInitial(this);
 #if 0
       key_printf("[%d] KEY_ON %s @ %f Hz, loop %d - AEG AR %d DC1R %d DC2V %d DC2R %d RR %d - KRS %d OCT %d FNS %d - PFLOS %d PFLOWS %d",
-            ChannelNumber, stream_names[ccd->PCMS], (44100.0 * update_rate) / 1024, ccd->LPCTL,
+            ChannelNumber, stream_names[ccd->PCMS], (44100.0 * update_rate) / STEP_ONE, ccd->LPCTL,
             ccd->AR, ccd->D1R, ccd->DL << 5, ccd->D2R, ccd->RR,
             ccd->KRS, ccd->OCT, ccd->FNS >> 9,
             ccd->PLFOS, ccd->PLFOWS);
@@ -800,13 +817,18 @@ struct ChannelEx
 	{
 		u32 oct=ccd->OCT;
 
-		u32 update_rate = 1024 | ccd->FNS;
-		if (oct& 8)
-			update_rate>>=(16-oct);
-		else
-			update_rate<<=oct;
-
-		this->update_rate=update_rate;
+		// (OCT is -8 to 7 in four bits: with the top one turned over, 0 to 15)
+		update_rate = (1024 | ccd->FNS) << (oct ^ 8);
+		UpdateStep();
+	}
+	/* What the place in the sound moves on by for every sample: the pitch,
+	 * times what the pitch LFO makes of it at this point of its wave. It
+	 * is worked out here, when one of the two changes, and each sample only
+	 * adds it: they used to be multiplied for every sample of every
+	 * channel. At most 2047 << 15 times 1.143, which 32 bits hold. */
+	void UpdateStep()
+	{
+		step_inc = (u32)(((u64)update_rate * lfo.plfo_step) >> PLFO_BITS);
 	}
 
 	//LFORE,LFOF,PLFOWS,PLFOS,ALFOWS,ALFOS
@@ -1128,13 +1150,15 @@ void StepDecodeSampleInitial(ChannelEx* ch)
 template<s32 PCMS,bool wrap>
 static __forceinline void StreamStepAny(ChannelEx* ch, const u32 LPCTL, const u32 LPSLNK)
 {
-	ch->step.full += (ch->update_rate * ch->lfo.plfo_step.full) >> 10;
-	fp_22_10 sp=ch->step;
-	ch->step.ip=0;
+	const u32 sp=ch->step + ch->step_inc;
+	ch->step=sp & (STEP_ONE - 1);
 
-	while(sp.ip>0)
+	// whole samples to move on by
+	u32 ip=sp >> STEP_BITS;
+
+	while(ip>0)
 	{
-		sp.ip--;
+		ip--;
 
 		u32 CA=ch->CA + 1;
 
@@ -1173,7 +1197,7 @@ static __forceinline void StreamStepAny(ChannelEx* ch, const u32 LPCTL, const u3
 		ch->CA=CA;
 
 		//keep adpcm up to date
-		if (sp.ip==0)
+		if (ip==0)
 			StepDecodeSample<PCMS,true,wrap>(ch,CA);
 		else
 			StepDecodeSample<PCMS,false,wrap>(ch,CA);
@@ -1246,7 +1270,8 @@ void CalcPlfo(ChannelEx* ch)
 		rv = (ch->lfo.state >> 3) ^ (ch->lfo.state << 3) ^ (ch->lfo.state & 0xE3);
 		break;
 	}
-	ch->lfo.plfo_step.full = ch->lfo.plfo_scale[(u8)rv];
+	ch->lfo.plfo_step = ch->lfo.plfo_scale[(u8)rv];
+	ch->UpdateStep();
 }
 
 template<u32 state>
@@ -1487,7 +1512,7 @@ void sgc_Init()
 	{
 		float limit = PLFOS_Scale[s];
 		for (int i = -128; i < 128; i++)
-			PLFO_Scales[s][i + 128] = (u32)((1 << 10) * powf(2.0f, limit * i / 128.0f / 1200.0f));
+			PLFO_Scales[s][i + 128] = (int)lround((1 << PLFO_BITS) * pow(2.0, (double)limit * i / 128.0 / 1200.0));
 	}
 
 	dsp_init();
@@ -1661,7 +1686,11 @@ bool channel_serialize(void **data, unsigned int *total_size)
 		LIBRETRO_S(addr);
 
 		LIBRETRO_S(Chans[i].CA) ;
-		LIBRETRO_S(Chans[i].step) ;
+		/* The 10 bits below a sample that states have always had here, in
+		 * the same four bytes; the 8 bits below those are in
+		 * channel_serialize_v21(). */
+		u32 step = Chans[i].step >> (STEP_BITS - 10);
+		LIBRETRO_S(step) ;
 		LIBRETRO_S(Chans[i].s0) ;
 		LIBRETRO_S(Chans[i].s1) ;
 		LIBRETRO_S(Chans[i].loop.looped) ;
@@ -1704,7 +1733,12 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 		Chans[i].UpdateSA();
 
 		LIBRETRO_US(Chans[i].CA) ;
-		LIBRETRO_US(Chans[i].step) ;
+		/* (Only what is below a sample: there is never anything above it
+		 * between two samples, and a state that had something there made
+		 * the channel run on by that many samples in one go.) */
+		u32 step = 0;
+		LIBRETRO_US(step) ;
+		Chans[i].step = (step & 1023) << (STEP_BITS - 10);
 		if (ver < V8)
 			LIBRETRO_US(dum); // Chans[i].update_rate
 		Chans[i].UpdatePitch();
@@ -1835,4 +1869,28 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 	ChannelEx::RefreshActive();
 
 	return true;
+}
+
+/* What a V21 state has that the ones before it have not: the low 8 bits of
+ * each channel's place between two samples. The 10 above them are where they
+ * always were, in channel_serialize(), and a state from before V21, read by
+ * channel_unserialize(), leaves these 0. 64 bytes. */
+void channel_serialize_v21(void **data, unsigned int *total_size)
+{
+	u8 step_lo[64];
+
+	for (int i = 0; i < 64; i++)
+		step_lo[i] = (u8)Chans[i].step;
+	LIBRETRO_SA(step_lo, 64);
+}
+
+/* After channel_unserialize(), which has put the other 10 bits in place.
+ * Any value of the 8 is a good one. */
+void channel_unserialize_v21(void **data, unsigned int *total_size)
+{
+	u8 step_lo[64] = {0};
+
+	LIBRETRO_USA(step_lo, 64);
+	for (int i = 0; i < 64; i++)
+		Chans[i].step = (Chans[i].step & (STEP_ONE - 256)) | step_lo[i];
 }
