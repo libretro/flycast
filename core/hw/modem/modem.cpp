@@ -424,12 +424,14 @@ static void modem_reset(u32 v)
 		memset(&modem_regs, 0, sizeof(modem_regs));
 		state = MS_RESET;
 		LOG("Modem reset start ...");
+		// The line drops as soon as reset is asserted: some games never
+		// release it again
+		stop_pico();
 	}
 	else
 	{
 		if (state == MS_RESET)
 		{
-			stop_pico();
 			memset(&modem_regs, 0, sizeof(modem_regs));
 			state = MS_RESETING;
 			ControllerTestStart();
@@ -479,9 +481,9 @@ static void ModemNormalWrite(u32 reg, u32 data)
 	case 0x06:
 		LOG("PEN = %d", modem_regs.reg06.PEN);
 		if (modem_regs.reg06.PEN)
-			die("PEN = 1");
+			WARN_LOG(MODEM, "Parity not supported");
 		if (modem_regs.reg06.HDLC)
-			die("HDLC = 1");
+			WARN_LOG(MODEM, "HDLC mode not supported");
 		break;
 
 	case 0x08:
@@ -522,7 +524,6 @@ static void ModemNormalWrite(u32 reg, u32 data)
 
 	case 0x11:
 		LOG("PARSL = %d", modem_regs.reg11.PARSL);
-		die("PARSL");
 		break;
 
 	case 0x14:	// ABCODE
@@ -559,7 +560,8 @@ static void ModemNormalWrite(u32 reg, u32 data)
 		break;
 
 	case 0x1a:
-		verify(connect_state != CONNECTED || !modem_regs.reg1a.SCIBE);
+		if (connect_state == CONNECTED && modem_regs.reg1a.SCIBE)
+			WARN_LOG(MODEM, "Unexpected state: connected and SCIBE==1");
 		break;
 
 		//Address low
