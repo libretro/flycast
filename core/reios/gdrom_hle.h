@@ -102,6 +102,9 @@ struct gdrom_hle_state_t
 		LIBRETRO_US(cur_sector);
 		LIBRETRO_US(multi_read_sector);
 		LIBRETRO_US(multi_read_offset);
+		// (a place in a 2048-byte sector: the sector is read from there)
+		if (multi_read_offset >= 2048)
+			multi_read_offset = 0;
 		LIBRETRO_US(multi_read_count);
 		LIBRETRO_US(multi_read_total);
 		LIBRETRO_US(multi_callback);

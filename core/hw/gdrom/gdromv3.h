@@ -12,6 +12,8 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz);
 void WriteMem_gdrom(u32 Addr, u32 data, u32 sz);
 
 u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info);
+// The drive's state has just been read from a save state: see gdromv3.cpp
+void gdrom_state_loaded();
 
 enum gd_states
 {

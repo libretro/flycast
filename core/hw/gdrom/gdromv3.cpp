@@ -1409,6 +1409,42 @@ void GDROM_DmaEnable(u32 addr, u32 data)
 	}
 }
 
+/* The drive's state as a save state gave it. How much of a buffer is in
+ * use, where in it the next word goes and how long a sector is are the
+ * state's word for it, and were taken at that: a state that is damaged, or
+ * was made to be, had the drive read and write outside its buffers. What
+ * does not fit is made to, and a transfer that cannot be is called off.
+ * Nothing changes for a state this drive wrote. */
+void gdrom_state_loaded()
+{
+	const u32 pio_words = sizeof(pio_buff.data) / sizeof(pio_buff.data[0]);
+
+	if (pio_buff.size > pio_words)
+		pio_buff.size = pio_words;
+	if (pio_buff.index > pio_buff.size)
+		pio_buff.index = pio_buff.size;
+	/* What follows a transfer is the end of the command, more sectors, or
+	 * SET_MODE taking what it was sent. (Anything else is not a state to
+	 * go to from there: taking data again, for one, with the buffer full.) */
+	if (pio_buff.next_state != gds_waitcmd && pio_buff.next_state != gds_pio_end
+			&& pio_buff.next_state != gds_readsector_pio && pio_buff.next_state != gds_process_set_mode)
+		pio_buff.next_state = gds_pio_end;
+	// SET_MODE's data goes into the first ten bytes of the drive's settings
+	if (pio_buff.next_state == gds_process_set_mode
+			&& (set_mode_offset > 10 || (pio_buff.size << 1) > 10 - set_mode_offset))
+		pio_buff.index = pio_buff.size = 0;
+	// data is taken until the buffer is full, and it is full already
+	if (gd_state == gds_pio_get_data && pio_buff.index >= pio_buff.size)
+		gd_state = gds_waitcmd;
+	// a packet is six words
+	if (gd_state == gds_waitpacket && packet_cmd.index >= 6)
+		packet_cmd.index = 0;
+	// sectors are read as 2048, 2340 or 2352 bytes: of any other size, none
+	if (read_params.sector_type != 2048 && read_params.sector_type != 2340
+			&& read_params.sector_type != 2352)
+		read_params.remaining_sectors = 0;
+}
+
 //Init/Term/Res
 void gdrom_reg_Init()
 {

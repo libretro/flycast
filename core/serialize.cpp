@@ -839,6 +839,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(GDStatus);
 	LIBRETRO_US(ByteCount);
 	LIBRETRO_US(GDROM_TICK);
+	gdrom_state_loaded();
 
 
 	LIBRETRO_USA(EEPROM,0x100);
