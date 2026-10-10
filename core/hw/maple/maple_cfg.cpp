@@ -220,7 +220,19 @@ struct MapleConfigMap : IMapleConfigMap
 	   }
 	   else
 	   {
-	      UpdateInputState(pnum);
+	      /* A NAOMI's I/O board is one device, on the first port, and
+	       * answers for every player: all of them are read when it asks.
+	       * (Only its own port was, since "read only the requested port
+	       * on NAOMI/Atomiswave" - with threaded rendering off the second
+	       * to fourth players' buttons, sticks and coins never changed.
+	       * An Atomiswave has a device for each player and each asks.) */
+	      if (SYSTEM_IS_NAOMI())
+	      {
+	         for (u32 port = 0; port < MAPLE_PORTS; port++)
+	            UpdateInputState(port);
+	      }
+	      else
+	         UpdateInputState(pnum);
 
 	      pjs->kcode=kcode[pnum];
 	      x1=joyx[pnum];

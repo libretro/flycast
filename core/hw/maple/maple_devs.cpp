@@ -1509,8 +1509,16 @@ struct maple_mouse : maple_base
 
 			   w32(MFID_9_Mouse);
 			   //struct data
-			   //int32 buttons       ; digital buttons bitfield (little endian)
-			   w32(buttons);
+			   /* int8 buttons, pressed is 0: bit 2 left, bit 1 right, bit 3
+			    * the middle one (the wheel's). The three bytes after it are
+			    * options, the axes that overflowed and one kept for later,
+			    * and are 0. (All four were sent as one word of buttons with
+			    * every bit above the three set: every axis always
+			    * overflowing. Upstream 9d4711a95: Silent Scope, Dreamkey.) */
+			   w8((u8)buttons);
+			   w8(0);
+			   w8(0);
+			   w8(0);
 			   //int16 axis1         ; horizontal movement (0-$3FF) (little endian)
 			   w16(mo_cvt(delta_x));
 			   //int16 axis2         ; vertical movement (0-$3FF) (little endian)
@@ -1658,10 +1666,8 @@ public:
 	{
 		this->node_id = node_id;
 		this->parent = parent;
-		coin_count[0] = 0;
-		coin_chute[0] = false;
-		coin_count[1] = 0;
-		coin_chute[1] = false;
+		memset(coin_count, 0, sizeof(coin_count));
+		memset(coin_chute, 0, sizeof(coin_chute));
 		this->first_player = first_player;
 	}
 	virtual ~jvs_io_board() = default;
@@ -1696,8 +1702,9 @@ private:
 
 	u8 node_id = 0;
 	maple_naomi_jamma *parent;
-	u32 coin_count[2];
-	bool coin_chute[2];
+	// a chute for each player a board can have (there were two: a third and fourth player's coins were never counted)
+	u32 coin_count[4];
+	bool coin_chute[4];
 	u8 first_player;
 };
 
@@ -2355,6 +2362,11 @@ struct maple_naomi_jamma : maple_sega_controller
 		  w8(sense_line(jvs_receive_buffer[channel][0]));	// bit 0 is sense line level. If set during F1 <n>, more I/O boards need addressing
 
 	   memcpy(dma_buffer_out, jvs_receive_buffer[channel], jvs_receive_length[channel]);
+	   /* The reply is made up to whole words, and what is past the message
+	    * is zeroes: it was whatever the buffer had there (upstream
+	    * 58f05f74c, an SH4 crash while a NAOMI started). */
+	   memset(dma_buffer_out + jvs_receive_length[channel], 0,
+			 dword_length * 4 - 0x10 - 3 - jvs_receive_length[channel]);
 	   dma_buffer_out += dword_length * 4 - 0x10 - 3;
 	   *dma_count_out += dword_length * 4 - 0x10 - 3;
 	   jvs_receive_length[channel] = 0;
@@ -3220,7 +3232,9 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					break;
 
 				case 0x30:	// substract coin
-					coin_count[buffer_in[cmdi + 1] - 1] -= (buffer_in[cmdi + 2] << 8) + buffer_in[cmdi + 3];
+					// (the chute's number is the game's: one there is, or nothing is done)
+					if (buffer_in[cmdi + 1] >= 1 && buffer_in[cmdi + 1] <= ARRAY_SIZE(coin_count))
+						coin_count[buffer_in[cmdi + 1] - 1] -= (buffer_in[cmdi + 2] << 8) + buffer_in[cmdi + 3];
 					JVS_STATUS1();	// report byte
 					cmdi += 4;
 					break;
