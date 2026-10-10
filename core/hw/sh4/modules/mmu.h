@@ -120,6 +120,8 @@ void mmu_lut_fill(u32 va, u32 pa, bool write);
 #else
 static INLINE void mmu_lut_flush() {}
 static INLINE void mmu_lut_forget(u32 va, u32 size) {}
+// (called below whichever host this is: without it a host with no table did not compile)
+static INLINE void mmu_lut_fill(u32 va, u32 pa, bool write) {}
 #endif
 u32 mmu_instruction_lookup(u32 va, const TLB_Entry **entry, u32& rv);
 template<u32 translation_type>

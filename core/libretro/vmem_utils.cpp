@@ -311,10 +311,21 @@ VMemType vmem_platform_init(void **vmem_base_addr, void **sh4rcb_addr) {
 	return rv;
 }
 
-// Just tries to wipe as much as possible in the relevant area.
+/* Gives back the whole of it: the addresses, and the memory file behind
+ * them. (The file was never closed: each game loaded in one run of the
+ * frontend left its own behind, some 30 to 60 MB of it with the pages a
+ * game had touched. And the base was left as it was, which a host with
+ * 32-bit addresses took the next time for a reservation it still had.) */
 void vmem_platform_destroy() {
 	if (reserved_base != NULL)
 		mem_region_release(reserved_base, reserved_size);
+	reserved_base = NULL;
+	reserved_size = 0;
+#ifndef HAVE_LIBNX
+	if (vmem_fd >= 0)
+		close(vmem_fd);
+	vmem_fd = -1;
+#endif
 }
 
 // Resets a chunk of memory by deleting its data and setting its protection back.
@@ -358,7 +369,13 @@ void vmem_platform_create_mappings(const vmem_mapping *vmem_maps, unsigned numma
 
 		for (unsigned j = 0; j < num_mirrors; j++) {
 			u64 offset = vmem_maps[i].start_address + j * vmem_maps[i].memsize;
+#ifdef HAVE_LIBNX
 			verify(mem_region_unmap_file(&virt_ram_base[offset], vmem_maps[i].memsize));
+#endif
+			/* (mmap() at a fixed address takes the place of what is there
+			 * in one go. Unmapped first, the addresses were anyone's in
+			 * between - another thread's malloc(), say - and the mapping
+			 * then went on top of that: upstream 478b9a9f6.) */
 			verify(mem_region_map_file((void*)(uintptr_t)vmem_fd, &virt_ram_base[offset],
 					vmem_maps[i].memsize, vmem_maps[i].memoffset, vmem_maps[i].allow_writes) != NULL);
 		}
