@@ -135,6 +135,7 @@ static void setHostRoundingMode()
                 "MSR    FPCR, x10     \n\t"
                 :
                 : "r"(off_mask), "r"(on_mask)
+                : "x10"
             );
 #else
 	#error "SetFloatStatusReg: Unsupported platform"
@@ -147,6 +148,17 @@ static void setHostRoundingMode()
 //called when fpscr is changed and we must check for reg banks etc..
 void UpdateFPSCR()
 {
+	/* The cause field (bits 12 to 17) is what the last FPU instruction
+	 * found: the processor clears it before each one and sets a bit only
+	 * for an exception. Nothing here sets one, so nothing here would clear
+	 * one either - a bit the program wrote back with the rest of FPSCR
+	 * stayed for good, and a program that saves FPSCR, compares, and looks
+	 * for an invalid operation found one every time (upstream bbdef06a0:
+	 * Kita He. White Illumination goes back to the BIOS). Cleared here, as
+	 * upstream does, where FPSCR is written: an instruction earlier than
+	 * the processor would, which only a program that reads FPSCR back
+	 * with no FPU instruction in between can tell. */
+	fpscr.full &= ~0x0003F000u;
 	if (fpscr.FR !=old_fpscr.FR)
 		ChangeFP(); // FPU bank change
 

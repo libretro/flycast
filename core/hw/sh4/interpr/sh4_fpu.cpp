@@ -416,11 +416,11 @@ sh4op(i1111_nnnn_0101_1101)
 {
 	int n=GetN(op);
 
-	if (fpscr.PR ==0)
-		fr_hex[n]&=0x7FFFFFFF;
-	else
-		fr_hex[(n&0xE)]&=0x7FFFFFFF;
-
+	/* The sign is in the register the instruction names, whichever the
+	 * precision: a double's is in the even one of its pair, which is the
+	 * one named. (An odd one with PR set is not defined; recompiled code
+	 * takes the one named, and so does this now.) */
+	fr_hex[n]&=0x7FFFFFFF;
 }
 
 //FSCA FPUL, DRn//F0FD//1111_nnn0_1111_1101
@@ -503,23 +503,21 @@ sh4op(i1111_nnmm_1110_1101)
 {
 	int n=GetN(op)&0xC;
 	int m=(GetN(op)&0x3)<<2;
-	if (fpscr.PR == 0)
-	{
-		/* In doubles, as the recompilers do it and upstream does, on every
-		 * host: this used to cut each product down to 28 bits on x86 and
-		 * to work in floats elsewhere, and the interpreter came out
-		 * different from recompiled code. */
-		double idp = (double)fr[n + 0] * fr[m + 0];
-		idp += (double)fr[n + 1] * fr[m + 1];
-		idp += (double)fr[n + 2] * fr[m + 2];
-		idp += (double)fr[n + 3] * fr[m + 3];
 
-		fr[n + 3] = fixNaN((float)idp);
-	}
-	else
-	{
-		die("FIPR Precision=1");
-	}
+	/* In doubles, as the recompilers do it and upstream does, on every
+	 * host: this used to cut each product down to 28 bits on x86 and
+	 * to work in floats elsewhere, and the interpreter came out
+	 * different from recompiled code.
+	 *
+	 * With FPSCR.PR set the instruction is not defined. Recompiled code
+	 * does the same sum either way, so this does too: it used to end the
+	 * emulator there (die()), which a program could then do at will. */
+	double idp = (double)fr[n + 0] * fr[m + 0];
+	idp += (double)fr[n + 1] * fr[m + 1];
+	idp += (double)fr[n + 2] * fr[m + 2];
+	idp += (double)fr[n + 3] * fr[m + 3];
+
+	fr[n + 3] = fixNaN((float)idp);
 }
 
 //fldi0 <FREG_N>
@@ -581,10 +579,8 @@ sh4op(i1111_nnnn_0100_1101)
 {
 	u32 n = GetN(op);
 
-	if (fpscr.PR ==0)
-		fr_hex[n]^=0x80000000;
-	else
-		fr_hex[(n&0xE)]^=0x80000000;
+	// (as FABS: the register named, whichever the precision)
+	fr_hex[n]^=0x80000000;
 }
 
 

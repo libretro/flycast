@@ -128,7 +128,7 @@ void Sh4_int_Reset(bool hard)
 	old_sr.status=sr.status;
 	UpdateSR();
 
-	fpscr.full = 0x0004001;
+	fpscr.full = 0x00040001;
 	old_fpscr=fpscr;
 	UpdateFPSCR();
 	icache.Reset(hard);
