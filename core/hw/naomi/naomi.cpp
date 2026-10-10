@@ -403,7 +403,8 @@ u32 ReadMem_naomi(u32 address, u32 size)
 		INFO_LOG(NAOMI, "called without cartridge");
 		return 0xFFFF;
 	}
-	if (address >= NAOMI_COMM2_CTRL_addr && address <= NAOMI_COMM2_STATUS1_addr)
+	// (a NAOMI's: an Atomiswave has no such board, and its cartridge answers there - as for a write)
+	if (address >= NAOMI_COMM2_CTRL_addr && address <= NAOMI_COMM2_STATUS1_addr && SYSTEM_IS_NAOMI())
 		return m3comm.ReadMem(address, size);
 	else
 		return CurrentCartridge->ReadMem(address, size);

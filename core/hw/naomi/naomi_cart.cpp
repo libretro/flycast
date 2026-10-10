@@ -77,6 +77,8 @@ extern char g_roms_dir[PATH_MAX];
 
 InputDescriptors *naomi_game_inputs;
 u8 *naomi_default_eeprom;
+// (whether it was allocated for this set, or is the game table's own)
+static bool naomi_default_eeprom_owned;
 static RotationType game_rotation = ROT0;
 
 /* Which member of @a is the ROM @filename of the set @set; -1 if none.
@@ -739,6 +741,7 @@ static bool naomi_cart_LoadZip(const char *filename)
 					ERROR_LOG(NAOMI, "malloc failed");
 			       goto error;
 			    }
+			    naomi_default_eeprom_owned = true;
 				memcpy(naomi_default_eeprom, blob, read);
 				DEBUG_LOG(NAOMI, "Loaded %s: %x bytes default eeprom", game->blobs[romid].filename, read);
 			}
@@ -947,6 +950,14 @@ void naomi_cart_Close()
 		RomCacheMap = NULL;
 	}
 	bios_loaded = false;
+	/* The settings a game starts with are that game's: the next one, in a
+	 * frontend the core stays loaded in, was given the last one's if it
+	 * had none of its own. (And the copy made of a set's own was never
+	 * freed.) */
+	if (naomi_default_eeprom_owned)
+		free(naomi_default_eeprom);
+	naomi_default_eeprom = NULL;
+	naomi_default_eeprom_owned = false;
 }
 
 static bool naomi_cart_LoadRom(const char* file)
@@ -1288,7 +1299,13 @@ void* NaomiCartridge::GetDmaPtr(u32& size)
 	return GetPtr(DmaOffset, size);
 }
 
+/* What a transfer has read is behind it: the next one goes on from there
+ * unless the game says otherwise, and a transfer that GetDmaPtr() gives in
+ * two pieces - at the end of the cartridge, or of a 4 MB bank - gets the
+ * second piece and not the first again. (This did nothing; upstream's
+ * moves the offset on as well.) */
 void NaomiCartridge::AdvancePtr(u32 size) {
+	DmaOffset += size;
 }
 
 u32 NaomiCartridge::ReadMem(u32 address, u32 size)
