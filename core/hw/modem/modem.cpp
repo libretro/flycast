@@ -603,8 +603,10 @@ static void ModemNormalWrite(u32 reg, u32 data)
 				{
 					if (dspram_addr & 1)
 					{
+						// The address has 12 bits: the second byte of a word
+						// at the last one is the first byte of the memory
 						dspram[dspram_addr] = modem_regs.reg18_19 & 0xFF;
-						dspram[dspram_addr + 1] = (modem_regs.reg18_19 >> 8) & 0xFF;
+						dspram[(dspram_addr + 1) & (sizeof(dspram) - 1)] = (modem_regs.reg18_19 >> 8) & 0xFF;
 					}
 					else
 						*(u16*)&dspram[dspram_addr] = modem_regs.reg18_19;
@@ -615,7 +617,7 @@ static void ModemNormalWrite(u32 reg, u32 data)
 			else
 			{
 				if (dspram_addr & 1)
-					modem_regs.reg18_19 = dspram[dspram_addr] | (dspram[dspram_addr + 1] << 8);
+					modem_regs.reg18_19 = dspram[dspram_addr] | (dspram[(dspram_addr + 1) & (sizeof(dspram) - 1)] << 8);
 				else
 					modem_regs.reg18_19 = *(u16*)&dspram[dspram_addr];
 				LOG("DSP mem Read address %08x == %x", dspram_addr, modem_regs.reg18_19 );
@@ -632,7 +634,12 @@ static void ModemNormalWrite(u32 reg, u32 data)
 			{
 				modem_regs.reg1a.SFRES = 0;
 				LOG("Soft Reset SET && NEWC, executing reset and init");
+				// As the reset line pulled and let go, but with NEWC left
+				// set until the self tests are over
+				modem_reset(0);
 				modem_reset(1);
+				modem_regs.reg1f.NEWC = 1;
+				modem_regs.ptr[0x20] = 0;
 			}
 			else
 			{
@@ -717,6 +724,11 @@ u32 ModemReadMem_A0_006(u32 addr, u32 size)
 			{
 				return modem_regs.ptr[reg];
 			}
+
+		case MS_END_DSP:
+			// Nothing to read, but NEWC: a soft reset is not over, and no
+			// write is taken, until the last self test has ended
+			return reg == 0x1f ? modem_regs.ptr[reg] : 0;
 
 		case MS_RESETING:
 			return 0; //still reset
