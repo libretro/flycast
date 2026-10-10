@@ -18,7 +18,8 @@
 #include "hw/sh4/sh4_mmr.h"
 #include "hw/sh4/sh4_sched.h"
 
-int gdrom_sched;
+// (-1 on a machine that has no drive, and has never registered the event)
+int gdrom_sched = -1;
 
 //Sense: ASC - ASCQ - Key
 signed int sns_asc=0;

@@ -51,7 +51,8 @@ static modemreg_t modem_regs;
 
 static u8 dspram[0x1000];
 
-int modem_sched;
+// (-1 on a machine that has no modem, and has never registered the event)
+int modem_sched = -1;
 
 enum ModemStates
 {

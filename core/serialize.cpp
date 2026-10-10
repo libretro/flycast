@@ -264,6 +264,42 @@ extern int SerStep2;
 extern unsigned char BSerial[];
 extern unsigned char GSerial[];
 
+/* What each part of the machine has had in a state since V21, in a block of
+ * its own at the end: written by X_serialize_v21(), read by
+ * X_unserialize_v21() - which answers false if the rest of the state cannot
+ * be found after what it read - and, for a state from before V21, set to
+ * what such a state implies by X_state_before_v21(). */
+#define V21_PART(x) \
+	void x##_serialize_v21(void **data, unsigned int *total_size); \
+	bool x##_unserialize_v21(void **data, unsigned int *total_size); \
+	void x##_state_before_v21(void)
+V21_PART(aica);
+V21_PART(gdrom);
+V21_PART(maple);
+V21_PART(naomi);
+V21_PART(modem);
+V21_PART(reios);
+V21_PART(gdhle);
+V21_PART(nbios);
+V21_PART(pvr);
+#undef V21_PART
+void tmu_state_loaded(void);
+
+/* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
+ * modem.cpp: 33 registers, the DSP's 4096 bytes, and 36 more), and a build
+ * without the modem has to leave room for it all the same: a state is the
+ * same whichever build made it. */
+#define MODEM_V21_SIZE 4165
+
+/* The drive's DMA event in a state, on a machine with no drive: there is
+ * no such event there and its id is -1. (The id used to start out as 0,
+ * which on an arcade board is some other device's event: that one's times
+ * were written here, and read back over it.) */
+static sched_list no_event = { NULL, 0, -1, -1 };
+#define GDROM_EVENT (gdrom_sched >= 0 ? sch_list[gdrom_sched] : no_event)
+// (and the modem's, the same way)
+#define MODEM_EVENT (modem_sched >= 0 ? sch_list[modem_sched] : no_event)
+
 /*
  * Deserialization input-buffer bounds tracking.
  *
@@ -557,9 +593,9 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	LIBRETRO_S(sch_list[rtc_schid].start) ;
 	LIBRETRO_S(sch_list[rtc_schid].end) ;
 
-	LIBRETRO_S(sch_list[gdrom_sched].tag) ;
-	LIBRETRO_S(sch_list[gdrom_sched].start) ;
-	LIBRETRO_S(sch_list[gdrom_sched].end) ;
+	LIBRETRO_S(GDROM_EVENT.tag) ;
+	LIBRETRO_S(GDROM_EVENT.start) ;
+	LIBRETRO_S(GDROM_EVENT.end) ;
 
 	LIBRETRO_S(sch_list[maple_sched].tag) ;
 	LIBRETRO_S(sch_list[maple_sched].start) ;
@@ -592,9 +628,9 @@ bool dc_serialize(void **data, unsigned int *total_size)
    }
    else
    {
-      LIBRETRO_S(sch_list[modem_sched].tag) ;
-      LIBRETRO_S(sch_list[modem_sched].start) ;
-      LIBRETRO_S(sch_list[modem_sched].end) ;
+      LIBRETRO_S(MODEM_EVENT.tag) ;
+      LIBRETRO_S(MODEM_EVENT.start) ;
+      LIBRETRO_S(MODEM_EVENT.end) ;
    }
 #else
    LIBRETRO_S(i);
@@ -703,6 +739,28 @@ bool dc_serialize(void **data, unsigned int *total_size)
 		LIBRETRO_S(sch_list[elan_schid].end);
 	}
 
+	/* V21: what each part of the machine was missing from a state. Every
+	 * part is the same size each time for the machine that is running;
+	 * the tile accelerator's, which is not, is last and is counted at its
+	 * largest. */
+	aica_serialize_v21(data, total_size);
+	gdrom_serialize_v21(data, total_size);
+	maple_serialize_v21(data, total_size);
+	naomi_serialize_v21(data, total_size);
+#ifdef ENABLE_MODEM
+	modem_serialize_v21(data, total_size);
+#else
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+	{
+		static const u8 no_modem[MODEM_V21_SIZE] = { 0 };
+		LIBRETRO_SA(no_modem, MODEM_V21_SIZE);
+	}
+#endif
+	reios_serialize_v21(data, total_size);
+	gdhle_serialize_v21(data, total_size);
+	nbios_serialize_v21(data, total_size);
+	pvr_serialize_v21(data, total_size);
+
 	return true ;
 }
 
@@ -736,6 +794,14 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	//that were created after the format change and before the new format had a new version saved in it
 	if (version == V1 && actual_data_size != 48324799 && actual_data_size != 48855967)
 	   version = V2 ;
+	/* A state of a version this build has not heard of - a later build's -
+	 * is laid out in a way it cannot know. Nothing has been put in place
+	 * yet. */
+	if ((u32)version > (u32)VCUR_LIBRETRO)
+	{
+		ra_unserialize_fail();
+		return false;
+	}
 
 	LIBRETRO_US(aica_interr) ;
 	LIBRETRO_US(aica_reg_L) ;
@@ -1074,9 +1140,11 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(sch_list[rtc_schid].start) ;
 	LIBRETRO_US(sch_list[rtc_schid].end) ;
 
-	LIBRETRO_US(sch_list[gdrom_sched].tag) ;
-	LIBRETRO_US(sch_list[gdrom_sched].start) ;
-	LIBRETRO_US(sch_list[gdrom_sched].end) ;
+	LIBRETRO_US(GDROM_EVENT.tag) ;
+	LIBRETRO_US(GDROM_EVENT.start) ;
+	LIBRETRO_US(GDROM_EVENT.end) ;
+	no_event.tag = 0;
+	no_event.start = no_event.end = -1;
 
 	LIBRETRO_US(sch_list[maple_sched].tag) ;
 	LIBRETRO_US(sch_list[maple_sched].start) ;
@@ -1128,9 +1196,11 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	if ( version >= V2 )
 	{
 #ifdef ENABLE_MODEM
-      LIBRETRO_US(sch_list[modem_sched].tag) ;
-      LIBRETRO_US(sch_list[modem_sched].start) ;
-      LIBRETRO_US(sch_list[modem_sched].end) ;
+      LIBRETRO_US(MODEM_EVENT.tag) ;
+      LIBRETRO_US(MODEM_EVENT.start) ;
+      LIBRETRO_US(MODEM_EVENT.end) ;
+      no_event.tag = 0;
+      no_event.start = no_event.end = -1;
 #else
 		LIBRETRO_US(dummy_int);
 		LIBRETRO_US(dummy_int);
@@ -1361,6 +1431,43 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_US(sch_list[elan_schid].end);
 		elan_set_state(&elan);
 	}
+
+	if (version >= V21)
+	{
+		bool ok = aica_unserialize_v21(data, total_size);
+		ok = ok && gdrom_unserialize_v21(data, total_size);
+		ok = ok && maple_unserialize_v21(data, total_size);
+		ok = ok && naomi_unserialize_v21(data, total_size);
+#ifdef ENABLE_MODEM
+		ok = ok && modem_unserialize_v21(data, total_size);
+#else
+		if (settings.System == DC_PLATFORM_DREAMCAST)
+			LIBRETRO_SKIP(MODEM_V21_SIZE);
+#endif
+		ok = ok && reios_unserialize_v21(data, total_size);
+		ok = ok && gdhle_unserialize_v21(data, total_size);
+		ok = ok && nbios_unserialize_v21(data, total_size);
+		ok = ok && pvr_unserialize_v21(data, total_size);
+		if (!ok)
+			ra_unserialize_fail();
+	}
+	else
+	{
+		aica_state_before_v21();
+		gdrom_state_before_v21();
+		maple_state_before_v21();
+		naomi_state_before_v21();
+#ifdef ENABLE_MODEM
+		modem_state_before_v21();
+#endif
+		reios_state_before_v21();
+		gdhle_state_before_v21();
+		nbios_state_before_v21();
+		pvr_state_before_v21();
+	}
+	/* The timers: what follows from their registers is worked out again,
+	 * for a state of any version, and their events are asked for anew. */
+	tmu_state_loaded();
 
 	/* Fail the whole load if any read was rejected for running past the end
 	 * of the input buffer. Callers (retro_unserialize) then bail cleanly

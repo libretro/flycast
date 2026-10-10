@@ -2485,14 +2485,15 @@ size_t retro_get_memory_size(unsigned type)
 }
 
 /* A frontend asks how large a state is once and keeps the answer - for
- * run-ahead and for rewind it does - and a state is not the same size every
- * time: the tile accelerator's part is a few bytes longer while a list is
- * being sent to it than between two lists. Told the exact size of a moment
- * between two, the frontend had no room for the state of the next frame,
- * which was refused, and gave up run-ahead for good. So it is told a little
- * more than is needed now, and what a state does not use of that is zeroes.
- * (This is not yet a limit no state can pass: a list that was left half
- * sent and is taken up again is in the state whole.) */
+ * run-ahead and for rewind it does. A state was not the same size every
+ * time: the tile accelerator's lists were in it for as long as they were
+ * at that moment, and told the size of one moment the frontend had no room
+ * for the state of another, which was refused, and gave up run-ahead for
+ * good. Since V21 the size that is counted is the most a state of this
+ * machine with these devices can be - the lists are counted at the most a
+ * state carries of them (TA_STATE_MAX) - and what a state does not use of
+ * that is zeroes. The little more that is told here was for the states
+ * before that, and is left. */
 #define STATE_HEADROOM 4096
 
 size_t retro_serialize_size (void)
@@ -2515,10 +2516,9 @@ bool retro_serialize(void *data, size_t size)
    emu_hold();
 #endif
 
-   /* A state is not the same size every time - the tile accelerator's list
-    * is in it for as long as it is at that moment - and the frontend may be
-    * going by what it was told earlier. Counted first, which costs nothing:
-    * a state that does not fit is refused. It used to be written past the
+   /* The frontend may be going by a size it was told earlier - before a
+    * device was plugged in, say. Counted first, which costs nothing: a
+    * state that does not fit is refused. It used to be written past the
     * end of what the frontend had room for. */
    {
       unsigned int needed = 0;
