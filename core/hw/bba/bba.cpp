@@ -221,14 +221,33 @@ int pico_send_eth_frame(const u8 *data, u32 len)
 	return 1;
 }
 
+// The address and the length are the guest's (a transmit descriptor, the
+// receive ring's place and size). A transfer that reaches the end of the
+// adapter's memory goes on at its start, as the reads and writes above do.
 void pci_dma_read(PCIDevice *dev, dma_addr_t addr, void *buf, dma_addr_t len)
 {
-	memcpy(buf, &GAPS_ram[addr & GAPSPCI_RAM_MASK], len);
+	while (len != 0)
+	{
+		addr &= GAPSPCI_RAM_MASK;
+		const dma_addr_t chunk = len < GAPSPCI_RAM_SIZE - addr ? len : GAPSPCI_RAM_SIZE - addr;
+		memcpy(buf, &GAPS_ram[addr], chunk);
+		buf = (u8 *)buf + chunk;
+		addr += chunk;
+		len -= chunk;
+	}
 }
 
 void pci_dma_write(PCIDevice *dev, dma_addr_t addr, const void *buf, dma_addr_t len)
 {
-	memcpy(&GAPS_ram[addr & GAPSPCI_RAM_MASK], buf, len);
+	while (len != 0)
+	{
+		addr &= GAPSPCI_RAM_MASK;
+		const dma_addr_t chunk = len < GAPSPCI_RAM_SIZE - addr ? len : GAPSPCI_RAM_SIZE - addr;
+		memcpy(&GAPS_ram[addr], buf, chunk);
+		buf = (const u8 *)buf + chunk;
+		addr += chunk;
+		len -= chunk;
+	}
 }
 
 void bba_Serialize(void **data, unsigned int *total_size)
