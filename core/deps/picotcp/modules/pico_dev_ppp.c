@@ -359,7 +359,7 @@ static inline int must_escape(struct pico_device_ppp *ppp, uint8_t b)
 			return 0;
 		else
 		{
-			uint32_t bit = 1 << b;
+			uint32_t bit = 1u << b;
 			return ppp->asyncmap & bit;
 		}
 	}
@@ -992,6 +992,18 @@ static int ppp_options_ok(const uint8_t *pkt, uint32_t len)
     return 1;
 }
 
+/* An option that a Configure-Request does not get acknowledged with,
+ * whatever is supported here: one this code has no number for (the flags
+ * have a bit each for options 0 to 8 only), or one too short to hold the
+ * value its type has. */
+static int lcp_option_bad(const uint8_t *p)
+{
+    return p[0] >= ARRAY_SIZE(LCPOPT_LEN) || p[1] < LCPOPT_LEN[p[0]];
+}
+
+/* The flag of such an option: a bit that no supported option has. */
+#define LCPOPT_BAD 0x8000u
+
 /* setting adjust_opts will adjust our options to the ones supplied */
 static uint16_t lcp_optflags(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t len, int adjust_opts)
 {
@@ -1003,9 +1015,15 @@ static uint16_t lcp_optflags(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t
     	ppp->asyncmap = 0xffffffff;
 
     while(p < (pkt + len)) {
-        flags = (uint16_t)((uint16_t)(1u << (uint16_t)p[0]) | flags);
+        if (p[0] < ARRAY_SIZE(LCPOPT_LEN))
+            flags = (uint16_t)((uint16_t)(1u << (uint16_t)p[0]) | flags);
 
-        if (adjust_opts && ppp)
+        if (lcp_option_bad(p))
+        {
+            /* Its value, if it has one at all, is not read */
+            flags |= LCPOPT_BAD;
+        }
+        else if (adjust_opts && ppp)
         {
             switch (p[0])
             {
@@ -1108,7 +1126,7 @@ static void lcp_send_configure_nack(struct pico_device_ppp *ppp)
     ppp_dbg("CONF_NACK: rej = %04X\n", ppp->rej);
     while (p < (ppp->pkt + ppp->len)) {
         uint8_t i = 0;
-        if ((1u << p[0]) & ppp->rej || (p[0] > 8u)) {       /* Reject anything we dont support or with option id >8 */
+        if (lcp_option_bad(p) || ((1u << p[0]) & ppp->rej)) {       /* Reject anything we dont support, with option id >8 or without its value */
             ppp_dbg("rejecting option %d -- ", p[0]);
             dst_opts[dstopts_len++] = p[0];
 
@@ -1214,8 +1232,8 @@ static void lcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t l
 static void pap_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t len)
 {
     struct pico_pap_hdr *p = (struct pico_pap_hdr *)pkt;
-    (void)len;
-    if (!p)
+    /* (a frame may end right behind the protocol number) */
+    if (!p || len < sizeof(struct pico_pap_hdr))
         return;
 
     if (ppp->auth != 0xc023)
@@ -1344,29 +1362,48 @@ static void ipcp_send_req(struct pico_device_ppp *ppp)
                       );
 }
 
-static void ipcp_reject_vj(struct pico_device_ppp *ppp, uint8_t *comp_req)
+/* Set for a peer that gives up when the Van Jacobson compression option is
+ * rejected (Web TV). The option is then let through, though nothing here
+ * compresses. */
+int dont_reject_opt_vj_hack = 0;
+
+/* An address option too short to hold an address. */
+static int ipcp_option_short(const uint8_t *p)
 {
-    uint8_t ipcp_req[PPP_HDR_SIZE + PPP_PROTO_SLOT_SIZE + sizeof(struct pico_ipcp_hdr) + IPCP_VJ_LEN + PPP_FCS_SIZE + 1];
+    return (p[0] == IPCP_OPT_IP || p[0] == IPCP_OPT_DNS1 || p[0] == IPCP_OPT_DNS2) && p[1] < IPCP_ADDR_LEN;
+}
+
+/* Sends back, in a Configure-Reject and as they came, the options that are
+ * not taken: Van Jacobson compression and the address options without an
+ * address. */
+static void ipcp_reject_vj(struct pico_device_ppp *ppp, uint8_t *comp_req, uint32_t len)
+{
+    /* The rejected options are some of the request's: never more than it holds */
+    uint8_t ipcp_req[PPP_HDR_SIZE + PPP_PROTO_SLOT_SIZE + len + PPP_FCS_SIZE + 1];
     uint32_t prefix = PPP_HDR_SIZE +  PPP_PROTO_SLOT_SIZE;
     struct pico_ipcp_hdr *ih = (struct pico_ipcp_hdr *) (ipcp_req + prefix);
     uint8_t *p = ipcp_req + prefix + sizeof(struct pico_ipcp_hdr);
-    uint32_t i;
+    uint32_t rej_len = 0;
     uint8_t *p2 =  comp_req + sizeof(struct pico_ipcp_hdr);
+
+    while (p2 < comp_req + len) {
+        if ((p2[0] == IPCP_OPT_VJ && dont_reject_opt_vj_hack == 0) || ipcp_option_short(p2)) {
+            memcpy(p + rej_len, p2, p2[1]);
+            rej_len += p2[1];
+        }
+        p2 += p2[1];
+    }
 
     ih->id = ((struct pico_ipcp_hdr *)comp_req)->id;
     ih->code = PICO_CONF_REJ;
-    ih->len = short_be(IPCP_VJ_LEN + sizeof(struct pico_ipcp_hdr));
+    ih->len = short_be((uint16_t)(rej_len + sizeof(struct pico_ipcp_hdr)));
 
-    while (p2[0] != IPCP_OPT_VJ)
-    	p2 += p2[1];
-    for(i = 0; i < IPCP_VJ_LEN; i++)
-        p[i] = p2[i];
     ppp_dbg("Sending IPCP CONF REJ VJ\n");
     pico_ppp_ctl_send(&ppp->dev, PPP_PROTO_IPCP,
                       ipcp_req,             /* Start of PPP packet */
                       (uint32_t)(prefix +              /* PPP Header, etc. */
                                  sizeof(struct pico_ipcp_hdr) + /* LCP HDR */
-                                 IPCP_VJ_LEN + /* Actual options size */
+                                 rej_len +   /* Actual options size */
                                  PPP_FCS_SIZE + /* FCS at the end of the frame */
                                  1u),        /* STOP Byte */
 					  0	                     /* escape */
@@ -1396,11 +1433,6 @@ static void ppp_ipv4_conf(struct pico_device_ppp *ppp)
 
 static void ipcp_send_nack(struct pico_device_ppp *ppp);
 
-/* Set for a peer that gives up when the Van Jacobson compression option is
- * rejected (Web TV). The option is then let through, though nothing here
- * compresses. */
-int dont_reject_opt_vj_hack = 0;
-
 static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t len)
 {
     struct pico_ipcp_hdr *ih = (struct pico_ipcp_hdr *)pkt;
@@ -1417,10 +1449,22 @@ static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
             reject++;
         }
 
+        if (ipcp_option_short(p)) {
+            /* No address in it to compare. A request gets the option back
+             * in a Configure-Reject; an answer to a request of ours that
+             * holds one is not an answer to it, and is dropped. */
+            if (ih->code != PICO_CONF_REQ)
+                return;
+
+            reject++;
+            p += p[1];
+            continue;
+        }
+
         if (p[0] == IPCP_OPT_IP) {
             if (ih->code != PICO_CONF_REJ)
             {
-            	uint32_t ipcp_ip = long_be((uint32_t)((p[2] << 24) + (p[3] << 16) + (p[4] << 8) + p[5]));
+                uint32_t ipcp_ip = long_be(((uint32_t)p[2] << 24) + (p[3] << 16) + (p[4] << 8) + p[5]);
             	if (ih->id == ppp->frame_id - 1)
             	{
                 	if (ipcp_ip != ppp->ipcp_ip)
@@ -1437,7 +1481,7 @@ static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
         if (p[0] == IPCP_OPT_DNS1) {
             if (ih->code != PICO_CONF_REJ)
             {
-            	uint32_t ipcp_dns1 = long_be((uint32_t)((p[2] << 24) + (p[3] << 16) + (p[4] << 8) + p[5]));
+                uint32_t ipcp_dns1 = long_be(((uint32_t)p[2] << 24) + (p[3] << 16) + (p[4] << 8) + p[5]);
             	if (ipcp_dns1 != ppp->ipcp_dns1)
             		nak++;
             }
@@ -1446,7 +1490,7 @@ static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
         if (p[0] == IPCP_OPT_DNS2) {
             if (ih->code != PICO_CONF_REJ)
             {
-            	uint32_t ipcp_dns2 = long_be((uint32_t)((p[2] << 24) + (p[3] << 16) + (p[4] << 8) + p[5]));
+                uint32_t ipcp_dns2 = long_be(((uint32_t)p[2] << 24) + (p[3] << 16) + (p[4] << 8) + p[5]);
             	if (ipcp_dns2 != ppp->ipcp_dns2)
             		nak++;
             }
@@ -1470,7 +1514,7 @@ static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
         break;
     }
     if (reject) {
-        ipcp_reject_vj(ppp, pkt);
+        ipcp_reject_vj(ppp, pkt, len);
         return;
     }
 
