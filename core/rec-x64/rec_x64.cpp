@@ -56,6 +56,11 @@ struct DynaRBI : RuntimeBlockInfo
    /* Where in the block's code its link sites are, 0 where there is none:
     * the way out to BranchBlock, and the one to NextBlock. */
    u32 link_at[2] = { 0, 0 };
+   /* Where a block that is linked to this one comes in: past the test of
+    * the address the block is run at, if that is what it starts with. A
+    * link is only ever made for the address the block was compiled for
+    * (ngen_link()), so whoever comes by one has the answer already. */
+   u32 linked_entry = 0;
 
    virtual u32 Relink();
 
@@ -488,7 +493,7 @@ u32 DynaRBI::Relink()
 		if (link_at[i] == 0)
 			continue;
 		if (to != NULL)
-			link_site_jump((u8 *)code + link_at[i], (const u8 *)to->code);
+			link_site_jump((u8 *)code + link_at[i], (const u8 *)to->code + ((const DynaRBI *)to)->linked_entry);
 		else
 			link_site_call_stub((u8 *)code + link_at[i]);
 	}
@@ -807,6 +812,7 @@ public:
 			cmp(Ctx(&next_pc), block->vaddr);
 			jne(vaddr_failed, T_NEAR);
 			vaddr_checked = true;
+			((DynaRBI *)block)->linked_entry = (u32)getSize();
 		}
 		/* (No stack to set up: the block runs on the main loop's, which is
 		 * as calls want it. See ngen_mainloop.) */
