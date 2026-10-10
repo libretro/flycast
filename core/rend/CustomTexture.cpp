@@ -246,6 +246,11 @@ void CustomTexture::DumpTexture(u32 hash, int w, int h, TextureType textype, voi
 	std::stringstream path;
 	path << base_dump_dir << std::hex << hash << ".png";
 
+	/* Four, five and six bits are made eight by repeating their top bits, as
+	 * the texture converters do for a texture drawn from 32 bits: full is 255.
+	 * With the low bits left clear an opaque texel was written with an alpha
+	 * of 240, and white as 248 or 240 - and that is the picture a replacement
+	 * texture is painted over and loaded back from. */
 	u16 *src = (u16 *)src_buffer;
 	u8 *dst_buffer = (u8 *)malloc(w * h * 4);	// 32-bit per pixel
 	u8 *dst = dst_buffer;
@@ -257,19 +262,19 @@ void CustomTexture::DumpTexture(u32 hash, int w, int h, TextureType textype, voi
 		case TextureType::_4444:
 			for (int x = 0; x < w; x++)
 			{
-				*dst++ = ((*src >> 12) & 0xF) << 4;
-				*dst++ = ((*src >> 8) & 0xF) << 4;
-				*dst++ = ((*src >> 4) & 0xF) << 4;
-				*dst++ = (*src & 0xF) << 4;
+				*dst++ = ((*src >> 12) & 0xF) * 17;
+				*dst++ = ((*src >> 8) & 0xF) * 17;
+				*dst++ = ((*src >> 4) & 0xF) * 17;
+				*dst++ = (*src & 0xF) * 17;
 				src++;
 			}
 			break;
 		case TextureType::_565:
 			for (int x = 0; x < w; x++)
 			{
-				*dst++ = ((*src >> 11) & 0x1F) << 3;
-				*dst++ = ((*src >> 5) & 0x3F) << 2;
-				*dst++ = (*src & 0x1F) << 3;
+				*dst++ = (((*src >> 11) & 0x1F) << 3) | ((*src >> 13) & 7);
+				*dst++ = (((*src >> 5) & 0x3F) << 2) | ((*src >> 9) & 3);
+				*dst++ = ((*src & 0x1F) << 3) | ((*src >> 2) & 7);
 				*dst++ = 255;
 				src++;
 			}
@@ -277,9 +282,9 @@ void CustomTexture::DumpTexture(u32 hash, int w, int h, TextureType textype, voi
 		case TextureType::_5551:
 			for (int x = 0; x < w; x++)
 			{
-				*dst++ = ((*src >> 11) & 0x1F) << 3;
-				*dst++ = ((*src >> 6) & 0x1F) << 3;
-				*dst++ = ((*src >> 1) & 0x1F) << 3;
+				*dst++ = (((*src >> 11) & 0x1F) << 3) | ((*src >> 13) & 7);
+				*dst++ = (((*src >> 6) & 0x1F) << 3) | ((*src >> 8) & 7);
+				*dst++ = (((*src >> 1) & 0x1F) << 3) | ((*src >> 3) & 7);
 				*dst++ = (*src & 1) ? 255 : 0;
 				src++;
 			}
