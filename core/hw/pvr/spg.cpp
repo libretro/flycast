@@ -42,6 +42,7 @@ int vblank_schid;
 static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
 static bool maple_int_pending;
+static u8 lightgun_flip;
 
 static u32 spg_next_line();
 
@@ -288,7 +289,6 @@ int spg_line_sched(int tag, int cycl, int jit)
 
 void read_lightgun_position(int x, int y)
 {
-   static u8 flip;
    /* The pending event was aimed without this line, or at the one asked
     * for before it. As for a write to a timing register: where the beam is
     * is worked out with things as they were, and the event is aimed again
@@ -308,11 +308,63 @@ void read_lightgun_position(int x, int y)
 	{
 		lightgun_line = y / (SPG_CONTROL.interlace ? 2 : 1) + SPG_VBLANK_INT.vblank_out_interrupt_line_number;
       // For some reason returning the same position twice makes it register off screen
-		lightgun_hpos = (x + 286) ^ flip;
-		flip ^= 1;
+		lightgun_hpos = (x + 286) ^ lightgun_flip;
+		lightgun_flip ^= 1;
 	}
    if (pending)
       sh4_sched_request(vblank_schid, (int)(line_start(spg_next_line()) - beam));
+}
+
+/* The light gun in a save state, from version 21 on (pvr_serialize_v21()):
+ * the line and the place on it where the gun will be found to point, 0xffff
+ * for no line; whether the transfer that asked is still to be ended; and
+ * which way the place is nudged next time. Five bytes.
+ *
+ * The line is one of those the pending event is aimed at, spg_next_line(),
+ * and the event's time is in the state: without the line, the event came
+ * at the time of one line and was taken for another. */
+void spg_gun_serialize(void **data, unsigned int *total_size)
+{
+	u16 line  = (u16)lightgun_line;
+	u16 hpos  = (u16)lightgun_hpos;
+	u8  flags = (maple_int_pending ? 1 : 0) | (lightgun_flip ? 2 : 0);
+
+	LIBRETRO_S(line);
+	LIBRETRO_S(hpos);
+	LIBRETRO_S(flags);
+}
+
+void spg_gun_unserialize(void **data, unsigned int *total_size)
+{
+	u16 line;
+	u16 hpos;
+	u8  flags;
+
+	LIBRETRO_US(line);
+	LIBRETRO_US(hpos);
+	LIBRETRO_US(flags);
+
+	/* A line is at most 479 down from the line the picture starts on, which
+	 * is a 10-bit register; the place goes into ten bits of a register. */
+	lightgun_line     = line > 479 + 1023 ? 0xffff : line;
+	lightgun_hpos     = hpos & 0x3FF;
+	maple_int_pending = (flags & 1) != 0;
+	lightgun_flip     = (flags >> 1) & 1;
+}
+
+/* A state from before version 21 has none of it. No line is pending. A
+ * transfer that the state says is under way with nothing scheduled to end
+ * it, though, is one a gun was asked its position in: the next vertical
+ * blank ends it, as it would have. (Called once the registers and the
+ * scheduler's events have been read.) */
+void spg_gun_before_v21(void)
+{
+	extern int maple_sched;
+
+	lightgun_line     = 0xffff;
+	lightgun_hpos     = 0;
+	lightgun_flip     = 0;
+	maple_int_pending = (SB_MDST & 1) != 0 && !sh4_sched_is_scheduled(maple_sched);
 }
 
 int rend_end_sch(int tag, int cycl, int jitt)
@@ -343,6 +395,7 @@ void spg_Reset(bool hard)
    maple_int_pending = false;
    lightgun_line     = 0xffff;
    lightgun_hpos     = 0;
+   lightgun_flip     = 0;
    // a render the last run started: its end is not an interrupt for this one
    if (sh4_sched_is_scheduled(render_end_schid))
       sh4_sched_request(render_end_schid, -1);

@@ -168,6 +168,11 @@ static inline u32 ta_data_size(void)
 	return settings.System == DC_PLATFORM_NAOMI2 ? TA_DATA_SIZE * TA_NAOMI2_SCALE : TA_DATA_SIZE;
 }
 
+/* The most tile accelerator data a save state carries, of all the frames
+ * being written together: a state is always counted as having this much
+ * (see pvr_serialize_v21()). */
+#define TA_STATE_MAX (ta_data_size() / 4)
+
 //vertex lists
 struct TA_context
 {

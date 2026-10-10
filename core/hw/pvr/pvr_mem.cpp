@@ -28,7 +28,7 @@ u32 YUV_y_curr;
 u32 YUV_x_size;
 u32 YUV_y_size;
 
-static u32 YUV_index = 0;
+u32 YUV_index = 0;
 
 void YUV_init(void)
 {
