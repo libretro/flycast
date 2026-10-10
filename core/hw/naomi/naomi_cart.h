@@ -22,6 +22,11 @@ public:
 	virtual std::string GetGameId();
 	virtual void Serialize(void **data, unsigned int *total_size) {}
 	virtual void Unserialize(void **data, unsigned int *total_size) {}
+	// What a cartridge keeps that the save states before V21 did not hold:
+	// written and read after everything else, by naomi_serialize_v21() and
+	// naomi_unserialize_v21().
+	virtual void SerializeV21(void **data, unsigned int *total_size) {}
+	virtual void UnserializeV21(void **data, unsigned int *total_size) {}
 	virtual void SetKey(u32 key) { }
 	virtual void SetKeyData(u8 *key_data) { }
 	u32 GetSize() const { return RomSize; }
@@ -92,6 +97,8 @@ public:
 	u16 ReadCipheredData(u32 offset);
 	virtual void Serialize(void** data, unsigned int* total_size) override;
 	virtual void Unserialize(void** data, unsigned int* total_size) override;
+	virtual void SerializeV21(void** data, unsigned int* total_size) override;
+	virtual void UnserializeV21(void** data, unsigned int* total_size) override;
 	virtual void* GetDmaPtr(u32& size) override;
 	virtual std::string GetGameId() override;
 

@@ -6,5 +6,8 @@ extern void cyptoSetKey(u32 privKey);
 extern void cyptoSetLowAddr(u16 val);
 extern void cyptoSetHighAddr(u16 val);
 extern void cyptoSetSubkey(u16 subKey);
+extern void cryptoReset(void);
+extern void cryptoSerialize(void **data, unsigned int *total_size);
+extern void cryptoUnserialize(void **data, unsigned int *total_size);
 
 #endif

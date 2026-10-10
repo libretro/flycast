@@ -463,8 +463,96 @@ static u16 buffer2a = 0;
 static u8 buffer2[2];
 
 static u8 buffer[BUFFER_SIZE];
-static u8 line_buffer[LINE_SIZE];
+// (a line is LINE_SIZE bytes at most; the run that ends one is written
+// whole, up to 7 bytes past the line's end)
+static u8 line_buffer[LINE_SIZE + 8];
 static u8 line_buffer_prev[LINE_SIZE];
+
+/* The chip as it is when the machine is switched on. */
+void cryptoReset(void)
+{
+  cryptoKey = 0;
+  cryptoSubKey = 0;
+  cryptoAddr = 0;
+  cryptoReady = 0;
+  bufferBit = 0;
+  bufferBit2 = 0;
+  dec_hist = 0;
+  dec_header = 0;
+  buffer_pos = 0;
+  line_buffer_pos = 0;
+  line_buffer_size = 0;
+  done_compression = 0;
+  block_pos = 0;
+  block_size = 0;
+  block_numlines = 0;
+  buffer2a = 0;
+  memset(buffer2, 0, sizeof(buffer2));
+  memset(buffer, 0, sizeof(buffer));
+  memset(line_buffer, 0, sizeof(line_buffer));
+  memset(line_buffer_prev, 0, sizeof(line_buffer_prev));
+}
+
+/* Where the chip is in the stream it is decrypting, for a save state: 558
+ * bytes. Not the key, which it is given before every word; nor the line
+ * before the current one, which is copied from the current one before it
+ * is next looked at; nor buffer2, which is buffer2a's two bytes. */
+void cryptoSerialize(void **data, unsigned int *total_size)
+{
+  u8 bits[2] = { (u8)bufferBit, (u8)bufferBit2 };
+
+  LIBRETRO_S(cryptoSubKey);
+  LIBRETRO_S(cryptoAddr);
+  LIBRETRO_S(dec_header);
+  LIBRETRO_S(buffer_pos);
+  LIBRETRO_S(line_buffer_pos);
+  LIBRETRO_S(line_buffer_size);
+  LIBRETRO_S(block_pos);
+  LIBRETRO_S(block_size);
+  LIBRETRO_S(block_numlines);
+  LIBRETRO_S(dec_hist);
+  LIBRETRO_S(buffer2a);
+  LIBRETRO_S(cryptoReady);
+  LIBRETRO_S(done_compression);
+  LIBRETRO_SA(bits, 2);
+  LIBRETRO_SA(buffer, BUFFER_SIZE);
+  LIBRETRO_SA(line_buffer, LINE_SIZE);
+}
+
+void cryptoUnserialize(void **data, unsigned int *total_size)
+{
+  u8 bits[2] = { 0, 0 };
+
+  LIBRETRO_US(cryptoSubKey);
+  LIBRETRO_US(cryptoAddr);
+  LIBRETRO_US(dec_header);
+  LIBRETRO_US(buffer_pos);
+  LIBRETRO_US(line_buffer_pos);
+  LIBRETRO_US(line_buffer_size);
+  LIBRETRO_US(block_pos);
+  LIBRETRO_US(block_size);
+  LIBRETRO_US(block_numlines);
+  LIBRETRO_US(dec_hist);
+  LIBRETRO_US(buffer2a);
+  LIBRETRO_US(cryptoReady);
+  LIBRETRO_US(done_compression);
+  LIBRETRO_USA(bits, 2);
+  LIBRETRO_USA(buffer, BUFFER_SIZE);
+  LIBRETRO_USA(line_buffer, LINE_SIZE);
+
+  // A bit of a byte, and of a word; a place in the two-byte buffer and
+  // in a line.
+  bufferBit = bits[0] & 7;
+  bufferBit2 = bits[1] & 15;
+  buffer2[0] = buffer2a;
+  buffer2[1] = buffer2a >> 8;
+  if (buffer_pos > BUFFER_SIZE)
+    buffer_pos = BUFFER_SIZE;
+  if (line_buffer_size > LINE_SIZE)
+    line_buffer_size = LINE_SIZE;
+  if (line_buffer_pos > line_buffer_size)
+    line_buffer_pos = line_buffer_size;
+}
 
 void cyptoSetKey(u32 privKey)
 {
@@ -777,7 +865,8 @@ u16 cryptoDecrypt()
   if(!cryptoReady)
     cryptoStart();
 	if(dec_header & FLAG_COMPRESSED) {
-		if (line_buffer_pos == line_buffer_size) // if there's no data left to read..
+		// (a line of an odd number of bytes ends in the middle of a word)
+		if (line_buffer_pos >= line_buffer_size) // if there's no data left to read..
 		{
 			if (done_compression == 1)
 				cryptoStart();
@@ -788,7 +877,9 @@ u16 cryptoDecrypt()
 		base = line_buffer + line_buffer_pos;
 		line_buffer_pos += 2;
 	} else {
-		if(buffer_pos == BUFFER_SIZE)
+		// (no whole word left: after a compressed stream, which counts its
+		// bytes with this, there may be half of one)
+		if(buffer_pos + 2 > BUFFER_SIZE)
 			enc_fill();
 		base = &buffer[buffer_pos];
 		buffer_pos += 2;

@@ -1652,6 +1652,17 @@ void M2Cartridge::Unserialize(void** data, unsigned int* total_size) {
    NaomiCartridge::Unserialize(data, total_size);
 }
 
+/* The decryption chip, which a game reads a word at a time: where it is in
+ * the stream it was last given, so that a state taken between two words
+ * goes on with the next one. */
+void M2Cartridge::SerializeV21(void** data, unsigned int* total_size) {
+   cryptoSerialize(data, total_size);
+}
+
+void M2Cartridge::UnserializeV21(void** data, unsigned int* total_size) {
+   cryptoUnserialize(data, total_size);
+}
+
 ArchivedCartridge::~ArchivedCartridge()
 {
 	// the image is the archive's
