@@ -2581,11 +2581,15 @@ static int tcp_first_ack(struct pico_socket *s, struct pico_frame *f)
 static void tcp_attempt_closewait(struct pico_socket *s, struct pico_frame *f)
 {
     struct pico_socket_tcp *t = (struct pico_socket_tcp *)s;
-    struct pico_tcp_hdr *hdr  = (struct pico_tcp_hdr *) (f->transport_hdr);
-    if (pico_seq_compare(SEQN(f), t->rcv_nxt) == 0) {
+    /* The FIN comes after the bytes of its segment, which have been taken
+     * by now if they were the next ones due. Looked for at the segment's
+     * first byte, a FIN that came with data was not seen until the peer
+     * sent it again on its own. */
+    uint32_t fin_seq = SEQN(f) + f->payload_len;
+    if (pico_seq_compare(fin_seq, t->rcv_nxt) == 0) {
         /* received FIN, increase ACK nr */
-        t->rcv_nxt = long_be(hdr->seq) + 1;
-        if (pico_seq_compare(SEQN(f), t->rcv_processed) == 0) {
+        t->rcv_nxt = fin_seq + 1;
+        if (pico_seq_compare(fin_seq, t->rcv_processed) == 0) {
             if ((s->state & PICO_SOCKET_STATE_TCP) == PICO_SOCKET_STATE_TCP_ESTABLISHED) {
                 tcp_dbg("Changing state to CLOSE_WAIT\n");
                 s->state &= 0x00FFU;

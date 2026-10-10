@@ -331,6 +331,14 @@ static int pico_fragments_reassemble(struct pico_tree *tree, unsigned int len, u
         return -3;
     }
 
+    /* An IP packet is 65535 bytes at most. Fragments that add up to more
+     * do not fit the 16-bit length the frame is allocated by: all of them
+     * are dropped. */
+    if (header_length + len > 0xFFFFu) {
+        pico_fragments_empty_tree(tree);
+        return 0;
+    }
+
     full = pico_frame_alloc((uint16_t)(header_length + len));
     if (full) {
         full->net_hdr = full->buffer;
@@ -341,15 +349,18 @@ static int pico_fragments_reassemble(struct pico_tree *tree, unsigned int len, u
         full->dev = first->dev;
         pico_tree_foreach_safe(index, tree, tmp) {
             f = index->keyValue;
-            memcpy(full->transport_hdr + bookmark, f->transport_hdr, f->transport_len);
-            bookmark += f->transport_len;
+            /* A fragment behind the one that said it was the last is not
+             * part of the packet, and the frame has no room for it */
+            if (bookmark + f->transport_len <= len) {
+                memcpy(full->transport_hdr + bookmark, f->transport_hdr, f->transport_len);
+                bookmark += f->transport_len;
+            }
             pico_tree_delete(tree, f);
             pico_frame_discard(f);
         }
-        if (pico_transport_receive(full, proto) == -1)
-        {
-            pico_frame_discard(full);
-        }
+        /* (taken or not, the frame is the receiver's from here on: for a
+         * protocol the stack does not have it has been freed already) */
+        pico_transport_receive(full, proto);
 
         return 0;
     }

@@ -233,8 +233,13 @@ MOCKABLE int32_t pico_transport_receive(struct pico_frame *f, uint8_t proto)
         dbg("pkt: no such protocol (%d)\n", proto);
         pico_notify_proto_unreachable(f);
         pico_frame_discard(f);
-        ret = -1;
+        return -1;
     }
+    /* A queue that is full has not taken the frame. It is dropped here: the
+     * frame is the caller's no longer, whatever is returned. */
+    if (ret < 0)
+        pico_frame_discard(f);
+
     return ret;
 }
 
@@ -652,7 +657,7 @@ void pico_timer_cancel_hashed(uint32_t hash)
             {
                 PICO_FREE(tref->tmr);
                 tref->tmr = NULL;
-                tref[i].id = 0;
+                tref->id = 0;
             }
         }
     }

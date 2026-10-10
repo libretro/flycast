@@ -103,10 +103,14 @@ static int socket_cmp_ipv4(struct pico_socket *a, struct pico_socket *b)
         return 0;
 
 #ifdef PICO_SUPPORT_IPV4
+    /* (Which is the greater, not the difference: taken as a signed number,
+     * the difference of two addresses orders three of them in a circle, and
+     * a socket in a tree ordered so cannot always be found again - it was
+     * then freed while still in the tree.) */
     if ((a->local_addr.ip4.addr == PICO_IP4_ANY) || (b->local_addr.ip4.addr == PICO_IP4_ANY))
         ret = 0;
     else
-        ret = (int)(a->local_addr.ip4.addr - b->local_addr.ip4.addr);
+        ret = (a->local_addr.ip4.addr > b->local_addr.ip4.addr) - (a->local_addr.ip4.addr < b->local_addr.ip4.addr);
 
 #endif
     return ret;
@@ -118,7 +122,7 @@ static int socket_cmp_remotehost(struct pico_socket *a, struct pico_socket *b)
     if (is_sock_ipv6(a))
         ret = memcmp(a->remote_addr.ip6.addr, b->remote_addr.ip6.addr, PICO_SIZE_IP6);
     else
-        ret = (int)(a->remote_addr.ip4.addr - b->remote_addr.ip4.addr);
+        ret = (a->remote_addr.ip4.addr > b->remote_addr.ip4.addr) - (a->remote_addr.ip4.addr < b->remote_addr.ip4.addr);
 
     return ret;
 }
@@ -477,6 +481,27 @@ static void socket_garbage_collect(pico_time now, void *arg)
     PICO_FREE(s);
 }
 
+/* Sockets deleted at a moment when no timer could be had to free them a
+ * little later (the timers are limited in number, and a peer that opens
+ * enough connections or sends enough fragments has them all). They wait
+ * here until one can be had, and are never freed on the spot: whoever
+ * deletes a socket, and whoever called it, goes on using the socket until
+ * it returns, and frames it has sent are still on their way out. */
+static struct pico_socket *sockets_to_collect;
+
+static void pico_sockets_collect(void)
+{
+    while (sockets_to_collect) {
+        struct pico_socket *s = sockets_to_collect;
+        struct pico_socket *next = s->next;
+
+        if (!pico_timer_add((pico_time)10, socket_garbage_collect, s))
+            break;
+
+        sockets_to_collect = next;
+    }
+}
+
 
 static void pico_socket_check_empty_sockport(struct pico_socket *s, struct pico_sockport *sp)
 {
@@ -517,9 +542,10 @@ int8_t pico_socket_del(struct pico_socket *s)
     pico_socket_tcp_delete(s);
     s->state = PICO_SOCKET_STATE_CLOSED;
     if (!pico_timer_add((pico_time)10, socket_garbage_collect, s)) {
-        dbg("SOCKET: Failed to start garbage collect timer, doing garbage collection now\n");
+        dbg("SOCKET: Failed to start garbage collect timer, garbage collection has to wait\n");
+        s->next = sockets_to_collect;
+        sockets_to_collect = s;
         PICOTCP_MUTEX_UNLOCK(Mutex);
-        socket_garbage_collect((pico_time)0, s);
         return -1;
     }
     PICOTCP_MUTEX_UNLOCK(Mutex);
@@ -2041,6 +2067,13 @@ int pico_transport_process_in(struct pico_protocol *self, struct pico_frame *f)
         return -1;
     }
 
+    /* A segment or a datagram shorter than its own header: the header's
+     * fields would be read from past the end of the frame. */
+    if (f->transport_len < (self->proto_number == PICO_PROTO_TCP ? PICO_SIZE_TCPHDR : PICO_UDPHDR_SIZE)) {
+        pico_frame_discard(f);
+        return 0;
+    }
+
     ret = pico_transport_crc_check(f);
     if (ret < 1)
         return ret;
@@ -2191,6 +2224,7 @@ static int pico_sockets_loop_tcp(int loop_score)
 
 int pico_sockets_loop(int loop_score)
 {
+    pico_sockets_collect();
     loop_score = pico_sockets_loop_udp(loop_score);
     loop_score = pico_sockets_loop_tcp(loop_score);
     return loop_score;

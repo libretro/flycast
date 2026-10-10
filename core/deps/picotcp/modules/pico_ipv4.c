@@ -395,6 +395,13 @@ static int pico_ipv4_process_in(struct pico_protocol *self, struct pico_frame *f
 
     (void)self;
 
+    /* A frame too short for an IP header: its fields would be read from
+     * past the frame's end, and the room worked out above has wrapped. */
+    if ((int)f->buffer_len - (f->net_hdr - f->buffer) < (int)PICO_SIZE_IP4HDR) {
+        pico_frame_discard(f);
+        return 0;
+    }
+
     /* NAT needs transport header information */
     if (((hdr->vhl) & 0x0F) > 5) {
         option_len =  (uint8_t)(4 * (((hdr->vhl) & 0x0F) - 5));
@@ -407,7 +414,8 @@ static int pico_ipv4_process_in(struct pico_protocol *self, struct pico_frame *f
     f->frag = short_be(hdr->frag);
 #endif
 
-    if (f->transport_len > max_allowed) {
+    /* (the header's options are in the frame too) */
+    if ((int)f->transport_len + option_len > (int)max_allowed) {
         pico_frame_discard(f);
         return 0; /* Packet is discarded due to unfeasible length */
     }
