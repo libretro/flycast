@@ -343,6 +343,9 @@ void spg_Reset(bool hard)
    maple_int_pending = false;
    lightgun_line     = 0xffff;
    lightgun_hpos     = 0;
+   // a render the last run started: its end is not an interrupt for this one
+   if (sh4_sched_is_scheduled(render_end_schid))
+      sh4_sched_request(render_end_schid, -1);
    CalculateSync();
 }
 

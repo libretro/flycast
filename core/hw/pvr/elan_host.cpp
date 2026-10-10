@@ -153,8 +153,7 @@ extern "C" bool elan_host_texture_dma(uint32_t dst, uint32_t src, uint32_t size,
 
 void elan_host_init()
 {
-	if (elan_schid == -1)
-		elan_schid = sh4_sched_register(0, &elan_sched);
+	elan_schid = sh4_sched_register(0, &elan_sched);
 	if (elan_ram && !elan_ram_own)
 		elan_ram = NULL;		// the last machine's, gone with its address space
 	if (settings.System == DC_PLATFORM_NAOMI2 && _vmem_elan_ram)
@@ -200,6 +199,9 @@ void elan_host_reset(bool hard)
 		if (elan_ram)
 			memset(elan_ram, 0, ELAN_RAM_SIZE);
 		elan_reset();
+		// (which leaves no transfer under way: there is no end of one to come)
+		if (sh4_sched_is_scheduled(elan_schid))
+			sh4_sched_request(elan_schid, -1);
 	}
 }
 

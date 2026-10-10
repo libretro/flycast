@@ -37,7 +37,8 @@ u32 sh4_sched_remaining(int id, u32 reference)
 // Whether there is a request waiting for this one
 bool sh4_sched_is_scheduled(int id)
 {
-	return sch_list[id].end != -1;
+	// (an id that was never given out - a device this machine does not have - is waiting for nothing)
+	return (size_t)id < sch_list.size() && sch_list[id].end != -1;
 }
 
 u32 sh4_sched_remaining(int id)
@@ -73,6 +74,23 @@ void sh4_sched_ffts(void)
 int sh4_sched_register(int tag, sh4_sched_callback* ssc)
 {
 	sched_list t={ssc,tag,-1,-1};
+
+	/* The list is the process's and outlives the machine: every game
+	 * loaded after the first has its devices register again. A callback
+	 * that is already in the list keeps the place it has, and so the id
+	 * its owner and the save state know it by, and whatever it was waiting
+	 * for in the machine before is forgotten. Appended again each time,
+	 * the list grew by up to ten a load, and the last machine's events -
+	 * its scanline event, which asks for itself again for ever - went on
+	 * being called beside the new one's. */
+	for (size_t i=0;i<sch_list.size();i++)
+	{
+		if (sch_list[i].cb==ssc && sch_list[i].tag==tag)
+		{
+			sch_list[i]=t;
+			return i;
+		}
+	}
 
 	sch_list.push_back(t);
 

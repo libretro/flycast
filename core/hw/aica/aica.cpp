@@ -285,11 +285,8 @@ s32 libAICA_Init()
 	MCIRE=(InterruptInfo*)&aica_reg[0x28B4+8];
 
 	sgc_Init();
-	if (aica_schid == -1)
-	{
-		aica_schid = sh4_sched_register(0, &AicaUpdate);
-		sh4_sched_request(aica_schid, AICA_TICK);
-	}
+	// (asked for by the reset that follows)
+	aica_schid = sh4_sched_register(0, &AicaUpdate);
 
 	return 0;
 }
@@ -304,6 +301,11 @@ void libAICA_Reset(bool hard)
 	for (u32 i = 0; i < 3; i++)
 		timers[i].Init(aica_reg, i);
 	aica_Reset(hard);
+	/* The sample clock does not stop for a reset: a tick that is on its
+	 * way comes when it was going to. It is asked for here only when there
+	 * is none, which is the first reset of a machine. */
+	if (!sh4_sched_is_scheduled(aica_schid))
+		sh4_sched_request(aica_schid, AICA_TICK);
 }
 
 void libAICA_Term()

@@ -10,6 +10,9 @@ typedef int sh4_sched_callback(int tag, int sch_cycl, int jitter);
 /*
 	Registed a callback to the scheduler. The returned id 
 	is used for sh4_sched_request and sh4_sched_elapsed calls
+
+	A callback that is registered already, with the same tag, is given
+	the id it has, with nothing asked of it any more.
 */
 int sh4_sched_register(int tag, sh4_sched_callback* ssc);
 

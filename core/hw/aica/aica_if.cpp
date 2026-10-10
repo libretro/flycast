@@ -167,19 +167,21 @@ static int DreamcastSecond(int tag, int c, int j)
 void aica_Init()
 {
 	RealTimeClock = GetRTC_now();
-	if (rtc_schid == -1)
-	{
-		rtc_schid = sh4_sched_register(0, &DreamcastSecond);
-		sh4_sched_request(rtc_schid, SH4_MAIN_CLOCK);
-	}
+	// (asked for by the reset that follows)
+	rtc_schid = sh4_sched_register(0, &DreamcastSecond);
 }
 
 void aica_Reset(bool hard)
 {
 	if (hard)
-		aica_Init();
+		RealTimeClock = GetRTC_now();
 	VREG = 0;
 	ARMRST = 0;
+	/* The clock runs on its battery through a reset: a second that is on
+	 * its way comes when it was going to. It is asked for here only when
+	 * there is none, which is the first reset of a machine. */
+	if (!sh4_sched_is_scheduled(rtc_schid))
+		sh4_sched_request(rtc_schid, SH4_MAIN_CLOCK);
 }
 
 static int dma_end_sched(int tag, int cycl, int jitt)
@@ -452,6 +454,13 @@ void aica_sb_Init()
 
 void aica_sb_Reset(bool hard)
 {
+	/* A transfer that was under way: its end, with its interrupt, is not
+	 * for the machine that starts now. (A hard reset has put the registers
+	 * back, SB_ADST with them. A soft one leaves them as they are, with
+	 * the transfer still marked as under way, and so the end of it is left
+	 * to come and say it is over.) */
+	if (hard && sh4_sched_is_scheduled(dma_sched_id))
+		sh4_sched_request(dma_sched_id, -1);
 }
 
 void aica_sb_Term()

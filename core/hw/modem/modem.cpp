@@ -321,6 +321,24 @@ void ModemInit()
 void ModemTerm()
 {
 	stop_pico();
+	/* A reset of the console calls this as well. The step of the chip's
+	 * self test or of a call that was due is not to come: it used to, after
+	 * the reset and with the registers the game before had left, and when
+	 * that game was connected it came 4200 times a second from then on.
+	 * And a chip that has been used is as it is when the console is
+	 * switched on: waiting for the game to reset it, nothing dialled, no
+	 * interrupt asked for. */
+	if (sh4_sched_is_scheduled(modem_sched))
+		sh4_sched_request(modem_sched, -1);
+	if (state != MS_INVALID)
+	{
+		memset(&modem_regs, 0, sizeof(modem_regs));
+		state = MS_INVALID;
+		connect_state = DISCONNECTED;
+		last_dial_time = 0;
+		connected_time = 0;
+		update_interrupt();
+	}
 }
 
 static void schedule_callback(int ms)

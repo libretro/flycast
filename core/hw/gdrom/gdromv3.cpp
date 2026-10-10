@@ -1457,13 +1457,20 @@ void gdrom_reg_Init()
 
 void gdrom_reg_Term(void)
 {
-	
+	/* The machine set up next may be one with no drive, which does not
+	 * register these again: nothing of this one's is left waiting in them. */
+	gd_swap_cancel();
+	if (sh4_sched_is_scheduled(gdrom_sched))
+		sh4_sched_request(gdrom_sched, -1);
 }
 
 void gdrom_reg_Reset(bool hard)
 {
 	SB_GDST = 0;
 	SB_GDEN = 0;
+	// (and the next piece of the transfer that was under way is not to come)
+	if (sh4_sched_is_scheduled(gdrom_sched))
+		sh4_sched_request(gdrom_sched, -1);
 
 	/* The drive starts over as well: whatever command, transfer or music it
 	 * was in the middle of is not carried into the game that starts next. */

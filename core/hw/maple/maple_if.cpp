@@ -391,6 +391,9 @@ void maple_Reset(bool hard)
 {
 	maple_ddt_pending_reset=false;
 	maple_out_used = 0;
+	// (and the end of the transfer those answers were for is not to come)
+	if (sh4_sched_is_scheduled(maple_sched))
+		sh4_sched_request(maple_sched, -1);
 	SB_MDTSEL = 0x00000000;
 	SB_MDEN   = 0x00000000;
 	SB_MDST   = 0x00000000;
