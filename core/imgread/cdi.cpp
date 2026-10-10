@@ -6,6 +6,33 @@
 
 #include "deps/chdpsr/cdipsr.h"
 
+/* A track's entry in the image's table starts with a word, eight more
+ * bytes when that word is not zero, and then the same ten-byte mark twice. */
+static bool cdi_track_entry_at(core_file* fsource, size_t at)
+{
+	static const u8 mark[10] = { 0, 0, 0x01, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+	u8 word[4], marks[20];
+
+	if (core_fread_at(fsource, at, word, sizeof(word)) != sizeof(word))
+		return false;
+	at += sizeof(word);
+	if (word[0] | word[1] | word[2] | word[3])
+		at += 8;
+	return core_fread_at(fsource, at, marks, sizeof(marks)) == sizeof(marks)
+			&& memcmp(marks, mark, 10) == 0 && memcmp(marks + 10, mark, 10) == 0;
+}
+
+/* The image is not one: a table that is damaged, or that the file ends
+ * in the middle of. (It was read as far as it went and the rest made up
+ * from whatever the last track left behind.) */
+static Disc* cdi_invalid(Disc* rv, core_file* fsource, const char* file, const char* what)
+{
+	WARN_LOG(GDROM, "Invalid CDI file '%s': %s", file, what);
+	delete rv;
+	core_fclose(fsource);
+	return nullptr;
+}
+
 Disc* cdi_parse(const char* file)
 {
 	// Only try to open .cdi files
@@ -27,6 +54,10 @@ Disc* cdi_parse(const char* file)
     }
 
 	CDI_get_sessions(fsource,&image);
+	// (the table is in the file, before the eight bytes the file ends with)
+	const size_t table_end = (size_t)image.length - 8;
+	if (core_ftell(fsource) > table_end)
+		return cdi_invalid(nullptr, fsource, file, "can't get sessions");
 
 	Disc* rv= new Disc();
 
@@ -41,7 +72,15 @@ Disc* cdi_parse(const char* file)
 		ft=true;
 		image.global_current_session++;
 
-		CDI_get_tracks (fsource, &image);
+		{
+			const size_t at = core_ftell(fsource);
+			CDI_get_tracks (fsource, &image);
+			if (core_ftell(fsource) != at + 2 || at + 2 > table_end)
+				return cdi_invalid(rv, fsource, file, "can't get tracks");
+		}
+		// (a disc has 99 tracks at most, and so has its table of contents)
+		if (rv->tracks.size() + image.tracks > 99)
+			return cdi_invalid(rv, fsource, file, "too many tracks");
 
 		image.header_position = core_ftell(fsource);
 
@@ -61,7 +100,14 @@ Disc* cdi_parse(const char* file)
 				track.global_current_track++;
 				track.number = image.tracks - image.remaining_tracks + 1;
 
+				if (!cdi_track_entry_at(fsource, core_ftell(fsource)))
+					return cdi_invalid(rv, fsource, file, "could not find the track start mark");
 				CDI_read_track (fsource, &image, &track);
+				if (core_ftell(fsource) > table_end)
+					return cdi_invalid(rv, fsource, file, "truncated track entry");
+				// (0, 1, 2 and 4 are 2048, 2336, 2352 and 2448 bytes; there are no others)
+				if (track.sector_size_value > 2 && track.sector_size_value != 4)
+					return cdi_invalid(rv, fsource, file, "unsupported sector size");
 
 				image.header_position = core_ftell(fsource);
 
@@ -107,7 +153,12 @@ Disc* cdi_parse(const char* file)
 				t.CTRL=track.mode==0?0:4;
 				t.StartFAD=track.start_lba+track.pregap_length;
 				t.EndFAD=t.StartFAD+track.length-1;
-				t.file = new RawTrackFile(core_fopen(file),track.position + track.pregap_length * track.sector_size,t.StartFAD,track.sector_size);
+				{
+					core_file* track_file = core_fopen(file);
+					if (track_file == nullptr)
+						return cdi_invalid(rv, fsource, file, "cannot re-open the file");
+					t.file = new RawTrackFile(track_file,track.position + track.pregap_length * track.sector_size,t.StartFAD,track.sector_size);
+				}
 
 				rv->tracks.push_back(t);
 
@@ -163,13 +214,15 @@ Disc* cdi_parse(const char* file)
 
 		image.remaining_sessions--;
 	}
+	if (rv->tracks.empty())
+		return cdi_invalid(rv, fsource, file, "no track found");
 	core_fclose(fsource);
 
 	rv->type=GuessDiscType(CD_M1,CD_M2,CD_DA);
 
 	rv->LeadOut.StartFAD=rv->EndFAD;
-	rv->LeadOut.ADDR=0;
-	rv->LeadOut.CTRL=0;
+	rv->LeadOut.ADDR=1;	// subcode-q channel
+	rv->LeadOut.CTRL=4;	// data
 
 
 

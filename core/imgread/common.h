@@ -364,8 +364,11 @@ struct RawTrackFile : TrackFile
             *sector_type=SECFMT_2448_MODE2;
             break;
          default:
-            verify(false);
-            break;
+            /* A size there is no sector of: nothing is read. (That many
+             * bytes were read into the caller's one sector of room.) */
+            *sector_type=SECFMT_2352;
+            memset(dst, 0, 2352);
+            return;
       }
 
 		core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);

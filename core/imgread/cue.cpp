@@ -181,6 +181,13 @@ Disc* cue_parse(const char* file)
 				t.StartFAD = current_fad;
 				t.CTRL = (track_type == "AUDIO" || track_type == "CDG") ? 0 : 4;
 
+				// (a disc has 99 tracks at most, and so has its table of contents)
+				if (disc->tracks.size() >= 99)
+				{
+					WARN_LOG(GDROM, "CUE file: more than 99 tracks");
+					delete disc;
+					return nullptr;
+				}
 				if (track_filename.size() >= sizeof(path) - dir_end)
 				{
 					WARN_LOG(GDROM, "CUE file: track %d: file name too long", track_number);
@@ -230,8 +237,8 @@ Disc* cue_parse(const char* file)
 	else
 	{
 		disc->type = CdRom_XA;
-		disc->LeadOut.ADDR = 0;
-		disc->LeadOut.CTRL = 0;
+		disc->LeadOut.ADDR = 1;	// subcode-q channel
+		disc->LeadOut.CTRL = 4;	// data
 		disc->EndFAD = disc->LeadOut.StartFAD = current_fad;
 	}
 

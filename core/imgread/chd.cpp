@@ -228,6 +228,12 @@ bool CHDDisc::TryOpen(const char* file)
 			INFO_LOG(GDROM, "chd: track type %s is not supported", type);
 			return false;
 		}
+		// (a disc has 99 tracks at most, and so has its table of contents)
+		if (tracks.size() >= 99)
+		{
+			INFO_LOG(GDROM, "chd: more than 99 tracks");
+			return false;
+		}
 		DEBUG_LOG(GDROM, "chd: track %d %s %d frames", tkid, type, frames);
 		Track t;
       t.StartFAD = total_frames;
@@ -241,6 +247,13 @@ bool CHDDisc::TryOpen(const char* file)
 		Offset += padded * CD_TRACK_PADDING;
 
 		tracks.push_back(t);
+	}
+
+	// (a hard disk's image, or anything else with no track in it, is no disc)
+	if (tracks.empty())
+	{
+		INFO_LOG(GDROM, "chd: no track found");
+		return false;
 	}
 
 	if (total_frames!=549300 || tracks.size()<3)

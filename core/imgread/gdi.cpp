@@ -32,6 +32,14 @@ Disc* load_gdi(const char* file)
 		WARN_LOG(GDROM, "GDI: empty or invalid GDI file");
 		return nullptr;
 	}
+	/* A disc has 99 tracks at most, and so has its table of contents. (A
+	 * count above that was taken as it came: a track was made for every
+	 * one of them, lines in the file or not.) */
+	if (iso_tc > 99)
+	{
+		WARN_LOG(GDROM, "GDI: invalid track count: %u", iso_tc);
+		return nullptr;
+	}
 	INFO_LOG(GDROM, "GDI : %d tracks", iso_tc);
 
 	char path[512];
@@ -102,6 +110,14 @@ Disc* load_gdi(const char* file)
 		t.file=0;
 		t.CTRL = CTRL;
 
+		/* Only the sector sizes the reader has a layout for: any other
+		 * was read, that many bytes of it, into one sector of room. */
+		if (SSIZE!=0 && SSIZE!=2048 && SSIZE!=2336 && SSIZE!=2352 && SSIZE!=2448)
+		{
+			WARN_LOG(GDROM, "GDI: track %d: unsupported sector size %u", TRACK, SSIZE);
+			delete disc;
+			return nullptr;
+		}
 		if (SSIZE!=0)
 		{
 			/* (a name that does not fit is not copied past the end of

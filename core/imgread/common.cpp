@@ -282,9 +282,11 @@ void GetDriveSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 }
 void GetDriveToc(u32* to,DiskArea area)
 {
+	/* (filled first: with no disc in the drive the table was left as the
+	 * caller had it, which is whatever was on its stack, and sent) */
+	memset(to, 0xFF, 102 * 4);
 	if (!disc)
 		return;
-	memset(to, 0xFF, 102 * 4);
 
 	/* can't get toc on the second area on discs that don't have it: there
 	 * is none to give. (This was a verify(), which checks nothing in a
@@ -298,6 +300,9 @@ void GetDriveToc(u32* to,DiskArea area)
 
 	u32 first_track=1;
 	u32 last_track=disc->tracks.size();
+	// the table has room for 99 tracks, and a disc has no more
+	if (last_track > 99)
+		last_track = 99;
 	if (area==DoubleDensity)
 		first_track=3;
 	else if (disc->type==GdRom)
