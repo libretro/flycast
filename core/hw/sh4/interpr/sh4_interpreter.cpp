@@ -119,7 +119,17 @@ void Sh4_int_Reset(bool hard)
 		return;
 
 	if (hard)
+	{
+		/* All but how long it is to the scheduler's next event: the
+		 * scheduler's clock is counted from that, and what is queued -
+		 * some of it by the devices, reset just before - is timed by the
+		 * clock. Cleared, the clock jumped ahead by as much and all of it
+		 * came early. */
+		int sched_next = Sh4cntx.sh4_sched_next;
+
 		memset(&p_sh4rcb->cntx, 0, sizeof(p_sh4rcb->cntx));
+		Sh4cntx.sh4_sched_next = sched_next;
+	}
 	next_pc = 0xA0000000;
 
 	memset(r,0,sizeof(r));
