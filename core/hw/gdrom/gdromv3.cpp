@@ -261,7 +261,18 @@ void gd_set_state(gd_states state)
 			break;
 
 		case gds_process_set_mode:
-			memcpy((u8 *)&GD_HardwareInfo + set_mode_offset, pio_buff.data, pio_buff.size << 1);
+			{
+				/* As many bytes as the command said, which is one less
+				 * than the words hold when that is an odd number, and no
+				 * further than the ten that can be set. */
+				u32 count = std::min((u32)packet_cmd.data_8[4], pio_buff.size << 1);
+				if (set_mode_offset >= 10)
+					count = 0;
+				else if (count > 10 - set_mode_offset)
+					count = 10 - set_mode_offset;
+				if (count != 0)
+					memcpy((u8 *)&GD_HardwareInfo + set_mode_offset, pio_buff.data, count);
+			}
 			//end pio transfer ;)
 			gd_set_state(gds_pio_end);
 			break;
@@ -408,11 +419,17 @@ void libCore_gdrom_disc_change()
 void gd_spi_pio_end(const u8* buffer, u32 len, gd_states next_state)
 {
 	pio_buff.index=0;
-	pio_buff.size=len>>1;
+	/* The data register is 16 bits wide: a reply of an odd number of bytes
+	 * goes out in one word more, whose high byte is padding. (The odd byte
+	 * was dropped, and a reply of one byte was no words at all: the drive
+	 * offered data and had none to give, so the command never ended.) */
+	pio_buff.size=(len+1)>>1;
 	pio_buff.next_state=next_state;
 
 	if (buffer!=0)
 		memcpy(pio_buff.data,buffer,len);
+	if (len&1)
+		((u8 *)pio_buff.data)[len]=0;
 
 	if (len==0)
 		gd_set_state(next_state);
@@ -442,13 +459,14 @@ static void gd_spi_pio_reply(const u8 *reply, u32 size, u32 offset, u32 len)
 void gd_spi_pio_read_end(u32 len, gd_states next_state)
 {
 	pio_buff.index=0;
-	pio_buff.size=len>>1;
+	// (an odd number of bytes comes in one word more: see gd_spi_pio_end)
+	pio_buff.size=(len+1)>>1;
 	pio_buff.next_state=next_state;
 
-	/* Counted in words: a length of one byte is none of them, and nothing
-	 * is waited for. (It was waited for: the count of words taken never
-	 * came to equal the none there were, and the game could go on sending
-	 * until they were written past the end of the buffer.) */
+	/* Counted in words: with none of them nothing is waited for. (It was
+	 * waited for: the count of words taken never came to equal the none
+	 * there were, and the game could go on sending until they were written
+	 * past the end of the buffer.) */
 	if (pio_buff.size==0)
 		gd_set_state(next_state);
 	else
@@ -459,9 +477,12 @@ void gd_process_ata_cmd()
 	//Any ATA command clears these bits, unless aborted/error :p
 	Error.ABRT=0;
 
-	// (unit attention is something to check for: D2 changes discs by it)
+	/* (Unit attention - a disc was changed - is for the packet command that
+	 * comes next to report, which it does: see gd_process_spi_cmd. An ATA
+	 * command is not failed by it.) */
 	if (sns_key == 0x0 			// No sense
-			|| sns_key == 0xB)	// Aborted
+			|| sns_key == 0xB	// Aborted
+			|| sns_key == 6)	// Unit attention
 		GDStatus.CHECK=0;
 	else
 		GDStatus.CHECK=1;
@@ -797,6 +818,11 @@ void gd_process_spi_cmd()
 			else
 				read_params.remaining_sectors = (packet_cmd.data_8[6] << 8) | packet_cmd.data_8[7];
 			read_params.sector_type = sector_type;//yeah i know , not really many types supported...
+			/* What is left of a sector of the read before, if that one
+			 * was given up halfway, is not the start of this one. (It was
+			 * sent first, since the cache stopped being filled afresh
+			 * for every read.) */
+			read_buff.cache_size = 0;
 			libGDR_Prefetch(read_params.start_sector, read_params.remaining_sectors);
 
 			printf_spicmd("SPI_CD_READ - Sector=%d Size=%d/%d DMA=%d",read_params.start_sector,read_params.remaining_sectors,read_params.sector_type,Features.CDRead.DMA);
@@ -1475,8 +1501,9 @@ void gdrom_state_loaded()
 			&& pio_buff.next_state != gds_readsector_pio && pio_buff.next_state != gds_process_set_mode)
 		pio_buff.next_state = gds_pio_end;
 	// SET_MODE's data goes into the first ten bytes of the drive's settings
+	// (and, for an odd number of them, one byte of padding in the last word)
 	if (pio_buff.next_state == gds_process_set_mode
-			&& (set_mode_offset > 10 || (pio_buff.size << 1) > 10 - set_mode_offset))
+			&& (set_mode_offset > 10 || (pio_buff.size << 1) > 11 - set_mode_offset))
 		pio_buff.index = pio_buff.size = 0;
 	// data is taken until the buffer is full, and it is full already
 	if (gd_state == gds_pio_get_data && pio_buff.index >= pio_buff.size)
@@ -1488,6 +1515,102 @@ void gdrom_state_loaded()
 	if (read_params.sector_type != 2048 && read_params.sector_type != 2340
 			&& read_params.sector_type != 2352)
 		read_params.remaining_sectors = 0;
+	// one of the states there are
+	if ((u32)gd_state > (u32)gds_process_set_mode)
+		gd_state = gds_waitcmd;
+	/* How long a piece of a DMA transfer takes when disc loading is set to
+	 * fast: a count of cycles, at least one, or 1500000 for "not set". Zero
+	 * or less would have the transfer never go on. */
+	if (GDROM_TICK < 1 || GDROM_TICK > 1500000)
+		GDROM_TICK = 1500000;
+}
+
+/* The part of the drive's state that was not in a save state before V21:
+ * the sector cache of a DMA read. It holds what is left of the one sector
+ * a transfer took part of, so that is all that is saved: how many bytes,
+ * and the bytes, in room for a whole sector (2352), the rest of it zero. */
+#define GD_CACHE_SAVED 2352
+
+void gdrom_serialize_v21(void **data, unsigned int *total_size)
+{
+	static const u8 blank[GD_CACHE_SAVED] = { 0 };
+	const u8 *from = read_buff.cache;
+	u32 left = read_buff.cache_size;
+
+	if (left > GD_CACHE_SAVED || read_buff.cache_index > sizeof(read_buff.cache) - left)
+		left = 0;
+	else
+		from += read_buff.cache_index;
+	LIBRETRO_S(left);
+	LIBRETRO_SA(from, left);
+	LIBRETRO_SA(blank, GD_CACHE_SAVED - left);
+}
+
+bool gdrom_unserialize_v21(void **data, unsigned int *total_size)
+{
+	u32 left = 0;
+
+	LIBRETRO_US(left);
+	LIBRETRO_USA(read_buff.cache, GD_CACHE_SAVED);
+	// (no more than the room that was saved; a count that says more is of nothing)
+	if (left > GD_CACHE_SAVED)
+		left = 0;
+	read_buff.cache_index = 0;
+	read_buff.cache_size = left;
+	return true;
+}
+
+/* A state from before V21 has no cache in it, and was loaded as if the
+ * cache had been empty: what was in it was never sent, and the read went on
+ * from further into the disc than the game had got.
+ *
+ * What was in it can be worked out when one DMA transfer carries the whole
+ * of the read, which the state shows: the read's command is still there,
+ * with its first sector and its count, and the transfer under way is as
+ * long as the read. Then the bytes sent so far are the transfer's count of
+ * them, the sectors taken from the disc beyond those were in the cache (up
+ * to 32 of them: the drive used to read that far ahead), and they are on
+ * the disc still. The sectors that had not been touched are given back to
+ * be read again, and the one that was partly sent is read into the cache.
+ *
+ * In any other case - a read sent in several transfers, or none under way -
+ * the cache is empty, as it was for every such state. */
+void gdrom_state_before_v21(void)
+{
+	read_buff.cache_index = 0;
+	read_buff.cache_size = 0;
+
+	const u32 cmd = packet_cmd.data_8[0];
+	const u32 sector_type = read_params.sector_type;
+	if (gd_state != gds_readsector_dma || !(SB_GDST & 1) || SB_GDDIR != 1
+			|| (cmd != SPI_CD_READ && cmd != SPI_CD_READ2)
+			|| (sector_type != 2048 && sector_type != 2340 && sector_type != 2352))
+		return;
+
+	const u32 first = GetFAD(&packet_cmd.data_8[2], packet_cmd.GDReadBlock.prmtype);
+	const u32 count = cmd == SPI_CD_READ
+			? (u32)((packet_cmd.data_8[8] << 16) | (packet_cmd.data_8[9] << 8) | packet_cmd.data_8[10])
+			: (u32)((packet_cmd.data_8[6] << 8) | packet_cmd.data_8[7]);
+	const u32 taken = read_params.start_sector - first;		// sectors read from the disc so far
+	// (a transfer's length is in 32s of bytes, and not every number of sectors is)
+	if (taken > count || read_params.remaining_sectors != count - taken
+			|| (((u64)count * sector_type + 31) & ~(u64)31) != gd_dma_len())
+		return;
+
+	const u64 sent = SB_GDLEND;
+	if (sent >= (u64)taken * sector_type)
+		return;
+	const u32 whole = (u32)(((u64)taken * sector_type - sent) / sector_type);
+	const u32 part = (u32)(((u64)taken * sector_type - sent) % sector_type);
+
+	read_params.start_sector -= whole;
+	read_params.remaining_sectors += whole;
+	if (part != 0)
+	{
+		libGDR_ReadSector(read_buff.cache, read_params.start_sector - 1, 1, sector_type);
+		read_buff.cache_index = sector_type - part;
+		read_buff.cache_size = part;
+	}
 }
 
 //Init/Term/Res
