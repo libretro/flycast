@@ -989,7 +989,8 @@ static bool RenderFrame(void)
 				WARN_LOG(RENDERER, "Unsupported render to texture format: %d", FB_W_CTRL.fb_packmode);
 				return false;
 			case 7: //7     invalid
-				die("7 is not valid");
+				// (a mode the chip does not have, which a game can write all the same: nothing is drawn)
+				WARN_LOG(RENDERER, "Invalid render to texture format: 7");
 				return false;
 		}
 		DEBUG_LOG(RENDERER, "RTT packmode=%d stride=%d - %d,%d -> %d,%d\n", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
