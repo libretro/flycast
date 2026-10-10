@@ -191,9 +191,14 @@ void ResetAudioBuffer(void);
 void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
 void UpdateInputStateArcade(void);
+void UpdateInputState(u32 port);
 /* Without threaded rendering: whether an arcade machine's ports have been
  * read from the frontend since the last frame ended. */
 static bool arcade_input_read;
+/* Without threaded rendering, a Dreamcast's mice, a bit for each port: the
+ * ports the game has asked a mouse on, and those of them read from the
+ * frontend since the last frame ended. */
+static u32 mouse_ports, mouse_ports_read;
 bool rend_single_frame();
 
 static void refresh_devices(bool first_startup);
@@ -2839,6 +2844,20 @@ void os_DoEvents(void)
 			UpdateInputStateArcade();
 			arcade_input_read = false;
 		}
+		else if (mouse_ports != 0)
+		{
+			/* So has a Dreamcast's mouse the game did not ask this frame. (A
+			 * port that has stopped being a mouse is forgotten.) */
+			for (u32 port = 0; port < MAPLE_PORTS; port++)
+				if (((mouse_ports & ~mouse_ports_read) >> port) & 1)
+				{
+					if (maple_devices[port] == MDT_Mouse)
+						UpdateInputState(port);
+					else
+						mouse_ports &= ~(1 << port);
+				}
+			mouse_ports_read = 0;
+		}
 		poll_cb();
 	}
 
@@ -3309,6 +3328,24 @@ void UpdateInputStateArcade(void)
    arcade_input_read = true;
    for (u32 port = 0; port < MAPLE_PORTS; port++)
       UpdateInputState(port);
+}
+
+/* Without threaded rendering, a Dreamcast's mouse is read from the frontend
+ * once for each poll of the frontend's, as an arcade machine's ports are:
+ * when the game first asks for it in a frame, or at the end of a frame in
+ * which it did not (os_DoEvents). (It was read each time the game asked: a
+ * poll's motion was counted once for each time, and in a frame without one
+ * not at all.) What the frontend says does not change between two polls, so
+ * the buttons are the same whichever time they are read. */
+void UpdateInputStateMouse(u32 port)
+{
+   const u32 bit = 1 << port;
+
+   if (mouse_ports_read & bit)
+      return;
+   mouse_ports |= bit;
+   mouse_ports_read |= bit;
+   UpdateInputState(port);
 }
 
 void UpdateInputState(u32 port)

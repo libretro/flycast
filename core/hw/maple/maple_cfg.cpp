@@ -67,6 +67,7 @@ Plugins:
 */
 void UpdateInputState(u32 port);
 void UpdateInputStateArcade(void);
+void UpdateInputStateMouse(u32 port);
 extern InputLatch input_latch;
 void UpdateVibration(u32 port, u32 value, u32 max_duration);
 
@@ -269,7 +270,7 @@ struct MapleConfigMap : IMapleConfigMap
 	      return;
 	   }
 	   if (settings.System == DC_PLATFORM_DREAMCAST)
-	      UpdateInputState(pnum);
+	      UpdateInputStateMouse(pnum);
 	   else
 	      UpdateInputStateArcade();
 	   *buttons = mo_buttons[pnum];
