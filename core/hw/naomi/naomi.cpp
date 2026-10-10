@@ -140,12 +140,23 @@ u16 NaomiBoardIDRead()
 {
 	if((BControl&0xff)==0xFE)
 		return 0xffff;
-	return (BSerialBuffer&(1<<(31-BBufPos)))?8:0;
+	// (the count goes on for as long as the game clocks it: one of the 32 bits)
+	return (BSerialBuffer&(1u<<((31-BBufPos)&31)))?8:0;
 }
 
 static u32 AdaptByte(u8 val)
 {
 	return val<<24;
+}
+
+/* A byte of a serial number, as AdaptByte() gives it. The block is six bits
+ * of a command the game shifts in (or whatever a save state has), and the
+ * numbers end long before the last of those: nothing past the end. */
+static u32 SerialByte(const unsigned char *serial, int block, unsigned int byte)
+{
+	const unsigned int index = 8u * (unsigned int)block + byte;
+
+	return index < sizeof(GSerial) ? AdaptByte(serial[index]) : 0;
 }
 
 void NaomiBoardIDWriteControl(const u16 Data)
@@ -163,49 +174,49 @@ void NaomiBoardIDWriteControl(const u16 Data)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2])>>1;
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 0)>>1;
 		}
 		if((BCmd&0xff)==0xAA)	//Load Offset 1
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+1]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 1);
 		}
 		if((BCmd&0xff)==0x54)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+2]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 2);
 		}
 		if((BCmd&0xff)==0xA8)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+3]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 3);
 		}
 		if((BCmd&0xff)==0x50)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+4]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 4);
 		}
 		if((BCmd&0xff)==0xA0)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+5]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 5);
 		}
 		if((BCmd&0xff)==0x40)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+6]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 6);
 		}
 		if((BCmd&0xff)==0x80)
 		{
 			BState=2;
 			BBufPos=0;
-			BSerialBuffer=AdaptByte(BSerial[8*SerStep2+7]);
+			BSerialBuffer=SerialByte(BSerial, SerStep2, 7);
 		}
 		BLastCmd=BCmd;
 	}
@@ -227,49 +238,49 @@ void NaomiGameIDProcessCmd()
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep])>>0;
+			GSerialBuffer=SerialByte(GSerial, SerStep, 0)>>0;
 		}
 		if((GCmd&0xff)==0xAA)	//Load Offset 1
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+1]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 1);
 		}
 		if((GCmd&0xff)==0x54)
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+2]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 2);
 		}
 		if((GCmd&0xff)==0xA8)
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+3]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 3);
 		}
 		if((GCmd&0xff)==0x50)
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+4]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 4);
 		}
 		if((GCmd&0xff)==0xA0)
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+5]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 5);
 		}
 		if((GCmd&0xff)==0x40)
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+6]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 6);
 		}
 		if((GCmd&0xff)==0x80)
 		{
 			GState=2;
 			GBufPos=0;
-			GSerialBuffer=AdaptByte(GSerial[8*SerStep+7]);
+			GSerialBuffer=SerialByte(GSerial, SerStep, 7);
 		}
 		GLastCmd=GCmd;
 	}
@@ -339,7 +350,7 @@ void NaomiGameIDWrite(const u16 Data)
 
 u16 NaomiGameIDRead()
 {
-	return (GSerialBuffer&(1<<(31-GBufPos)))?1:0;
+	return (GSerialBuffer&(1u<<((31-GBufPos)&31)))?1:0;
 }
 
 //DIMM board
@@ -398,7 +409,6 @@ void naomi_process(u32 command, u32 offsetl, u32 parameterl, u32 parameterh)
 
 u32 ReadMem_naomi(u32 address, u32 size)
 {
-	verify(size!=1);
 	if (unlikely(CurrentCartridge == NULL))
 	{
 		INFO_LOG(NAOMI, "called without cartridge");
@@ -441,7 +451,9 @@ void Naomi_DmaStart(u32 addr, u32 data)
 	if (!m3comm.DmaStart(addr, data) && CurrentCartridge != NULL)
 	{
 		DEBUG_LOG(NAOMI, "NAOMI-DMA start addr %08X len %d", SB_GDSTAR, SB_GDLEN);
-		verify(1 == SB_GDDIR);
+		// (a cartridge is only read: the other direction is taken as this one)
+		if (SB_GDDIR != 1)
+			DEBUG_LOG(NAOMI, "NAOMI-DMA to the cartridge (SB_GDDIR=0): done as a read");
 		u32 start = SB_GDSTAR & 0x1FFFFFE0;
 		u32 len = (SB_GDLEN + 31) & ~31;
 		SB_GDLEND = 0;

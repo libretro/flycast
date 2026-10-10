@@ -371,6 +371,13 @@ void NaomiM3Comm::startThread()
 	retro_atomic_int_init(&net_packet_number, 0);
 	retro_atomic_int_init(&net_slot_size, swap16(*(u16*)&m68k_ram[0x204]));
 	publishSlot();
+	/* A link needs a board that serves it, or the address of one that
+	 * does, and nothing sets either: with neither the network thread could
+	 * only ask the local network, by broadcast and for ten seconds, for a
+	 * server no machine running this core can be. The board stays as it
+	 * is without a link, which is what the game saw at the end of that. */
+	if (!settings.network.ActAsServer && settings.network.server.empty())
+		return;
 	// The socket shutdown() ends the network thread's waits with
 	network.armWake();
 	thread = sthread_create(threadEntry, this);
