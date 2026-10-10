@@ -785,6 +785,21 @@ public:
       if (force_checks) {
 			CheckBlock(block);
 		}
+		else if (mmu_enabled())
+		{
+			/* A block is found by where its code is in memory, and with the
+			 * MMU on that can be at more than one address: is this the one
+			 * it was compiled for? Everything in it that goes by the pc -
+			 * where it branches to, what it leaves in PR - does. A block
+			 * that checks its code asks this as well (CheckBlock()); one
+			 * in a write-protected page did not, and ran as if it were at
+			 * its other address. The ARM recompilers ask every block, as
+			 * upstream does. The context has the address whenever the MMU
+			 * is on: see GenGoOn(). */
+			cmp(Ctx(&next_pc), block->vaddr);
+			jne(vaddr_failed, T_NEAR);
+			vaddr_checked = true;
+		}
 		/* (No stack to set up: the block runs on the main loop's, which is
 		 * as calls want it. See ngen_mainloop.) */
 
@@ -1733,6 +1748,15 @@ public:
 		if (force_checks)
 		{
 			L(check_failed);
+			mov(rax, (uintptr_t)&ngen_blockcheckfail);
+			call(rax);
+			jmp(exit_block, T_NEAR);
+		}
+		/* Or it is not the block for this address. */
+		if (vaddr_checked)
+		{
+			L(vaddr_failed);
+			mov(call_regs[0], block->addr);
 			mov(rax, (uintptr_t)&ngen_blockcheckfail);
 			call(rax);
 			jmp(exit_block, T_NEAR);
@@ -2928,6 +2952,8 @@ public:
 	Xbyak::Label exit_block;
 	Xbyak::Label slice_out;
 	Xbyak::Label check_failed;
+	Xbyak::Label vaddr_failed;
+	bool vaddr_checked = false;
 	bool slice_out_used = false;
 	u32 block_cycles = 0;
 	bool charge_at_tail = false;

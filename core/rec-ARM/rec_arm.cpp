@@ -2614,23 +2614,6 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 		CMP(r1, r2);
 		MOV32(r0, block->addr);
 		JUMP((u32)ngen_blockcheckfail, CC_NE);
-
-		if (block->has_fpu_op)
-		{
-			// with the FPU off (SR.FD), using it is an exception
-			LoadSh4Reg_mem(r1, reg_sr_status);
-			TST(r1, 1 << 15);
-			u32 *fpu_on = (u32 *)EMIT_GET_PTR();
-			MOV(r0, r0);		// "beq" over what follows, once its length is known
-			MOV32(r0, block->vaddr);
-			MOV32(r1, 0x800);
-			MOV32(r2, 0x100);
-			CALL((u32)Do_Exception);
-			LoadSh4Reg_mem(r4, reg_nextpc);
-			JUMP((u32)no_update_mmu);
-			u32 *over = (u32 *)EMIT_GET_PTR();
-			*fpu_on = 0x0A000000 | ((u32)(over - fpu_on - 2) & 0x00FFFFFF);
-		}
 	}
 #endif
 
@@ -2675,6 +2658,32 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 			}
 		}
 	}
+
+#ifndef NO_MMU
+	/* After the checks, not before: a block that is not the one for this
+	 * address, or whose code has been written over, is not there to raise
+	 * anything (upstream 6f58d204b: Sega Rally 2 hung leaving its records
+	 * menu). */
+	if (mmu_enabled())
+	{
+		if (block->has_fpu_op)
+		{
+			// with the FPU off (SR.FD), using it is an exception
+			LoadSh4Reg_mem(r1, reg_sr_status);
+			TST(r1, 1 << 15);
+			u32 *fpu_on = (u32 *)EMIT_GET_PTR();
+			MOV(r0, r0);		// "beq" over what follows, once its length is known
+			MOV32(r0, block->vaddr);
+			MOV32(r1, 0x800);
+			MOV32(r2, 0x100);
+			CALL((u32)Do_Exception);
+			LoadSh4Reg_mem(r4, reg_nextpc);
+			JUMP((u32)no_update_mmu);
+			u32 *over = (u32 *)EMIT_GET_PTR();
+			*fpu_on = 0x0A000000 | ((u32)(over - fpu_on - 2) & 0x00FFFFFF);
+		}
+	}
+#endif
 
 	u32 cyc=block->guest_cycles;
 	if (!is_i8r4(cyc))
