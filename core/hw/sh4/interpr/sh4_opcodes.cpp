@@ -1469,26 +1469,34 @@ sh4op(i0100_nnnn_mmmm_1111)
 {
 	u32 n = GetN(op);
 	u32 m = GetM(op);
+	s32 rm,rn;
+
+	rn = (s32)(s16)ReadMem16(r[n]);
+	//if (n==m)
+	//{
+	//	r[n]+=2;
+	//	r[m]+=2;
+	//}
+	rm = (s32)(s16)ReadMem16(r[m] + (n == m ? 2 : 0));
+
+	r[n]+=2;
+	r[m]+=2;
+
+	s32 mul=rm * rn;
 	if (sr.S!=0)
 	{
-		die("mac.w @<REG_M>+,@<REG_N>+ : S=1");
+		// With S set the sum is kept in MACL alone and stops at the ends
+		// of the 32-bit range. MACH is not changed.
+		s64 sum = (s64)(s32)mac.l + (s64)mul;
+
+		if (sum > 0x7FFFFFFFll)
+			sum = 0x7FFFFFFFll;
+		else if (sum < -0x80000000ll)
+			sum = -0x80000000ll;
+		mac.l = (u32)sum;
 	}
 	else
 	{
-		s32 rm,rn;
-
-		rn = (s32)(s16)ReadMem16(r[n]);
-		//if (n==m)
-		//{
-		//	r[n]+=2;
-		//	r[m]+=2;
-		//}
-		rm = (s32)(s16)ReadMem16(r[m] + (n == m ? 2 : 0));
-
-		r[n]+=2;
-		r[m]+=2;
-
-		s32 mul=rm * rn;
 		mac.full+=(s64)mul;
 	}
 }
@@ -1499,14 +1507,33 @@ sh4op(i0000_nnnn_mmmm_1111)
 	u32 m = GetM(op);
 	s32 rm, rn;
 
-	verify(sr.S==0);
-
 	ReadMemS32(rm,r[m]);
 	ReadMemS32(rn,r[n] + (n == m ? 4 : 0));
 	r[m] += 4;
 	r[n] += 4;
 
-	mac.full += (s64)rm * (s64)rn;
+	s64 mul = (s64)rm * (s64)rn;
+	// added as unsigned: the sum of a product and MAC can pass the ends of 64 bits
+	u64 sum = mac.full + (u64)mul;
+
+	if (sr.S!=0)
+	{
+		// With S set the sum stops at the ends of the 48-bit range.
+		const s64 mac_max = 0x00007FFFFFFFFFFFll;
+		const s64 mac_min = -mac_max - 1;
+		s64 acc = (s64)mac.full;
+		s64 res = (s64)sum;
+
+		if (((acc ^ res) & (mul ^ res)) < 0)
+			// MAC and the product have one sign and the sum has the other
+			res = mul < 0 ? mac_min : mac_max;
+		else if (res > mac_max)
+			res = mac_max;
+		else if (res < mac_min)
+			res = mac_min;
+		sum = (u64)res;
+	}
+	mac.full = sum;
 
 	//printf("%I64u %I64u | %d %d | %d %d\n",mac,mul,macl,mach,rm,rn);
 }
