@@ -291,6 +291,12 @@ bool ra_unserialize_failed(void)
 	return unserialize_failed;
 }
 
+/* A state whose contents cannot be this machine's: the load is given up. */
+void ra_unserialize_fail(void)
+{
+	unserialize_failed = true;
+}
+
 bool ra_serialize(const void *src, unsigned int src_size, void **dest, unsigned int *total_size)
 {
 	if ( *dest != NULL )
@@ -360,8 +366,14 @@ bool register_unserialize(Array<RegisterStruct>& regs,void **data, unsigned int 
 	   force_size = regs.Size;
 	for ( i = 0 ; i < force_size ; i++ )
 	{
-		LIBRETRO_US(regs.data[i].flags) ;
-		if ( ! (regs.data[i].flags & REG_RF) )
+		/* What kind of register it is - a plain value or one read and
+		 * written through functions, whose addresses are in its place -
+		 * is this build's to say, not the state's: flags taken from the
+		 * state made a function's address of a value, or a value of an
+		 * address. The value is taken when both agree it is one. */
+		u32 flags = 0 ;
+		LIBRETRO_US(flags) ;
+		if ( ! ((flags | regs.data[i].flags) & REG_RF) )
 			LIBRETRO_US(regs.data[i].data32) ;
 		else
 			LIBRETRO_US(dummy) ;
@@ -669,8 +681,14 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	LIBRETRO_SA(maple_out, MAPLE_OUT_WORDS);
 
 	/* V19: the drive still looking at a disc that has just been put in */
-	LIBRETRO_S(sch_list[gd_swap_schid].start);
-	LIBRETRO_S(sch_list[gd_swap_schid].end);
+	{
+		/* (a machine with no drive has no such event: its id is -1, and
+		 * what was written here was whatever is in memory before the list) */
+		int swap_start = gd_swap_schid >= 0 ? sch_list[gd_swap_schid].start : -1;
+		int swap_end = gd_swap_schid >= 0 ? sch_list[gd_swap_schid].end : -1;
+		LIBRETRO_S(swap_start);
+		LIBRETRO_S(swap_end);
+	}
 
 	/* V20: what a NAOMI 2 has that a NAOMI does not - the second PowerVR's
 	 * interrupts, and the geometry processor with its memory. */
@@ -702,6 +720,15 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	 * past the end of a truncated or malformed state. *data points at the
 	 * start of the frontend-supplied buffer on entry. */
 	ra_unserialize_init(*data, actual_data_size);
+
+	/* A state has the whole of the machine's three memories in it: one
+	 * that is smaller than those is not this machine's (or is cut short),
+	 * and is turned down before any of it has been put in place. */
+	if (actual_data_size < (size_t)RAM_SIZE + VRAM_SIZE + ARAM_SIZE)
+	{
+		ra_unserialize_fail();
+		return false;
+	}
 
 	LIBRETRO_US(version) ;
 
@@ -845,7 +872,12 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 
 
 	LIBRETRO_USA(EEPROM,0x100);
-	LIBRETRO_US(EEPROM_loaded);
+	{
+		// (a flag is 0 or 1, whatever byte the state has for it)
+		u8 flag = 0;
+		LIBRETRO_US(flag);
+		EEPROM_loaded = flag != 0;
+	}
 
 	if ( version == V1 )
 	{
@@ -855,7 +887,11 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_US(dummy);
 	}
 
-	LIBRETRO_US(maple_ddt_pending_reset);
+	{
+		u8 flag = 0;
+		LIBRETRO_US(flag);
+		maple_ddt_pending_reset = flag != 0;
+	}
 
 	if ( version == V1 )
 	{
@@ -903,6 +939,9 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_US(pvr_cur_scanline);
 	else
 		pvr_cur_scanline = 0;
+	// (the line counter has ten bits; lines are counted up to this one from wherever the beam is)
+	if (pvr_cur_scanline > 1023)
+		pvr_cur_scanline = 0;
    fb_w_cur = 1;
 	if (version < V9)
 	{
@@ -930,6 +969,11 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		fb_w_cur = 1;
 	LIBRETRO_US(ta_fsm[2048]);
 	LIBRETRO_US(ta_fsm_cl);
+	// (the state the list is in is one of eight, and it is an index into the table of what follows each)
+	if (ta_fsm[2048] > 7)
+		ta_fsm[2048] = 0;
+	if (ta_fsm_cl > 7)
+		ta_fsm_cl = 7;
 
 	if (version < V9)
 	{
@@ -1064,24 +1108,29 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_US(dummy_int); // sch_list[time_sync].end
 	}
 
-   if (version >= V13)
-		LIBRETRO_US(settings.network.EmulateBBA);
-	else
+	{
+		/* Whether the machine has a broadband adapter in place of the
+		 * modem. This build has none: a state that says it has one has
+		 * the adapter's contents next, which nothing here can take, and
+		 * the flag left set had every access to the modem go to an adapter
+		 * that was never set up. */
+		u8 bba = 0;
+		if (version >= V13)
+			LIBRETRO_US(bba);
 		settings.network.EmulateBBA = false;
+		if (bba != 0)
+		{
+			ra_unserialize_fail();
+			return false;
+		}
+	}
 
 	if ( version >= V2 )
 	{
 #ifdef ENABLE_MODEM
-      if (settings.network.EmulateBBA)
-      {
-         bba_Unserialize(data, total_size);
-      }
-      else
-      {
-         LIBRETRO_US(sch_list[modem_sched].tag) ;
-         LIBRETRO_US(sch_list[modem_sched].start) ;
-         LIBRETRO_US(sch_list[modem_sched].end) ;
-      }
+      LIBRETRO_US(sch_list[modem_sched].tag) ;
+      LIBRETRO_US(sch_list[modem_sched].start) ;
+      LIBRETRO_US(sch_list[modem_sched].end) ;
 #else
 		LIBRETRO_US(dummy_int);
 		LIBRETRO_US(dummy_int);
@@ -1148,15 +1197,23 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(NullDriveDiscType);
 	LIBRETRO_USA(q_subchannel,96);
 
-	LIBRETRO_US(FLASH_SIZE);
-	LIBRETRO_US(BBSRAM_SIZE);
-	LIBRETRO_US(BIOS_SIZE);
-	LIBRETRO_US(RAM_SIZE);
-	LIBRETRO_US(ARAM_SIZE);
-	LIBRETRO_US(VRAM_SIZE);
-	LIBRETRO_US(RAM_MASK);
-	LIBRETRO_US(ARAM_MASK);
-	LIBRETRO_US(VRAM_MASK);
+	{
+		/* How much memory of each kind the machine has, and the masks for
+		 * it. These are not state: they are what the machine that is
+		 * running was set up with, and its memory is that large whatever
+		 * a state says. Taking them from the state had every access
+		 * masked for a size the memory may not have. A state made on a
+		 * machine with other main, video or sound memory is another
+		 * machine's, with all that came before this laid out otherwise,
+		 * and is not loaded. */
+		unsigned sizes[9];
+		LIBRETRO_USA(sizes, 9);
+		if (sizes[3] != RAM_SIZE || sizes[4] != ARAM_SIZE || sizes[5] != VRAM_SIZE)
+		{
+			ra_unserialize_fail();
+			return false;
+		}
+	}
 
 	if (version < V9)
 	{
@@ -1276,11 +1333,22 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 
 	// Before V19 a disc put in was ready at once: there is never a look under way
-	sch_list[gd_swap_schid].end = -1;
-	if (version >= V19)
 	{
-		LIBRETRO_US(sch_list[gd_swap_schid].start);
-		LIBRETRO_US(sch_list[gd_swap_schid].end);
+		/* (on a machine with no drive there is no such event, its id is
+		 * -1, and this was written before the start of the list) */
+		int swap_start = -1;
+		int swap_end = -1;
+		if (version >= V19)
+		{
+			LIBRETRO_US(swap_start);
+			LIBRETRO_US(swap_end);
+		}
+		if (gd_swap_schid >= 0)
+		{
+			if (version >= V19)
+				sch_list[gd_swap_schid].start = swap_start;
+			sch_list[gd_swap_schid].end = swap_end;
+		}
 	}
 
 	if (version >= V20 && settings.System == DC_PLATFORM_NAOMI2 && elan_ram)

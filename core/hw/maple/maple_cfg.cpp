@@ -481,10 +481,21 @@ void mcfg_UnserializeDevices(void **data, unsigned int *total_size)
 	for (int i = 0; i < MAPLE_PORTS; i++)
 		for (int j = 0; j < 6; j++)
 		{
-			u8 **p = (u8 **)data;
-			MapleDeviceType device_type = (MapleDeviceType)**p;
-			*p = *p + 1;
-			*total_size = *total_size + 1;
+			/* Which device is there is a byte of the state's: past the end
+			 * of a state that stops short there is none, and one that is no
+			 * device at all is none either. (It was made all the same, which
+			 * maple_Create() cannot do.) */
+			u8 type = MDT_None;
+			if (!LIBRETRO_US(type))
+				type = MDT_None;
+			if (type > MDT_None)
+			{
+				WARN_LOG(MAPLE, "Invalid device type %d at %d.%d in the state", type, i, j);
+				type = MDT_None;
+				// (what such a device has in the state comes next, and is read as something else: the load has failed)
+				ra_unserialize_fail();
+			}
+			MapleDeviceType device_type = (MapleDeviceType)type;
 			if (device_type != MDT_None)
 			{
 				mcfg_Create(device_type, i, j,
