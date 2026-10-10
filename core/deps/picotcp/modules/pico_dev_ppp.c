@@ -1338,6 +1338,11 @@ static void ppp_ipv4_conf(struct pico_device_ppp *ppp)
 
 static void ipcp_send_nack(struct pico_device_ppp *ppp);
 
+/* Set for a peer that gives up when the Van Jacobson compression option is
+ * rejected (Web TV). The option is then let through, though nothing here
+ * compresses. */
+int dont_reject_opt_vj_hack = 0;
+
 static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t len)
 {
     struct pico_ipcp_hdr *ih = (struct pico_ipcp_hdr *)pkt;
@@ -1345,7 +1350,7 @@ static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
     int reject = 0;
     int nak = 0;
     while (p < pkt + len) {
-        if (p[0] == IPCP_OPT_VJ) {
+        if (p[0] == IPCP_OPT_VJ && dont_reject_opt_vj_hack == 0) {
             reject++;
         }
 
@@ -1772,7 +1777,10 @@ static const struct pico_ppp_fsm ppp_lcp_fsm[PPP_LCP_STATE_MAX][PPP_LCP_EVENT_MA
                                     { lcp_this_layer_down, lcp_send_terminate_request, lcp_send_configure_ack }},
         [PPP_LCP_EVENT_RCR_NEG] = { PPP_LCP_STATE_REQ_SENT,
                                     { lcp_this_layer_down, lcp_send_configure_request, lcp_send_configure_nack }},
-        [PPP_LCP_EVENT_RCA]     = { PPP_LCP_STATE_REQ_SENT, { lcp_this_layer_down, lcp_send_terminate_request } },
+        /* No request is waiting for an answer once the link is open, so an
+         * Ack that comes then is a late or repeated one (KallistiOS sends
+         * one) and is ignored, not taken as a reason to hang up. */
+        [PPP_LCP_EVENT_RCA]     = { PPP_LCP_STATE_OPENED, {} },
         [PPP_LCP_EVENT_RCN]     = { PPP_LCP_STATE_REQ_SENT, { lcp_this_layer_down, lcp_send_terminate_request } },
         [PPP_LCP_EVENT_RTR]     = { PPP_LCP_STATE_STOPPING, { lcp_this_layer_down, lcp_zero_restart_count, lcp_send_terminate_ack} },
         [PPP_LCP_EVENT_RTA]     = { PPP_LCP_STATE_REQ_SENT, { lcp_this_layer_down, lcp_send_terminate_request} },
@@ -2254,6 +2262,10 @@ void pico_ppp_destroy(struct pico_device *ppp)
      * or register a custom cleanup function during initialization
      * by setting 'ppp->dev.destroy'. */
 
+    /* The stack outlives the device: a tick left pending would run on it
+     * after it has been freed. */
+    pico_timer_cancel(((struct pico_device_ppp *)ppp)->timer);
+
     pico_device_destroy(ppp);
 }
 
@@ -2318,7 +2330,8 @@ static void pico_ppp_tick(pico_time t, void *arg)
         evaluate_lcp_state(ppp, PPP_LCP_EVENT_OPEN);
     }
 
-    if (!pico_timer_add(1000, pico_ppp_tick, arg)) {
+    ppp->timer = pico_timer_add(1000, pico_ppp_tick, arg);
+    if (!ppp->timer) {
         ppp_dbg("PPP: Failed to start tick timer\n");
         /* TODO No more PPP ticks now */
     }

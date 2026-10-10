@@ -24,7 +24,10 @@
 
 #define TCP_TIME (pico_time)(PICO_TIME_MS())
 
-#define PICO_TCP_RTO_MIN (70)
+/* One second, as RFC 6298 has it both for the first timeout and for the
+ * least one. The peer is an emulated machine behind an emulated modem: its
+ * acknowledgement of a full segment cannot be back in 70 ms. */
+#define PICO_TCP_RTO_MIN (1000)
 #define PICO_TCP_RTO_MAX (120000)
 #define PICO_TCP_IW          2
 #define PICO_TCP_SYN_TO  2000u
@@ -1486,6 +1489,10 @@ int pico_tcp_reply_rst(struct pico_frame *fr)
     if (0) {
 #ifdef PICO_SUPPORT_IPV4
     } else if (IS_IPV4(f)) {
+        /* The reset comes from the address the segment was sent to, which
+         * is the remote host's and not this stack's own: the checksum was
+         * made for it, and the peer knows the connection by it. */
+        f->local_ip.addr = ((struct pico_ipv4_hdr *)(f->net_hdr))->src.addr;
         tcp_dbg("Pushing IPv4 reset frame...\n");
         pico_ipv4_frame_push(f, &(((struct pico_ipv4_hdr *)(f->net_hdr))->dst), PICO_PROTO_TCP);
 #endif
@@ -1995,11 +2002,17 @@ static void add_retransmission_timer(struct pico_socket_tcp *t, pico_time next_t
                 val = next_ts + (t->rto << t->backoff);
             }
         }
+        /* Nothing sent is waiting to be acknowledged: no timer. One that
+         * is pending finds this and does nothing. */
+        if (next_ts == 0) {
+            t->retrans_tmr_due = 0;
+            return;
+        }
     } else {
         val = next_ts;
     }
 
-    if ((val > 0) || (val > now)) {
+    if (val > now) {
         t->retrans_tmr_due = val;
     } else {
         t->retrans_tmr_due = now + 1;
@@ -2780,7 +2793,7 @@ static uint8_t invalid_flags(struct pico_socket *s, uint8_t flags)
         { /* PICO_SOCKET_STATE_TCP_UNDEF      */ 0, },
         { /* PICO_SOCKET_STATE_TCP_CLOSED     */ 0, },
         { /* PICO_SOCKET_STATE_TCP_LISTEN     */ PICO_TCP_SYN, PICO_TCP_SYN | PICO_TCP_PSH },
-        { /* PICO_SOCKET_STATE_TCP_SYN_SENT   */ PICO_TCP_SYNACK, PICO_TCP_RST, PICO_TCP_RSTACK},
+        { /* PICO_SOCKET_STATE_TCP_SYN_SENT   */ PICO_TCP_SYNACK, PICO_TCP_RST, PICO_TCP_RSTACK, PICO_TCP_SYNACK | PICO_TCP_PSH },
         { /* PICO_SOCKET_STATE_TCP_SYN_RECV   */ PICO_TCP_SYN, PICO_TCP_ACK, PICO_TCP_PSH, PICO_TCP_PSHACK, PICO_TCP_FINACK, PICO_TCP_FINPSHACK, PICO_TCP_RST},
         { /* PICO_SOCKET_STATE_TCP_ESTABLISHED*/ PICO_TCP_SYN, PICO_TCP_SYNACK, PICO_TCP_ACK, PICO_TCP_PSH, PICO_TCP_PSHACK, PICO_TCP_FIN, PICO_TCP_FINACK, PICO_TCP_FINPSHACK, PICO_TCP_RST, PICO_TCP_RSTACK},
         { /* PICO_SOCKET_STATE_TCP_CLOSE_WAIT */ PICO_TCP_SYNACK, PICO_TCP_ACK, PICO_TCP_PSH, PICO_TCP_PSHACK, PICO_TCP_FIN, PICO_TCP_FINACK, PICO_TCP_FINPSHACK, PICO_TCP_RST},
@@ -2843,6 +2856,17 @@ int pico_tcp_input(struct pico_socket *s, struct pico_frame *f)
     uint8_t flags = hdr->flags;
     const struct tcp_action_entry *action = &tcp_fsm[s->state >> 8];
 
+    /* The header's length is the sender's word for it. With one shorter
+     * than a TCP header or longer than the segment, or a segment that runs
+     * past the end of its buffer, the payload would be read from memory
+     * that is not the segment's. */
+    if (((hdr->len & 0xf0u) >> 2u) < PICO_SIZE_TCPHDR
+        || ((hdr->len & 0xf0u) >> 2u) > f->transport_len
+        || (f->transport_hdr + f->transport_len) > (f->buffer + f->buffer_len)) {
+        pico_frame_discard(f);
+        return -1;
+    }
+
     f->payload = (f->transport_hdr + ((hdr->len & 0xf0u) >> 2u));
     f->payload_len = (uint16_t)(f->transport_len - ((hdr->len & 0xf0u) >> 2u));
 
@@ -2861,7 +2885,9 @@ int pico_tcp_input(struct pico_socket *s, struct pico_frame *f)
     }
     else if (flags == PICO_TCP_SYN || flags == (PICO_TCP_SYN | PICO_TCP_PSH)) {
         tcp_action_call(action->syn, s, f);
-    } else if (flags == (PICO_TCP_SYN | PICO_TCP_ACK)) {
+    } else if (flags == (PICO_TCP_SYN | PICO_TCP_ACK)
+               /* Windows CE (DirectPlay) answers a SYN with SYN, ACK and PSH */
+               || flags == (PICO_TCP_SYN | PICO_TCP_ACK | PICO_TCP_PSH)) {
         tcp_action_call(action->synack, s, f);
     } else {
         ret = tcp_action_by_flags(action, s, f, flags);

@@ -283,7 +283,7 @@ static bool pico_stack_inited;
 static retro_atomic_int_t pico_thread_running;
 extern "C"
 {
-   int dont_reject_opt_vj_hack;
+   extern int dont_reject_opt_vj_hack;
 };
 
 static void read_native_sockets();
