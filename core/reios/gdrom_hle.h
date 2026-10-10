@@ -116,3 +116,4 @@ struct gdrom_hle_state_t
 	}
 };
 extern gdrom_hle_state_t gd_hle_state;
+void gdrom_hle_reset();

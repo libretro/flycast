@@ -419,6 +419,26 @@ void gd_spi_pio_end(const u8* buffer, u32 len, gd_states next_state)
 	else
 		gd_set_state(gds_pio_send_data);
 }
+/* A reply of which the program says how much it wants and, for some, from
+ * how far into it. It gets as much as it asks for: what there is of the
+ * reply from there, and zeroes after that. (The numbers are the program's
+ * own, a byte or two of its command, and went straight into a copy out of
+ * ten bytes on the stack, or thirty-two of a variable - whatever came
+ * after those in memory was sent with them.) */
+static void gd_spi_pio_reply(const u8 *reply, u32 size, u32 offset, u32 len)
+{
+	u32 have = offset < size ? size - offset : 0;
+
+	if (len > sizeof(pio_buff.data))
+		len = sizeof(pio_buff.data);
+	if (have > len)
+		have = len;
+	if (have != 0)
+		memcpy(pio_buff.data, reply + offset, have);
+	memset((u8 *)pio_buff.data + have, 0, len - have);
+	gd_spi_pio_end(NULL, len);
+}
+
 void gd_spi_pio_read_end(u32 len, gd_states next_state)
 {
 	pio_buff.index=0;
@@ -736,7 +756,7 @@ void gd_process_spi_cmd()
 		GD_HardwareInfo._res2[1] = 0;
 		GD_HardwareInfo.read_flags &= 0x39;
 		printf_spicmd("SPI_REQ_MODE cd-rom speed %d flags %x retry %x", GD_HardwareInfo.speed, GD_HardwareInfo.read_flags, GD_HardwareInfo.read_retry);
-		gd_spi_pio_end((u8*)&GD_HardwareInfo + packet_cmd.data_8[2], packet_cmd.data_8[4]);
+		gd_spi_pio_reply((const u8 *)&GD_HardwareInfo, sizeof(GD_HardwareInfo), packet_cmd.data_8[2], packet_cmd.data_8[4]);
 		break;
 
 		/////////////////////////////////////////////////
@@ -785,7 +805,7 @@ void gd_process_spi_cmd()
 			//toc - dd/sd
 			libGDR_GetToc(&toc_gd[0],packet_cmd.data_8[1]&0x1);
 			 
-			gd_spi_pio_end((u8*)&toc_gd[0], (packet_cmd.data_8[4]) | (packet_cmd.data_8[3]<<8) );
+			gd_spi_pio_reply((const u8 *)&toc_gd[0], sizeof(toc_gd), 0, (packet_cmd.data_8[4]) | (packet_cmd.data_8[3]<<8));
 		}
 		break;
 
@@ -825,7 +845,8 @@ void gd_process_spi_cmd()
 		{
 			printf_spicmd("SPI_SET_MODE");
 			u32 Offset = packet_cmd.data_8[2];
-			u32 Count = std::min((u32)packet_cmd.data_8[4], 10 - Offset);	// limit to writable area
+			// limit to writable area (the first ten bytes; from past them, nothing)
+			u32 Count = Offset >= 10 ? 0 : std::min((u32)packet_cmd.data_8[4], 10 - Offset);
 			set_mode_offset=Offset;
 			gd_spi_pio_read_end(Count,gds_process_set_mode);
 		}
@@ -867,7 +888,7 @@ void gd_process_spi_cmd()
 			//9 0   0   0   0   0   0   0   0
 			stat[9]=0;
 
-			gd_spi_pio_end(&stat[packet_cmd.data_8[2]],packet_cmd.data_8[4]);
+			gd_spi_pio_reply(stat, sizeof(stat), packet_cmd.data_8[2], packet_cmd.data_8[4]);
 		}
 		break;
 
@@ -883,7 +904,7 @@ void gd_process_spi_cmd()
 			resp[8]=sns_asc;//Additional Sense Code
 			resp[9]=sns_ascq;//Additional Sense Code Qualifier
 
-			gd_spi_pio_end(resp,packet_cmd.data_8[4]);
+			gd_spi_pio_reply(resp, sizeof(resp), 0, packet_cmd.data_8[4]);
 			sns_key = 0;
 			sns_asc = 0;
 			sns_ascq = 0;
@@ -898,7 +919,7 @@ void gd_process_spi_cmd()
 			u8 ses_inf[6];
 			libGDR_GetSessionInfo(ses_inf,packet_cmd.data_8[2]);
 			ses_inf[0]=SecNumber.Status;
-			gd_spi_pio_end((u8*)&ses_inf[0],packet_cmd.data_8[4]);
+			gd_spi_pio_reply(ses_inf, sizeof(ses_inf), 0, packet_cmd.data_8[4]);
 		}
 		break;
 
@@ -1033,6 +1054,10 @@ void gd_process_spi_cmd()
 		sns_key = 5;	// Illegal request
 		sns_asc = 0x20;	// Unsupported command was received
 		sns_ascq = 0;
+		/* And the command is over (upstream): without this the drive
+		 * stayed busy with it, no interrupt came, and it took nothing
+		 * more. */
+		gd_set_state(gds_procpacketdone);
 		break;
 	}
 }

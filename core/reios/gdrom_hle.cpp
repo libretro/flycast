@@ -23,6 +23,17 @@
 
 gdrom_hle_state_t gd_hle_state = { 0xffffffff, 2, BIOS_INACTIVE };
 
+/* As the machine starts: nothing asked for, nothing in the middle of
+ * being read. (It was left as the game before the reset had it - a read by
+ * DMA that was under way went on into the memory of whatever was started
+ * next.) Upstream has the same. */
+void gdrom_hle_reset()
+{
+	static const gdrom_hle_state_t fresh = { 0xffffffff, 2, BIOS_INACTIVE };
+
+	gd_hle_state = fresh;
+}
+
 extern int GDROM_TICK;
 
 static void GDROM_HLE_ReadSES()

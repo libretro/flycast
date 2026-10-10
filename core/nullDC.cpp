@@ -17,6 +17,7 @@
 #include "hw/naomi/naomi_cart.h"
 
 #include "reios/reios.h"
+#include "reios/gdrom_hle.h"
 
 extern bool bios_loaded;
 #include <libretro.h>
@@ -374,6 +375,7 @@ void dc_prepare_system()
 void dc_reset(bool hard)
 {
 	plugins_Reset(hard);
+	gdrom_hle_reset();
 	mem_Reset(hard);
 
 	sh4_cpu.Reset(hard);
