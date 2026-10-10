@@ -79,6 +79,7 @@ extern u32 mo_buttons[4];
 extern f32 mo_x_delta[4];
 extern f32 mo_y_delta[4];
 extern f32 mo_wheel_delta[4];
+extern bool EEPROM_loaded;
 
 const char* VMU_SCREEN_COLOR_NAMES[VMU_NUM_COLORS] = {
 		"DEFAULT_ON",
@@ -443,9 +444,37 @@ void mcfg_SerializeDevices(void **data, unsigned int *total_size)
 		}
 }
 
+/* Whose inputs an Atomiswave's device on the third or fourth bus reads: the
+ * first and second player's, where mcfg_CreateDevices() puts their analog
+ * axes, guns or trackball there. A state does not say, and a device made
+ * from one read the third and fourth player's. */
+static int mcfg_PlayerNum(MapleDeviceType type, int bus)
+{
+	switch (settings.mapping.JammaSetup)
+	{
+	case JVS::Analog:
+		return type == MDT_SegaController ? bus - 2 : -1;
+	case JVS::LightGun:
+		return type == MDT_LightGun ? bus - 2 : -1;
+	case JVS::RotaryEncoders:
+	case JVS::SegaMarineFishing:
+		return type == MDT_Mouse && bus == 2 ? 0 : -1;
+	default:
+		return -1;
+	}
+}
+
 void mcfg_UnserializeDevices(void **data, unsigned int *total_size)
 {
+	/* A NAOMI's I/O board, when it goes, forgets that the EEPROM has been
+	 * read from its file. The board made below is the same one, and the
+	 * EEPROM is what the state says: it has been read from the state by
+	 * now, and with it whether it had been read from the file. */
+	const bool eeprom_loaded = EEPROM_loaded;
+	const bool atomiswave = settings.System == DC_PLATFORM_ATOMISWAVE;
+
 	mcfg_DestroyDevices();
+	EEPROM_loaded = eeprom_loaded;
 
 	for (int i = 0; i < MAPLE_PORTS; i++)
 		for (int j = 0; j < 6; j++)
@@ -456,7 +485,8 @@ void mcfg_UnserializeDevices(void **data, unsigned int *total_size)
 			*total_size = *total_size + 1;
 			if (device_type != MDT_None)
 			{
-				mcfg_Create(device_type, i, j);
+				mcfg_Create(device_type, i, j,
+						atomiswave && i >= 2 && j == 5 ? mcfg_PlayerNum(device_type, i) : -1);
 				MapleDevices[i][j]->maple_unserialize(data, total_size);
 			}
 		}

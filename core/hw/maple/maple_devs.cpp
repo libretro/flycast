@@ -2137,6 +2137,9 @@ struct maple_naomi_jamma : maple_sega_controller
 
 	std::vector<jvs_io_board *> io_boards;
 	bool crazy_mode = false;
+	// The firmware is The House of the Dead 2 prototype's. A state does not
+	// have this: on a load it is worked out from the game's name.
+	bool hotd2p = false;
 
 	u8 jvs_repeat_request[32][256];
 	u8 jvs_receive_buffer[32][258];
@@ -2161,6 +2164,28 @@ struct maple_naomi_jamma : maple_sega_controller
 		if (save_state.Failed())
 			WARN_LOG(MAPLE, "Cannot save EEPROM to file %s", eeprom_file);
 		EEPROM_loaded = false;
+	}
+
+	/* The EEPROM is read from its file once, the first time the game asks
+	 * for it or writes to it, and is in memory from then on. (It was read
+	 * again each time the game asked. What the game writes goes to the file
+	 * later, from the writer's thread: asked for before that, the file was
+	 * still the old one, and the old one was then what got written.) */
+	void load_eeprom()
+	{
+		if (EEPROM_loaded)
+			return;
+		EEPROM_loaded = true;
+		memset(EEPROM, 0, sizeof(EEPROM));
+		RFILE* f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+		if (f)
+		{
+			filestream_read(f, EEPROM, 0x80);
+			filestream_close(f);
+			DEBUG_LOG(MAPLE, "Loaded EEPROM from %s", eeprom_file);
+		}
+		else if (naomi_default_eeprom != NULL)
+			memcpy(EEPROM, naomi_default_eeprom, 0x80);
 	}
 
 	/* The EEPROM, when the game has written to it, to its file: made
@@ -2403,7 +2428,8 @@ struct maple_naomi_jamma : maple_sega_controller
 		u8 channel = 0;
 		if (dma_count_in >= 3)
 		{
-			if (dma_buffer_in[1] > 31 && dma_buffer_in[1] != 0xff && dma_count_in >= 8)	// TODO what is this?
+			// every request but "store" has its channel, node and length further on, if it is long enough
+			if (subcode != 0x13 && dma_count_in >= 8)
 			{
 				node_id = dma_buffer_in[6];
 				len = dma_buffer_in[7];
@@ -2439,6 +2465,19 @@ struct maple_naomi_jamma : maple_sega_controller
 
 			case 0x15:	// Receive JVS data
 				receive_jvs_messages(dma_buffer_in[1]);
+				if (hotd2p)
+				{
+					// this firmware sends its next request along with it
+					send_jvs_messages(node_id, channel, true, len, cmd, false);
+					w8(MDRS_JVSReply);
+					w8(0);
+					w8(0x20);
+					w8(0x01);
+					w8(0x18);	// always
+					w8(channel);
+					w8(sense_line(node_id));
+					w8(0);
+				}
 				break;
 
 			case 0x17:	// Transmit without repeat
@@ -2530,6 +2569,11 @@ struct maple_naomi_jamma : maple_sega_controller
 				int size = dma_buffer_in[2];
 				DEBUG_LOG(MAPLE, "EEprom write %08X %08X\n", address, size);
 				//printState(Command,buffer_in,buffer_in_len);
+				load_eeprom();
+				// (the chip has 0x80 bytes; the game's address and size went unchecked)
+				address &= 0x7f;
+				if (size > 0x80 - address)
+					size = 0x80 - address;
 				memcpy(EEPROM + address, dma_buffer_in + 4, size);
 				eeprom_dirty = true;
 
@@ -2545,18 +2589,11 @@ struct maple_naomi_jamma : maple_sega_controller
 
 			case 0x3:	//EEPROM read
 			{
-				RFILE* f = filestream_open(eeprom_file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-				if (f)
-				{
-				   filestream_read(f, EEPROM, 0x80);
-				   filestream_close(f);
-				   DEBUG_LOG(MAPLE, "Loaded EEPROM from %s", eeprom_file);
-				}
-				else if (naomi_default_eeprom != NULL)
-					memcpy(EEPROM, naomi_default_eeprom, 0x80);
+				load_eeprom();
 
 				//printf("EEprom READ\n");
-				int address = dma_buffer_in[1];
+				// (0x80 bytes from an address below 0x80 are inside the array, which has 0x100)
+				int address = dma_buffer_in[1] & 0x7f;
 				//printState(Command,buffer_in,buffer_in_len);
 				w8(MDRS_JVSReply);
 				w8(0x00);
@@ -2660,8 +2697,10 @@ struct maple_naomi_jamma : maple_sega_controller
 				{
 					u32 hash = XXH32(ram, 0x10000, 0);
 					LOGJVS("JVS Firmware hash %08x\n", hash);
+					hotd2p = hash == 0xa6784e26;
 					if (hash == 0xa7c50459			// CT
-						  || hash == 0xae841e36)	// HOTD2
+						  || hash == 0xae841e36	// HOTD2
+						  || hotd2p)
 						crazy_mode = true;
 					else
 						crazy_mode = false;
@@ -2690,7 +2729,12 @@ struct maple_naomi_jamma : maple_sega_controller
 					for (int i = 0; i < 32; i++)
 						jvs_repeat_request[i][0] = 0;
 
-					return MDRS_DeviceReply;
+					// (the reply was never written: its code was returned as the length of one)
+					w8(MDRS_DeviceReply);
+					w8(0x00);
+					w8(0x20);
+					w8(0x00);
+					break;
 				}
 				int xfer_bytes;
 				if (dma_buffer_in[0] == 0xff)
@@ -2806,6 +2850,8 @@ struct maple_naomi_jamma : maple_sega_controller
 	   LIBRETRO_US(jvs_repeat_request);
 	   LIBRETRO_US(jvs_receive_length);
 	   LIBRETRO_US(jvs_receive_buffer);
+	   // (the prototype's own firmware is one of those that set crazy_mode; the BIOS's, before it, is not)
+	   hotd2p = crazy_mode && !strcmp(naomi_game_id, "hotd2p");
 	   create_io_boards();
 	   size_t board_count;
 	   LIBRETRO_US(board_count);
@@ -3145,16 +3191,21 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						   if (player_num < 4)
 						   {
 						   	bool inverted = false;
+							bool half = false;
 						   	bool unmapped_half = false;
 						   	if (naomi_game_inputs != NULL)
 						   	{
 						   		const AxisDescriptor& desc = naomi_game_inputs->axes[player_axis];
 						   		inverted = desc.inverted;
+								half = desc.name != NULL && desc.type == Half;
 						   		// a pedal or lever no stick or trigger is for is let go, not half way
-						   		unmapped_half = desc.name != NULL && desc.type == Half && desc.axis > 5;
+								unmapped_half = half && desc.axis > 5;
 						   		player_axis = desc.axis;
 						   	}
 						   	axis_value = unmapped_half ? 0 : read_analog_axis(player_num, player_axis, inverted);
+							// King of Route 66 takes a pedal at exactly half way for the race won
+							if (half && axis_value == 0x8000)
+								axis_value = 0x8100;
 						   }
 						   LOGJVS("P%d.%d:%4x ", player_num + 1, player_axis + 1, axis_value);
 						   JVS_OUT(axis_value >> 8);
