@@ -513,9 +513,17 @@ extern "C" __attribute__((used)) void *ngen_link(u8 *after, u32 pc)
 		/* With the MMU on a block has a link site only for an address
 		 * that is where it is whatever the TLB says (rdv_MmuSamePlace()),
 		 * and the context has the address as well: GenGoOn(). So nothing
-		 * is translated here - and no exception raised in passing. */
+		 * is translated here - and no exception raised in passing.
+		 *
+		 * Unless the block is the one that turned the MMU on. It was
+		 * compiled for a machine without one, has a site for anywhere it
+		 * goes and put nothing in the context: the main loop, sent there
+		 * with the context as it was, ran the block a second time. */
 		if (from == NULL || !rdv_MmuSamePlace(from.get(), pc, &addr))
+		{
+			next_pc = pc;
 			return (void *)&ngen_block_return;
+		}
 		code = (DynarecCodeEntryPtr)p_sh4rcb->fpcb[(addr >> 1) & FPCB_MASK];
 	}
 	else
