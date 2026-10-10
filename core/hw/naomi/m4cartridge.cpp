@@ -190,7 +190,7 @@ void *M4Cartridge::GetDmaPtr(u32 &size)
 	}
 	if (encryption)
 	{
-		size = std::min(size, (u32)sizeof(buffer));
+		size = std::min(size, buffer_actual_size);
 		return buffer;
 
 	}
@@ -244,9 +244,9 @@ void M4Cartridge::enc_fill()
 	// is the game's (or a save state's): past the end of the ROMs the words
 	// to decode are all ones, as Read() gives them.
 	const u32 left = rom_cur_address < RomSize ? RomSize - rom_cur_address : 0;
-	const bool inside = sizeof(buffer) - buffer_actual_size <= left;
+	const bool inside = buffer_actual_size < BUFFER_FILL && BUFFER_FILL - buffer_actual_size <= left;
 	const u8 *base = RomPtr + rom_cur_address;
-	while (buffer_actual_size < sizeof(buffer))
+	while (buffer_actual_size < BUFFER_FILL)
 	{
 		u16 enc;
 		if (inside)

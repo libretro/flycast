@@ -4,6 +4,7 @@
 #include "types.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/sh4_mem.h"
+#include "hw/sh4/sh4_sched.h"
 #include "hw/holly/holly_intc.h"
 #include "hw/maple/maple_devs.h"
 
@@ -11,6 +12,7 @@
 #include "naomi_cart.h"
 #include "naomi_regs.h"
 #include "naomi_m3comm.h"
+#include "decrypt.h"
 
 //#define NAOMI_COMM
 
@@ -27,6 +29,21 @@ int SerStep=0,SerStep2=0;
 
 static bool aw_ram_test_skipped = false;
 static u8 aw_maple_devs;
+static int coin_chute[4];
+// how many times the DIMM board has answered: see naomi_process()
+static int opcd;
+
+/* A transfer from the cartridge takes time. It moves a piece at a time at
+ * the rate of the board's bus, the registers that say how far it has got
+ * move with it, and SB_GDST goes back to 0 and the interrupt is raised
+ * after the last piece. Games count on it: one starts a sound whose data
+ * is still coming, another looks at SB_GDST and SB_GDLEND while it waits. */
+#define NAOMI_DMA_CHUNK 1024	// bytes moved at a time
+static int naomi_dma_schid = -1;
+// SH4 cycles for a byte: 10 is 20 MB a second, 27 is 7
+static int naomi_dma_delay = 10;
+
+extern std::vector<sched_list> sch_list;
 
 #ifdef NAOMI_COMM
 	u32 CommOffset;
@@ -395,7 +412,6 @@ void naomi_process(u32 command, u32 offsetl, u32 parameterl, u32 parameterh)
 	{
 		DEBUG_LOG(NAOMI, "invalid opcode or smth ?");
 	}
-	static int opcd=0;
 	//else if (param!=3)
 	if (opcd<255)
 	{
@@ -434,19 +450,66 @@ void WriteMem_naomi(u32 address, u32 data, u32 size)
 		CurrentCartridge->WriteMem(address, data, size);
 }
 
+/* The next piece of the transfer that is under way. */
+static int naomi_dma_sched(int tag, int sch_cycl, int jitter)
+{
+	static u32 zeroes[NAOMI_DMA_CHUNK / 4];
+	const u32 total = (SB_GDLEN + 31) & ~31;
+	u32 start = SB_GDSTARD;
+	u32 len = 0;
+
+	// (nothing under way: a save state's doing, or the cartridge is gone)
+	if (SB_GDST != 1 || CurrentCartridge == NULL)
+		return 0;
+
+	if (SB_GDLEND < total)
+		len = std::min(total - SB_GDLEND, (u32)NAOMI_DMA_CHUNK);
+	SB_GDLEND += len;
+	while (len > 0)
+	{
+		u32 block_len = len;
+		void* ptr = CurrentCartridge->GetDmaPtr(block_len);
+		if (block_len == 0 || ptr == NULL)
+		{
+			// Nothing there to read: the rest of the piece is zeroes, and
+			// the transfer goes on to where it was asked to end.
+			INFO_LOG(NAOMI, "DMA transfer past the end of the cartridge");
+			WriteMemBlock_nommu_ptr(start, zeroes, len);
+			start += len;
+			break;
+		}
+		WriteMemBlock_nommu_ptr(start, (u32*)ptr, block_len);
+		CurrentCartridge->AdvancePtr(block_len);
+		len -= block_len;
+		start += block_len;
+	}
+	SB_GDSTARD = start;
+	// (stopped by what it wrote: a piece can land on the register that does that)
+	if (SB_GDST != 1)
+		return 0;
+	if (SB_GDLEND >= total)
+	{
+		SB_GDST = 0;
+		asic_RaiseInterrupt(holly_GDROM_DMA);
+		return 0;
+	}
+	// (the time the next piece takes: never none, with a piece still to come)
+	const u32 left = SB_GDLEN - SB_GDLEND;
+	return (left == 0 || left > NAOMI_DMA_CHUNK ? NAOMI_DMA_CHUNK : left) * naomi_dma_delay;
+}
+
 //Dma Start
 void Naomi_DmaStart(u32 addr, u32 data)
 {
+	// (a transfer that is under way goes on to its end: it is not started again)
+	if ((data & 1) == 0 || SB_GDST == 1)
+		return;
+
 	if (SB_GDEN==0)
 	{
 		INFO_LOG(NAOMI, "Invalid (NAOMI)GD-DMA start, SB_GDEN=0. Ignoring it.");
 		return;
 	}
-	
-	SB_GDST |= data & 1;
-
-	if (SB_GDST == 0)
-		return;
 
 	if (!m3comm.DmaStart(addr, data) && CurrentCartridge != NULL)
 	{
@@ -454,50 +517,23 @@ void Naomi_DmaStart(u32 addr, u32 data)
 		// (a cartridge is only read: the other direction is taken as this one)
 		if (SB_GDDIR != 1)
 			DEBUG_LOG(NAOMI, "NAOMI-DMA to the cartridge (SB_GDDIR=0): done as a read");
-		u32 start = SB_GDSTAR & 0x1FFFFFE0;
-		u32 len = (SB_GDLEN + 31) & ~31;
+		SB_GDST = 1;
+		SB_GDSTARD = SB_GDSTAR & 0x1FFFFFE0;
 		SB_GDLEND = 0;
-		while (len > 0)
-		{
-			u32 block_len = len;
-			void* ptr = CurrentCartridge->GetDmaPtr(block_len);
-			if (block_len == 0)
-			{
-				// Nothing there to read: the rest of the transfer is zeroes,
-				// and it ends where it was asked to end. (A page at a time,
-				// so that no piece runs over the end of what it starts in.)
-				static u32 zeroes[1024];
-
-				INFO_LOG(NAOMI, "Aborted DMA transfer. Read past end of cart?");
-				while (len > 0)
-				{
-					block_len = (u32)sizeof(zeroes) - (start & ((u32)sizeof(zeroes) - 1));
-					if (block_len > len)
-						block_len = len;
-					WriteMemBlock_nommu_ptr(start, zeroes, block_len);
-					len -= block_len;
-					start += block_len;
-					SB_GDLEND += block_len;
-				}
-				break;
-			}
-			WriteMemBlock_nommu_ptr(start, (u32*)ptr, block_len);
-			CurrentCartridge->AdvancePtr(block_len);
-			len -= block_len;
-			start += block_len;
-			SB_GDLEND += block_len;
-		}
-		SB_GDSTARD = start;
+		sh4_sched_request(naomi_dma_schid, std::min(SB_GDLEN, (u32)NAOMI_DMA_CHUNK) * naomi_dma_delay);
+		return;
 	}
-	else
-	{
-		SB_GDSTARD = SB_GDSTAR + SB_GDLEN;
-		SB_GDLEND = SB_GDLEN;
-	}
-	SB_GDST = 0;
+	SB_GDSTARD = SB_GDSTAR + SB_GDLEN;
+	SB_GDLEND = SB_GDLEN;
 	asic_RaiseInterrupt(holly_GDROM_DMA);
 }
 
+/* No transfer is under way any more, and its next piece is not to come. */
+static void naomi_dma_cancel()
+{
+	if (naomi_dma_schid >= 0 && sh4_sched_is_scheduled(naomi_dma_schid))
+		sh4_sched_request(naomi_dma_schid, -1);
+}
 
 void Naomi_DmaEnable(u32 addr, u32 data)
 {
@@ -506,6 +542,7 @@ void Naomi_DmaEnable(u32 addr, u32 data)
 	{
 		INFO_LOG(NAOMI, "(NAOMI)GD-DMA aborted");
 		SB_GDST=0;
+		naomi_dma_cancel();
 	}
 }
 void naomi_reg_Init()
@@ -557,6 +594,8 @@ void naomi_reg_Init()
 	#endif
 	NaomiInit();
 
+	naomi_dma_schid = sh4_sched_register(0, &naomi_dma_sched);
+
 	sb_rio_register(SB_GDST_addr, RIO_WF, 0, &Naomi_DmaStart);
 
 	sb_rio_register(SB_GDEN_addr, RIO_WF, 0, &Naomi_DmaEnable);
@@ -574,6 +613,8 @@ void naomi_reg_Term()
 		CloseHandle(CommMapFile);
 	}
 #endif
+	// (the machine set up next may be a Dreamcast, which does not register this again)
+	naomi_dma_cancel();
 	m3comm.closeNetwork();
 }
 
@@ -581,6 +622,14 @@ void naomi_reg_Reset(bool hard)
 {
 	SB_GDST = 0;
 	SB_GDEN = 0;
+	naomi_dma_cancel();
+	// An Atomiswave's bus is the slower one, and two games made for it and
+	// moved to a NAOMI cartridge still expect its pace.
+	if (settings.System == DC_PLATFORM_ATOMISWAVE
+			|| !strcmp(naomi_game_id, "FORCE FIVE") || !strcmp(naomi_game_id, "KENJU"))
+		naomi_dma_delay = 27;
+	else
+		naomi_dma_delay = 10;
 
 	aw_ram_test_skipped = false;
 	// (the kinds of device the last game had on ports 3 and 4: the next one
@@ -607,11 +656,107 @@ void naomi_reg_Reset(bool hard)
 	reg_dimm_parameterl = 0;
 	reg_dimm_parameterh = 0;
 	reg_dimm_status = 0x11;
+	opcd = 0;
+	memset(coin_chute, 0, sizeof(coin_chute));
+	cryptoReset();
 	m3comm.reset();
 }
 
+/* The cartridge transfer's event as a save state has it. With no transfer
+ * under way nothing is due, whatever the state says; with one, the next
+ * piece is due within the time a piece takes, and at once if the state has
+ * it otherwise. */
+static void naomi_dma_set_state(s32 start, s32 end)
+{
+	if (naomi_dma_schid < 0)
+		return;
+	if (SB_GDST != 1 || CurrentCartridge == NULL)
+		end = -1;
+	else
+	{
+		const u32 now = sh4_sched_now();
+
+		if (end == -1 || (u32)end - now > (u32)(NAOMI_DMA_CHUNK * naomi_dma_delay))
+		{
+			start = (s32)now;
+			end = start == -1 ? 0 : start;
+		}
+	}
+	sch_list[naomi_dma_schid].start = start;
+	sch_list[naomi_dma_schid].end = end;
+}
+
+/* What the save states before V21 did not hold, for an arcade board (a
+ * Dreamcast has none of it, and nothing is written for one):
+ *   - when the next piece of a cartridge transfer is due (how far it has
+ *     got is in the registers);
+ *   - which devices an Atomiswave game has asked for on ports 3 and 4,
+ *     whether its BIOS has been let past the RAM test, and how long each
+ *     coin switch has been read as closed;
+ *   - how many times the DIMM board has answered;
+ *   - what the cartridge has to add (see Cartridge::SerializeV21()). */
+void naomi_serialize_v21(void **data, unsigned int *total_size)
+{
+	s32 dma_start = -1, dma_end = -1;
+	u8 board[7];
+
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+		return;
+
+	if (naomi_dma_schid >= 0)
+	{
+		dma_start = sch_list[naomi_dma_schid].start;
+		dma_end = sch_list[naomi_dma_schid].end;
+	}
+	board[0] = aw_maple_devs;
+	board[1] = aw_ram_test_skipped;
+	board[2] = (u8)opcd;
+	for (int i = 0; i < 4; i++)
+		board[3 + i] = (u8)coin_chute[i];
+
+	LIBRETRO_S(dma_start);
+	LIBRETRO_S(dma_end);
+	LIBRETRO_SA(board, 7);
+
+	if (CurrentCartridge != NULL)
+		CurrentCartridge->SerializeV21(data, total_size);
+}
+
+bool naomi_unserialize_v21(void **data, unsigned int *total_size)
+{
+	s32 dma_start = -1, dma_end = -1;
+	u8 board[7] = { 0 };
+
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+		return true;
+
+	LIBRETRO_US(dma_start);
+	LIBRETRO_US(dma_end);
+	LIBRETRO_USA(board, 7);
+
+	naomi_dma_set_state(dma_start, dma_end);
+	aw_maple_devs = board[0] & 0xF0;
+	aw_ram_test_skipped = board[1] != 0;
+	opcd = board[2];
+	for (int i = 0; i < 4; i++)
+		coin_chute[i] = std::min<int>(board[3 + i], 5);
+
+	if (CurrentCartridge != NULL)
+		CurrentCartridge->UnserializeV21(data, total_size);
+	return true;
+}
+
+/* An older state: no transfer was ever under way in one, since a transfer
+ * was over as soon as it was asked for. The rest stays as the running
+ * machine has it, which is what loading such a state has always done. */
+void naomi_state_before_v21(void)
+{
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+		return;
+	naomi_dma_set_state(-1, -1);
+}
+
 extern u32 kcode[4];
-static int coin_chute[4];
 
 u32 libExtDevice_ReadMem_A0_006(u32 addr,u32 size) {
 	addr &= 0x7ff;

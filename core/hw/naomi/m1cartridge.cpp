@@ -62,7 +62,7 @@ void M1Cartridge::wb(u8 byte)
 
 void M1Cartridge::enc_fill()
 {
-	while (buffer_actual_size < sizeof(buffer) && !stream_ended)
+	while (buffer_actual_size < BUFFER_FILL && !stream_ended)
 	{
 		switch (lookb(3)) {
 		// 00+2 - 0000+esc
@@ -108,7 +108,7 @@ void M1Cartridge::enc_fill()
 			}
 		}
 	}
-	while (buffer_actual_size < sizeof(buffer))
+	while (buffer_actual_size < BUFFER_FILL)
 		buffer[buffer_actual_size++] = 0;
 }
 

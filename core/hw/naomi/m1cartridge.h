@@ -26,7 +26,7 @@ public:
 	{
 		if (encryption)
 		{
-			size = std::min(size, (u32)sizeof(buffer));
+			size = std::min(size, buffer_actual_size);
 			return buffer;
 		}
 		else
@@ -99,6 +99,12 @@ private:
 	void enc_fill();
 
 	u16 actel_id;
+
+	// How much is decoded ahead of what is read: a transfer moves this much
+	// at a time, so nothing is left over to be moved down the buffer. (The
+	// buffer is 32 KB, as the save states have it, and an older state's is
+	// full: that is read to its end before any more is decoded.)
+	enum { BUFFER_FILL = 1024 };
 
 	u8 buffer[32768];
 	u8 dict[111], hist[2];

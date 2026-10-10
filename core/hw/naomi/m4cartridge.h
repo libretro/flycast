@@ -68,6 +68,13 @@ private:
 	u16 subkey2 = 0;
 	u16 one_round[0x10000];
 
+	// How much is decoded ahead of what is read: a transfer moves this much
+	// at a time, so nothing is left over to be moved down the buffer, and a
+	// word read through the data register moves 1 KB down and not 32. (The
+	// buffer is 32 KB, as the save states have it, and an older state's is
+	// full: that is read to its end before any more is decoded.)
+	enum { BUFFER_FILL = 1024 };
+
 	u8 buffer[32768];
 	u32 rom_cur_address, buffer_actual_size;
 	u16 iv;
