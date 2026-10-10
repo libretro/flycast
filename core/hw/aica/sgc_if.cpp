@@ -44,6 +44,11 @@ void WriteSample(s16 r, s16 l);
 //Sound generation, mixin, and channel regs emulation
 //x.15
 static s32 volume_lut[16];
+/* What each output gets of a signal sent at a level and a pan (EFSDL and
+ * EFPAN), x.15: [0] left, [1] right, by level * 32 + pan. The two are steps
+ * of 3 dB, and for the side the pan turns down they are one attenuation,
+ * their sum. */
+static s32 volpan_lut[2][16 * 32];
 //255 -> mute
 //Converts Send levels to TL-compatible values (DISDL, etc)
 static const u32 SendLevel[16] =
@@ -122,21 +127,17 @@ void AICA_Sample();
 //Fixed point mul w/ rounding :)
 #define FPMul(a, b, bits) (FPs((a) * (b), bits))
 
+/* A 16-bit signal into the two outputs, which are summed as 20 bits (see
+ * AICA_Sample()). One multiplication for each side. There used to be two,
+ * one after the other, for the side the pan turns down: the level's, cut
+ * back to 16 bits, and then the pan's on what was left, which came out up
+ * to 2 below what the two together make of the signal. */
 #define VOLPAN(value,vol,pan,outl,outr) \
 {\
-	s32 temp=FPMul((value),volume_lut[(vol)],15);\
-	u32 t_pan=(pan);\
-	SampleType Sc=FPMul(temp,volume_lut[0xF-(t_pan&0xF)],15);\
-	if (t_pan& 0x10)\
-	{\
-		(outl)+=temp;\
-		(outr)+=Sc ;\
-	}\
-	else\
-	{\
-		(outl)+=Sc;\
-		(outr)+=temp;\
-	}\
+	const s32 t_value=(value);\
+	const u32 t_lvl=((vol)<<5)|(pan);\
+	(outl)+=FPMul(t_value,volpan_lut[0][t_lvl],11);\
+	(outr)+=FPMul(t_value,volpan_lut[1][t_lvl],11);\
 }
 
 DSP_OUT_VOL_REG* dsp_out_vol;
@@ -549,8 +550,7 @@ struct ChannelEx
 		else
 		{
 			/* 20 bits from here to the outputs: the filter needs the four
-			 * extra, and the DSP takes 20-bit samples. A channel with its
-			 * filter off comes out exactly as it did with 16. */
+			 * extra, and the DSP takes 20-bit samples. */
 			SampleType sample = InterpolateSample();
 
 			if (FEG.active)
@@ -581,15 +581,18 @@ struct ChannelEx
 			u32 dr = std::min(VolMix.DRAtt, max_att);
 			u32 ds = std::min(VolMix.DSPAtt, max_att);
 
-			oLeft = (SampleType)FPMul((s64)sample, (s64)logtable[dl], 19);	// 16 bits
-			oRight = (SampleType)FPMul((s64)sample, (s64)logtable[dr], 19);	// 16 bits
+			/* 20 bits to the outputs too, as to the DSP: they are added up
+			 * as that, and what is below 16 bits goes once, from the sum,
+			 * and not from each channel before it is added. */
+			oLeft = (SampleType)FPMul((s64)sample, (s64)logtable[dl], 15);	// 20 bits
+			oRight = (SampleType)FPMul((s64)sample, (s64)logtable[dr], 15);	// 20 bits
 			oDsp = (SampleType)FPMul((s64)sample, (s64)logtable[ds], 15);	// 20 bits
 
-			clip_verify(((s16)oLeft)==oLeft);
-			clip_verify(((s16)oRight)==oRight);
+			clip_verify((oLeft << 12) >> 12 == oLeft);
+			clip_verify((oRight << 12) >> 12 == oRight);
 			clip_verify((oDsp << 12) >> 12 == oDsp);
-			clip_verify(sample*oLeft>=0);
-			clip_verify(sample*oRight>=0);
+			clip_verify((s64)sample*oLeft>=0);
+			clip_verify((s64)sample*oRight>=0);
 			clip_verify((s64)sample*oDsp>=0);
 
 			StepAEG(this);
@@ -1442,6 +1445,22 @@ void sgc_Init()
 	for (int i=256;i<1024;i++)
 		tl_lut[i]=0;
 
+	for (int vol=0;vol<16;vol++)
+	{
+		for (int pan=0;pan<32;pan++)
+		{
+			// the side the pan leaves alone, and the one it turns down:
+			// all the way at 15
+			s32 full=volume_lut[vol];
+			s32 less=0;
+			if (vol!=0 && (pan&0xF)!=0xF)
+				less=(s32)((1<<15)/pow(2.0,((15-vol)+(pan&0xF))/2.0));
+			//0x1* -> R decreases
+			volpan_lut[0][vol*32+pan]=(pan&0x10)?full:less;
+			volpan_lut[1][vol*32+pan]=(pan&0x10)?less:full;
+		}
+	}
+
 	for (int i=0;i<64;i++)
 	{
 		AEG_ATT_SPS[i] = CalcAttackEgSteps(AEG_Attack_Time[i]);
@@ -1589,10 +1608,12 @@ void AICA_Sample()
 	
 	//MVOL !
 	//we want to make sure mix* is *At least* 23 bits wide here, so 64 bit mul !
+	//(the sum is of 20-bit samples, and comes down to the 16 of the output
+	//here, after the volume)
 	u32 mvol=CommonData->MVOL;
 	s32 val=volume_lut[mvol];
-	mixl=(s32)FPMul((s64)mixl,val,15);
-	mixr=(s32)FPMul((s64)mixr,val,15);
+	mixl=(s32)FPMul((s64)mixl,val,19);
+	mixr=(s32)FPMul((s64)mixr,val,19);
 
 
 	if (CommonData->DAC18B)
