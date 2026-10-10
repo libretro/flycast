@@ -774,6 +774,8 @@ void MMU_reset()
 	memset(ITLB, 0, sizeof(ITLB));
 	mmu_set_state();
 	mmu_flush_table();
+	// (where the store queues go by the TLB, which is empty now)
+	memset(sq_remap, 0, sizeof(sq_remap));
 }
 
 void MMU_term()

@@ -112,6 +112,19 @@ static u32 strict_lookup(u32 va, const TLB_Entry **tlb_entry_ret, u32& rv)
 		return MMU_ERROR_NONE;
 	}
 
+	/* The TLB is looked in: the counter that says which entry LDTLB writes
+	 * moves on, as it does at every look on the machine, and starts again
+	 * at the limit the program gave it, if it gave one. A program that
+	 * leaves the choice of entry to the counter (KallistiOS does) had
+	 * every page it asked for put in the same one, each taking the place
+	 * of the last: an instruction in one page that reads another never got
+	 * both. (Not for the looks answered above, from what is kept: between
+	 * two entries being written there is always one that comes here.) */
+	{
+		const u32 urc = (CCN_MMUCR.URC + 1) & 63;
+
+		CCN_MMUCR.URC = urc == CCN_MMUCR.URB ? 0 : urc;
+	}
 	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
 	{
 		if (!mmu_match(va, UTLB[i].Address, UTLB[i].Data))
