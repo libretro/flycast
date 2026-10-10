@@ -121,6 +121,47 @@ typedef char ta_vert_layout[(offsetof(Vertex, col) == 12 && offsetof(Vertex, vtx
 		&& offsetof(Vertex, u) == 20 && offsetof(Vertex, v) == 24) ? 1 : -1];
 #endif
 
+/* A colour given as four floats - alpha, red, green, blue, the order the
+ * game sends them in - to the vertex's red, green, blue, alpha bytes, all
+ * four at once: float_to_satu8() of each, bit for bit, for every float
+ * there is. The clamp is done on the floats' bits, as saturate01() does it. */
+#if defined(TA_VERT_SSE2)
+#define TA_COLOUR_SIMD 1
+static inline void float_argb_to_satu8(u8 *to, const void *argb)
+{
+	const __m128i bits = _mm_loadu_si128((const __m128i *)argb);
+	/* above 1, infinity and NaN with either sign */
+	const __m128i one = _mm_or_si128(_mm_cmpgt_epi32(bits, _mm_set1_epi32(0x3f800000)),
+			_mm_cmpgt_epi32(_mm_and_si128(bits, _mm_set1_epi32(0x7fffffff)), _mm_set1_epi32(0x7f800000)));
+	/* anything else with the sign set is 0 */
+	__m128i c = _mm_andnot_si128(_mm_srai_epi32(bits, 31), bits);
+	c = _mm_or_si128(_mm_andnot_si128(one, c), _mm_and_si128(one, _mm_set1_epi32(0x3f800000)));
+	c = _mm_cvttps_epi32(_mm_mul_ps(_mm_castsi128_ps(c), _mm_set1_ps(255.f)));
+	c = _mm_shuffle_epi32(c, _MM_SHUFFLE(0, 3, 2, 1));
+	c = _mm_packs_epi32(c, c);
+	c = _mm_packus_epi16(c, c);
+	const u32 rgba = (u32)_mm_cvtsi128_si32(c);
+	memcpy(to, &rgba, 4);
+}
+#elif !defined(MSB_FIRST) && (defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(_M_ARM64))
+#include <arm_neon.h>
+#define TA_COLOUR_SIMD 1
+static inline void float_argb_to_satu8(u8 *to, const void *argb)
+{
+	const int32x4_t bits = vreinterpretq_s32_u8(vld1q_u8((const u8 *)argb));
+	/* above 1, infinity and NaN with either sign */
+	const uint32x4_t one = vorrq_u32(vcgtq_s32(bits, vdupq_n_s32(0x3f800000)),
+			vcgtq_s32(vandq_s32(bits, vdupq_n_s32(0x7fffffff)), vdupq_n_s32(0x7f800000)));
+	/* anything else with the sign set is 0 */
+	int32x4_t c = vbicq_s32(bits, vshrq_n_s32(bits, 31));
+	c = vbslq_s32(one, vdupq_n_s32(0x3f800000), c);
+	const uint16x4_t n = vmovn_u32(vcvtq_u32_f32(vmulq_n_f32(vreinterpretq_f32_s32(c), 255.f)));
+	const uint8x8_t b = vmovn_u16(vcombine_u16(n, n));   /* A R G B A R G B */
+	const u32 rgba = vget_lane_u32(vreinterpret_u32_u8(vext_u8(b, b, 1)), 0);
+	memcpy(to, &rgba, 4);
+}
+#endif
+
 #ifdef MSB_FIRST
 #define vert_fast_packed_color(to,src) vert_packed_color_(cv->to,vtx->src)
 #else
@@ -860,11 +901,16 @@ private:
 
 	#define glob_param_bdc(pp) glob_param_bdc_( (TA_PolyParam0*)pp)
 
+#ifdef TA_COLOUR_SIMD
+	#define poly_float_color_(to,a,r,g,b) \
+		float_argb_to_satu8(to, &(a));
+#else
 	#define poly_float_color_(to,a,r,g,b) \
 		to[0] = float_to_satu8(r);	\
 		to[1] = float_to_satu8(g);	\
 		to[2] = float_to_satu8(b);	\
 		to[3] = float_to_satu8(a);
+#endif
 
 
 	#define poly_float_color(to,src) \
@@ -1032,11 +1078,16 @@ private:
 		cv->spc1[2] = (u8)(FaceOffsColor1F[2] * intensity);  \
 		cv->spc1[3] = FaceOffsColor1[3]; }
 
+#ifdef TA_COLOUR_SIMD
+	#define vert_float_color_(to,a,r,g,b) \
+		float_argb_to_satu8(to, &(a));
+#else
 	#define vert_float_color_(to,a,r,g,b) \
 		to[0] = float_to_satu8(r); \
 		to[1] = float_to_satu8(g); \
 		to[2] = float_to_satu8(b); \
 		to[3] = float_to_satu8(a);
+#endif
 
 		//Macros to make thins easier ;)
 	#define vert_packed_color(to,src) \
