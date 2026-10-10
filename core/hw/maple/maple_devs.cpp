@@ -145,7 +145,8 @@ struct maple_base: maple_device
 	
 	u8 r8()	  { u8  rv=*((u8*)dma_buffer_in);dma_buffer_in+=1;dma_count_in-=1; return rv; }
 	u16 r16() { u16 rv=*((u16*)dma_buffer_in);dma_buffer_in+=2;dma_count_in-=2; return rv; }
-	u32 r32() { u32 rv=*(u32*)dma_buffer_in;dma_buffer_in+=4;dma_count_in-=4; return rv; }
+	// (a frame can be shorter than its command needs: the words it has not got read as 0, and the count does not go below 0)
+	u32 r32() { if (dma_count_in<4) return 0; u32 rv=*(u32*)dma_buffer_in;dma_buffer_in+=4;dma_count_in-=4; return rv; }
 	void rptr(void* dst, u32 len)
 	{
 		u8* dst8=(u8*)dst;
@@ -965,6 +966,11 @@ struct maple_sega_vmu: maple_base
 					{
 						DEBUG_LOG(MAPLE, "VMU %s LCD write", logical_port);
 						r32();
+						if (r_count() < 192)
+						{
+							INFO_LOG(MAPLE, "VMU %s LCD write invalid params: rcount %d", logical_port, r_count());
+							return MDRE_TransmitAgain;	//invalid params
+						}
 						rptr(lcd_data,192);
 
 						u8 white=0xff,black=0x00;
@@ -1339,16 +1345,24 @@ struct maple_sega_purupuru : maple_base
          case MDCF_BlockWrite:
 
             //Auto-stop time
-            AST = dma_buffer_in[10];
-            AST_ms = AST * 250 + 250;
+            // (if the frame is long enough to have one)
+            if (dma_count_in >= 12)
+            {
+               AST = dma_buffer_in[10];
+               AST_ms = AST * 250 + 250;
+            }
 
             return MDRS_DeviceReply;
 
          case MDCF_SetCondition:
 
-            VIBSET = *(u32*)&dma_buffer_in[4];
-            //Do the rumble thing!
-            config->SetVibration(VIBSET, AST_ms);
+            // (a frame too short to say how is not acted on)
+            if (dma_count_in >= 8)
+            {
+               VIBSET = *(u32*)&dma_buffer_in[4];
+               //Do the rumble thing!
+               config->SetVibration(VIBSET, AST_ms);
+            }
 
             return MDRS_DeviceReply;
 
@@ -2078,6 +2092,9 @@ protected:
 	virtual const char *get_id() override { return "SEGA ENTERPRISES,LTD.;I/O BD JVS;837-13551 ;Ver1.00;98/10"; }
 
 	virtual u32 read_digital_in(int player_num) override {
+		// (how many players a request asks for is the game's to say)
+		if (player_num > 3)
+			return 0;
 		u32 keycode = ~kcode[player_num];
 		u8 trigger = rt[player_num] >> 2;
 				// Ball button
@@ -2310,20 +2327,25 @@ struct maple_naomi_jamma : maple_sega_controller
 
 	void send_jvs_messages(u32 node_id, u32 channel, bool use_repeat, u32 length, u8 *data, bool repeat_first)
 	{
-		u8 temp_buffer[256];
+		/* A request is 255 bytes at the most. The four more are zeroes put
+		 * after it: a request that stops short of what its code needs is read
+		 * by a board that far past its end, and no further. */
+		u8 temp_buffer[256 + 4];
 		if (data)
 		{
 			memcpy(temp_buffer, data, length);
 		}
 		if (node_id == ALL_NODES)
 		{
+			memset(temp_buffer + length, 0, 4);
 			for (int i = 0; i < io_boards.size(); i++)
 				send_jvs_message(i + 1, channel, length, temp_buffer);
 		}
 		else if (node_id >= 1 && node_id <= 32)
 		{
 			u32 repeat_len = jvs_repeat_request[node_id - 1][0];
-			if (use_repeat && repeat_len > 0)
+			// (a stored request is left out if it and this one together are longer than a request can be)
+			if (use_repeat && repeat_len > 0 && length + repeat_len <= 256)
 			{
 				if (repeat_first)
 				{
@@ -2336,6 +2358,7 @@ struct maple_naomi_jamma : maple_sega_controller
 				}
 				length += repeat_len;
 			}
+			memset(temp_buffer + length, 0, 4);
 			send_jvs_message(node_id, channel, length, temp_buffer);
 		}
 	}
@@ -2442,6 +2465,9 @@ struct maple_naomi_jamma : maple_sega_controller
 				len = dma_buffer_in[2];
 				cmd = &dma_buffer_in[3];
 			}
+			// (the length is the game's: no more than the frame has after it)
+			if (len > (u32)(dma_buffer_in + dma_count_in - cmd))
+				len = dma_buffer_in + dma_count_in - cmd;
 		}
 
 		switch (subcode)
@@ -2464,7 +2490,8 @@ struct maple_naomi_jamma : maple_sega_controller
 				break;
 
 			case 0x15:	// Receive JVS data
-				receive_jvs_messages(dma_buffer_in[1]);
+				// (there are 32 channels)
+				receive_jvs_messages(dma_buffer_in[1] & 0x1f);
 				if (hotd2p)
 				{
 					// this firmware sends its next request along with it
@@ -2527,13 +2554,17 @@ struct maple_naomi_jamma : maple_sega_controller
 				{
 					jvs_receive_length[channel] = 0;
 
-					u32 cmd_count = dma_buffer_in[6];
+					/* How many requests, and how long each is, are the game's
+					 * to say: no more than the frame has is read. */
+					u32 cmd_count = dma_count_in >= 8 ? dma_buffer_in[6] : 0;
 					u32 idx = 7;
-					for (int i = 0; i < cmd_count; i++)
+					for (int i = 0; i < cmd_count && idx + 2 <= dma_count_in; i++)
 					{
 						node_id = dma_buffer_in[idx];
 						len = dma_buffer_in[idx + 1];
 						cmd = &dma_buffer_in[idx + 2];
+						if (len > dma_count_in - idx - 2)
+							len = dma_count_in - idx - 2;
 						idx += len + 2;
 
 						send_jvs_messages(node_id, channel, true, len, cmd, false);
@@ -2574,6 +2605,9 @@ struct maple_naomi_jamma : maple_sega_controller
 				address &= 0x7f;
 				if (size > 0x80 - address)
 					size = 0x80 - address;
+				// (nor more than the frame has)
+				if (size > (int)dma_count_in - 4)
+					size = (int)dma_count_in - 4;
 				memcpy(EEPROM + address, dma_buffer_in + 4, size);
 				eeprom_dirty = true;
 
@@ -2692,10 +2726,22 @@ struct maple_naomi_jamma : maple_sega_controller
 
 				if (ram == NULL)
 					ram = (u8 *)calloc(0x10000, 1);
+				if (ram == NULL)
+					WARN_LOG(MAPLE, "JVS: no memory for the firmware");
+				if (dma_count_in < 4)
+				{
+					// (not long enough to say where its bytes go)
+					w8(MDRE_UnknownCmd);
+					w8(0x00);
+					w8(0x00);
+					w8(0x00);
+					break;
+				}
 
 				if (dma_buffer_in[1] == 0xff)
 				{
-					u32 hash = XXH32(ram, 0x10000, 0);
+					// (a firmware there was no memory for is none that is known)
+					u32 hash = ram != NULL ? XXH32(ram, 0x10000, 0) : 0;
 					LOGJVS("JVS Firmware hash %08x\n", hash);
 					hotd2p = hash == 0xa6784e26;
 					if (hash == 0xa7c50459			// CT
@@ -2742,7 +2788,11 @@ struct maple_naomi_jamma : maple_sega_controller
 				else
 					xfer_bytes = 0x18;
 				u16 addr = (dma_buffer_in[2] << 8) + dma_buffer_in[3];
-				memcpy(ram + addr, &dma_buffer_in[4], xfer_bytes);
+				// (where the bytes go is the game's to say: what is past the end of the 64 KB is left out)
+				if (xfer_bytes > 0x10000 - addr)
+					xfer_bytes = 0x10000 - addr;
+				if (ram != NULL)
+					memcpy(ram + addr, &dma_buffer_in[4], xfer_bytes);
 				u8 sum = 0;
 				for (int i = 0; i < 0x1C; i++)
 					sum += dma_buffer_in[i];
@@ -2850,13 +2900,29 @@ struct maple_naomi_jamma : maple_sega_controller
 	   LIBRETRO_US(jvs_repeat_request);
 	   LIBRETRO_US(jvs_receive_length);
 	   LIBRETRO_US(jvs_receive_buffer);
+	   // (a state cannot have more waiting on a channel than a channel holds)
+	   for (int i = 0; i < 32; i++)
+		  if (jvs_receive_length[i] > sizeof(jvs_receive_buffer[0]))
+			 jvs_receive_length[i] = 0;
 	   // (the prototype's own firmware is one of those that set crazy_mode; the BIOS's, before it, is not)
 	   hotd2p = crazy_mode && !strcmp(naomi_game_id, "hotd2p");
 	   create_io_boards();
 	   size_t board_count;
 	   LIBRETRO_US(board_count);
-	   for (int i = 0; i < board_count; i++)
-		  io_boards[i]->maple_unserialize(data, total_size);
+	   /* The boards are this cabinet's, how many the state has is the
+	    * state's to say: one it has and the cabinet has not is read past
+	    * (what a board keeps: jvs_io_board::maple_serialize()), and there
+	    * are 31 addresses on the bus. */
+	   for (size_t i = 0; i < board_count && i < 31; i++)
+	   {
+		  if (i < io_boards.size())
+			 io_boards[i]->maple_unserialize(data, total_size);
+		  else
+		  {
+			 u8 skipped[sizeof(u8) + sizeof(bool)];
+			 LIBRETRO_US(skipped);
+		  }
+	   }
 
 	   return true;
 	}
@@ -2901,6 +2967,11 @@ u16 jvs_io_board::read_rotary_encoder(f32 &encoder_value, f32 delta_value)
 
 #define JVS_OUT(b) buffer_out[length++] = b
 #define JVS_STATUS1() JVS_OUT(1)
+/* A board's answer is 255 bytes at the most, its sum, the last of them,
+ * included. How many inputs a request asks for is the game's to say:
+ * JVS_FIT() is how many of @n, at two bytes each, there is still room for. */
+#define JVS_OUT_MAX 254
+#define JVS_FIT(n) ((u32)(n) * 2 > JVS_OUT_MAX - length ? (JVS_OUT_MAX - length) / 2 : (u32)(n))
 
 u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_out)
 {
@@ -3038,6 +3109,9 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 			JVS_STATUS1();	// status
 			for (int cmdi = 0; cmdi < length_in; )
 			{
+				// (what there is no room left to answer is not answered: five bytes is the most a request takes before its inputs)
+				if (length > JVS_OUT_MAX - 5)
+					break;
 				switch (buffer_in[cmdi])
 				{
 				case 0x20:	// Read digital input
@@ -3053,7 +3127,8 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 
 						u32 next_keycode = 0;
 
-						for (int player = 0; player < buffer_in[cmdi + 1]; player++)
+						const int players = JVS_FIT(buffer_in[cmdi + 1]);
+						for (int player = 0; player < players; player++)
 						{
 						   u32 keycode = read_digital_in(first_player + player);
 
@@ -3104,7 +3179,8 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					{
 						JVS_STATUS1();	// report byte
 						LOGJVS("coins ");
-						for (int slot = 0; slot < buffer_in[cmdi + 1]; slot++)
+						const int slots = JVS_FIT(buffer_in[cmdi + 1]);
+						for (int slot = 0; slot < slots; slot++)
 						{
 						   if (slot < ARRAY_SIZE(coin_count)
 								 && first_player + slot < 4)
@@ -3139,12 +3215,13 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					{
 						JVS_STATUS1();	// report byte
 						int axis = 0;
+						const int axes = JVS_FIT(buffer_in[cmdi + 1]);
 
 						LOGJVS("ana ");
 						if (lightgun_as_analog)
 						{
 							// Death Crimson / Confidential Mission
-							while (axis < buffer_in[cmdi + 1] && first_player * 2 + axis < 8)
+							while (axis < axes && first_player * 2 + axis < 8)
 							{
 							   int player_num = first_player + axis / 2;
 							   u16 x = mo_x_abs[player_num] * 0xFFFF / 639 + 0.5f;
@@ -3159,7 +3236,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 							   JVS_OUT(x >> 8);		// X, MSB
 							   JVS_OUT(x);			// X, LSB
 							   axis++;
-							   if (axis < buffer_in[cmdi + 1])
+							   if (axis < axes)
 							   {
 								  JVS_OUT(y >> 8);		// Y, MSB
 								  JVS_OUT(y);			// Y, LSB
@@ -3183,7 +3260,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						   // Hack for Ring Out 4x4
 						   axes_per_player = 2;
 
-						for (; axis < buffer_in[cmdi + 1]; axis++)
+						for (; axis < axes; axis++)
 						{
 						   int player_num = first_player + axis / axes_per_player;
 						   int player_axis = axis % axes_per_player;
@@ -3221,7 +3298,11 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					   static f32 rotx[4] = { 0 };
 					   static f32 roty[4] = { 0 };
 					   LOGJVS("rotenc ");
-					   for (int chan = 0; chan < buffer_in[cmdi + 1]; chan++)
+					   // (there are four mice, an encoder for each of the two ways one moves)
+					   int chans = JVS_FIT(buffer_in[cmdi + 1]);
+					   if (chans > 8)
+						  chans = 8;
+					   for (int chan = 0; chan < chans; chan++)
 					   {
 						  u16 v;
 						  if (chan & 1)
@@ -3247,7 +3328,8 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						JVS_STATUS1();	// report byte
 						u32 channel = buffer_in[cmdi + 1] - 1;
 						int player_num = first_player + channel;
-						if (player_num >= 4)
+						// (guns are numbered from 1: number 0 is no player either)
+						if ((u32)player_num >= 4)
 						{
 							LOGJVS("P%d lightgun inv ", player_num + 1);
 							JVS_OUT(0xFF);

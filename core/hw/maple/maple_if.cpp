@@ -37,6 +37,7 @@ int maple_sched;
 
 static void maple_DoDma();
 static void maple_handle_reconnect();
+static bool IsOnSh4Ram(u32 addr);
 
 //really hackish
 //misses delay , and stop/start implementation
@@ -65,6 +66,11 @@ static void maple_out_write(u32 dest, const u32 *data, u32 bytes)
 		asic_RaiseInterrupt(holly_MAPLE_OVERRUN);
 		return;
 	}
+	/* An answer goes to RAM, and all of it there. The address and the length
+	 * can be a save state's, and the game can ask for an answer at the very
+	 * end of RAM: what would be written outside it is left out. */
+	if (!IsOnSh4Ram(dest) || bytes > RAM_SIZE - (dest & RAM_MASK))
+		return;
 	u32 *p = (u32 *)GetMemPtr(dest, bytes);
 	if (p != NULL)
 		memcpy(p, data, bytes);
@@ -94,9 +100,10 @@ void maple_dma_done()
 	while (at + 2 <= maple_out_used)
 	{
 		const u32 dest = maple_out[at], bytes = maple_out[at + 1];
-		const u32 words = (bytes + 3) / 4;
-		if (at + 2 + words > maple_out_used)
+		// (a length from a save state can be anything: no more than is kept here)
+		if (bytes > (maple_out_used - at - 2) * 4)
 			break;
+		const u32 words = (bytes + 3) / 4;
 		maple_out_write(dest, &maple_out[at + 2], bytes);
 		at += 2 + words;
 	}
@@ -204,12 +211,29 @@ static void maple_DoDma(void)
 		return;
 	}
 #endif
+	/* The table of frames is in RAM, and ends where RAM does at the latest.
+	 * (It was read from wherever the game said, and one with no entry marked
+	 * as its last went on through all of memory.) */
+	if (!IsOnSh4Ram(addr))
+	{
+		INFO_LOG(MAPLE, "MAPLE ERROR : INVALID SB_MDSTAR value 0x%X", addr);
+		SB_MDST = 0;
+		return;
+	}
+	const u32 ram_end = (addr | RAM_MASK) + 1;
 	const bool swap_msb = (SB_MMSEL == 0);
 	u32 xfer_in = 0, xfer_out = 0;		// bytes from the console, and from the devices
 	bool last   = false;
    bool occupy = false;
 	while (last != true)
 	{
+		if (addr + 4 > ram_end)
+		{
+			INFO_LOG(MAPLE, "MAPLE ERROR : the table at 0x%X has no end", SB_MDSTAR);
+			SB_MDST = 0;
+			maple_out_used = 0;
+			return;
+		}
 		u32 header_1 = ReadMem32_nommu(addr);
 		u32 header_2 = ReadMem32_nommu(addr + 4) &0x1FFFFFE0;
 
@@ -238,7 +262,9 @@ static void maple_DoDma(void)
 			}
 #endif
 
-			u32* p_data =(u32*) GetMemPtr(addr + 8,(plen)*sizeof(u32));
+			// (a frame that starts in RAM and ends past it is not one)
+			u32* p_data = addr + 8 + plen * sizeof(u32) > ram_end ? NULL
+					: (u32*) GetMemPtr(addr + 8,(plen)*sizeof(u32));
 			if (p_data == NULL)
 			{
 				INFO_LOG(MAPLE, "MAPLE ERROR : INVALID SB_MDSTAR value 0x%X", addr);
@@ -257,6 +283,9 @@ static void maple_DoDma(void)
 			//u32 send=(p_data[0] >> 16) & 0xFF;
 			//Number of additional words in frame 
 			u32 inlen = (frame_header >> 24) & 0xFF;
+			// (no more than the table says the frame has: the device reads no further)
+			if (inlen >= plen)
+				inlen = plen - 1;
 
 			u32 port=maple_GetPort(reci);
 			u32 bus=maple_GetBusId(reci);
