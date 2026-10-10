@@ -871,7 +871,8 @@ struct maple_sega_vmu: maple_base
 					DEBUG_LOG(MAPLE, "VMU %s read LCD", logical_port);
 					w32(MFID_2_LCD);
 					w32(r32()); // mnn ?
-					wptr(flash_data,192);
+					// (the screen's own bytes: it was the first 192 of the card's memory)
+					wptr(lcd_data,192);
 
 					return MDRS_DataTransfer;//data transfer
 
@@ -1123,42 +1124,9 @@ struct maple_microphone: maple_base
 
 			return cmd == MDC_DeviceRequest ? MDRS_DeviceStatus : MDRS_DeviceStatusAll;
 
-		case MDCF_GetCondition:
-			{
-				DEBUG_LOG(MAPLE, "maple_microphone::dma MDCF_GetCondition");
-				//this was copied from the controller case with just the id replaced!
-
-				//PlainJoystickState pjs;
-				//config->GetInput(&pjs);
-				//caps
-				//4
-				w32(MFID_4_Mic);
-
-				//state data
-				//2 key code
-				//w16(pjs.kcode);
-
-				//triggers
-				//1 R
-				//w8(pjs.trigger[PJTI_R]);
-				//1 L
-				//w8(pjs.trigger[PJTI_L]);
-
-				//joyx
-				//1
-				//w8(pjs.joy[PJAI_X1]);
-				//joyy
-				//1
-				//w8(pjs.joy[PJAI_Y1]);
-
-				//not used
-				//1
-				w8(0x80);
-				//1
-				w8(0x80);
-			}
-
-			return MDRS_DataTransfer;
+		/* (A microphone has no condition to ask for: the request is one it
+		 * does not know. The answer made here was the controller's with all
+		 * but two bytes taken out, six bytes where an answer is whole words.) */
 
 		case MDC_DeviceReset:
 			//uhhh do nothing?
@@ -2843,6 +2811,8 @@ struct maple_naomi_jamma : maple_sega_controller
 			w8(0x00);
 			w8(0x20);
 			w8(0x00);
+			// (it went on into the next answer, and both were sent)
+			break;
 
 		case MDC_DeviceReset:
 		case MDC_DeviceKill:
@@ -3379,6 +3349,12 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					break;
 				}
 			}
+		}
+		else if (length_in == 0)
+		{
+			// A request with nothing in it has nothing wrong with it: the
+			// board says so, and has nothing to report
+			JVS_STATUS1();
 		}
 		else
 		{
