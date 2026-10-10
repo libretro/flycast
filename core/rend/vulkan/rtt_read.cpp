@@ -137,6 +137,7 @@ void vk_rtt_watch(Texture *texture, u32 addr, u32 width, u32 height)
 	watch.packmode = FB_W_CTRL.fb_packmode;
 	watch.kval_bit = (FB_W_CTRL.fb_kval & 0x80) << 8;
 	watch.alpha_threshold = FB_W_CTRL.fb_alpha_threshold;
+	watch.dither = FB_W_CTRL.fb_dither;
 	watch.tex = (uintptr_t)texture;
 	watch.scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
 	if (watch.bytes != 0)

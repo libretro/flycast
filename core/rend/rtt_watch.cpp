@@ -66,11 +66,73 @@ static void release_garbage(void)
 		backend.release(garbage[--garbage_count]);
 }
 
+/* What the console adds to a colour before it drops the low bits, when
+ * FB_W_CTRL asks for dithering: a number from this four by four pattern,
+ * laid over the picture from its first pixel, as large as the bits that are
+ * dropped (a half of it where three are, a quarter where two are). The
+ * colour stops at 255. Without dithering the bits are just dropped. */
+static const u8 dither_pattern[4][4] = {
+	{  5, 13,  7, 15 },
+	{  9,  1, 11,  3 },
+	{  6, 14,  4, 12 },
+	{ 10,  2,  8,  0 },
+};
+
+static inline u32 dithered(u32 colour, u32 add)
+{
+	colour += add;
+	return colour > 255 ? 255 : colour;
+}
+
+static void pack_dithered(const RttWatch& s, const u8 *p, u16 *dst)
+{
+	const u32 skip = (s.stride - s.w * 2) / 2;
+
+	for (u32 l = 0; l < s.h; l++, dst += skip)
+	{
+		const u8 *row = dither_pattern[l & 3];
+
+		switch (s.packmode)
+		{
+		case 1:
+			for (u32 c = 0; c < s.w; c++, p += 4)
+			{
+				const u32 d = row[c & 3];
+				*dst++ = (u16)(((dithered(p[0], d >> 1) >> 3) << 11) | ((dithered(p[1], d >> 2) >> 2) << 5)
+						| (dithered(p[2], d >> 1) >> 3));
+			}
+			break;
+		case 2:
+			/* (alpha is not a colour: its low bits are dropped) */
+			for (u32 c = 0; c < s.w; c++, p += 4)
+			{
+				const u32 d = row[c & 3];
+				*dst++ = (u16)(((dithered(p[0], d) >> 4) << 8) | ((dithered(p[1], d) >> 4) << 4) | (dithered(p[2], d) >> 4)
+						| ((p[3] >> 4) << 12));
+			}
+			break;
+		default:
+			for (u32 c = 0; c < s.w; c++, p += 4)
+			{
+				const u32 d = row[c & 3] >> 1;
+				*dst++ = (u16)(((dithered(p[0], d) >> 3) << 10) | ((dithered(p[1], d) >> 3) << 5) | (dithered(p[2], d) >> 3)
+						| (s.packmode == 0 ? s.kval_bit : p[3] >= s.alpha_threshold ? 0x8000 : 0));
+			}
+			break;
+		}
+	}
+}
+
 /* As the console packs a pixel into the framebuffer it renders to. */
 static void pack(const RttWatch& s, const u8 *p, u16 *dst)
 {
 	const u32 skip = (s.stride - s.w * 2) / 2;
 
+	if (s.dither)
+	{
+		pack_dithered(s, p, dst);
+		return;
+	}
 	for (u32 l = 0; l < s.h; l++, dst += skip)
 	{
 		switch (s.packmode)

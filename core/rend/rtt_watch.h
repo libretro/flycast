@@ -31,6 +31,7 @@ struct RttWatch
 	u32 packmode;        /* FB_W_CTRL: 0 0555, 1 565, 2 4444, 3 1555 */
 	u32 kval_bit;        /* the top bit of a 0555 pixel */
 	u32 alpha_threshold; /* what makes the top bit of a 1555 one */
+	u32 dither;          /* FB_W_CTRL: the colours are dithered on the way down */
 	uintptr_t tex;       /* the renderer's name for the picture */
 	u32 scale;           /* how many times finer than w by h it is */
 	bool owned;          /* nothing else will delete tex */
