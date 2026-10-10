@@ -715,7 +715,13 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	vk::CommandBuffer commandBuffer = commandPool->Allocate();
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-	const vk::ClearValue clear_colors[] = { vk::ClearColorValue(std::array<float, 4> { 0.f, 0.f, 0.f, 1.f }), vk::ClearDepthStencilValue { 0.f, 0 } };
+	/* A framebuffer the game has not drawn to lately starts as the border
+	 * colour, which is what the OpenGL renderers clear it to; any other
+	 * starts black, and has the last picture put into it below. */
+	const std::array<float, 4> clear_color = pvrrc.clearFramebuffer
+			? std::array<float, 4> { VO_BORDER_COL.Red / 255.f, VO_BORDER_COL.Green / 255.f, VO_BORDER_COL.Blue / 255.f, 1.f }
+			: std::array<float, 4> { 0.f, 0.f, 0.f, 1.f };
+	const vk::ClearValue clear_colors[] = { vk::ClearColorValue(clear_color), vk::ClearDepthStencilValue { 0.f, 0 } };
 	commandBuffer.beginRenderPass(vk::RenderPassBeginInfo(*renderPass, *framebuffers[GetCurrentImage()],
 			vk::Rect2D( { 0, 0 }, viewport), 2, clear_colors), vk::SubpassContents::eInline);
 	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, viewport.width, viewport.height, 1.0f, 0.0f));

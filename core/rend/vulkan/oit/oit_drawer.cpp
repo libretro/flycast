@@ -330,9 +330,16 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	OITDescriptorSets::PushConstants pushConstants = { };
 	cmdBuffer.pushConstants<OITDescriptorSets::PushConstants>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
 
+	/* A framebuffer the game has not drawn to lately starts as the border
+	 * colour, which is what the OpenGL renderers clear it to (never a
+	 * render to a texture: that is not such a framebuffer); any other
+	 * starts black. */
+	const vk::ClearColorValue clear_color(pvrrc.clearFramebuffer
+			? std::array<float, 4>{ VO_BORDER_COL.Red / 255.f, VO_BORDER_COL.Green / 255.f, VO_BORDER_COL.Blue / 255.f, 1.f }
+			: std::array<float, 4>{ 0.f, 0.f, 0.f, 1.f });
 	const std::array<vk::ClearValue, 3> clear_colors = {
-			vk::ClearColorValue(std::array<float, 4>{0.f, 0.f, 0.f, 1.f}),
-			vk::ClearColorValue(std::array<float, 4>{0.f, 0.f, 0.f, 1.f}),
+			clear_color,
+			clear_color,
 			vk::ClearDepthStencilValue{ 0.f, 0 },
 	};
 
