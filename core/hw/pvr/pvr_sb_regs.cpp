@@ -78,12 +78,15 @@ void RegWrite_SB_PDST(u32 addr, u32 data)
 u32 calculate_start_link_addr(void)
 {
 	u32 rv;
-	u8* base = &mem_b[SB_SDSTAW & (RAM_MASK - 31)];
+	/* The table is read in main RAM and nowhere else, however far the
+	 * list's ends have moved the index on (the table starts on a multiple
+	 * of 32, so an entry never straddles the end). */
+	u32 base = SB_SDSTAW & (RAM_MASK - 31);
 
 	if (SB_SDWLT==0) /* 16b width */
-		rv=((u16*)base)[SB_SDDIV];
+		rv=*(u16*)&mem_b.data[(base + SB_SDDIV * 2) & RAM_MASK];
 	else /* 32b width */
-		rv=((u32*)base)[SB_SDDIV];
+		rv=*(u32*)&mem_b.data[(base + SB_SDDIV * 4) & RAM_MASK];
 
 	SB_SDDIV++; //next index
 
@@ -95,6 +98,14 @@ void pvr_do_sort_dma(void)
 	SB_SDDIV           = 0; //index is 0 now :)
 	u32 link_addr      = calculate_start_link_addr();
 	u32 link_base_addr = SB_SDBAAW & ~31;
+	/* What one transfer may take, in 32-byte blocks: one for each link
+	 * followed and one for each block it sends. Main RAM holds RAM_SIZE / 32
+	 * blocks, which a list that sends nothing twice cannot exceed; twice
+	 * that is allowed, at least twice what the tile accelerator's buffer
+	 * takes before it is full and drops the rest. A list that goes round in
+	 * a circle, or a block count that is no count at all, used never to
+	 * come back from the register write that starts the transfer. */
+	u32 budget         = RAM_SIZE / 16;
 
 	while (link_addr != 2)
 	{
@@ -106,10 +117,27 @@ void pvr_do_sort_dma(void)
 		 * copies them as whole aligned blocks. */
 		u32 ea          = (link_base_addr+link_addr) & (RAM_MASK - 31);
 		u32* ea_ptr     = (u32*)&mem_b.data[ea];
+		u32 count       = ea_ptr[0x18>>2];
 		link_addr       = ea_ptr[0x1C>>2];//Next link
 
-		/* transfer global param */
-		ta_vtx_data(ea_ptr,ea_ptr[0x18>>2]);
+		if (count >= budget)
+		{
+			WARN_LOG(PVR, "Sort-DMA: list without end at %08x (%u blocks), transfer ended", ea, count);
+			break;
+		}
+		budget         -= count + 1;
+
+		/* transfer global param: it is read in main RAM only, and one that
+		 * runs off the end goes on at the start, as the address does */
+		while (count != 0)
+		{
+			u32 blocks   = (RAM_SIZE - ea) / 32;
+			if (blocks > count)
+				blocks    = count;
+			ta_vtx_data((u32*)&mem_b.data[ea], blocks);
+			count       -= blocks;
+			ea           = 0;
+		}
 		if (link_addr == 1)
 			link_addr    = calculate_start_link_addr();
 	}

@@ -73,10 +73,11 @@ void YUV_reset(void)
 #pragma GCC optimize ("-O2")
 #endif
 
-static void YUV_Block8x8(const u8* inuv, const u8* iny, u8* out)
+/* (@x_size: the width in pixels of the picture @out is in) */
+static void YUV_Block8x8(const u8* inuv, const u8* iny, u8* out, u32 x_size)
 {
 	u8* line_out_0=out+0;
-	u8* line_out_1=out+YUV_x_size*2;
+	u8* line_out_1=out+x_size*2;
 
 	for (int y=0;y<8;y+=2)
 	{
@@ -104,24 +105,41 @@ static void YUV_Block8x8(const u8* inuv, const u8* iny, u8* out)
 		iny+=8;
 		inuv+=4;
 
-		line_out_0+=YUV_x_size*4-8*2;
-		line_out_1+=YUV_x_size*4-8*2;
+		line_out_0+=x_size*4-8*2;
+		line_out_1+=x_size*4-8*2;
 	}
 }
 #ifdef HAVE_LIBNX
 #pragma GCC pop_options
 #endif
 
-static INLINE void YUV_Block384(u8* in, u8* out)
+static INLINE void YUV_Block384(u8* in, u8* out, u32 x_size)
 {
 	u8* inuv=in;
 	u8* iny=in+128;
 	u8* p_out=out;
 
-	YUV_Block8x8(inuv+ 0,iny+  0,p_out);                    //(0,0)
-	YUV_Block8x8(inuv+ 4,iny+64,p_out+8*2);                 //(8,0)
-	YUV_Block8x8(inuv+32,iny+128,p_out+YUV_x_size*8*2);     //(0,8)
-	YUV_Block8x8(inuv+36,iny+192,p_out+YUV_x_size*8*2+8*2); //(8,8)
+	YUV_Block8x8(inuv+ 0,iny+  0,p_out,x_size);                 //(0,0)
+	YUV_Block8x8(inuv+ 4,iny+64,p_out+8*2,x_size);              //(8,0)
+	YUV_Block8x8(inuv+32,iny+128,p_out+x_size*8*2,x_size);      //(0,8)
+	YUV_Block8x8(inuv+36,iny+192,p_out+x_size*8*2+8*2,x_size);  //(8,8)
+}
+
+/* A macroblock some of which would land past the end of video memory: it
+ * is converted on its own and put there a byte at a time, each at its
+ * address taken round to the start of video memory, as the chip's address
+ * goes. No game does this; a wrong base address, or a save state, can. */
+static NOINLINE void YUV_ConvertMacroBlockWrapped(u8* datap, u32 dest, u32 x_size)
+{
+	u8 block[16 * 32];
+
+	YUV_Block384(datap, block, 16);
+	for (u32 y = 0; y < 16; y++)
+	{
+		const u32 line = dest + y * x_size * 2;
+		for (u32 x = 0; x < 32; x++)
+			vram.data[(line + x) & VRAM_MASK] = block[y * 32 + x];
+	}
 }
 
 static INLINE void YUV_ConvertMacroBlock(u8* datap)
@@ -129,7 +147,14 @@ static INLINE void YUV_ConvertMacroBlock(u8* datap)
 	//do shit
 	TA_YUV_TEX_CNT++;
 
-	YUV_Block384((u8*)datap,vram.data + YUV_dest);
+	/* A macroblock is 16 lines of 32 bytes, a picture's line apart: the last
+	 * byte of it is 15 lines and 31 bytes from the first. */
+	const u32 dest   = YUV_dest & VRAM_MASK;
+	const u32 x_size = YUV_x_size;
+	if ((u64)x_size * (15 * 2) + 32 + dest <= VRAM_SIZE)
+		YUV_Block384((u8*)datap,vram.data + dest,x_size);
+	else
+		YUV_ConvertMacroBlockWrapped(datap, dest, x_size);
 
 	YUV_dest+=32;
 
