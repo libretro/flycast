@@ -207,6 +207,7 @@ Disc* cue_parse(const char* file)
 				if (sector_size == 0)
 				{
 					WARN_LOG(GDROM, "CUE file: track %d has unknown sector type: %s", track_number, track_type.c_str());
+					core_fclose(track_file);
 					delete disc;
 					return nullptr;
 				}

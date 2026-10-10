@@ -336,7 +336,11 @@ void GetDriveToc(u32* to,DiskArea area)
 void GetDriveSessionInfo(u8* to,u8 session)
 {
 	if (!disc)
+	{
+		// no disc, no sessions: said, and not left as the caller's buffer was
+		memset(to, 0, 6);
 		return;
+	}
 	to[0]=2;//status, will get overwritten anyway
 	to[1]=0;//0's
 	

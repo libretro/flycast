@@ -58,7 +58,7 @@ u32 libGDR_GetTrackNumber(u32 sector, u32& elapsed)
 
 bool libGDR_GetTrack(u32 track_num, u32& start_fad, u32& end_fad)
 {
-	if (track_num == 0 || track_num > disc->tracks.size())
+	if (disc == NULL || track_num == 0 || track_num > disc->tracks.size())
 		return false;
 	start_fad = disc->tracks[track_num - 1].StartFAD;
 	end_fad = disc->tracks[track_num - 1].EndFAD;

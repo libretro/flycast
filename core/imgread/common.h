@@ -190,6 +190,9 @@ struct Disc
 				return;
 			if (tracks[i].EndFAD && tracks[i].EndFAD - FAD + 1 < n)
 				n = tracks[i].EndFAD - FAD + 1;
+			// (a track an image gives no length ends one sector before it starts, and has none to give: this went round for ever)
+			if (n == 0)
+				return;
 			tracks[i].file->Prefetch(FAD, n);
 			FAD += n;
 			count -= n;
@@ -371,7 +374,11 @@ struct RawTrackFile : TrackFile
             return;
       }
 
-		core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
+		/* A file shorter than its track says gives part of a sector, or
+		 * none of it: the rest is blank, not what the buffer held before. */
+		const size_t got = core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
+		if (got < fmt)
+			memset(dst + got, 0, fmt - got);
 	}
 	virtual void Prefetch(u32 FAD, u32 count)
 	{
