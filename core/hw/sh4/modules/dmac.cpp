@@ -18,9 +18,15 @@ void DMAC_Ch2St()
 {
 	u32 dmaor = DMAC_DMAOR.full;
 
-	u32 src = DMAC_SAR(2);
+	/* The DMAC puts a physical address on the bus, 29 bits: the top three
+	 * of SAR2 choose nothing. And this channel moves 32 bytes at a time,
+	 * which is how the Tile Accelerator takes them: the source is on a
+	 * 32-byte boundary. */
+	u32 src = DMAC_SAR(2) & 0x1fffffe0;
    u32 dst = SB_C2DSTAT & 0x01ffffe0;
    u32 len = SB_C2DLEN  & 0x00ffffe0;
+	// where SAR2 is left: as far on as the transfer is long
+	const u32 sar_end = DMAC_SAR(2) + len;
 
    if (0x8201 != (dmaor & DMAOR_MASK))
 	{
@@ -35,37 +41,42 @@ void DMAC_Ch2St()
    // TA FIFO - Polygon and YUV converter paths and mirror
    // 10000000 - 10FFFFE0
    // 12000000 - 12FFFFE0
-   if ((dst & 0x01000000) == 0 && ((src >> 26) & 7) != 3)
+   if ((dst & 0x01000000) == 0)
 	{
-		/* Not from main memory, which is where a display list is: there is
-		 * no pointer to hand over (GetMemPtr() says so with NULL, which
-		 * used to be handed over all the same). Read as the bus would be,
-		 * 32 bytes at a time. Upstream refuses the transfer with an
-		 * address error; the processor has no such rule for this area or
-		 * that, and what a game that does this by mistake gets on the
-		 * machine is whatever is there. */
-		u32 block[8];
+		while (len != 0)
+		{
+			if ((src >> 26) == 3)
+			{
+				/* Main memory, which is where a display list is: handed
+				 * over where it lies, as far as the end of the memory.
+				 * What is left starts again in the next copy of it, or
+				 * past the last one. */
+				u32 part = RAM_SIZE - (src & RAM_MASK);
+				if (part > len)
+					part = len;
+				TAWrite(dst, (u32 *)GetMemPtr(src, part), part / 32);
+				len -= part;
+				src += part;
+			}
+			else
+			{
+				/* Not main memory: there is no pointer to hand over
+				 * (GetMemPtr() says so with NULL, which used to be handed
+				 * over all the same). Read as the bus would be, 32 bytes at
+				 * a time. Upstream refuses the transfer with an address
+				 * error; the processor has no such rule for this area or
+				 * that, and what a game that does this by mistake gets on
+				 * the machine is whatever is there. (Aligned as the memory
+				 * is: the blocks are copied 16 bytes at a time.) */
+				DECL_ALIGN(32) u32 block[8];
 
-		for (; len >= 32; len -= 32, src += 32)
-		{
-			for (u32 i = 0; i < 8; i++)
-				block[i] = ReadMem32_nommu(src + i * 4);
-			TAWrite(dst, block, 1);
+				for (u32 i = 0; i < 8; i++)
+					block[i] = ReadMem32_nommu(src + i * 4);
+				TAWrite(dst, block, 1);
+				len -= 32;
+				src += 32;
+			}
 		}
-	}
-   else if ((dst & 0x01000000) == 0)
-	{
-      u32 *sys_buf = (u32 *)GetMemPtr(src, len);
-      if ((src & RAM_MASK) + len > RAM_SIZE)
-		{
-         u32 newLen = RAM_SIZE - (src & RAM_MASK);
-         TAWrite(dst, sys_buf, newLen / 32);
-         len -= newLen;
-         src += newLen;
-         sys_buf = (u32 *)GetMemPtr(src, len);
-		}
-      TAWrite(dst, sys_buf, len / 32);
-      src += len;
 	}
    // Direct Texture path and mirror
    // 11000000 - 11FFFFE0
@@ -108,7 +119,7 @@ void DMAC_Ch2St()
 
 	// Setup some of the regs so it thinks we've finished DMA
 
-   DMAC_SAR(2)     = src;
+   DMAC_SAR(2)     = sar_end;
 	DMAC_CHCR(2).TE = 1;
 	DMAC_DMATCR(2)  = 0;
 
