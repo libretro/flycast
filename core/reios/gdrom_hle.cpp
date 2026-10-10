@@ -36,6 +36,40 @@ void gdrom_hle_reset()
 
 extern int GDROM_TICK;
 
+/* Main memory at @addr, if all of the @size bytes from there are in it.
+ * GetMemPtr() looks only at where they start: what was read or copied to an
+ * address near the end of memory went on past the end of it. */
+static u8 *hle_ram_ptr(u32 addr, u64 size)
+{
+	if (!IsOnRam(addr) || size > RAM_SIZE - (addr & RAM_MASK))
+		return NULL;
+	return GetMemPtr(addr, (u32)size);
+}
+
+/* A command with a parameter nothing can be made of fails as the drive's
+ * own would: illegal request, invalid field in the command. */
+static void GDROM_HLE_BadParam()
+{
+	gd_hle_state.status = BIOS_ERROR;
+	gd_hle_state.result[0] = 5;
+	gd_hle_state.result[1] = 0x24;
+	gd_hle_state.result[2] = 0;
+	gd_hle_state.result[3] = 0;
+}
+
+/* A read of more sectors than main memory holds is not a read into any
+ * buffer there is. It fails. (It was carried out: past the end of memory
+ * when it began in memory, and a word at a time for as long as that takes -
+ * hours, for a count that is junk - when it did not.) */
+static bool GDROM_HLE_BadRead()
+{
+	if (gd_hle_state.params[1] <= RAM_SIZE / 2048)
+		return false;
+	WARN_LOG(REIOS, "GDROM: read of %u sectors to %08x refused", gd_hle_state.params[1], gd_hle_state.params[2]);
+	GDROM_HLE_BadParam();
+	return true;
+}
+
 static void GDROM_HLE_ReadSES()
 {
 	u32 s = gd_hle_state.params[0];
@@ -68,7 +102,7 @@ static void GDROM_HLE_ReadTOC()
 	}
 	if (!mmu_enabled())
 	{
-		u32* pDst = (u32*)GetMemPtr(dest, sizeof(toc));
+		u32* pDst = (u32*)hle_ram_ptr(dest, sizeof(toc));
 		if (pDst != NULL)
 		{
 			memcpy(pDst, toc, sizeof(toc));
@@ -94,7 +128,7 @@ static void read_sectors_to(u32 addr, u32 sector, u32 count)
 		gd_hle_state.xfer_end_time = sh4_sched_now64() + 5 * 2048 * 2;
 	if (!virtual_addr || !mmu_enabled())
 	{
-		u8 * pDst = GetMemPtr(addr, 0);
+		u8 * pDst = hle_ram_ptr(addr, (u64)count * 2048);
 
 		if (pDst != NULL)
 		{
@@ -164,7 +198,7 @@ static void GDROM_HLE_ReadDMA_step()
 	if (chunk > 32)
 		chunk = 32;
 
-	u8 *pDst = GetMemPtr(gd_hle_state.dma_read_addr, 0);
+	u8 *pDst = hle_ram_ptr(gd_hle_state.dma_read_addr, chunk * 2048);
 	if (pDst != NULL)
 	{
 		libGDR_ReadSector(pDst, gd_hle_state.dma_read_sector, chunk, 2048);
@@ -174,8 +208,9 @@ static void GDROM_HLE_ReadDMA_step()
 	}
 	else
 	{
-		/* Unmapped destination (rare): fall back to the original
-		 * sector-by-sector path for the remainder. */
+		/* A destination that is not main memory, or not all of it is
+		 * (rare): fall back to the original sector-by-sector path for the
+		 * remainder. */
 		u32 temp[2048 / 4];
 		while (gd_hle_state.dma_read_count > 0)
 		{
@@ -242,10 +277,16 @@ static void GDCC_HLE_GETSCD() {
 		gd_hle_state.cur_sector = cdda.CurrAddr.FAD;
 	u8 scd[100];
 	gd_get_subcode(format, gd_hle_state.cur_sector, scd);
-	verify(scd[3] == size);
+	/* No more than the drive has to say, which is its fourth byte (100 at
+	 * the most): the game's count is the room it has, and the drive's own
+	 * command gives the lesser of the two. (The game's count was taken as
+	 * it came, out of these 100 bytes and what lay after them.) */
+	if (size > scd[3])
+		size = scd[3];
 
-	if (!mmu_enabled() && GetMemPtr(dest, size) != NULL)
-		memcpy(GetMemPtr(dest, size), scd, size);
+	u8 *pDst = mmu_enabled() ? NULL : hle_ram_ptr(dest, size);
+	if (pDst != NULL)
+		memcpy(pDst, scd, size);
 	else
 	{
 		for (int i = 0; i < size; i++)
@@ -262,6 +303,8 @@ static void multi_xfer()
 	u32 size = gd_hle_state.params[1];
 
 	size = std::min(size, gd_hle_state.multi_read_count);
+	// (asking for more than this is refused; a save state can still say so)
+	size = std::min(size, (u32)RAM_SIZE);
 	while (size > 0)
 	{
 		u8 buf[2048];
@@ -358,12 +401,19 @@ static void GD_HLE_Command(u32 cc)
 		break;
 
 	case GDCC_PIOREAD:
+		if (GDROM_HLE_BadRead())
+			break;
 		GDROM_HLE_ReadPIO();
-		SecNumber.Status = GD_STANDBY;
+		/* The disc goes on turning after a read, the head held where it
+		 * is: paused, which is what the drive itself says once it has been
+		 * started. Stopped is what it says after the command that stops it. */
+		SecNumber.Status = GD_PAUSE;
 		cdda.status = cdda_t::NoInfo;
 		break;
 
 	case GDCC_DMAREAD:
+		if (GDROM_HLE_BadRead())
+			break;
 		cdda.status = cdda_t::NoInfo;
 		if (gd_hle_state.xfer_end_time == 0)
 			GDROM_HLE_ReadDMA();
@@ -375,7 +425,7 @@ static void GD_HLE_Command(u32 cc)
 		gd_hle_state.xfer_end_time = 0;
 		gd_hle_state.result[2] = gd_hle_state.params[1] * 2048;
 		gd_hle_state.result[3] = 0;
-		SecNumber.Status = GD_STANDBY;
+		SecNumber.Status = GD_PAUSE;
 		break;
 
 
@@ -436,8 +486,16 @@ static void GD_HLE_Command(u32 cc)
 				SecNumber.Status = GD_STANDBY;
 				break;
 			}
-			libGDR_GetTrack(first_track, start_fad, dummy);
-			libGDR_GetTrack(last_track, dummy, end_fad);
+			if (!libGDR_GetTrack(first_track, start_fad, dummy)
+					|| !libGDR_GetTrack(last_track, dummy, end_fad))
+			{
+				/* A track the disc has not got. Nothing says where it would
+				 * be: the command fails and the drive goes on as it was.
+				 * (It played from and to whatever was on the stack.) */
+				WARN_LOG(REIOS, "GDROM: CMD PLAY: no track %d or %d", first_track, last_track);
+				GDROM_HLE_BadParam();
+				break;
+			}
 			debugf("GDROM: CMD PLAY first_track %x last_track %x repeats %x start_fad %x end_fad %x param4 %x", first_track, last_track, repeats,
 					start_fad, end_fad, gd_hle_state.params[3]);
 			cdda.status = cdda_t::Playing;
@@ -873,7 +931,9 @@ void gdrom_hle_op()
 			debugf("GDROM: REQ_DMA_TRANS req_id %x dest %x size %x",
 					r[4], gd_hle_state.params[0], gd_hle_state.params[1]);
 
-			if (gd_hle_state.status != BIOS_DATA_AVAIL || gd_hle_state.params[1] > gd_hle_state.multi_read_count)
+			// (more than main memory holds is not a transfer into any buffer there is)
+			if (gd_hle_state.status != BIOS_DATA_AVAIL || gd_hle_state.params[1] > gd_hle_state.multi_read_count
+					|| gd_hle_state.params[1] > RAM_SIZE)
 			{
 				r[0] = -1;
 			}
@@ -889,7 +949,8 @@ void gdrom_hle_op()
 			gd_hle_state.params[1] = ReadMem32(r[5] + 4);
 			debugf("GDROM: REQ_PIO_TRANS req_id %x dest %x size %x",
 					r[4], gd_hle_state.params[0], gd_hle_state.params[1]);
-			if (gd_hle_state.status != BIOS_DATA_AVAIL || gd_hle_state.params[1] > gd_hle_state.multi_read_count)
+			if (gd_hle_state.status != BIOS_DATA_AVAIL || gd_hle_state.params[1] > gd_hle_state.multi_read_count
+					|| gd_hle_state.params[1] > RAM_SIZE)
 			{
 				r[0] = -1;
 			}

@@ -113,6 +113,9 @@ struct gdrom_hle_state_t
 		LIBRETRO_US(xfer_end_time);
 		LIBRETRO_US(dma_read_sector);
 		LIBRETRO_US(dma_read_count);
+		// (a read is of no more sectors than main memory holds: none is begun of more)
+		if (dma_read_count > RAM_SIZE_MAX / 2048)
+			dma_read_count = 0;
 		LIBRETRO_US(dma_read_addr);
 
 		return true;

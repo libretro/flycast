@@ -372,6 +372,12 @@ static void reios_sys_flashrom() {
 				u32 size = r[6];
 
 				debugf("reios_sys_flashrom: FLASHROM_READ offs %x dest %08x size %x", offset, dest, size);
+				// (more than the flash holds is not a read of it, and went round it for as long as that took)
+				if (size > flashrom->size)
+				{
+					r[0] = -1;
+					break;
+				}
 				for (int i = 0; i < size; i++)
 					WriteMem8(dest++, flashrom->Read8(offset + i));
 
@@ -397,6 +403,15 @@ static void reios_sys_flashrom() {
 
 				debugf("reios_sys_flashrom: FLASHROM_WRITE offs %x src %08x size %x", offs, src, size);
 
+				/* Into the flash and nowhere else: the place and the length
+				 * are the game's, and were written to wherever they came to
+				 * past the end of it. */
+				if (offs >= flashrom->size || size > flashrom->size - offs)
+				{
+					WARN_LOG(REIOS, "reios_sys_flashrom: FLASHROM_WRITE outside the flash: offs %x size %x", offs, size);
+					r[0] = -1;
+					break;
+				}
 				for (int i = 0; i < size; i++)
 					flashrom->data[offs + i] &= ReadMem8(src + i);
 
