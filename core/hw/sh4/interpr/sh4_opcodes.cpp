@@ -876,10 +876,11 @@ sh4op(i0000_nnnn_0000_0011)
 sh4op(i0000_0000_0010_1011)
 {
 	u32 newpc = spc;
-	// (SR is restored there, between fetching the next instruction and executing it)
+	// (SR is restored there, register bank and all, between fetching the next instruction and executing it)
 	ExecuteDelayslot_RTE();
 	next_pc = newpc;
-	if (UpdateSR())
+	// an interrupt the restored SR lets in, or one the slot's instruction raised, is taken now
+	if (Sh4cntx.interrupt_pend)
 	{
 		UpdateINTC();
 	}

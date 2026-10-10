@@ -194,9 +194,14 @@ void ExecuteDelayslot_RTE()
 #endif
       u32 op = ReadNexOp();
 
-      // Fetched as RTE was, in privileged mode. Now SR is as it was saved.
+      /* Fetched as RTE was, in privileged mode. Now SR is as it was saved,
+       * and the registers are those of the bank it names: the instruction
+       * in the slot is executed with them. (The banks used to be switched
+       * after it, by the caller: it read and wrote R0 to R7 of the handler's
+       * bank, and what it wrote was lost to the program returned to.) */
       fetched = true;
       sh4_sr_SetFull(ssr);
+      UpdateSR();
       ExecuteOpcode(op);
 #if !defined(NO_MMU)
    }
@@ -204,7 +209,10 @@ void ExecuteDelayslot_RTE()
       ERROR_LOG(INTERPRETER, "Exception in RTE delay slot");
       // the return is made all the same: with SR as it was saved
       if (!fetched)
+      {
          sh4_sr_SetFull(ssr);
+         UpdateSR();
+      }
    }
 #endif
 }
