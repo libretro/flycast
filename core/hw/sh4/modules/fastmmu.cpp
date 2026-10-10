@@ -347,6 +347,26 @@ static void forget_all()
 	mmu_lut_flush();
 }
 
+static bool utlb_is_a_page(const TLB_Entry& tlb_entry);
+
+/* An entry has been given what it is to hold: if that is a page of the
+ * program's own and translation is already on, this is a program for the
+ * strict way that did things in the other order - AT first, its pages
+ * after (upstream fd72eebbe: a port of Super Mario 64). It was only asked
+ * when AT changed, and such a program went on with addresses meaning what
+ * they mean without an MMU. */
+static void strict_if_a_page(const TLB_Entry& tlb_entry)
+{
+	if (mmu_enabled() || CCN_MMUCR.AT == 0 || !utlb_is_a_page(tlb_entry))
+		return;
+	mmu_detect_strict();
+	if (mmu_strict)
+	{
+		sh4_cpu.ResetCache();
+		mmu_set_state();
+	}
+}
+
 static void sq_remap_entry(const TLB_Entry& tlb_entry)
 {
 	if (!mmu_enabled() && (tlb_entry.Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
@@ -375,6 +395,7 @@ bool UTLB_Sync(u32 entry)
 	forget_page(lru_address, ~lru_mask + 1);
 
 	sq_remap_entry(tlb_entry);
+	strict_if_a_page(tlb_entry);
 	return true;
 }
 
@@ -432,6 +453,7 @@ void mmu_utlb_written(u32 entry)
 		cache_entry(UTLB[i]);
 	}
 	sq_remap_entry(UTLB[entry]);
+	strict_if_a_page(UTLB[entry]);
 }
 
 void ITLB_Sync(u32 entry)
@@ -622,18 +644,22 @@ void mmu_flush_table()
  * such a program AT going off and on does not come here. And a state does
  * not say which way it was saved in: one saved with AT off, or with the
  * TLB just emptied, is not known for what it is until AT next comes on.) */
+static bool utlb_is_a_page(const TLB_Entry& tlb_entry)
+{
+	if (tlb_entry.Data.V == 0)
+		return false;
+	if ((tlb_entry.Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
+		return false;	// the store queues
+	if (tlb_entry.Address.VPN == 0x30040 || tlb_entry.Address.VPN == 0x30000)
+		return false;	// entries that mean nothing, in many arcade and Visual Concepts games (upstream's list)
+	return true;
+}
+
 static bool utlb_has_a_page()
 {
 	for (u32 i = 0; i < ARRAY_SIZE(UTLB); i++)
-	{
-		if (UTLB[i].Data.V == 0)
-			continue;
-		if ((UTLB[i].Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
-			continue;	// the store queues
-		if (UTLB[i].Address.VPN == 0x30040 || UTLB[i].Address.VPN == 0x30000)
-			continue;	// entries that mean nothing, in many arcade and Visual Concepts games (upstream's list)
-		return true;
-	}
+		if (utlb_is_a_page(UTLB[i]))
+			return true;
 	return false;
 }
 
@@ -645,7 +671,7 @@ void mmu_detect_strict()
 	{
 		memset(strict_kept, 0, sizeof(strict_kept));
 		strict_time = 0;
-		NOTICE_LOG(SH4, "Enabling Full MMU support, the strict way: the TLB was loaded before AT");
+		NOTICE_LOG(SH4, "Enabling Full MMU support, the strict way: the program has a TLB of its own");
 	}
 	mmu_strict = strict;
 	bm_ForgetVaddrs();
