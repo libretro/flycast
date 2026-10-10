@@ -183,6 +183,17 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 	}
 	else
 #endif // NO_MMU
+	if (vaddr & 1)
+	{
+		/* An instruction is at an even address: fetching one from an odd
+		 * one is an address error, raised here as the MMU's are above -
+		 * the caller goes on from where the exception leads. (It was
+		 * compiled, from between two instructions.) */
+		CCN_TEA = vaddr;
+		Do_Exception(vaddr, 0xE0, 0x100);
+		return false;
+	}
+	else
 		addr = vaddr;
 	fpu_cfg=rfpu_cfg;
 	
@@ -347,9 +358,12 @@ DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
 DynarecCodeEntryPtr rdv_FindOrCompile()
 {
 	DynarecCodeEntryPtr rv = bm_GetCodeByVAddr(next_pc);  // Returns exec addr
+	/* (Compiling can be an exception instead - an odd address is one: what
+	 * comes back is the handler's code then, and the context has its
+	 * address.) */
 	if (rv == ngen_FailedToFindBlock)
-		rv = (DynarecCodeEntryPtr)CC_RW2RX(rdv_CompilePC(0)); // Returns rw addr
-	
+		rv = rdv_FailedToFindBlock(next_pc);
+
 	return rv;
 }
 
@@ -449,7 +463,7 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 	 * block that was compiled for that very address - not to one for
 	 * another address of the same memory, which would send it back - and
 	 * not at all if an exception was raised instead. */
-	bool link = !stale_block;
+	bool link = !stale_block && next_pc == target;
 	if (mmu && link)
 	{
 		link = false;
@@ -496,7 +510,7 @@ void* DYNACALL rdv_LinkBlock(u8* code,u32 dpc)
 		verify(rbi->host_code_size >= ncs);
 		rbi->host_code_size = ncs;
 	}
-	else if (!mmu)
+	else if (!mmu && stale_block)
 	{
 		INFO_LOG(DYNAREC, "null RBI: from %08X to %08X -- unlinked stale block -- code %p next %p", rbi->vaddr, next_pc, code, rv);
 	}
