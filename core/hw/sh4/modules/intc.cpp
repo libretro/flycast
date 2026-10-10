@@ -48,6 +48,8 @@ void intc_init()
 {
 	//INTC ICR 0xFFD00000 0x1FD00000 16 0x0000 0x0000 Held Held Pclk
 	sh4_rio_reg(INTC,INTC_ICR_addr,RIO_DATA,16);
+	// (the top bit is the level of the NMI pin: it stays as it is written)
+	sh4_rio_wmask(INTC,INTC_ICR_addr,0xC380);
 
 	//INTC IPRA 0xFFD00004 0x1FD00004 16 0x0000 0x0000 Held Held Pclk
 	sh4_rio_reg(INTC,INTC_IPRA_addr,RIO_WF,16,0,&write_INTC_IPRA);

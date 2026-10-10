@@ -29,6 +29,8 @@ void sh4_mmr_reset(bool hard);
 void sh4_mmr_term();
 
 void sh4_rio_reg(Array<RegisterStruct>& arr, u32 addr, RegIO flags, u32 sz, RegReadAddrFP* rf=0, RegWriteAddrFP* wf=0);
+// The bits a write keeps of a register that is RIO_DATA: the others stay 0.
+void sh4_rio_wmask(Array<RegisterStruct>& arr, u32 addr, u32 mask);
 
 #define SH4IO_REGN(mod, addr, size) ((mod)[((addr) & 255) / 4].data##size)
 #define SH4IO_REG(mod, name, size) SH4IO_REGN(mod, mod##_##name##_addr, size)

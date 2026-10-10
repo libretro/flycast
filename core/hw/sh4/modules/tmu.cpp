@@ -192,7 +192,8 @@ static void UpdateTMUCounts(u32 reg)
 template<int ch>
 void TMU_TCR_write(u32 addr, u32 data)
 {
-	TMU_TCR(ch)=(u16)data;
+	// (only channel 2 has the input capture bits)
+	TMU_TCR(ch)=(u16)data & (ch == 2 ? 0x03ff : 0x013f);
 	UpdateTMUCounts(ch);
 }
 
@@ -210,7 +211,7 @@ static void TMU_TCPR2_write(u32 addr, u32 data)
 
 static void write_TMU_TSTR(u32 addr, u32 data)
 {
-	TMU_TSTR=data;
+	TMU_TSTR=data & 7;
 	//?
 
 	for (int i=0;i<3;i++)
@@ -269,6 +270,7 @@ void tmu_init()
 {
 	//TMU TOCR 0xFFD80000 0x1FD80000 8 0x00 0x00 Held Held Pclk
 	sh4_rio_reg(TMU,TMU_TOCR_addr,RIO_DATA,8);
+	sh4_rio_wmask(TMU,TMU_TOCR_addr,0x01);
 
 	//TMU TSTR 0xFFD80004 0x1FD80004 8 0x00 0x00 Held 0x00 Pclk
 	sh4_rio_reg(TMU,TMU_TSTR_addr,RIO_WF,8,0,&write_TMU_TSTR);

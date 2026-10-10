@@ -15,6 +15,7 @@ void cpg_init()
 {
 	//CPG FRQCR H'FFC0 0000 H'1FC0 0000 16 *2 Held Held Held Pclk
 	sh4_rio_reg(CPG,CPG_FRQCR_addr,RIO_DATA,16);
+	sh4_rio_wmask(CPG,CPG_FRQCR_addr,0x0FFF);
 
 	//CPG STBCR H'FFC0 0004 H'1FC0 0004 8 H'00 Held Held Held Pclk
 	sh4_rio_reg(CPG,CPG_STBCR_addr,RIO_DATA,8);
@@ -24,9 +25,11 @@ void cpg_init()
 
 	//CPG WTCSR H'FFC0 000C H'1FC0 000C 8/16*3 H'00 Held Held Held Pclk
 	sh4_rio_reg(CPG,CPG_WTCSR_addr,RIO_DATA,16);
+	sh4_rio_wmask(CPG,CPG_WTCSR_addr,0x00FF);
 
 	//CPG STBCR2 H'FFC0 0010 H'1FC0 0010 8 H'00 Held Held Held Pclk
 	sh4_rio_reg(CPG,CPG_STBCR2_addr,RIO_DATA,8);
+	sh4_rio_wmask(CPG,CPG_STBCR2_addr,0x80);
 }
 void cpg_reset()
 {

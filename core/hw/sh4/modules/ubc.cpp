@@ -12,18 +12,22 @@ void ubc_init()
 
 	//UBC BAMRA 0xFF200004 0x1F200004 8 Undefined Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BAMRA_addr,RIO_DATA,8);
+	sh4_rio_wmask(UBC,UBC_BAMRA_addr,0x0F);
 
 	//UBC BBRA 0xFF200008 0x1F200008 16 0x0000 Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BBRA_addr,RIO_DATA,16);
+	sh4_rio_wmask(UBC,UBC_BBRA_addr,0x007F);
 
 	//UBC BARB 0xFF20000C 0x1F20000C 32 Undefined Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BARB_addr,RIO_DATA,32);
 
 	//UBC BAMRB 0xFF200010 0x1F200010 8 Undefined Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BAMRB_addr,RIO_DATA,8);
+	sh4_rio_wmask(UBC,UBC_BAMRB_addr,0x0F);
 
 	//UBC BBRB 0xFF200014 0x1F200014 16 0x0000 Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BBRB_addr,RIO_DATA,16);
+	sh4_rio_wmask(UBC,UBC_BBRB_addr,0x007F);
 
 	//UBC BDRB 0xFF200018 0x1F200018 32 Undefined Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BDRB_addr,RIO_DATA,32);
@@ -33,6 +37,7 @@ void ubc_init()
 
 	//UBC BRCR 0xFF200020 0x1F200020 16 0x0000 Held Held Held Iclk
 	sh4_rio_reg(UBC,UBC_BRCR_addr,RIO_DATA,16);
+	sh4_rio_wmask(UBC,UBC_BRCR_addr,0xC4C9);
 }
 void ubc_reset()
 {

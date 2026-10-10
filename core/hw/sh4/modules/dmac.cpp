@@ -184,7 +184,8 @@ void WriteCHCR(u32 addr, u32 data)
 
 void WriteDMAOR(u32 addr, u32 data)
 {
-	DMAC_DMAOR.full = data;
+	// DDT, PR, AE, NMIF and DME: the rest read as 0
+	DMAC_DMAOR.full = data & 0x8307;
 }
 
 //Init term res
@@ -198,6 +199,7 @@ void dmac_init()
 
 	//DMAC DMATCR0 0xFFA00008 0x1FA00008 32 Undefined Undefined Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_DMATCR0_addr,RIO_DATA,32);
+	sh4_rio_wmask(DMAC,DMAC_DMATCR0_addr,0x00FFFFFF);
 
 	//DMAC CHCR0 0xFFA0000C 0x1FA0000C 32 0x00000000 0x00000000 Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_CHCR0_addr,RIO_WF,32,0,&WriteCHCR<0>);
@@ -210,6 +212,7 @@ void dmac_init()
 
 	//DMAC DMATCR1 0xFFA00018 0x1FA00018 32 Undefined Undefined Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_DMATCR1_addr,RIO_DATA,32);
+	sh4_rio_wmask(DMAC,DMAC_DMATCR1_addr,0x00FFFFFF);
 
 	//DMAC CHCR1 0xFFA0001C 0x1FA0001C 32 0x00000000 0x00000000 Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_CHCR1_addr,RIO_WF,32,0,&WriteCHCR<1>);
@@ -222,6 +225,7 @@ void dmac_init()
 
 	//DMAC DMATCR2 0xFFA00028 0x1FA00028 32 Undefined Undefined Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_DMATCR2_addr,RIO_DATA,32);
+	sh4_rio_wmask(DMAC,DMAC_DMATCR2_addr,0x00FFFFFF);
 
 	//DMAC CHCR2 0xFFA0002C 0x1FA0002C 32 0x00000000 0x00000000 Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_CHCR2_addr,RIO_WF,32,0,&WriteCHCR<2>);
@@ -234,6 +238,7 @@ void dmac_init()
 
 	//DMAC DMATCR3 0xFFA00038 0x1FA00038 32 Undefined Undefined Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_DMATCR3_addr,RIO_DATA,32);
+	sh4_rio_wmask(DMAC,DMAC_DMATCR3_addr,0x00FFFFFF);
 
 	//DMAC CHCR3 0xFFA0003C 0x1FA0003C 32 0x00000000 0x00000000 Held Held Bclk
 	sh4_rio_reg(DMAC,DMAC_CHCR3_addr,RIO_WF,32,0,&WriteCHCR<3>);

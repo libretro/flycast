@@ -29,6 +29,24 @@ Array<RegisterStruct> SCIF(10,true); //SCIF : 10 registers
 
 Array<RegisterStruct> * const AllRegisters[] = { &CCN, &UBC, &BSC, &DMAC, &CPG, &RTC, &INTC, &TMU, &SCI, &SCIF };
 
+/* What a write keeps of a register that is plain data (RIO_DATA): the bits
+ * the register has. The others are not there and read as 0. All of them
+ * until sh4_rio_wmask() says which. As many as there are registers above,
+ * and in the order of AllRegisters. (Beside the registers and not in their
+ * flags: those go into save states.) */
+static u32 CCN_wmask[18];
+static u32 UBC_wmask[9];
+static u32 BSC_wmask[19];
+static u32 DMAC_wmask[17];
+static u32 CPG_wmask[5];
+static u32 RTC_wmask[16];
+static u32 INTC_wmask[5];
+static u32 TMU_wmask[12];
+static u32 SCI_wmask[8];
+static u32 SCIF_wmask[10];
+
+static u32 * const AllWriteMasks[] = { CCN_wmask, UBC_wmask, BSC_wmask, DMAC_wmask, CPG_wmask, RTC_wmask, INTC_wmask, TMU_wmask, SCI_wmask, SCIF_wmask };
+
 u32 sh4io_read_noacc(u32 addr) 
 { 
 	INFO_LOG(SH4, "sh4io: Invalid read access @@ %08X", addr);
@@ -75,6 +93,18 @@ void sh4_rio_reg(Array<RegisterStruct>& arr, u32 addr, RegIO flags, u32 sz, RegR
    }
 }
 
+void sh4_rio_wmask(Array<RegisterStruct>& arr, u32 addr, u32 mask)
+{
+	u32 idx=(addr&255)/4;
+
+	if (idx >= arr.Size)
+		return;
+
+	for (u32 i = 0; i < ARRAY_SIZE(AllRegisters); i++)
+		if (AllRegisters[i] == &arr)
+			AllWriteMasks[i][idx] = mask;
+}
+
 template<u32 sz>
 u32 sh4_rio_read(Array<RegisterStruct>& sb_regs, u32 addr)
 {	
@@ -116,7 +146,7 @@ u32 sh4_rio_read(Array<RegisterStruct>& sb_regs, u32 addr)
 }
 
 template<u32 sz>
-void sh4_rio_write(Array<RegisterStruct>& sb_regs, u32 addr, u32 data)
+void sh4_rio_write(Array<RegisterStruct>& sb_regs, const u32* wmask, u32 addr, u32 data)
 {
 	u32 offset = addr&255;
 #ifdef TRACE
@@ -132,6 +162,7 @@ offset>>=2;
 #endif
 		if (!(sb_regs.data[offset].flags & REG_WF) )
 		{
+			data&=wmask[offset];
 			if (sz==4)
 				sb_regs.data[offset].data32=data;
 			else if (sz==2)
@@ -615,7 +646,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(CCN_BASE_addr):
 		if (addr<=0x1F00003C)
 		{
-			sh4_rio_write<sz>(CCN,addr & 0xFF,data);
+			sh4_rio_write<sz>(CCN,CCN_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -626,7 +657,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(UBC_BASE_addr):
 		if (addr<=0x1F200020)
 		{
-			sh4_rio_write<sz>(UBC,addr & 0xFF,data);
+			sh4_rio_write<sz>(UBC,UBC_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -637,7 +668,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(BSC_BASE_addr):
 		if (addr<=0x1F800048)
 		{
-			sh4_rio_write<sz>(BSC,addr & 0xFF,data);
+			sh4_rio_write<sz>(BSC,BSC_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -656,7 +687,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(DMAC_BASE_addr):
 		if (addr<=0x1FA00040)
 		{
-			sh4_rio_write<sz>(DMAC,addr & 0xFF,data);
+			sh4_rio_write<sz>(DMAC,DMAC_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -667,7 +698,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(CPG_BASE_addr):
 		if (addr<=0x1FC00010)
 		{
-			sh4_rio_write<sz>(CPG,addr & 0xFF,data);
+			sh4_rio_write<sz>(CPG,CPG_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -678,7 +709,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(RTC_BASE_addr):
 		if (addr<=0x1FC8003C)
 		{
-			sh4_rio_write<sz>(RTC,addr & 0xFF,data);
+			sh4_rio_write<sz>(RTC,RTC_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -689,7 +720,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(INTC_BASE_addr):
 		if (addr<=0x1FD0000C)
 		{
-			sh4_rio_write<sz>(INTC,addr & 0xFF,data);
+			sh4_rio_write<sz>(INTC,INTC_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -700,7 +731,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(TMU_BASE_addr):
 		if (addr<=0x1FD8002C)
 		{
-			sh4_rio_write<sz>(TMU,addr & 0xFF,data);
+			sh4_rio_write<sz>(TMU,TMU_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -711,7 +742,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(SCI_BASE_addr):
 		if (addr<=0x1FE0001C)
 		{
-			sh4_rio_write<sz>(SCI,addr & 0xFF,data);
+			sh4_rio_write<sz>(SCI,SCI_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -722,7 +753,7 @@ void DYNACALL WriteMem_p4mmr(u32 addr,T data)
 	case A7_REG_HASH(SCIF_BASE_addr):
 		if (addr<=0x1FE80024)
 		{
-			sh4_rio_write<sz>(SCIF,addr & 0xFF,data);
+			sh4_rio_write<sz>(SCIF,SCIF_wmask,addr & 0xFF,data);
 		}
 		else
 		{
@@ -786,6 +817,10 @@ void DYNACALL WriteMem_area7_OCR(u32 addr, T data)
 void sh4_mmr_init(void)
 {
 	OnChipRAM.Resize(OnChipRAM_SIZE,false);
+
+	for (u32 i = 0; i < ARRAY_SIZE(AllRegisters); i++)
+		for (u32 j = 0; j < AllRegisters[i]->Size; j++)
+			AllWriteMasks[i][j] = 0xFFFFFFFF;
 
 	for (u32 i=0;i<30;i++)
 	{

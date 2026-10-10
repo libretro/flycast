@@ -71,7 +71,8 @@ void CCN_QACR_write(u32 addr, u32 value)
 void CCN_PTEH_write(u32 addr, u32 value)
 {
 	CCN_PTEH_type temp;
-	temp.reg_data = value;
+	// VPN and ASID; the two bits between them are not there
+	temp.reg_data = value & 0xFFFFFCFF;
 	// (the strict way keeps what it finds by address space, and nothing else)
 	if (temp.ASID != CCN_PTEH.ASID && !mmu_strict)
 		mmu_lut_flush();
@@ -120,7 +121,8 @@ void CCN_MMUCR_write(u32 addr, u32 value)
 void CCN_CCR_write(u32 addr, u32 value)
 {
 	CCN_CCR_type temp;
-	temp.reg_data=value;
+	// IIX, ICI, ICE, OIX, ORA, OCI, CB, WT and OCE: the rest read as 0
+	temp.reg_data=value & 0x89AF;
 
 	//what is 0xAC13DBF8 from ?
 	if (temp.ICI && curr_pc!=0xAC13DBF8)
@@ -161,6 +163,7 @@ void ccn_init()
 
 	//CCN PTEL 0xFF000004 0x1F000004 32 Undefined Undefined Held Held Iclk
 	sh4_rio_reg(CCN,CCN_PTEL_addr,RIO_DATA,32);
+	sh4_rio_wmask(CCN,CCN_PTEL_addr,0x1FFFFDFF);
 
 	//CCN TTB 0xFF000008 0x1F000008 32 Undefined Undefined Held Held Iclk
 	sh4_rio_reg(CCN,CCN_TTB_addr,RIO_DATA,32);
@@ -182,18 +185,22 @@ void ccn_init()
 
 	//CCN TRA 0xFF000020 0x1F000020 32 Undefined Undefined Held Held Iclk
 	sh4_rio_reg(CCN,CCN_TRA_addr,RIO_DATA,32);
+	sh4_rio_wmask(CCN,CCN_TRA_addr,0x000003FC);
 
 	//CCN EXPEVT 0xFF000024 0x1F000024 32 0x00000000 0x00000020 Held Held Iclk
 	sh4_rio_reg(CCN,CCN_EXPEVT_addr,RIO_DATA,32);
+	sh4_rio_wmask(CCN,CCN_EXPEVT_addr,0x00000FFF);
 
 	//CCN INTEVT 0xFF000028 0x1F000028 32 Undefined Undefined Held Held Iclk
 	sh4_rio_reg(CCN,CCN_INTEVT_addr,RIO_DATA,32);
+	sh4_rio_wmask(CCN,CCN_INTEVT_addr,0x00003FFF);
 
 	// CPU VERSION 0xFF000030 0x1F000030 (undocumented)
 	sh4_rio_reg(CCN,CPU_VERSION_addr, RIO_RO_FUNC, 32, &CPU_VERSION_read, 0);
 
 	//CCN PTEA 0xFF000034 0x1F000034 32 Undefined Undefined Held Held Iclk
 	sh4_rio_reg(CCN,CCN_PTEA_addr,RIO_DATA,32);
+	sh4_rio_wmask(CCN,CCN_PTEA_addr,0x0000000F);
 
 	//CCN QACR0 0xFF000038 0x1F000038 32 Undefined Undefined Held Held Iclk
 	sh4_rio_reg(CCN,CCN_QACR0_addr,RIO_WF,32,0,&CCN_QACR_write<0>);
