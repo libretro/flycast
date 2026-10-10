@@ -11,6 +11,7 @@
 
 #define tmu_underflow 0x0100
 #define tmu_UNIE      0x0020
+#define tmu_ICPF      0x0200
 
 u32 tmu_shift[3];
 u32 tmu_mask[3];
@@ -77,11 +78,8 @@ void UpdateTMU_i(u32 Cycles)
 u32 tmu_ch_base[3];
 u64 tmu_ch_base64[3];
 
-static u32 read_TMU_TCNTch(u32 ch)
-{
-	return tmu_ch_base[ch] - ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask[ch]);
-}
-
+/* The count as it stands, in 64 bits: below 0 is a count that has gone
+ * past 0 and has not been loaded again yet. */
 static s64 read_TMU_TCNTch64(u32 ch)
 {
 	return tmu_ch_base64[ch] - ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask64[ch]);
@@ -89,33 +87,67 @@ static s64 read_TMU_TCNTch64(u32 ch)
 
 static void sched_chan_tick(int ch)
 {
-	//schedule next interrupt
-	//return TMU_TCOR(ch) << tmu_shift[ch];
-
-	u32 togo = read_TMU_TCNTch(ch);
-
-	if (togo > SH4_MAIN_CLOCK)
-		togo = SH4_MAIN_CLOCK;
-
-	u32 cycles = togo << tmu_shift[ch];
-
-	if (cycles > SH4_MAIN_CLOCK)
-		cycles = SH4_MAIN_CLOCK;
-
-	if (tmu_mask[ch])
-		sh4_sched_request(tmu_sched[ch], cycles );
-	else
+	if (!tmu_mask64[ch])
+	{
+		// stopped: nothing is to come
 		sh4_sched_request(tmu_sched[ch], -1);
-	//sched_tmu_cb
+		return;
+	}
+
+	/* The counter underflows on the tick after the one that brings it to
+	 * 0, and ticks fall where the clock is a multiple of the divider. The
+	 * scheduler calls back at the first time slice that ends after the
+	 * time asked for: one cycle before that tick is asked for, so that it
+	 * is the first slice to end on the tick or after it. In 64 bits: a
+	 * count of thousands of millions times a divider of thousands does not
+	 * fit 32, and what was left of it there was any time at all. More
+	 * than the scheduler takes is cut down to that, and the call that
+	 * comes then asks again. */
+	const u64 now = sh4_sched_now64();
+	const s64 togo = (s64)((((now >> tmu_shift[ch]) + read_TMU_TCNTch64(ch) + 1) << tmu_shift[ch]) - 1 - now);
+
+	sh4_sched_request(tmu_sched[ch], togo <= 0 ? 0 : togo > SH4_MAIN_CLOCK ? SH4_MAIN_CLOCK : (int)togo);
 }
 
 static void write_TMU_TCNTch(u32 ch, u32 data)
 {
-	//u32 TCNT=read_TMU_TCNTch(ch);
-	tmu_ch_base[ch]=data+((sh4_sched_now64()>>tmu_shift[ch])&tmu_mask[ch]);
 	tmu_ch_base64[ch] = data + ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask64[ch]);
+	tmu_ch_base[ch] = (u32)tmu_ch_base64[ch];
 
 	sched_chan_tick(ch);
+}
+
+/* The counter has gone below 0, to @past: the flag is set, the interrupt
+ * asked for, and the counter is what it was loaded with again less what it
+ * has counted since. It is loaded on the tick after it reads 0, so a count
+ * of -1 is that tick and the counter is TCOR: its period is TCOR + 1. (It
+ * used to be loaded with TCOR on reaching 0, a period of TCOR.) */
+static u32 tmu_underflowed(u32 ch, s64 past)
+{
+	TMU_TCR(ch) |= tmu_underflow;
+	InterruptPend(tmu_intID[ch], 1);
+
+	s64 next = (s64)TMU_TCOR(ch) + 1 + past;
+
+	if (next < 0)
+	{
+		// TCOR is so small that it has underflowed more than once in the time
+		next = (s64)TMU_TCOR(ch) - (s64)((u64)(-1 - past) % ((u64)TMU_TCOR(ch) + 1));
+	}
+	write_TMU_TCNTch(ch, (u32)next);
+	return (u32)next;
+}
+
+/* What the counter reads now. The scheduler's call comes before anything
+ * can read a count that has underflowed, the clock moving only between
+ * time slices; were one read all the same, it is put right here. */
+static u32 read_TMU_TCNTch(u32 ch)
+{
+	const s64 count = read_TMU_TCNTch64(ch);
+
+	if (unlikely(count < 0))
+		return tmu_underflowed(ch, count);
+	return (u32)count;
 }
 
 template<u32 ch>
@@ -132,6 +164,10 @@ void write_TMU_TCNT(u32 addr, u32 data)
 
 static void turn_on_off_ch(u32 ch, bool on)
 {
+	// nothing changes for this channel: its count and the call asked for stay
+	if ((tmu_mask64[ch] != 0) == on)
+		return;
+
 	u32 TCNT=read_TMU_TCNTch(ch);
 	tmu_mask[ch]=on?0xFFFFFFFF:0x00000000;
 	tmu_mask64[ch] = on ? 0xFFFFFFFFFFFFFFFF : 0x0000000000000000;
@@ -201,7 +237,12 @@ template<int ch>
 void TMU_TCR_write(u32 addr, u32 data)
 {
 	// (only channel 2 has the input capture bits)
-	TMU_TCR(ch)=(u16)data & (ch == 2 ? 0x03ff : 0x013f);
+	data &= ch == 2 ? 0x03ff : 0x013f;
+	/* The underflow and input capture flags are cleared by writing 0 to
+	 * them. Writing 1 leaves a flag as it is: it does not set it, and the
+	 * interrupt that used to follow is not one the timer gives. */
+	data &= TMU_TCR(ch) | ~(u32)(tmu_underflow | tmu_ICPF);
+	TMU_TCR(ch)=(u16)data;
 	UpdateTMUCounts(ch);
 }
 
@@ -228,48 +269,85 @@ static void write_TMU_TSTR(u32 addr, u32 data)
 
 static int sched_tmu_cb(int ch, int sch_cycl, int jitter)
 {
-	if (tmu_mask[ch]) {
-		
-		u32 tcnt = read_TMU_TCNTch(ch);
-		
-		s64 tcnt64 = (s64)read_TMU_TCNTch64(ch);
+	if (tmu_mask64[ch])
+	{
+		const s64 count = read_TMU_TCNTch64(ch);
 
-		//64 bit maths to differentiate big values from overflows
-		if (tcnt64 <= jitter) {
-			//raise interrupt, timer counted down
-			TMU_TCR(ch) |= tmu_underflow;
-			InterruptPend(tmu_intID[ch], 1);
-			
-			//printf("Interrupt for %d, %d cycles\n", ch, sch_cycl);
-
-			/* schedule next trigger by writing the TCNT register: what
-			 * it is loaded with again, less what it had gone past 0 by.
-			 * In 64 bits: with a TCOR of 0, or less than it had gone
-			 * past by, the sum is below 0 - more than one underflow in
-			 * the time - and as 32 bits that was a count of four
-			 * thousand million, the timer as good as stopped (upstream
-			 * 05d51cc35, DreamShell not starting). 0 then: the next one
-			 * is due at once. And a count that is still a little above
-			 * 0, taken for an underflow because it is within the
-			 * jitter, does not wrap the other way. */
-			s64 next = (s64)TMU_TCOR(ch) + tcnt64;
-
-			if (next < 0)
-				next = 0;
-			else if (next > 0xFFFFFFFFll)
-				next = 0xFFFFFFFFll;
-			write_TMU_TCNTch(ch, (u32)next);
-		}
-		else {
-			
-			//schedule next trigger by writing the TCNT register
-			write_TMU_TCNTch(ch, tcnt);
-		}
-
-		return 0;	//has already been scheduled by TCNT write
+		/* Below 0 it has underflowed. Not below 0, the call has come
+		 * before time - as much time as the scheduler takes was asked for,
+		 * and it was not enough: the rest is asked for. (This used to
+		 * take a count no greater than the number of cycles the call was
+		 * late by for an underflow: ticks compared with cycles, and the
+		 * flag could be raised some hundreds of ticks early.) */
+		if (count < 0)
+			tmu_underflowed(ch, count);
+		else
+			sched_chan_tick(ch);
 	}
-	else {
-		return 0;	//this channel is disabled, no need to schedule next event
+	return 0;	// asked for again already, where there is something to come
+}
+
+u32 sh4_sched_remaining(int id);
+
+/* To be called at the end of a state load, when the registers, the
+ * scheduler's clock and the variables above are those of the state:
+ * everything here that follows from something else is worked out again, and
+ * what does not is brought within what the code above can take. A state
+ * that is as this file makes it is left as it is. */
+void tmu_state_loaded(void)
+{
+	for (u32 ch = 0; ch < 3; ch++)
+	{
+		const u32 mode = TMU_TCR(ch) & 7;
+
+		/* The divider: 4, 16, 64, 256 or 1024 of a clock that is a
+		 * quarter of the scheduler's. With a clock source the machine does
+		 * not have (5 to 7) it is four times the divider there was before,
+		 * which only the state knows: any of those. */
+		if (mode <= 4)
+			tmu_shift[ch] = 4 + 2 * mode;
+		else if (tmu_shift[ch] > 14)
+			tmu_shift[ch] = 14;
+		else if (tmu_shift[ch] < 6 || (tmu_shift[ch] & 1))
+			tmu_shift[ch] = 6;
+		old_mode[ch] = mode;
+
+		tmu_mask[ch] = (TMU_TSTR & (1 << ch)) ? 0xFFFFFFFF : 0x00000000;
+		tmu_mask64[ch] = (TMU_TSTR & (1 << ch)) ? 0xFFFFFFFFFFFFFFFF : 0x0000000000000000;
+
+		// a count is 32 bits, or a little below 0 when the state was made between an underflow and its call
+		s64 count = read_TMU_TCNTch64(ch);
+		if (count > 0xFFFFFFFFll || count < -0xFFFFFFFFll)
+			count = (u32)count;
+		tmu_ch_base64[ch] = count + ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask64[ch]);
+		tmu_ch_base[ch] = (u32)tmu_ch_base64[ch];
+
+		InterruptPend(tmu_intID[ch],TMU_TCR(ch) & tmu_underflow);
+		InterruptMask(tmu_intID[ch],TMU_TCR(ch) & tmu_UNIE);
+
+		if (count < 0)
+			tmu_underflowed(ch, count);
+		else if (!tmu_mask64[ch])
+		{
+			// stopped: nothing is to come
+			if (sh4_sched_is_scheduled(tmu_sched[ch]))
+				sh4_sched_request(tmu_sched[ch], -1);
+		}
+		else
+		{
+			/* The call the state has asked for is left as it is when it
+			 * comes no later than the underflow: one that comes before it
+			 * asks again for the rest (sched_tmu_cb). Asked for anew from
+			 * here, it would be the same call with other numbers in the
+			 * scheduler, and two machines in the same state would save
+			 * states that are not the same bytes. */
+			const u64 now = sh4_sched_now64();
+			const s64 togo = (s64)((((now >> tmu_shift[ch]) + count + 1) << tmu_shift[ch]) - 1 - now);
+
+			if (!sh4_sched_is_scheduled(tmu_sched[ch])
+					|| (s64)(s32)sh4_sched_remaining(tmu_sched[ch]) > togo)
+				sched_chan_tick(ch);
+		}
 	}
 }
 

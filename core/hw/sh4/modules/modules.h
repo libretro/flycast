@@ -33,6 +33,8 @@ void ubc_term();
 void tmu_init();
 void tmu_reset(bool hard);
 void tmu_term();
+// after a state has been loaded: see tmu.cpp
+void tmu_state_loaded(void);
 
 void ccn_init();
 void ccn_reset(bool hard);

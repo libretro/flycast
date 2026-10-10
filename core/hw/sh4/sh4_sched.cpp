@@ -121,7 +121,8 @@ void sh4_sched_request(int id, int cycles)
 
 	if (cycles != -1)
 	{
-		sch_list[id].end = sch_list[id].start + cycles;
+		// (the time is 32 bits and wraps: added as unsigned, a signed sum past the top is not defined)
+		sch_list[id].end = (int)((u32)sch_list[id].start + (u32)cycles);
 		if (sch_list[id].end == -1)
 			sch_list[id].end++;
 	}
@@ -142,7 +143,7 @@ static int sh4_sched_elapsed(int id)
 
 static void handle_cb(int id)
 {
-	int remain=sch_list[id].end-sch_list[id].start;
+	int remain=(int)((u32)sch_list[id].end-(u32)sch_list[id].start);
 	int elapsd=sh4_sched_elapsed(id);
 	int jitter=elapsd-remain;
 
