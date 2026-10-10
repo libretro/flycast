@@ -374,6 +374,64 @@ tr -d '\r' < "$WORK/naomi.out" | grep -q "= 600d7e57\$" || {
    exit 1
 }
 
+# And a state of another machine: one saved by the Dreamcast program above,
+# given to the cartridge while it runs. A Dreamcast has half a NAOMI's
+# memory, so nothing in such a state is where a NAOMI's has it. It has to
+# be turned down before anything of it is put in place, and the cartridge's
+# program has to go on to the end as if nothing had happened. (It used to
+# be read to its end, as whatever each part of it happened to be.) The
+# other way round - the NAOMI's state to the Dreamcast program - is too
+# large to tell by its size, and is found out halfway through, with the
+# machine's memory already replaced: that load has to be refused too, and
+# the run has to end without stopping the emulator, whatever the program
+# then makes of what is in its memory.
+echo "== headless: a state of another machine, refused"
+unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+if [ -n "$WINDOWS" ]; then
+   :
+elif [ -z "$GLES" ]; then
+   LD_PRELOAD=$WORK/libGLESv2.so.2
+   export LD_PRELOAD
+fi
+rm -f "$WORK/dc.state" "$WORK/naomi.state"
+HEADLESS_DIR=$WORK/dir HEADLESS_DUMP=20:$WORK/dc.state \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/smc.elf" 30 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/other.out" 2> "$WORK/other.log" && [ -s "$WORK/dc.state" ] || {
+   echo "FAIL: the Dreamcast program's state was not saved" >&2
+   exit 1
+}
+HEADLESS_DIR=$WORK/dir HEADLESS_PEEK=$(python3 "$T/naomi_cart.py" --verdict) \
+   HEADLESS_DUMP=20:$WORK/naomi.state HEADLESS_UNDUMP=40:$WORK/dc.state \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/naomi-test.bin" 120 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/other.out" 2> "$WORK/other.log" || {
+   echo "FAIL: the run ended badly" >&2
+   tail -n 20 "$WORK/other.log" >&2
+   exit 1
+}
+tr -d '\r' < "$WORK/other.out" | grep -q "^state refused\$" || {
+   echo "FAIL: a Dreamcast's state was not refused by a NAOMI: $(cat "$WORK/other.out")" >&2
+   exit 1
+}
+tr -d '\r' < "$WORK/other.out" | grep -q "= 600d7e57\$" || {
+   echo "FAIL: the cartridge's program did not go on after the state was refused: $(cat "$WORK/other.out")" >&2
+   exit 1
+}
+HEADLESS_DIR=$WORK/dir HEADLESS_UNDUMP=40:$WORK/naomi.state \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/smc.elf" 60 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/other.out" 2> "$WORK/other.log" || {
+   echo "FAIL: the run ended badly" >&2
+   tail -n 20 "$WORK/other.log" >&2
+   exit 1
+}
+unset LD_PRELOAD
+tr -d '\r' < "$WORK/other.out" | grep -q "^state refused\$" || {
+   echo "FAIL: a NAOMI's state was not refused by a Dreamcast: $(cat "$WORK/other.out")" >&2
+   exit 1
+}
+
 # And romsets (naomi_cart.py --merged): a merged set - a game and its
 # clones in one archive, the clones' own ROMs in folders - has to start the
 # game under its own name and under no set's name, and a clone under the

@@ -22,6 +22,9 @@
  *   HEADLESS_SAVE    frame to save a state before
  *   HEADLESS_LOAD    frame to load that state back before
  *   HEADLESS_DUMP    "frame:file": a state saved before that frame, written to the file
+ *   HEADLESS_UNDUMP  "frame:file": the state in that file loaded before that
+ *                    frame. "state loaded" or "state refused" is printed,
+ *                    and the run goes on either way.
  *   HEADLESS_OPTION  "frame:key=value[,key=value...]": core options changed before
  *                    that frame, as from the frontend's menu while the game runs.
  *                    Whatever size the core then tells the frontend is printed,
@@ -447,6 +450,22 @@ int main(int argc, char **argv)
                if (out)
                   fclose(out);
                free(dump);
+            }
+            if (getenv("HEADLESS_UNDUMP") && i == atoi(getenv("HEADLESS_UNDUMP")) && strchr(getenv("HEADLESS_UNDUMP"), ':'))
+            {
+               FILE *in = fopen(strchr(getenv("HEADLESS_UNDUMP"), ':') + 1, "rb");
+               long in_size = 0;
+               void *in_state = NULL;
+
+               if (in && !fseek(in, 0, SEEK_END) && (in_size = ftell(in)) > 0
+                     && !fseek(in, 0, SEEK_SET) && (in_state = malloc(in_size))
+                     && fread(in_state, 1, in_size, in) == (size_t)in_size)
+                  printf(retro_unserialize(in_state, in_size) ? "state loaded\n" : "state refused\n");
+               else
+                  fprintf(stderr, "the state's file could not be read\n");
+               if (in)
+                  fclose(in);
+               free(in_state);
             }
             /* the lid opened, and shut again on the same disc 20 frames later */
             if (have_disk && i == swap_at)
