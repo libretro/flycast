@@ -706,6 +706,10 @@ struct ChannelEx
 		u32 addr = (ccd->SA_hi<<16) | ccd->SA_low;
 		if (ccd->PCMS==0)
 			addr&=~1; //0: 16 bit
+		/* The register has 23 bits and sound memory is 2 MB of that on a
+		 * Dreamcast: an address above it is the same memory again, and
+		 * where the host has no mirrors of it, was a place past its end. */
+		addr &= ARAM_MASK;
 		
 		SA=&aica_ram.data[addr];
 	}
@@ -762,7 +766,13 @@ struct ChannelEx
 	}
 
 	//LFORE,LFOF,PLFOWS,PLFOS,ALFOWS,ALFOS
-	void UpdateLFO()
+	/* @from_state: the channel has just been read out of a save state,
+	 * with where its LFO was in it. What follows from the registers is
+	 * worked out again; the count and the step it had got to are the
+	 * state's and are left. (They were started again with the rest, and a
+	 * loaded state's vibrato and tremolo set off from the top of the wave:
+	 * upstream has had this since 2021, as "derivedState".) */
+	void UpdateLFO(bool from_state = false)
 	{
 		{
 			int N=ccd->LFOF;
@@ -771,7 +781,10 @@ struct ChannelEx
 			int G = 128>>S;
 			int L = (G-1)<<2;
 			int O = L + G * (M+1);
-			lfo.SetStartValue(O);
+			if (from_state)
+				lfo.start_value = O;
+			else
+				lfo.SetStartValue(O);
 		}
 
 		lfo.alfo_shft=8-ccd->ALFOS;
@@ -780,7 +793,7 @@ struct ChannelEx
 		lfo.plfo_calc=PLFOWS_CALC[ccd->PLFOWS];
 		lfo.plfo_scale = PLFO_Scales[ccd->PLFOS];
 
-		if (ccd->LFORE)
+		if (ccd->LFORE && !from_state)
 		{
 			lfo.Reset(this);
 		}
@@ -1697,7 +1710,7 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			LIBRETRO_US(dumu8); // Chans[i].lfo.alfo_calc_lut
 			LIBRETRO_US(dumu8); // Chans[i].lfo.plfo_calc_lut
 		}
-		Chans[i].UpdateLFO();
+		Chans[i].UpdateLFO(true);
 		LIBRETRO_US(Chans[i].enabled) ;
 		if (ver < V8)
 			LIBRETRO_US(dum); // Chans[i].ChannelNumber

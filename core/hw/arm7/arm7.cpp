@@ -218,8 +218,11 @@ void CPUSwitchMode(int mode, bool saveState, bool breakLoop)
 			reg[17].I = reg[SPSR_UND].I;
 		break;
 	default:
+		/* A mode there is none of: the processor is in no state to go
+		 * on from, and is left standing (upstream). It was the emulator
+		 * that stopped, die(), for a value the program writes. */
 		ERROR_LOG(AICA_ARM, "Unsupported ARM mode %02x", mode);
-		die("Arm error..");
+		Arm7Enabled = false;
 		break;
 	}
 	armMode = mode;

@@ -44,8 +44,11 @@ void AICADSP_Step(struct dsp_t *DSP)
 	s32 Y_REG = 0;		//24 bit
 	u32 ADRS_REG = 0;	//13 bit
 
-	memset(DSPData->EFREG, 0, sizeof(DSPData->EFREG));
-
+	/* (EFREG is not cleared: the registers the program writes its
+	 * output to hold what they were last given. Upstream 5905b8c14, for
+	 * the AICA0203 diagnostic; the ARM64 and 32-bit x86 recompilers here
+	 * have had it since 2021 and this and the x86-64 one had not, so the
+	 * same game did not sound the same on every host.) */
 	if (DSP->Stopped)
 		return;
 

@@ -54,13 +54,7 @@ public:
 
 		if (DSP->Stopped)
 		{
-			// Clear EFREG
-			mov(rax, (uintptr_t)DSPData->EFREG);
-	        pxor(xmm0, xmm0);
-	        movups(xword[rax], xmm0);
-	        movups(xword[rax+16], xmm0);
-	        movups(xword[rax+32], xmm0);
-	        movups(xword[rax+48], xmm0);
+			// (nothing to do, and EFREG is left as it is: see dsp_interp.cpp)
 			ret();
 			ready();
 
@@ -93,14 +87,6 @@ public:
 #else
 		const Xbyak::Reg32 call_arg0 = edi;
 #endif
-		// Clear EFREG
-		mov(rax, (uintptr_t)DSPData->EFREG);
-        pxor(xmm0, xmm0);
-        movups(xword[rax], xmm0);
-        movups(xword[rax+16], xmm0);
-        movups(xword[rax+32], xmm0);
-        movups(xword[rax+48], xmm0);
-
 		xor_(ACC, ACC);
 		mov(dword[rbx + dsp_operand(&DSP->FRC_REG)], 0);
 		xor_(Y_REG, Y_REG);
