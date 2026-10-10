@@ -83,6 +83,7 @@ static void recSh4_ClearCache(void)
 static void recSh4_Run(void)
 {
    sh4_int_bCpuRun = true;
+	HostFloatModeSave();
 	RestoreHostRoundingMode();
 
 	sh4_dyna_rcb=(u8*)&Sh4cntx + sizeof(Sh4cntx);
@@ -91,6 +92,7 @@ static void recSh4_Run(void)
 	ngen_mainloop(sh4_dyna_rcb);
 
 	sh4_int_bCpuRun=false;
+	HostFloatModeBack();
 }
 
 void emit_Write32(u32 data)

@@ -47,6 +47,7 @@ static u16 ReadNexOp()
 void Sh4_int_Run()
 {
    sh4_int_bCpuRun = true;
+	HostFloatModeSave();
 	RestoreHostRoundingMode();
 
 	l = SH4_TIMESLICE;
@@ -75,6 +76,7 @@ void Sh4_int_Run()
    } while(sh4_int_bCpuRun);
    
    sh4_int_bCpuRun=false;
+	HostFloatModeBack();
 }
 
 void Sh4_int_Stop()
@@ -143,8 +145,11 @@ void Sh4_int_Reset(bool hard)
 	UpdateSR();
 
 	fpscr.full = 0x00040001;
+	/* (Not the host's rounding mode with it, as UpdateFPSCR() would: this
+	 * is whoever asked for the reset's thread, which with threaded
+	 * rendering never runs the SH4 and kept the mode for good. Run() sets
+	 * it each time it is entered.) */
 	old_fpscr=fpscr;
-	UpdateFPSCR();
 	icache.Reset(hard);
 	ocache.Reset(hard);
 

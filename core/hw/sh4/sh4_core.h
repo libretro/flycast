@@ -33,6 +33,8 @@
 void UpdateFPSCR();
 bool UpdateSR();
 void RestoreHostRoundingMode();
+void HostFloatModeSave();
+void HostFloatModeBack();
 
 union DoubleReg
 {

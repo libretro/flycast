@@ -7,6 +7,10 @@
 #include "cheats.h"
 #include "spg.h"
 
+// (hw/sh4/sh4_core.h, which has a name for every register of the SH4)
+void RestoreHostRoundingMode();
+void HostFloatModeBack();
+
 /*
 
 	rendv3 ideas
@@ -339,7 +343,16 @@ void rend_start_render(void)
             }
             else
 #endif
-            	rend_single_frame();
+            {
+               /* This is the thread that runs the SH4, in the middle of
+                * running it: the frame is drawn with the thread's own
+                * floating point settings and not the game's, as it is
+                * when a thread of its own draws it, and the game's are
+                * put back after. */
+               HostFloatModeBack();
+               rend_single_frame();
+               RestoreHostRoundingMode();
+            }
             pend_rend = true;
          }
       }
@@ -357,7 +370,12 @@ void rend_end_render(void)
    /* Non-threaded only: in threaded rendering this is the emulation thread,
     * which leaves the renderer alone. */
    if (pend_rend && !settings.rend.ThreadedRendering && renderer != NULL)
+   {
+      // (the SH4's thread, as in rend_start_render())
+      HostFloatModeBack();
       renderer->Present();
+      RestoreHostRoundingMode();
+   }
 }
 
 void rend_term(void)

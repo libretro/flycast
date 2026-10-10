@@ -5,6 +5,7 @@
 #include "types.h"
 #include "sh4_core.h"
 #include "sh4_interrupts.h"
+#include <fenv.h>
 
 
 Sh4RCB* p_sh4rcb;
@@ -171,6 +172,27 @@ void RestoreHostRoundingMode()
 	old_rm = 0xFF;
 	old_dn = 0xFF;
 	setHostRoundingMode();
+}
+
+/* The floating point settings of the thread that runs the SH4, as they
+ * were when it began to: the SH4's rounding mode and its way with very
+ * small numbers are the thread's for as long as the SH4 runs, and are
+ * nobody else's. Without threaded rendering that thread is the frontend's,
+ * and it was given back rounding towards zero - which a game sets as a
+ * matter of course - for its sound and its picture, and for the drawing
+ * of the frame, which the other thread does with its own. */
+static fenv_t host_float_mode;
+
+// (when the SH4 is about to run, before its mode is set)
+void HostFloatModeSave()
+{
+	fegetenv(&host_float_mode);
+}
+
+// (when it has run, or for something done on its thread that is not its own)
+void HostFloatModeBack()
+{
+	fesetenv(&host_float_mode);
 }
 
 static u32* Sh4_int_GetRegisterPtr(Sh4RegType reg)
