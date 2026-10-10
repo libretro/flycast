@@ -445,7 +445,11 @@ void gd_spi_pio_read_end(u32 len, gd_states next_state)
 	pio_buff.size=len>>1;
 	pio_buff.next_state=next_state;
 
-	if (len==0)
+	/* Counted in words: a length of one byte is none of them, and nothing
+	 * is waited for. (It was waited for: the count of words taken never
+	 * came to equal the none there were, and the game could go on sending
+	 * until they were written past the end of the buffer.) */
+	if (pio_buff.size==0)
 		gd_set_state(next_state);
 	else
 		gd_set_state(gds_pio_get_data);
@@ -721,6 +725,17 @@ u32 gd_get_subcode(u32 format, u32 fad, u8 *subc_info)
 	return subc_info[3];
 }
 
+/* A field of the command packet that the drive can make nothing of. The
+ * command ends in a check condition, as one the drive does not know does:
+ * illegal request, with "invalid field in the command packet" for a reason. */
+static void gd_spi_invalid_field()
+{
+	GDStatus.CHECK = 1;
+	sns_key = 5;	// Illegal request
+	sns_asc = 0x24;	// Invalid field in command packet
+	sns_ascq = 0;
+}
+
 void gd_process_spi_cmd()
 {
 
@@ -971,7 +986,13 @@ void gd_process_spi_cmd()
 				}
 			}
 			else
-				die("SPI_CD_PLAY: unknown parameter");
+			{
+				/* No way of saying where to play that the drive has: it
+				 * goes on with what it was doing and reports the error.
+				 * (This stopped the emulator.) */
+				WARN_LOG(GDROM, "SPI_CD_PLAY: unknown parameter type %d", param_type);
+				gd_spi_invalid_field();
+			}
 
 			DEBUG_LOG(GDROM, "CDDA StartAddr=%d EndAddr=%d repeats=%d status=%d CurrAddr=%d",cdda.StartAddr.FAD,
 					cdda.EndAddr.FAD, cdda.repeats, cdda.status, cdda.CurrAddr.FAD);
@@ -985,6 +1006,15 @@ void gd_process_spi_cmd()
 			const u32 param_type = packet_cmd.data_8[1] & 7;
 			printf_spicmd("SPI_CD_SEEK param_type=%d", param_type);
 
+			if (param_type < 1 || param_type > 4)
+			{
+				/* Likewise, and looked at first: music that is playing is
+				 * not paused for a command the drive does not carry out. */
+				WARN_LOG(GDROM, "SPI_CD_SEEK: unknown parameter type %d", param_type);
+				gd_spi_invalid_field();
+				gd_set_state(gds_procpacketdone);
+				break;
+			}
 			SecNumber.Status = GD_PAUSE;
 			if (cdda.status == cdda_t::Playing)
 				cdda.status = cdda_t::Paused;
@@ -1019,8 +1049,6 @@ void gd_process_spi_cmd()
 			{
 				//pause audio -- nothing more
 			}
-			else
-				die("SPI_CD_SEEK  : not known parameter..");
 
 			DEBUG_LOG(GDROM, "CDDA StartAddr=%d EndAddr=%d repeats=%d status=%d CurrAddr=%d",cdda.StartAddr.FAD,
 					cdda.EndAddr.FAD, cdda.repeats, cdda.status, cdda.CurrAddr.FAD);
@@ -1226,13 +1254,23 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 
 int GDROM_TICK=1500000;
 
+/* How much the game asked to have transferred; 0 stands for all 32 MB. It
+ * goes 32 bytes at a time, so a length that is not so many of those is
+ * carried on to the end of the 32 bytes it stops in. (Such a length stopped
+ * the emulator.) */
+static inline u32 gd_dma_len()
+{
+	return (SB_GDLEN + 31) & 0x01ffffe0;
+}
+
 static int getGDROMTicks()
 {
    if (SB_GDST & 1)
    {
 	  if (GDROM_TICK < 1500000)
 		 return GDROM_TICK;
-     u32 len = SB_GDLEN == 0 ? 0x02000000 : SB_GDLEN;
+     const u32 gdlen = gd_dma_len();
+     u32 len = gdlen == 0 ? 0x02000000 : gdlen;
      /* A large transfer comes off the disc as it turns: 10240 bytes at the
       * drive's 1.8 MB/s. This was a round 1000000 cycles, which is 2 MB/s,
       * faster than the drive goes; upstream found Sakura Taisen 3's music
@@ -1268,13 +1306,8 @@ static int GDRomschd(int i, int c, int j)
 		return 0;
 
    u32 src = SB_GDSTARD;
-   u32 len = (SB_GDLEN == 0 ? 0x02000000 : SB_GDLEN) - SB_GDLEND;
-
-	if(SB_GDLEN & 0x1F) 
-	{
-		die("\n!\tGDROM: SB_GDLEN has invalid size !\n");
-      return 0;
-	}
+   const u32 gdlen = gd_dma_len();
+   u32 len = (gdlen == 0 ? 0x02000000 : gdlen) - SB_GDLEND;
 
 	/* No more than the drive has to give: what is left in the cache and
 	 * the sectors still to be read. This used to be checked only when no
@@ -1321,9 +1354,19 @@ static int GDRomschd(int i, int c, int j)
 			{
 				bool  dst_ismem;
 				void* dst_ptr = _vmem_write_const(src, dst_ismem, 4);
+				/* (no further than the memory goes on from there: as far
+				 * as the end of it or of its 16 MB of the address space.
+				 * The sector that would cross that goes through the
+				 * cache, which is copied out a piece at a time.) */
+				u32 n = 0;
 				if (dst_ismem)
 				{
-					u32 n = len / read_params.sector_type;
+					bool end_ismem;
+					const u32 run = (u32)((u8*)_vmem_write_const(src | 0x00FFFFFF, end_ismem, 4) - (u8*)dst_ptr) + 1;
+					n = std::min(len, run) / read_params.sector_type;
+				}
+				if (n != 0)
+				{
 					if (n > read_params.remaining_sectors)
 						n = read_params.remaining_sectors;
 					libGDR_ReadSector((u8*)dst_ptr, read_params.start_sector, n, read_params.sector_type);
@@ -1357,7 +1400,7 @@ static int GDRomschd(int i, int c, int j)
    SB_GDSTARD += len_backup;
 
 
-	if (SB_GDLEND == SB_GDLEN)
+	if (SB_GDLEND == gdlen)
 	{
       SB_GDST = 0;
 		asic_RaiseInterrupt(holly_GDROM_DMA);
@@ -1388,6 +1431,8 @@ void GDROM_DmaStart(u32 addr, u32 data)
 		SB_GDSTARD=SB_GDSTAR;
 		SB_GDLEND=0;
 		DEBUG_LOG(GDROM, "GDROM-DMA start addr %08X len %d", SB_GDSTAR, SB_GDLEN);
+		if (SB_GDLEN & 0x1F)
+			WARN_LOG(GDROM, "GDROM: SB_GDLEN %X is not a multiple of 32: %X transferred", SB_GDLEN, gd_dma_len());
 
       int ticks = getGDROMTicks();
 		if (ticks < SH4_TIMESLICE)
