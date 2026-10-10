@@ -23,6 +23,13 @@
 
 gdrom_hle_state_t gd_hle_state = { 0xffffffff, 2, BIOS_INACTIVE };
 
+/* What GDROM_SECTOR_MODE was last given, to be given back when it is asked:
+ * the part of the sector that is read (8192: its data), the kind of track
+ * and the size of a sector. Reads here are of 2048-byte data whatever it
+ * says. */
+#define SECMODE_DEFAULTS { 0, 8192, 2048, 2048 }
+u32 SecMode[4] = SECMODE_DEFAULTS;
+
 /* As the machine starts: nothing asked for, nothing in the middle of
  * being read. (It was left as the game before the reset had it - a read by
  * DMA that was under way went on into the memory of whatever was started
@@ -30,8 +37,31 @@ gdrom_hle_state_t gd_hle_state = { 0xffffffff, 2, BIOS_INACTIVE };
 void gdrom_hle_reset()
 {
 	static const gdrom_hle_state_t fresh = { 0xffffffff, 2, BIOS_INACTIVE };
+	static const u32 fresh_mode[4] = SECMODE_DEFAULTS;
 
 	gd_hle_state = fresh;
+	memcpy(SecMode, fresh_mode, sizeof(SecMode));
+}
+
+/* The save state, from V21: the sector mode a game set, which it can ask
+ * for again. 12 bytes. Any value is one a game may have set. */
+void gdhle_serialize_v21(void **data, unsigned int *total_size)
+{
+	LIBRETRO_SA(&SecMode[1], 3);
+}
+
+bool gdhle_unserialize_v21(void **data, unsigned int *total_size)
+{
+	LIBRETRO_USA(&SecMode[1], 3);
+	return true;
+}
+
+// An older state does not say: as after a reset.
+void gdhle_state_before_v21(void)
+{
+	static const u32 fresh_mode[4] = SECMODE_DEFAULTS;
+
+	memcpy(SecMode, fresh_mode, sizeof(SecMode));
 }
 
 extern int GDROM_TICK;
@@ -53,6 +83,18 @@ static void GDROM_HLE_BadParam()
 	gd_hle_state.status = BIOS_ERROR;
 	gd_hle_state.result[0] = 5;
 	gd_hle_state.result[1] = 0x24;
+	gd_hle_state.result[2] = 0;
+	gd_hle_state.result[3] = 0;
+}
+
+/* A command for a disc when there is none in the drive, or its lid is open:
+ * not ready, no medium - what GETSCD says of it below. (PLAY failed with
+ * both words 0, which is "no error".) */
+static void GDROM_HLE_NoDisc()
+{
+	gd_hle_state.status = BIOS_ERROR;
+	gd_hle_state.result[0] = 2;
+	gd_hle_state.result[1] = 0x3a;
 	gd_hle_state.result[2] = 0;
 	gd_hle_state.result[3] = 0;
 }
@@ -140,6 +182,8 @@ static void read_sectors_to(u32 addr, u32 sector, u32 count)
 
 	while (count > 0)
 	{
+		// (blank first: with no disc nothing is read, and what was on the stack went to the game)
+		memset(temp, 0, sizeof(temp));
 		libGDR_ReadSector((u8 *)temp, sector, 1, sizeof(temp));
 
 		for (int i = 0; i < ARRAY_SIZE(temp); i++)
@@ -214,6 +258,7 @@ static void GDROM_HLE_ReadDMA_step()
 		u32 temp[2048 / 4];
 		while (gd_hle_state.dma_read_count > 0)
 		{
+			memset(temp, 0, sizeof(temp));	// (as above)
 			libGDR_ReadSector((u8 *)temp, gd_hle_state.dma_read_sector, 1, sizeof(temp));
 			for (int i = 0; i < (int)ARRAY_SIZE(temp); i++)
 			{
@@ -296,11 +341,33 @@ static void GDCC_HLE_GETSCD() {
 	// record size of pio transfer to gdrom
 	gd_hle_state.result[2] = size;
 }
+/* A transfer to the game's addresses can stop at a page that is not mapped
+ * yet: the game maps it and the call is made again, to the same place from
+ * its start. What had been taken off the read by then is put back, or the
+ * second go wrote what follows it there. */
+struct multi_xfer_rewind
+{
+	u32 sector, offset, count;
+	bool done;
+
+	multi_xfer_rewind() : sector(gd_hle_state.multi_read_sector), offset(gd_hle_state.multi_read_offset),
+		count(gd_hle_state.multi_read_count), done(false) {}
+	~multi_xfer_rewind()
+	{
+		if (done)
+			return;
+		gd_hle_state.multi_read_sector = sector;
+		gd_hle_state.multi_read_offset = offset;
+		gd_hle_state.multi_read_count = count;
+	}
+};
+
 template<bool dma>
 static void multi_xfer()
 {
 	u32 dest = gd_hle_state.params[0];
 	u32 size = gd_hle_state.params[1];
+	multi_xfer_rewind rewind;
 
 	size = std::min(size, gd_hle_state.multi_read_count);
 	// (asking for more than this is refused; a save state can still say so)
@@ -308,16 +375,21 @@ static void multi_xfer()
 	while (size > 0)
 	{
 		u8 buf[2048];
+		// (blank first: with no disc nothing is read, and what was on the stack went to the game)
+		memset(buf, 0, sizeof(buf));
 		libGDR_ReadSector(buf, gd_hle_state.multi_read_sector, 1, 2048);
 		while (size > 0)
 		{
 			int remaining = 2048 - gd_hle_state.multi_read_offset;
 			if (size >= 4 && remaining >= 4 && (dest & 3) == 0)
 			{
+				// (the place in the sector is odd after a transfer of an odd length)
+				u32 word;
+				memcpy(&word, &buf[gd_hle_state.multi_read_offset], sizeof(word));
 				if (dma)
-					WriteMem32_nommu(dest, *(u32*)&buf[gd_hle_state.multi_read_offset]);
+					WriteMem32_nommu(dest, word);
 				else
-					WriteMem32(dest, *(u32*)&buf[gd_hle_state.multi_read_offset]);
+					WriteMem32(dest, word);
 				dest += 4;
 				gd_hle_state.multi_read_offset += 4;
 				gd_hle_state.multi_read_count -= 4;
@@ -325,10 +397,12 @@ static void multi_xfer()
 			}
 			else if (size >= 2 && remaining >= 2 && (dest & 1) == 0)
 			{
+				u16 word;
+				memcpy(&word, &buf[gd_hle_state.multi_read_offset], sizeof(word));
 				if (dma)
-					WriteMem16_nommu(dest, *(u16*)&buf[gd_hle_state.multi_read_offset]);
+					WriteMem16_nommu(dest, word);
 				else
-					WriteMem16(dest, *(u16*)&buf[gd_hle_state.multi_read_offset]);
+					WriteMem16(dest, word);
 				dest += 2;
 				gd_hle_state.multi_read_offset += 2;
 				gd_hle_state.multi_read_count -= 2;
@@ -354,6 +428,7 @@ static void multi_xfer()
 			}
 		}
 	}
+	rewind.done = true;
 	if (!dma)
 	{
 		gd_hle_state.result[2] = gd_hle_state.multi_read_total - gd_hle_state.multi_read_count;
@@ -374,8 +449,6 @@ static void multi_xfer()
 		asic_RaiseInterrupt(holly_GDROM_DMA);
 	}
 }
-
-u32 SecMode[4];
 
 static void GD_HLE_Command(u32 cc)
 {
@@ -437,7 +510,7 @@ static void GD_HLE_Command(u32 cc)
 			if (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk)
 			{
 				// nothing to play
-				gd_hle_state.status = BIOS_ERROR;
+				GDROM_HLE_NoDisc();
 				cdda.status = cdda_t::NoInfo;
 				SecNumber.Status = GD_STANDBY;
 				break;
@@ -481,7 +554,7 @@ static void GD_HLE_Command(u32 cc)
 			if (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk)
 			{
 				// no disc, no tracks: asking for one was a crash
-				gd_hle_state.status = BIOS_ERROR;
+				GDROM_HLE_NoDisc();
 				cdda.status = cdda_t::NoInfo;
 				SecNumber.Status = GD_STANDBY;
 				break;
@@ -742,6 +815,11 @@ void gdrom_hle_op()
 				gd_hle_state.status = BIOS_ACTIVE;
 				gd_hle_state.command = r[4];
 				gd_hle_state.multi_read_count = 0;
+				/* Nor is a read by DMA still under way: one that INIT or
+				 * RESET cut short was, and the next went on with it - the
+				 * old sectors to the old buffer - in place of its own. */
+				gd_hle_state.xfer_end_time = 0;
+				gd_hle_state.dma_read_count = 0;
 			}
 			break;
 
@@ -900,8 +978,13 @@ void gdrom_hle_op()
 			//
 			// Returns: zero if successful, -1 if failure
 			debugf("GDROM: HLE GDROM_SECTOR_MODE PTR_r4:%X",r[4]);
-			for(int i=0; i<4; i++) {
-				SecMode[i] = ReadMem32(r[4]+(i<<2));
+			// (asked for, it was taken as set: the game's own block came back as the answer)
+			SecMode[0] = ReadMem32(r[4]);
+			for(int i=1; i<4; i++) {
+				if (SecMode[0] == 0)
+					SecMode[i] = ReadMem32(r[4]+(i<<2));
+				else
+					WriteMem32(r[4]+(i<<2), SecMode[i]);
 				debugf("%08X", SecMode[i]);
 			}
 			r[0] = 0;

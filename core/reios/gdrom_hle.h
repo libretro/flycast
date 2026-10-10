@@ -96,6 +96,11 @@ struct gdrom_hle_state_t
 		LIBRETRO_US(last_request_id);
 		LIBRETRO_US(next_request_id);
 		LIBRETRO_US(status);
+		// (one of the five there are: nothing ends a command in a state that is none of them, and none can be sent until it has ended)
+		s32 status_read;
+		memcpy(&status_read, &status, sizeof(status_read));
+		if (status_read < BIOS_ERROR || status_read > BIOS_DATA_AVAIL)
+			status = BIOS_INACTIVE;
 		LIBRETRO_US(command);
 		LIBRETRO_US(params);
 		LIBRETRO_US(result);
@@ -110,6 +115,7 @@ struct gdrom_hle_state_t
 		LIBRETRO_US(multi_callback);
 		LIBRETRO_US(multi_callback_arg);
 		LIBRETRO_US(dma_trans_ended);
+		dma_trans_ended = *(const u8 *)&dma_trans_ended != 0;	// (a flag: 0 or 1)
 		LIBRETRO_US(xfer_end_time);
 		LIBRETRO_US(dma_read_sector);
 		LIBRETRO_US(dma_read_count);
