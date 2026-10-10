@@ -233,9 +233,23 @@ static int sched_tmu_cb(int ch, int sch_cycl, int jitter)
 			
 			//printf("Interrupt for %d, %d cycles\n", ch, sch_cycl);
 
-			//schedule next trigger by writing the TCNT register
-			u32 tcor = TMU_TCOR(ch);
-			write_TMU_TCNTch(ch, tcor + tcnt);
+			/* schedule next trigger by writing the TCNT register: what
+			 * it is loaded with again, less what it had gone past 0 by.
+			 * In 64 bits: with a TCOR of 0, or less than it had gone
+			 * past by, the sum is below 0 - more than one underflow in
+			 * the time - and as 32 bits that was a count of four
+			 * thousand million, the timer as good as stopped (upstream
+			 * 05d51cc35, DreamShell not starting). 0 then: the next one
+			 * is due at once. And a count that is still a little above
+			 * 0, taken for an underflow because it is within the
+			 * jitter, does not wrap the other way. */
+			s64 next = (s64)TMU_TCOR(ch) + tcnt64;
+
+			if (next < 0)
+				next = 0;
+			else if (next > 0xFFFFFFFFll)
+				next = 0xFFFFFFFFll;
+			write_TMU_TCNTch(ch, (u32)next);
 		}
 		else {
 			

@@ -35,7 +35,25 @@ void DMAC_Ch2St()
    // TA FIFO - Polygon and YUV converter paths and mirror
    // 10000000 - 10FFFFE0
    // 12000000 - 12FFFFE0
-   if ((dst & 0x01000000) == 0)
+   if ((dst & 0x01000000) == 0 && ((src >> 26) & 7) != 3)
+	{
+		/* Not from main memory, which is where a display list is: there is
+		 * no pointer to hand over (GetMemPtr() says so with NULL, which
+		 * used to be handed over all the same). Read as the bus would be,
+		 * 32 bytes at a time. Upstream refuses the transfer with an
+		 * address error; the processor has no such rule for this area or
+		 * that, and what a game that does this by mistake gets on the
+		 * machine is whatever is there. */
+		u32 block[8];
+
+		for (; len >= 32; len -= 32, src += 32)
+		{
+			for (u32 i = 0; i < 8; i++)
+				block[i] = ReadMem32_nommu(src + i * 4);
+			TAWrite(dst, block, 1);
+		}
+	}
+   else if ((dst & 0x01000000) == 0)
 	{
       u32 *sys_buf = (u32 *)GetMemPtr(src, len);
       if ((src & RAM_MASK) + len > RAM_SIZE)
