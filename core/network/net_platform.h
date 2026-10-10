@@ -52,6 +52,27 @@ typedef SOCKET sock_t;
 #define SHUT_RDWR SD_BOTH
 #endif
 
+/* Writing to a TCP connection the other end has closed raises SIGPIPE, and
+ * a SIGPIPE nothing handles ends the whole process. The signal's handling
+ * belongs to the frontend, so it is never raised instead: by a flag on each
+ * send where the system has one, and by an option set once on the socket
+ * where it has that (Apple, the BSDs). Windows has no such signal. */
+#if !defined(_WIN32) && defined(MSG_NOSIGNAL)
+#define L_MSG_NOSIGNAL MSG_NOSIGNAL
+#else
+#define L_MSG_NOSIGNAL 0
+#endif
+
+static inline void set_no_sigpipe(sock_t fd)
+{
+#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
+	int optval = 1;
+	setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, (const void *)&optval, sizeof(optval));
+#else
+	(void)fd;
+#endif
+}
+
 static inline void set_non_blocking(sock_t fd)
 {
 #ifndef _WIN32

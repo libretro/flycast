@@ -81,7 +81,7 @@ void get_host_by_name(const char *host, struct pico_ip4 dnsaddr)
 	qinfo->qtype = htons(PICO_DNS_TYPE_A);		// Address record
 	qinfo->qclass = htons(PICO_DNS_CLASS_IN);
 
-	if (sendto(sock_fd, buf, sizeof(pico_dns_packet) + qname_len + sizeof(struct pico_dns_question_suffix), 0, (struct sockaddr *)&dest, sizeof(dest)) < 0)
+	if (sendto(sock_fd, buf, sizeof(pico_dns_packet) + qname_len + sizeof(struct pico_dns_question_suffix), L_MSG_NOSIGNAL, (struct sockaddr *)&dest, sizeof(dest)) < 0)
 		perror("DNS sendto failed");
 }
 

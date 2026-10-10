@@ -214,7 +214,7 @@ void NaomiNetwork::processBeacon()
 		{
 			DEBUG_LOG(NETWORK, "NaomiServer: beacon received %ld bytes", n);
 			if (n == sizeof(buf) && !strncmp(buf, "flycast", n))
-				sendto(beacon_sock, buf, n, 0, (const struct sockaddr *)&addr, addrlen);
+				sendto(beacon_sock, buf, n, L_MSG_NOSIGNAL, (const struct sockaddr *)&addr, addrlen);
 		}
 	} while (n != -1);
 }
@@ -250,7 +250,7 @@ bool NaomiNetwork::findServer()
 
     for (int i = 0; i < 3 && !stopping(); i++)
     {
-        if (sendto(sockfd, "flycast", 6, 0, (struct sockaddr *)&addr, sizeof addr) == -1)
+        if (sendto(sockfd, "flycast", 6, L_MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof addr) == -1)
         {
             WARN_LOG(NETWORK, "Send datagram failed. errno=%d", get_last_error());
             // Try again in a tenth of a second
@@ -339,6 +339,7 @@ bool NaomiNetwork::startNetwork()
 			else
 			{
 				NOTICE_LOG(NETWORK, "Slave connection accepted");
+				set_no_sigpipe(clientSock);
 				slaves.push_back(clientSock);
 				if (slaves.size() == 3)
 					break;
@@ -360,7 +361,7 @@ bool NaomiNetwork::startNetwork()
 			{
 				buf[1] = { (u8)slot_num };
 				slot_num++;
-				::send(socket, (const char *)buf, 2, 0);
+				::send(socket, (const char *)buf, 2, L_MSG_NOSIGNAL);
 				set_non_blocking(socket);
 				set_tcp_nodelay(socket);
 			}
@@ -406,6 +407,8 @@ bool NaomiNetwork::startNetwork()
 				continue;
 
 			client_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (client_sock != INVALID_SOCKET)
+				set_no_sigpipe(client_sock);
 			struct sockaddr_in src_addr;
 			src_addr.sin_family = AF_INET;
 			src_addr.sin_addr = server_ip;
@@ -475,7 +478,7 @@ void NaomiNetwork::pipeSlaves()
 	{
 		ssize_t l = ::recv(*it, buf, sizeof(buf), 0);
 		if (l > 0)
-			::send(*(it + 1), buf, l, 0);
+			::send(*(it + 1), buf, l, L_MSG_NOSIGNAL);
 		// TODO handle errors
 	}
 }
@@ -553,7 +556,7 @@ void NaomiNetwork::send(u8 *data, u32 size)
 		return;
 
 	u16 pktnum = packet_number + 1;
-	if (::send(sockfd, (const char *)&pktnum, sizeof(pktnum), 0) < 2)
+	if (::send(sockfd, (const char *)&pktnum, sizeof(pktnum), L_MSG_NOSIGNAL) < 2)
 	{
 		if (errno != L_EAGAIN && errno != L_EWOULDBLOCK)
 		{
@@ -566,7 +569,7 @@ void NaomiNetwork::send(u8 *data, u32 size)
 		}
 		return;
 	}
-	if (::send(sockfd, (const char *)data, size, 0) < size)
+	if (::send(sockfd, (const char *)data, size, L_MSG_NOSIGNAL) < size)
 	{
 		WARN_LOG(NETWORK, "send failed. errno=%d", get_last_error());
 		if (isMaster())
@@ -588,7 +591,7 @@ void NaomiNetwork::shutdown()
 	retro_atomic_store_release_int(&network_stopping, 1);
 	// Ends whatever wait the network thread is in
 	if (wake_sock != INVALID_SOCKET)
-		::send(wake_sock, "", 1, 0);
+		::send(wake_sock, "", 1, L_MSG_NOSIGNAL);
 }
 void NaomiNetwork::closeSockets()
 {
