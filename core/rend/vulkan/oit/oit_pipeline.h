@@ -99,7 +99,8 @@ public:
 		if (fogImageView)
 		{
 			TSP fogTsp = {};
-			fogTsp.FilterMode = 1;
+			// single entries, read at the middle of their texels: see UpdateFogTexture() in gles.cpp
+			fogTsp.FilterMode = 0;
 			fogTsp.ClampU = 1;
 			fogTsp.ClampV = 1;
 			vk::Sampler fogSampler = samplerManager->GetSampler(fogTsp);

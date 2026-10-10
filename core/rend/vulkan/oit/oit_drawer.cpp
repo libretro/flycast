@@ -52,9 +52,9 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 	if (palette)
 	{
 		if (poly.tcw.PixelFmt == PixelPal4)
-			palette_index = float(poly.tcw.PalSelect << 4) / 1023.f;
+			palette_index = (float(poly.tcw.PalSelect << 4) + 0.5f) / 1024.f;
 		else
-			palette_index = float((poly.tcw.PalSelect >> 4) << 8) / 1023.f;
+			palette_index = (float((poly.tcw.PalSelect >> 4) << 8) + 0.5f) / 1024.f;
 	}
 
 	OITDescriptorSets::PushConstants pushConstants = {

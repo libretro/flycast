@@ -88,7 +88,8 @@ protected:
 		fragUniforms.colorClampMax[2] = ((pvrrc.fog_clamp_max >> 0) & 0xFF) / 255.0f;
 		fragUniforms.colorClampMax[3] = ((pvrrc.fog_clamp_max >> 24) & 0xFF) / 255.0f;
 
-		fragUniforms.cp_AlphaTestValue = (PT_ALPHA_REF & 0xFF) / 255.0f;
+		// half a step under the reference: see the same in gles/gles.cpp
+		fragUniforms.cp_AlphaTestValue = ((PT_ALPHA_REF & 0xFF) - 0.5f) / 255.0f;
 
 		return fragUniforms;
 	}

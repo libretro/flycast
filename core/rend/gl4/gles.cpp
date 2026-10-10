@@ -172,7 +172,8 @@ vec4 fog_clamp(vec4 col)
 
 vec4 palettePixel(sampler2D tex, vec2 coords)
 {
-	vec4 c = vec4(texture(tex, coords).r * 255.0 / 1023.0 + palette_index, 0.5, 0.0, 0.0);
+	// palette_index is where the middle of the palette's first colour is in the row of 1024
+	vec4 c = vec4(texture(tex, coords).r * (255.0 / 1024.0) + palette_index, 0.5, 0.0, 0.0);
 	return texture(palette, c.xy);
 }
 
@@ -682,7 +683,8 @@ static bool RenderFrame()
 
 	glUniformMatrix4fv(gl4.modvol_shader.normal_matrix, 1, GL_FALSE, gl4ShaderUniforms.normal_mat);
 
-	gl4ShaderUniforms.PT_ALPHA=(PT_ALPHA_REF&0xFF)/255.0f;
+	// half a step under the reference: see the same in gles.cpp
+	gl4ShaderUniforms.PT_ALPHA = ((PT_ALPHA_REF & 0xFF) - 0.5f) / 255.0f;
 
 	GLuint output_fbo;
 
@@ -699,7 +701,12 @@ static bool RenderFrame()
 
 		case 1: //0x1   565 RGB 16 bit
 			channels=GL_RGB;
-			format=GL_UNSIGNED_SHORT_5_6_5;
+			/* Eight bits a channel, as the other renderers have it: the
+			 * console blends at eight bits and cuts the result down to five
+			 * and six when it writes it to video memory, which is done when
+			 * the picture is read back. Asked for as 5-6-5, a driver may
+			 * give just that, and every blend then rounds to five bits. */
+			format=GL_UNSIGNED_BYTE;
 			break;
 
 		case 2: //0x2   4444 ARGB 16 bit

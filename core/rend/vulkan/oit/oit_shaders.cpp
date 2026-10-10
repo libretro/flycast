@@ -355,7 +355,8 @@ vec4 colorClamp(vec4 col)
 
 vec4 palettePixel(sampler2D tex, vec2 coords)
 {
-	vec4 c = vec4(texture(tex, coords).r * 255.0 / 1023.0 + pushConstants.palette_index, 0.5, 0.0, 0.0);
+	// palette_index is where the middle of the palette's first colour is in the row of 1024
+	vec4 c = vec4(texture(tex, coords).r * (255.0 / 1024.0) + pushConstants.palette_index, 0.5, 0.0, 0.0);
 	return texture(palette, c.xy);
 }
 

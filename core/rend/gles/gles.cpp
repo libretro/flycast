@@ -65,12 +65,12 @@ uniform highp float sp_FOG_DENSITY;
 
 /* Vertex input */
 in highp vec4    in_pos;
-in lowp  vec4     in_base;
-in lowp vec4     in_offs;
+in mediump vec4  in_base;
+in mediump vec4  in_offs;
 in highp vec2    in_uv;
 /* output */
-INTERPOLATION out lowp vec4 vtx_base;
-INTERPOLATION out lowp vec4 vtx_offs;
+INTERPOLATION out mediump vec4 vtx_base;
+INTERPOLATION out mediump vec4 vtx_offs;
               out highp vec2 vtx_uv;
 #if TARGET_GL == GLES2
               out highp float fog_depth;
@@ -154,31 +154,37 @@ out highp vec4 FragColor;
 
 /* Shader program params*/
 /* gles has no alpha test stage, so its emulated on the shader */
-uniform lowp float cp_AlphaTestValue;
+uniform highp float cp_AlphaTestValue;
 uniform highp vec4 pp_ClipTest;
-uniform lowp vec3 sp_FOG_COL_RAM,sp_FOG_COL_VERT;
+uniform mediump vec3 sp_FOG_COL_RAM,sp_FOG_COL_VERT;
 uniform highp float sp_FOG_DENSITY;
-uniform sampler2D tex,fog_table;
+uniform mediump sampler2D tex,fog_table;
 uniform lowp float trilinear_alpha;
-uniform lowp vec4 fog_clamp_min;
-uniform lowp vec4 fog_clamp_max;
-uniform sampler2D palette;
+uniform mediump vec4 fog_clamp_min;
+uniform mediump vec4 fog_clamp_max;
+uniform mediump sampler2D palette;
 uniform mediump int palette_index;
 #if pp_Shadowed == 1
 uniform lowp float shade_scale_factor;
 #endif
 
-/* Precision. The colours that come in are eight bits each and lowp holds
- * them, but lowp need not hold more than that: what is worked out from
- * them here (texture times colour, plus offset, into fog) is kept in
- * mediump so that each step does not round to an eighth bit again. Texture
- * coordinates are highp: in mediump, which may be a 16-bit float, a
- * coordinate that repeats a large texture a few times no longer says which
- * texel. The clip rectangle is in pixels and was lowp, which need not reach
- * past 2. */
+/* Precision. The colours that come in are eight bits each, so many 255ths.
+ * lowp need not hold those: it may be a number of 256ths and nothing finer,
+ * and no 255th but 0 and 1 is one of them - a colour, a texel, the fog
+ * colour or a clamp limit kept in lowp can be half a step out before
+ * anything is done with it, and comes out a step out about as often as
+ * not. Nor need lowp reach past 2, and a texel times 255, which is how the
+ * fog table and a palette index are read, is done in the precision of the
+ * texel: a sampler is lowp unless it says otherwise. So colours, samplers
+ * and what is worked out from them (texture times colour, plus offset, into
+ * fog) are mediump, which has ten bits at the least. (Only what is a number
+ * of quarters or of 256ths as it comes stays lowp.) Texture coordinates are
+ * highp: in mediump, which may be a 16-bit float, a coordinate that repeats
+ * a large texture a few times no longer says which texel. The clip
+ * rectangle is in pixels and was lowp, which need not reach past 2. */
 /* Vertex input*/
-INTERPOLATION in lowp vec4 vtx_base;
-INTERPOLATION in lowp vec4 vtx_offs;
+INTERPOLATION in mediump vec4 vtx_base;
+INTERPOLATION in mediump vec4 vtx_offs;
 in highp vec2 vtx_uv;
 #if TARGET_GL == GLES2
 in highp float fog_depth;
@@ -232,9 +238,14 @@ highp vec4 fog_clamp(highp vec4 col)
 
 #if pp_Palette == 1
 
-lowp vec4 palettePixel(highp vec2 coords)
+// The palette is a row of 1024 colours, and a colour is read at the middle
+// of its texel. (It used to be read at index/1023: the first few a
+// thousandth of a texel from the one before, the last at the very end of
+// the row.)
+mediump vec4 palettePixel(highp vec2 coords)
 {
-	highp vec2 c = vec2((texture(tex, coords).FOG_CHANNEL * 255.0 + float(palette_index)) / 1023.0, 0.5);
+	highp float index = texture(tex, coords).FOG_CHANNEL;
+	highp vec2 c = vec2((index * 255.0 + float(palette_index) + 0.5) / 1024.0, 0.5);
 	return texture(palette, c);
 }
 
@@ -799,8 +810,12 @@ void UpdateFogTexture(u8 *fog_table, GLenum texture_slot, GLint fog_image_format
 	{
 		fogTextureId = glcache.GenTexture();
 		glcache.BindTexture(GL_TEXTURE_2D, fogTextureId);
-		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		/* The shader reads single entries, at the middle of their texels,
+		 * and blends them itself: nothing for the card to filter, and
+		 * filtering, a card whose weights are not exact there lets the
+		 * entry next to it in. */
+		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	}
@@ -942,7 +957,13 @@ static bool RenderFrame(void)
 	glUniform4fv(gl.modvol_shader.depth_scale, 1, ShaderUniforms.depth_coefs);
 	glUniformMatrix4fv(gl.modvol_shader.normal_matrix, 1, GL_FALSE, ShaderUniforms.normal_mat);
 
-	ShaderUniforms.PT_ALPHA=(PT_ALPHA_REF&0xFF)/255.0f;
+	/* A punch-through texel is kept when its alpha, eight bits, is at least
+	 * the reference. The shader compares floats, and the two come to it by
+	 * different roads - a texel's alpha by the graphics card's own division -
+	 * so that one equal to the reference could come out a hair under it and
+	 * be dropped. The reference is given half a step low: then any alpha
+	 * that is a whole number of steps is on the right side by half a one. */
+	ShaderUniforms.PT_ALPHA = ((PT_ALPHA_REF & 0xFF) - 0.5f) / 255.0f;
 	ShaderUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
 
 	for (const auto& it : gl.shaders)
