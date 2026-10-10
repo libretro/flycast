@@ -101,6 +101,10 @@ struct maple_device
 };
 
 maple_device* maple_Create(MapleDeviceType type);
+// What a NAOMI's I/O boards have had in a save state since V21: maple_devs.cpp
+void maple_jvs_serialize_v21(void **data, unsigned int *total_size);
+void maple_jvs_unserialize_v21(void **data, unsigned int *total_size);
+void maple_jvs_state_before_v21(void);
 #define SIZE_OF_MIC_DATA	480 //ALSO DEFINED IN SipEmulator.java
 int get_mic_data(u8* buffer); //implemented in Android.cpp
 int push_vmu_screen(u8* buffer); //implemented in Android.cpp

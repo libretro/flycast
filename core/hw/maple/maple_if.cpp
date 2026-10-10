@@ -459,6 +459,43 @@ static void maple_handle_reconnect()
 	if (reconnect_time != 0 && reconnect_time <= sh4_sched_now64())
 	{
 		reconnect_time = 0;
+		// (a state loaded in the meantime has put its own devices there: they go first)
+		mcfg_DestroyDevices();
 		mcfg_CreateDevices();
 	}
+}
+
+/* What Maple has had in a save state since V21, after everything older:
+ * the I/O boards' part (maple_devs.cpp), and when the devices that have
+ * been unplugged are to be plugged in again, 0 if they are not waiting to
+ * be. The size is always the same.
+ *
+ * The time was not in a state. With run-ahead, which loads a state every
+ * frame, the devices came back in a frame that was run ahead and went
+ * again with the load that followed, and by then nothing was waiting to
+ * bring them back: a port's device changed, and every port was empty from
+ * then on. */
+void maple_serialize_v21(void **data, unsigned int *total_size)
+{
+	maple_jvs_serialize_v21(data, total_size);
+	LIBRETRO_S(reconnect_time);
+}
+
+bool maple_unserialize_v21(void **data, unsigned int *total_size)
+{
+	maple_jvs_unserialize_v21(data, total_size);
+	reconnect_time = 0;
+	LIBRETRO_US(reconnect_time);
+	// (it is never more than a tenth of a second away)
+	const u64 latest = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
+	if (reconnect_time > latest)
+		reconnect_time = latest;
+	return true;
+}
+
+/* A state from before V21: the boards as maple_devs.cpp says, and devices
+ * waiting to be plugged in again go on waiting, as they did. */
+void maple_state_before_v21(void)
+{
+	maple_jvs_state_before_v21();
 }

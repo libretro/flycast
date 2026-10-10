@@ -1657,6 +1657,9 @@ public:
 	u32 handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_out);
 	bool maple_serialize(void **data, unsigned int *total_size);
 	bool maple_unserialize(void **data, unsigned int *total_size);
+	// What a board has had in a save state since V21: see maple_jvs_serialize_v21()
+	void maple_serialize_v21(void **data, unsigned int *total_size);
+	void maple_state_v21(const u32 *coins, const u8 *flags);
 
 	bool lightgun_as_analog = false;
 
@@ -1669,6 +1672,9 @@ protected:
 		return remap_buttons(keycode);
 	}
 	virtual void write_digital_out(int count, u8 *data) { }
+	// What a drive board last answered, on a board that is wired to one
+	virtual u8 get_drive_board() { return 0; }
+	virtual void set_drive_board(u8 value) { }
 
 	u32 player_count = 0;
 	u32 digital_in_count = 0;
@@ -1858,6 +1864,9 @@ protected:
 				drive_board = 0xff & ~(1 << (7 - out));
 		}
 	}
+
+	virtual u8 get_drive_board() override { return drive_board; }
+	virtual void set_drive_board(u8 value) override { drive_board = value; }
 
 private:
 	u8 drive_board = 0;
@@ -2877,13 +2886,26 @@ struct maple_naomi_jamma : maple_sega_controller
 	   // (the prototype's own firmware is one of those that set crazy_mode; the BIOS's, before it, is not)
 	   hotd2p = crazy_mode && !strcmp(naomi_game_id, "hotd2p");
 	   create_io_boards();
-	   size_t board_count;
+	   /* How many boards there are is written as the build's own size_t:
+	    * eight bytes by a 64-bit build, four by a 32-bit one. The four
+	    * more are zeroes. Where a 32-bit build's state goes straight on,
+	    * the next byte is the first board's address on the bus or, with no
+	    * board, the device on the next port: never 0. So a state of either
+	    * build is read by both. (Each took the other's for its own: the
+	    * boards and every device after them were read four bytes out.) */
+	   u32 board_count = 0;
+	   u32 count_high = 0;
 	   LIBRETRO_US(board_count);
+	   if (LIBRETRO_US(count_high) && count_high != 0)
+	   {
+		  *data = (u8 *)*data - sizeof(count_high);
+		  *total_size -= sizeof(count_high);
+	   }
 	   /* The boards are this cabinet's, how many the state has is the
 	    * state's to say: one it has and the cabinet has not is read past
 	    * (what a board keeps: jvs_io_board::maple_serialize()), and there
 	    * are 31 addresses on the bus. */
-	   for (size_t i = 0; i < board_count && i < 31; i++)
+	   for (u32 i = 0; i < board_count && i < 31; i++)
 	   {
 		  if (i < io_boards.size())
 			 io_boards[i]->maple_unserialize(data, total_size);
@@ -2926,6 +2948,12 @@ u16 jvs_io_board::read_analog_axis(int player_num, int player_axis, bool inverte
 	}
 	return (inverted ? 0xff - v : v) << 8;
 }
+
+/* Where the rotary encoders are: one for each of the two ways each of the
+ * four mice moves. A game goes by how far one has turned since it last
+ * looked, so they are in the save state, from V21. */
+static f32 rotx[4];
+static f32 roty[4];
 
 u16 jvs_io_board::read_rotary_encoder(f32 &encoder_value, f32 delta_value)
 {
@@ -3265,8 +3293,6 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 				case 0x23:	// Read rotary encoders
 					{
 					   JVS_STATUS1();	// report byte
-					   static f32 rotx[4] = { 0 };
-					   static f32 roty[4] = { 0 };
 					   LOGJVS("rotenc ");
 					   // (there are four mice, an encoder for each of the two ways one moves)
 					   int chans = JVS_FIT(buffer_in[cmdi + 1]);
@@ -3388,6 +3414,119 @@ bool jvs_io_board::maple_unserialize(void **data, unsigned int *total_size)
    LIBRETRO_US(lightgun_as_analog);
 
    return true ;
+}
+
+/* What the I/O boards have had in a save state since V21, after everything
+ * older. It is the same size whatever the cabinet has, and whether or not
+ * its boards have been made yet (they are when the game first talks to
+ * them): room for two boards, which is the most a cabinet has, and the
+ * eight rotary encoders. A board is
+ *   u32 coin_count[4]   the coins counted in each chute
+ *   u8  coin_chute[4]   whether each coin switch was closed when last read
+ *   u8  drive_board     what Wave Runner GP's drive board last answered
+ *   u8  init_in_progress
+ * None of it was in a state. A load made the boards anew, with nothing
+ * counted, and the game, which goes by how far a count has moved since it
+ * last looked, saw coins come or go: on every frame with run-ahead, which
+ * loads a state each frame. The switches are kept with the counts: a coin
+ * that is in the chute across a load is otherwise counted twice. */
+#define JVS_STATE_BOARDS 2
+#define JVS_STATE_BOARD_FLAGS 6
+#define JVS_STATE_BOARD_SIZE (4 * sizeof(u32) + JVS_STATE_BOARD_FLAGS)
+
+void jvs_io_board::maple_serialize_v21(void **data, unsigned int *total_size)
+{
+   u8 flags[JVS_STATE_BOARD_FLAGS];
+
+   for (int i = 0; i < 4; i++)
+	  flags[i] = coin_chute[i];
+   flags[4] = get_drive_board();
+   flags[5] = init_in_progress;
+   LIBRETRO_SA(coin_count, 4);
+   LIBRETRO_SA(flags, JVS_STATE_BOARD_FLAGS);
+}
+
+// (a counter and the drive board's byte can be anything; a flag is 0 or 1 whatever byte the state has for it)
+void jvs_io_board::maple_state_v21(const u32 *coins, const u8 *flags)
+{
+   for (int i = 0; i < 4; i++)
+   {
+	  coin_count[i] = coins[i];
+	  coin_chute[i] = flags[i] != 0;
+   }
+   set_drive_board(flags[4]);
+   init_in_progress = flags[5] != 0;
+}
+
+// The NAOMI's I/O board device, if the machine has one: it is the first port's, and its boards are the ones in the state
+static maple_naomi_jamma *jvs_state_device()
+{
+   maple_device *dev = MapleDevices[0][5];
+
+   if (dev != NULL && dev->get_device_type() == MDT_NaomiJamma)
+	  return (maple_naomi_jamma *)dev;
+   return NULL;
+}
+
+void maple_jvs_serialize_v21(void **data, unsigned int *total_size)
+{
+   static const u8 no_board[JVS_STATE_BOARD_SIZE] = { 0 };
+   maple_naomi_jamma *jamma = jvs_state_device();
+
+   for (u32 i = 0; i < JVS_STATE_BOARDS; i++)
+   {
+	  if (jamma != NULL && i < jamma->io_boards.size())
+		 jamma->io_boards[i]->maple_serialize_v21(data, total_size);
+	  else
+		 LIBRETRO_SA(no_board, JVS_STATE_BOARD_SIZE);
+   }
+   LIBRETRO_SA(rotx, 4);
+   LIBRETRO_SA(roty, 4);
+}
+
+void maple_jvs_unserialize_v21(void **data, unsigned int *total_size)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+
+   // (the boards have been made by now: the older part of the state does that)
+   for (u32 i = 0; i < JVS_STATE_BOARDS; i++)
+   {
+	  u32 coins[4] = { 0 };
+	  u8 flags[JVS_STATE_BOARD_FLAGS] = { 0 };
+
+	  LIBRETRO_USA(coins, 4);
+	  LIBRETRO_USA(flags, JVS_STATE_BOARD_FLAGS);
+	  if (jamma != NULL && i < jamma->io_boards.size())
+		 jamma->io_boards[i]->maple_state_v21(coins, flags);
+   }
+
+   f32 rot[8] = { 0 };
+   LIBRETRO_USA(rot, 8);
+   for (int i = 0; i < 8; i++)
+   {
+	  // An encoder counts from 0 to 65535 and round again: anything else (not a number, too) is not where one can be
+	  if (!(rot[i] >= 0.f && rot[i] < 65536.f))
+		 rot[i] = 0.f;
+   }
+   memcpy(rotx, &rot[0], sizeof(rotx));
+   memcpy(roty, &rot[4], sizeof(roty));
+}
+
+/* A state from before V21 has none of this. Its boards are new ones, with
+ * nothing counted, as they have been on every load so far. The drive
+ * board's byte is the one it answers with when it has nothing to say,
+ * which is what the game most likely last saw, and not the 0 of a board
+ * that has not been spoken to yet. The encoders stay where they are. */
+void maple_jvs_state_before_v21(void)
+{
+   static const u32 coins[4] = { 0 };
+   static const u8 flags[JVS_STATE_BOARD_FLAGS] = { 0, 0, 0, 0, 0xff, 0 };
+   maple_naomi_jamma *jamma = jvs_state_device();
+
+   if (jamma == NULL)
+	  return;
+   for (u32 i = 0; i < jamma->io_boards.size(); i++)
+	  jamma->io_boards[i]->maple_state_v21(coins, flags);
 }
 
 maple_device* maple_Create(MapleDeviceType type)
