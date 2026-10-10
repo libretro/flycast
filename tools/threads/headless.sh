@@ -284,18 +284,22 @@ done
 # written over by whatever road the write came: at any of the addresses the
 # same memory is at, by DMA, through a store queue, through the MMU.
 #
-# Six times: as it is; with a state saved while it is at it and loaded a
+# Seven times: as it is; with a state saved while it is at it and loaded a
 # third of a second on, which is the code of the earlier moment back in
 # memory under whatever was compiled since; both with the MMU on the way a
 # Windows CE game has it (the core option), the program then mapping its
-# code somewhere else; and both with the program bringing a TLB of its own
+# code somewhere else; both with the program bringing a TLB of its own
 # (smc_elf.py --own-tlb), which the core has to notice and do the whole MMU
 # for - the exception for a first write, user mode, an address that is
-# mapped only while its entry is in the TLB.
+# mapped only while its entry is in the TLB; and once with that TLB loaded
+# after translation is turned on and not before (--late-tlb), which the
+# core has to notice as well.
 python3 "$T/smc_elf.py" "$WORK/smc.elf"
 python3 "$T/smc_elf.py" --own-tlb "$WORK/smc-own.elf"
+python3 "$T/smc_elf.py" --late-tlb "$WORK/smc-late.elf"
 for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a state loaded" \
-   "with a TLB of its own" "with a TLB of its own and a state loaded"; do
+   "with a TLB of its own" "with a TLB of its own and a state loaded" \
+   "with a TLB of its own loaded late"; do
    echo "== headless: code that is rewritten while it is in use, $SMC"
    unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
    WINCE=disabled
@@ -305,6 +309,9 @@ for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a s
       *MMU*)
          WINCE=enabled
          SMC_WANT=600d5ace;;
+      *late*)
+         SMC_ELF=$WORK/smc-late.elf
+         SMC_WANT=600d5ac5;;
       *own*)
          SMC_ELF=$WORK/smc-own.elf
          SMC_WANT=600d5ac5;;

@@ -71,7 +71,8 @@
  *
  * Step 24 is not about memory at all: an instruction, NEGC, that a
  * recompiler which takes addresses straight from its registers has to
- * leave those registers right after.
+ * leave those registers right after. Nor is step 25: SETS and CLRS, and
+ * shifts by a count of 32 either way that is there in the code.
  *
  * And with the MMU on, what is not rewritten code but goes wrong the same
  * way - something kept of how things were, that is used after they have
@@ -105,11 +106,14 @@
  *
  *   - pages of 1K, each mapped where its neighbour would be; a page that
  *     may be read and not written; the TLB emptied and then one of its
- *     entries written to; and more pages than an emulator that keeps what
- *     the TLB is given may have room for (step 21);
+ *     entries written to; more pages than an emulator that keeps what
+ *     the TLB is given may have room for; and code that was never written
+ *     run at two addresses, which has to know which it is at (step 21);
  *   - if the program was started with a TLB of its own making (smc_elf.py
  *     --own-tlb: it puts a page into the TLB by hand and only then turns
- *     translation on, which is how a core knows such a program): the
+ *     translation on, which is how a core knows such a program; or
+ *     --late-tlb: translation on first and the page after, which a core
+ *     has to know it by as well): the
  *     exception for the first write to a page; a page that has to be
  *     asked for again once another has taken its entry; a page for
  *     privileged mode only, read from user mode; and translation turned
@@ -135,7 +139,7 @@ __asm__(".section .text.start,\"ax\"\n.global _start\n_start:\n"
         " mov.l 1f,r15\n mov.l 2f,r0\n jmp @r0\n nop\n .align 2\n"
         "1: .long 0x8c00f000\n2: .long cmain\n"
         /* 16 bytes into the program: not 0 if it is to bring a TLB of its own
-         * (smc_elf.py --own-tlb sets it) */
+         * (smc_elf.py --own-tlb sets it to 1, --late-tlb to 2) */
         ".global smc_own_tlb\nsmc_own_tlb: .long 0\n"
         /* Where VBR points when the MMU is on: 0x100 on is where an exception
          * goes and 0x400 on where a TLB miss does. Both go to smc_fault(),
@@ -179,9 +183,33 @@ __asm__(".text\n.align 2\n.global smc_move64\nsmc_move64:\n"
 __asm__(".text\n.align 2\n.global smc_negc_twice\nsmc_negc_twice:\n"
         "  clrt\n  negc r4, r4\n  negc r4, r4\n  movt r0\n"
         "  rts\n  mov.l r4, @r5\n");
+/* smc_where(): where it is being run - an address worked out from the pc
+ * (MOVA), which is smc_where_mark's when it is run where it was loaded. */
+__asm__(".text\n.align 2\n.global smc_where\n.global smc_where_mark\nsmc_where:\n"
+        "  mova smc_where_mark, r0\n  rts\n  nop\n  .align 2\n"
+        "smc_where_mark:\n  .long 0\n");
+/* smc_s_flag(): SETS and CLRS, with SR read after each - 1 if S was set
+ * by the one and cleared by the other. */
+__asm__(".text\n.align 2\n.global smc_s_flag\nsmc_s_flag:\n"
+        "  sets\n  stc sr, r0\n  clrs\n  stc sr, r1\n"
+        "  mov #2, r2\n  and r2, r0\n  and r2, r1\n  shlr r0\n"
+        "  rts\n  or r1, r0\n");
+/* smc_shifts(x, p): x shifted by a count that is in the code - by -32,
+ * which is 32 to the right, logical (SHLD) and arithmetic (SHAD), and by
+ * 32, which is by 0 - to p[0] to p[3]. */
+__asm__(".text\n.align 2\n.global smc_shifts\nsmc_shifts:\n"
+        "  mov #-32, r1\n  mov r4, r0\n  shld r1, r0\n  mov.l r0, @r5\n"
+        "  mov r4, r0\n  shad r1, r0\n  mov.l r0, @(4,r5)\n"
+        "  mov #32, r1\n  mov r4, r0\n  shld r1, r0\n  mov.l r0, @(8,r5)\n"
+        "  mov r4, r0\n  shad r1, r0\n"
+        "  rts\n  mov.l r0, @(12,r5)\n");
 extern char smc_vbr[];
 extern const u32 smc_own_tlb;
 extern u32 smc_negc_twice(u32 x, volatile u32 *to);
+extern u32 smc_where(void);
+extern char smc_where_mark[];
+extern u32 smc_s_flag(void);
+extern void smc_shifts(u32 x, volatile u32 *to);
 extern void smc_move64(u32 from, u32 to);
 extern u32 smc_enter_user(u32 where, u32 what);
 
@@ -382,7 +410,14 @@ static u32 mmu_on(void)
    __asm__ volatile ("ldc %0, vbr" : : "r" (smc_vbr));
    *(volatile u32 *)PAGES_IN_MEMORY = 0x11223344;
    *(volatile u32 *)0xFF000000 = 0;                 /* PTEH: address space 0 */
-   if (smc_own_tlb)
+   if (smc_own_tlb == 2)
+   {
+      /* the other order: on with the TLB empty, and the page after */
+      *MMUCR = 0x00000005;
+      *TLB_ADDRESS((PAGES_MAPPED >> 12) & 0x3F) = PAGES_MAPPED | 0x300;
+      *TLB_DATA((PAGES_MAPPED >> 12) & 0x3F) = (PAGES_IN_MEMORY & 0x00FFF000) | 0x0C000176;
+   }
+   else if (smc_own_tlb)
    {
       *MMUCR = 0x00000004;                          /* the TLB emptied */
       *TLB_ADDRESS((PAGES_MAPPED >> 12) & 0x3F) = PAGES_MAPPED | 0x300;
@@ -972,6 +1007,28 @@ static u32 __attribute__((noinline)) user_mode(void)
    return 0;
 }
 
+/* Code that is at two addresses, and was never written: this program's
+ * own, where it was loaded and where the MMU has that memory as well. An
+ * emulator finds what it compiled by where the code is in memory, which
+ * is one place - and what it compiled for the one address has the other's
+ * pc in it. Run at each in turn, more often than a recompiler puts up
+ * with before it treats the code as code that keeps changing. */
+static u32 __attribute__((noinline)) at_two_addresses(void)
+{
+   const u32 here = (u32)smc_where, mark = (u32)smc_where_mark;
+   const u32 there = (here & 0x00FFFFFF) | 0x10000000;
+   u32 i;
+
+   for (i = 0; i < 8; i++)
+   {
+      if (call(here) != mark)
+         return 1;
+      if (call(there) != ((mark & 0x00FFFFFF) | 0x10000000))
+         return 2;
+   }
+   return 0;
+}
+
 /* Translation turned off and on again, a thousand times, as such programs
  * do all the time: while it is off an address is itself, and when it is
  * on again the TLB is what it was. */
@@ -1230,6 +1287,8 @@ void cmain(void)
          fail(21, 0x30 | r);
       if ((r = many()) != 0)
          fail(21, 0x40 | r);
+      if ((r = at_two_addresses()) != 0)
+         fail(21, 0x60 | r);
    }
 
    /* The MMU as it is, for a program with a TLB of its own. */
@@ -1264,6 +1323,25 @@ void cmain(void)
          fail(24, 1);
       if (left != 0)
          fail(24, 2);
+   }
+
+   /* Nor are these: two flag instructions and a shift whose count is in
+    * the code, which a recompiler has its own way with - SETS and CLRS had
+    * nowhere to put what they made, and a logical shift by -32 was done as
+    * the arithmetic one. */
+   *VERDICT = 25;
+   {
+      static volatile u32 out[4];
+
+      if (smc_s_flag() != 1)
+         fail(25, 1);
+      smc_shifts(0x80000001, out);
+      if (out[0] != 0)
+         fail(25, 2);
+      if (out[1] != 0xFFFFFFFF)
+         fail(25, 3);
+      if (out[2] != 0x80000001 || out[3] != 0x80000001)
+         fail(25, 4);
    }
 
    /* And for ever, for whoever saves a state and loads it later. */
