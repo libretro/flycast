@@ -102,7 +102,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "HDR-0100  ", nullptr,    { 0x3235D4, 0 }, { 0x00004000 } },		// Ferrari F355 Challenge (JP) vga mode only
 		{ "MK-5115450", nullptr,    { 0x3D3B10, 0 }, { 0x43700000 } },		// Fighting Vipers 2 (PAL)
 		{ "HDR-0133  ", nullptr,    { 0x3D3AF0, 0 }, { 0x43700000 } },		// Fighting Vipers 2 (JP)
-		{ "MK-51114  ", nullptr,    { 0x132DD8, 0xA26CA8, 0xA26738, 0xA275B8, 0xA26AD8, 0xA26908, 0 },
+		{ "MK-51114  ", "  E     ", { 0x132DD8, 0xA26CA8, 0xA26738, 0xA275B8, 0xA26AD8, 0xA26908, 0 },
 				{ 0x3F400000, 0x3F400000, 0x3F400000, 0x3F400000, 0x3F400000, 0x3F400000 } },	// Floigan Bros. Ep. 1 (PAL)
 		{ "T34201M   ", nullptr,    { 0x586290, 0x586260, 0 }, { 0x3F400000, 0x43F00000 } },	// Frame Gride (JP)
 		{ "T-8113D-50", nullptr,    { 0x55A354, 0 }, { 0x3FAAAAAB } },		// Fur Fighters (PAL)
@@ -119,7 +119,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "MK-5104150", nullptr,    { 0x23FCC4, 0 }, { 0x44558000 } },		// Headhunter (PAL)
 		{ "MK-5100250", nullptr,    { 0x4C6708, 0 }, { 0x43700000 } },		// House of the Dead 2, The (PAL)
 		{ "MK-51002  ", nullptr,    { 0x4C6088, 0 }, { 0x43700000 } },		// House of the Dead 2, The (USA)
-		{ "T38706M   ", nullptr,    { 0xC0CFA0, 0 }, { 0x3F400000 } },		// Ikaruga (JP)
+//		{ "T38706M   ", nullptr,    { 0xC0CFA0, 0 }, { 0x3F400000 } },		// Ikaruga (JP) not working
 		{ "T46001N   ", nullptr,    { 0x1C8A98, 0 }, { 0x3F400000 } },		// Illbleed (USA)
 		{ "T44904D 50", nullptr,    { 0x18C15C, 0x18C18C, 0 }, { 0x43F00000, 0x3F400000 } },	// Iron Aces (PAL)
 		{ "MK-51058  ", nullptr,    { 0x32E0FC, 0x32E12C, 0 }, { 0x43F00000, 0x3F400000 } },	// Jet Grind Radio (USA)
@@ -259,7 +259,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T35402M   ", nullptr,    { 0x315370, 0x3153A0, 0 }, { 0x43F00000, 0x3F400000 } },	// Tokyo Bus Guide (JP) doesn't work?
 		{ "T40201D 50", nullptr,    { 0x1D9F10, 0 }, { 0x3F400000 } },		// Tokyo Highway Challenge (PAL)
 		{ "T40210D 50", nullptr,    { 0x21E4F8, 0 }, { 0x43700000 } },		// Tokyo Highway Challenge 2 (PAL)
-		{ "xxxxxxxxxx", nullptr,    { 0x21DEF8, 0 }, { 0x3F400000 } },		// Tokyo Street Racer 2 (USA)
+		{ "T40211N   ", nullptr,    { 0x21DEF8, 0 }, { 0x43700000 } },		// Tokyo Xtreme Racer 2 (USA)
 //		{ "T36804D05 ", nullptr,    { 0xB75E28, 0 }, { 0x3EC00000 } },		// Tomb Raider: The Last Revelation (UK) (PAL) clipping, use hex patch instead
 		{ "T13008D 05", nullptr,    { 0x1D7C20, 0 }, { 0x3FA66666 } },		// Tony Hawk's Pro Skater 2 (PAL)
 		{ "T13006N   ", nullptr,    { 0x1D77A0, 0 }, { 0x3FA66666 } },		// Tony Hawk's Pro Skater 2 (USA)
