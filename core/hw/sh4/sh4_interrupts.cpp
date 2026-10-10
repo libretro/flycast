@@ -154,7 +154,12 @@ bool Do_Interrupt(u32 intEvn)
 
 bool Do_Exception(u32 epc, u32 expEvn, u32 CallVect)
 {
-	verify(sr.BL == 0);
+	/* The processor does not take an exception while they are blocked: it
+	 * resets. That is not done here, and the exception is taken as if they
+	 * were not, which is what this has always done; but it is said. (This
+	 * was a check that either stopped the emulator or was compiled out.) */
+	if (sr.BL != 0)
+		ERROR_LOG(SH4, "Exception %03X at %08X with exceptions blocked (SR.BL set): the SH4 would reset", expEvn, epc);
 	CCN_EXPEVT = expEvn;
 
 	ssr = sh4_sr_GetFull();

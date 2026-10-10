@@ -163,8 +163,12 @@ void WriteCHCR(u32 addr, u32 data)
 			const int dst_step = DMAC_CHCR(ch).DM == 1 ? (int)unit : DMAC_CHCR(ch).DM == 2 ? -(int)unit : 0;
 			u32 src = DMAC_SAR(ch);
 			u32 dst = DMAC_DAR(ch);
+			// a count of 0 is the most there is, 16777216 transfers, and not none
+			u32 count = DMAC_DMATCR(ch) & 0x00FFFFFF;
 
-			for (u32 count = DMAC_DMATCR(ch); count != 0; count--)
+			if (count == 0)
+				count = 0x01000000;
+			for (; count != 0; count--)
 			{
 				switch (unit)
 				{

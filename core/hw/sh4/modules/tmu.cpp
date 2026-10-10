@@ -146,8 +146,9 @@ static void UpdateTMUCounts(u32 reg)
 
 	if (old_mode[reg]==(TMU_TCR(reg) & 0x7))
 		return;
-	else
-		old_mode[reg]=(TMU_TCR(reg) & 0x7);
+	// (0xFFFF after a hard reset, when there is no divider yet)
+	const u32 mode_before=old_mode[reg];
+	old_mode[reg]=(TMU_TCR(reg) & 0x7);
 
 	u32 TCNT=read_TMU_TCNTch(reg);
 	switch(TMU_TCR(reg) & 0x7)
@@ -184,6 +185,13 @@ static void UpdateTMUCounts(u32 reg)
 			INFO_LOG(SH4, "TMU ch%d - TCR%d mode is External (7), can't be used on Dreamcast",reg,reg);
 			break;
 	}
+	/* The last three are clocks this machine does not have. The divider is
+	 * left as it was and the 2 below is added to it: once, on going to one
+	 * of them. It was added again on going from one of them to another, and
+	 * a game that kept doing that had the shift count past the width of
+	 * what it shifts. */
+	if (old_mode[reg]>=5 && mode_before>=5 && mode_before<=7)
+		tmu_shift[reg]-=2;
 	tmu_shift[reg]+=2;
 	write_TMU_TCNTch(reg,TCNT);
 }
