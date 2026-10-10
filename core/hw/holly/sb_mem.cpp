@@ -499,8 +499,9 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 		}
 		else if ( likely((addr>= 0x005F8000) && (addr<=0x005F9FFF)) ) // TA / PVR Core Reg.
 		{
-			verify(sz==4);
-			pvr_WriteReg(addr,data);
+			// these registers are 32 bits wide: a shorter write is ignored
+			if (sz == 4)
+				pvr_WriteReg(addr,data);
 		}
       else
          EMUERROR4("Write to area0_32 not implemented [Unassigned], addr=%x,data=%x,size=%d",addr,data,sz);

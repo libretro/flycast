@@ -221,7 +221,10 @@ static NOINLINE void DYNACALL ta_handle_cmd(u32 trans)
          if (ta_fsm_cl==7)
             ta_fsm_cl=dat->pcw.ListType;
          //printf("List %d ended\n",ta_fsm_cl);
-         asic_RaiseInterruptBothCLX(ListEndInterrupt[ta_fsm_cl]);
+         /* There are five lists and an interrupt for each. A list type of
+          * 5 to 7 is none of them: the list ends and nothing is raised. */
+         if (ta_fsm_cl < 5)
+            asic_RaiseInterruptBothCLX(ListEndInterrupt[ta_fsm_cl]);
          ta_fsm_cl=7;
          trans=TAS_NS;
       }

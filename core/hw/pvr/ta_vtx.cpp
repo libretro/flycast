@@ -1684,6 +1684,33 @@ static NOINLINE u32 *make_index_overrun(rend_context* ctx, u32 **out_end)
 	return start;
 }
 
+#include <stddef.h>
+/* (the words poly_same_state() takes two at a time are side by side) */
+typedef char ta_poly_layout[(offsetof(PolyParam, tcw) == offsetof(PolyParam, tsp) + 4
+		&& offsetof(PolyParam, isp) == offsetof(PolyParam, pcw) + 4
+		&& offsetof(PolyParam, tcw1) == offsetof(PolyParam, tsp1) + 4) ? 1 : -1];
+
+/* Whether two polygons are drawn in the same way, so that their strips can
+ * be joined into one: the same control, depth, shading and texture words,
+ * the same clipping rectangle and mode, and the same second shading and
+ * texture words (those of a polygon under two volumes; all ones on any
+ * other). Two words are compared at a time and there is one test for all
+ * of them. */
+static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
+{
+	u64 a_tex, b_tex, a_ctl, b_ctl, a_tex1, b_tex1;
+
+	memcpy(&a_tex,  &a->tsp,  sizeof(a_tex));
+	memcpy(&b_tex,  &b->tsp,  sizeof(b_tex));
+	memcpy(&a_ctl,  &a->pcw,  sizeof(a_ctl));
+	memcpy(&b_ctl,  &b->pcw,  sizeof(b_ctl));
+	memcpy(&a_tex1, &a->tsp1, sizeof(a_tex1));
+	memcpy(&b_tex1, &b->tsp1, sizeof(b_tex1));
+
+	return ((a_tex ^ b_tex) | (a_ctl ^ b_ctl) | (a_tex1 ^ b_tex1)
+			| (u64)(a->tileclip ^ b->tileclip)) == 0;
+}
+
 static void make_index(const List<PolyParam> *polys, int first, int end, bool merge, rend_context* ctx)
 {
 	u32 * const indices = ctx->idx.head();
@@ -1709,12 +1736,7 @@ static void make_index(const List<PolyParam> *polys, int first, int end, bool me
 		bool dupe_next_vtx = false;
 		if (merge
 				&& last_poly != NULL
-				&& poly->pcw.full == last_poly->pcw.full
-				&& poly->tcw.full == last_poly->tcw.full
-				&& poly->tsp.full == last_poly->tsp.full
-				&& poly->isp.full == last_poly->isp.full
-				// FIXME tcw1, tsp1, tileclip?
-				)
+				&& poly_same_state(poly, last_poly))
 		{
 			const u32 last_vtx = indices[last_poly->first + last_poly->count - 1];
 			IDX_PUT(last_vtx);

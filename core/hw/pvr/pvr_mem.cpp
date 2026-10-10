@@ -38,14 +38,20 @@ void YUV_init(void)
    TA_YUV_TEX_CNT = 0;
    YUV_blockcount = (TA_YUV_TEX_CTRL.yuv_u_size + 1) * (TA_YUV_TEX_CTRL.yuv_v_size + 1);
 
-   /* yuv_tex set asks for as many textures of 16x16 as there are
-    * macroblocks, not one of them all. That is not done: it comes out as
-    * the one texture, as upstream has it. (It used to end the emulator -
-    * die() - on a bit any program can set.) */
    if (TA_YUV_TEX_CTRL.yuv_tex != 0)
-      WARN_LOG(PVR, "YUV: a texture for each macroblock is not supported");
-   YUV_x_size = (TA_YUV_TEX_CTRL.yuv_u_size + 1) * 16;
-   YUV_y_size = (TA_YUV_TEX_CTRL.yuv_v_size + 1) * 16;
+   {
+      /* A texture of 16x16 for each macroblock, not one of them all: 512
+       * bytes each, one after another from the base address. Converted
+       * as a picture one macroblock wide and high, a macroblock fills
+       * exactly its 512 bytes and the next one starts where it ends. */
+      YUV_x_size = 16;
+      YUV_y_size = 16;
+   }
+   else
+   {
+      YUV_x_size = (TA_YUV_TEX_CTRL.yuv_u_size + 1) * 16;
+      YUV_y_size = (TA_YUV_TEX_CTRL.yuv_v_size + 1) * 16;
+   }
    YUV_index = 0;
 }
 

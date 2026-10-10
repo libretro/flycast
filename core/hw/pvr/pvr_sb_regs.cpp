@@ -101,7 +101,10 @@ void pvr_do_sort_dma(void)
 		if (SB_SDLAS==1)
 			link_addr   *= 32;
 
-		u32 ea          = (link_base_addr+link_addr) & RAM_MASK;
+		/* Parameters are 32 bytes and start on a multiple of that, whatever
+		 * the low bits of an unshifted link address say: the tile accelerator
+		 * copies them as whole aligned blocks. */
+		u32 ea          = (link_base_addr+link_addr) & (RAM_MASK - 31);
 		u32* ea_ptr     = (u32*)&mem_b.data[ea];
 		link_addr       = ea_ptr[0x1C>>2];//Next link
 
