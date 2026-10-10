@@ -1480,7 +1480,8 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 		return false;
 #endif
 	bool isram = false;
-	void* ptr = _vmem_write_const(op->rs1._imm, isram, std::max(4u, memop_bytes(optp)));
+	// (the handler for the size of the store: a byte or a word got the 32-bit one's)
+	void* ptr = _vmem_write_const(op->rs1._imm, isram, std::min(4u, memop_bytes(optp)));
 
 	eReg rs2 = r1;
 	eFSReg rs2f = f0;
@@ -1527,7 +1528,15 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 		if (optp == SZ_64F)
 			die("SZ_64F not supported");
 		MOV32(r0, op->rs1._imm);
-		if (optp == SZ_32F)
+		/* (A handler takes the byte or the word it is given as it comes:
+		 * extending a small argument is the caller's job on this host, and
+		 * a compiler that holds its callers to that stored the register's
+		 * other bits in whatever the handler keeps.) */
+		if (optp == SZ_8)
+			UXTB(r1, rs2);
+		else if (optp == SZ_16)
+			UXTH(r1, rs2);
+		else if (optp == SZ_32F)
 			VMOV(r1, rs2f);
 		else if (r1 != rs2)
 			MOV(r1, rs2);
@@ -2229,21 +2238,39 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 			
 		case shop_xtrct:
 			{
+				/* The low half of the one and the high half of the other.
+				 * Either may be a number the optimiser found, which is no
+				 * register to look up: its half is put in r0 as it is. */
 				eReg rd = reg.mapg(op->rd);
-				eReg rs1 = reg.mapg(op->rs1);
-				eReg rs2 = reg.mapg(op->rs2);
-				if (rd == rs1)
+				if (op->rs1.is_imm() && op->rs2.is_imm())
+					MOV32(rd, (op->rs1._imm >> 16) | (op->rs2._imm << 16));
+				else if (op->rs1.is_imm())
 				{
-					verify(rd != rs2);
-					LSR(rd, rs1, 16);
-					LSL(r0, rs2, 16);
+					MOV32(r0, op->rs1._imm >> 16);
+					ORR(rd, r0, reg.mapg(op->rs2), false, S_LSL, 16);
+				}
+				else if (op->rs2.is_imm())
+				{
+					MOV32(r0, op->rs2._imm << 16);
+					ORR(rd, r0, reg.mapg(op->rs1), false, S_LSR, 16);
 				}
 				else
 				{
-					LSL(rd, rs2, 16);
-					LSR(r0, rs1, 16);
+					eReg rs1 = reg.mapg(op->rs1);
+					eReg rs2 = reg.mapg(op->rs2);
+					if (rd == rs1)
+					{
+						verify(rd != rs2);
+						LSR(rd, rs1, 16);
+						LSL(r0, rs2, 16);
+					}
+					else
+					{
+						LSL(rd, rs2, 16);
+						LSR(r0, rs1, 16);
+					}
+					ORR(rd, rd, r0);
 				}
-				ORR(rd, rd, r0);
 			}
 			break;
 
@@ -2373,7 +2400,11 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 			{
 				//r1: base ptr
 				MOVW(r1,((size_t)sin_table)&0xFFFF);
-				UXTH(r0,reg.mapg(op->rs1));
+				// (the angle may be a number the optimiser found)
+				if (op->rs1.is_imm())
+					MOVW(r0,op->rs1._imm&0xFFFF);
+				else
+					UXTH(r0,reg.mapg(op->rs1));
 				MOVT(r1,((u32)sin_table)>>16);
 				
 				/*
@@ -2887,12 +2918,19 @@ void ngen_init(void)
 			}
 			else
 			{
-				if (i==0)
+				/* (a byte or a word is extended for the handler, as in
+				 * ngen_writemem_immediate(): the value is in r1) */
+				if (i==0 && s==5)
 					v=(size_t)fn;
 				else
 				{
 					v=(size_t)EMIT_GET_PTR();
-					MOV(r0,(eReg)(i));
+					if (i!=0)
+						MOV(r0,(eReg)(i));
+					if (s==3)
+						UXTB(r1,r1);
+					else if (s==4)
+						UXTH(r1,r1);
 					JUMP((u32)fn);
 				}
 			}

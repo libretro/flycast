@@ -95,6 +95,15 @@ static s32 mem_load8(u32 addr)  { return (signed char)ReadMem8(addr); }
 static s32 mem_load16(u32 addr) { return (short)ReadMem16(addr); }
 static u32 mem_load32(u32 addr) { return ReadMem32(addr); }
 static u64 mem_load64(u32 addr) { return ReadMem64(addr); }
+/* Whether extending a byte or a word that is passed to a function is the
+ * caller's job. It is the function's own by this host's rules, except on
+ * Apple's systems: a write handler called from compiled code there took the
+ * register's other bits along with the value. */
+#ifdef __APPLE__
+static const bool caller_extends = true;
+#else
+static const bool caller_extends = false;
+#endif
 static void mem_store8(u32 addr, u32 data)  { WriteMem8(addr, (u8)data); }
 static void mem_store16(u32 addr, u32 data) { WriteMem16(addr, (u16)data); }
 static void mem_store32(u32 addr, u32 data) { WriteMem32(addr, data); }
@@ -947,21 +956,40 @@ public:
 
 			case shop_xtrct:
 				{
+					/* The low half of the one and the high half of the
+					 * other. Either may be a number the optimiser found,
+					 * which is no register to look up: its half is put in
+					 * w0 as it is. */
 					const Register rd = regalloc.MapRegister(op.rd);
-					const Register rs1 = regalloc.MapRegister(op.rs1);
-					const Register rs2 = regalloc.MapRegister(op.rs2);
-					if (op.rs1._reg == op.rd._reg)
+					if (op.rs1.is_imm() && op.rs2.is_imm())
+						Mov(rd, (op.rs1._imm >> 16) | (op.rs2._imm << 16));
+					else if (op.rs1.is_imm())
 					{
-						verify(op.rs2._reg != op.rd._reg);
-						Lsr(rd, rs1, 16);
-						Lsl(w0, rs2, 16);
+						Mov(w0, op.rs1._imm >> 16);
+						Orr(rd, w0, Operand(regalloc.MapRegister(op.rs2), LSL, 16));
+					}
+					else if (op.rs2.is_imm())
+					{
+						Mov(w0, op.rs2._imm << 16);
+						Orr(rd, w0, Operand(regalloc.MapRegister(op.rs1), LSR, 16));
 					}
 					else
 					{
-						Lsl(rd, rs2, 16);
-						Lsr(w0, rs1, 16);
+						const Register rs1 = regalloc.MapRegister(op.rs1);
+						const Register rs2 = regalloc.MapRegister(op.rs2);
+						if (op.rs1._reg == op.rd._reg)
+						{
+							verify(op.rs2._reg != op.rd._reg);
+							Lsr(rd, rs1, 16);
+							Lsl(w0, rs2, 16);
+						}
+						else
+						{
+							Lsl(rd, rs2, 16);
+							Lsr(w0, rs1, 16);
+						}
+						Orr(rd, rd, w0);
 					}
-					Orr(rd, rd, w0);
 				}
 				break;
 
@@ -1286,6 +1314,8 @@ public:
 		switch (size)
 		{
 		case 1:
+			if (caller_extends)
+				Uxtb(w1, w1);
 			if (!mmu_enabled())
 				GenCallRuntime(WriteMem8);
 			else
@@ -1293,6 +1323,8 @@ public:
 			break;
 
 		case 2:
+			if (caller_extends)
+				Uxth(w1, w1);
 			if (!mmu_enabled())
 				GenCallRuntime(WriteMem16);
 			else
@@ -2139,7 +2171,12 @@ private:
 			}
 			else
 			{
-				Mov(w1, reg2);
+				if (caller_extends && size == 1)
+					Uxtb(w1, reg2);
+				else if (caller_extends && size == 2)
+					Uxth(w1, reg2);
+				else
+					Mov(w1, reg2);
 
 				switch(size)
 				{
