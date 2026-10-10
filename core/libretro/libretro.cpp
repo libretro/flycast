@@ -2495,6 +2495,25 @@ bool retro_serialize(void *data, size_t size)
    emu_hold();
 #endif
 
+   /* A state is not the same size every time - the tile accelerator's list
+    * is in it for as long as it is at that moment - and the frontend may be
+    * going by what it was told earlier. Counted first, which costs nothing:
+    * a state that does not fit is refused. It used to be written past the
+    * end of what the frontend had room for. */
+   {
+      unsigned int needed = 0;
+      void *nowhere = NULL;
+
+      dc_serialize(&nowhere, &needed);
+      if (needed > size)
+      {
+#if !defined(TARGET_NO_THREADS)
+         emu_release();
+#endif
+         return false;
+      }
+   }
+
    result = dc_serialize(&data_ptr, &total_size) ;
 
 #if !defined(TARGET_NO_THREADS)

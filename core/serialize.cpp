@@ -952,7 +952,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	KillTex = true;
 	if (version >= V10)
-		UnserializeTAContext(data, total_size, VCUR_LIBRETRO);
+		UnserializeTAContext(data, total_size, version);	// (the state's version, not this build's: a state of before V12 has no render passes to read)
 
 	LIBRETRO_USA(vram.data, vram.size);
 
