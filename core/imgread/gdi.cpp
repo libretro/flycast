@@ -72,6 +72,16 @@ Disc* load_gdi(const char* file)
 		gdi >> FADS;
 		gdi >> CTRL;
 		gdi >> SSIZE;
+		/* (Fewer lines than the first line says, or one that is not
+		 * numbers: the track read before was made again, in the same
+		 * place and with no name for its file, once for each that was
+		 * missing.) */
+		if (!gdi)
+		{
+			WARN_LOG(GDROM, "GDI: track %u of %u is missing or invalid", i + 1, iso_tc);
+			delete disc;
+			return nullptr;
+		}
 
 		/* (A file that ends here - in the middle of a line, or of a name
 		 * in quotes that is never closed - ends the reading: these loops

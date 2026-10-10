@@ -82,6 +82,9 @@ bool ConvertSector(const u8* in_buff , u8* out_buff , int from , int to,int sect
          break;
       default :
 		INFO_LOG(GDROM, "Sector conversion from %d to %d not supported \n", from , to);
+         // (a blank sector, not what the buffer held before)
+         if (to > 0)
+            memset(out_buff, 0, to);
          break;
    }
 
@@ -276,7 +279,11 @@ void GetDriveSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 {
    //printf("GD: read %08X, %d\n",StartSector,SectorCount);
    if (!disc)
+   {
+      // no disc: blank sectors, not what the buffer held before
+      memset(buff, 0, (size_t)SectorCount * secsz);
       return;
+   }
 
    disc->ReadSectors(StartSector,SectorCount,buff,secsz);
 }

@@ -241,6 +241,16 @@ struct Disc
 					memcpy(dst,src+8,2048);
 				else if (fmt == 2340 && secfmt==SECFMT_2336_MODE2)
 					ConvertSector(src, dst, 2336, fmt, FAD);
+				else if (fmt == 2352 && secfmt==SECFMT_2336_MODE2)
+				{
+					/* The whole sector from one kept without its first
+					 * sixteen bytes: those are the sync pattern, which is
+					 * the same in every sector, and the header, which is
+					 * made as it is for 2340. (Nothing was written.) */
+					static const u8 sync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+					memcpy(dst, sync, 12);
+					ConvertSector(src, dst + 12, 2336, 2340, FAD);
+				}
 				else if (fmt==2048 && (secfmt==SECFMT_2048_MODE1 || secfmt==SECFMT_2048_MODE2_FORM1 ))
 				{
 					memcpy(dst,src,2048);
@@ -249,16 +259,26 @@ struct Disc
 				{
 					INFO_LOG(GDROM, "GDR:fmt=2352;secfmt=2048");
 					memcpy(dst,src,2048);
+					// (and the rest of what was asked for is blank, not what the buffer held)
+					memset(dst+2048,0,2352-2048);
 				}
-				else if (fmt==2048 && secfmt==SECFMT_2448_MODE2)
+				else if (secfmt==SECFMT_2448_MODE2)
 				{
-					// Pier Solar and the Great Architects
+					/* A whole sector with its 96 bytes of subcode after
+					 * it: without those it is a whole sector, and is
+					 * converted as one. (Only to 2048 was: Pier Solar and
+					 * the Great Architects. Asked for whole, as music is,
+					 * nothing was written.) */
 					ConvertSector(src, dst, 2448, fmt, FAD);
 				}
 				else
 				{
-					WARN_LOG(GDROM, "ERROR: UNABLE TO CONVERT SECTOR. THIS IS FATAL. Format: %d Sector format: %d", fmt, secfmt);
-					//verify(false);
+					/* No way from one to the other - the header and the
+					 * error correction of a sector kept as 2048 bytes are
+					 * not there to give: a blank sector, not what the
+					 * buffer held before. */
+					WARN_LOG(GDROM, "Unable to convert sector. Format: %d Sector format: %d", fmt, secfmt);
+					memset(dst, 0, fmt);
 				}
 			}
 			else

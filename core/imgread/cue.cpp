@@ -98,6 +98,12 @@ Disc* cue_parse(const char* file)
 
 	while (!cuesheet.eof())
 	{
+		/* A number that was not one - a session, track or index given in
+		 * letters, or too large - stops the stream from reading at all,
+		 * short of the end of the sheet, and this loop then went round for
+		 * ever. The sheet is read on from where that was. */
+		if (cuesheet.fail())
+			cuesheet.clear();
       std::string token;
 		cuesheet >> token;
 
