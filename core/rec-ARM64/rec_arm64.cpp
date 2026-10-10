@@ -2402,7 +2402,7 @@ static Arm64Assembler* compiler;
 
 void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool staging, bool optimise)
 {
-	verify(emit_FreeSpace() >= 16 * 1024);
+	verify(emit_FreeSpace() >= CODE_MARGIN);
 
 	compiler = new Arm64Assembler();
 

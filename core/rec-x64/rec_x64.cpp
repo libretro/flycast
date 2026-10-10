@@ -2962,7 +2962,7 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 	verify(CPU_RUNNING == offsetof(Sh4RCB, cntx.CpuRunning));
 	verify(PC == offsetof(Sh4RCB, cntx.pc));
 	verify(CTX_BASE == offsetof(Sh4RCB, cntx) + CTX_BIAS);
-	verify(emit_FreeSpace() >= 16 * 1024);
+	verify(emit_FreeSpace() >= CODE_MARGIN);
 
 	compiler = new BlockCompiler();
 

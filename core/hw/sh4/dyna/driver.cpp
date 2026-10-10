@@ -211,7 +211,7 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 	u32 pc=next_pc;
 	//printf("rdv_CompilePC next_pc %p\n", next_pc);
 
-	if (emit_FreeSpace()<16*1024 || pc==0x8c0000e0 || pc==0xac010000 || pc==0xac008300)
+	if (emit_FreeSpace() < CODE_MARGIN || pc==0x8c0000e0 || pc==0xac010000 || pc==0xac008300)
 		recSh4_ClearCache();
 
 	RuntimeBlockInfo* rbi = ngen_AllocateBlock();
@@ -225,7 +225,7 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 	rbi->mmu_go_on = rdv_MmuMayGoOn(rbi);
 	if (smc_hotspots.find(rbi->addr) != smc_hotspots.end())
 	{
-		if (TEMP_CODE_SIZE - TempLastAddr < 16 * 1024)
+		if (TEMP_CODE_SIZE - TempLastAddr < CODE_MARGIN)
 			clear_temp_cache(false);
 		emit_ptr = (u32 *)(TempCodeCache + TempLastAddr);
 		emit_ptr_limit = (u32 *)(TempCodeCache + TEMP_CODE_SIZE);
@@ -294,14 +294,18 @@ DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
 	if (mmu_enabled())
 	{
 		RuntimeBlockInfoPtr block = bm_GetBlock(addr);
-		blockcheck_failures = block->blockcheck_failures + 1;
-		if (blockcheck_failures > 5)
+		// (gone already, if what failed was run once more after it was discarded)
+		if (block)
 		{
-			bool inserted = smc_hotspots.insert(addr).second;
-			if (inserted)
-				DEBUG_LOG(DYNAREC, "rdv_BlockCheckFail SMC hotspot @ %08x fails %d", addr, blockcheck_failures);
+			blockcheck_failures = block->blockcheck_failures + 1;
+			if (blockcheck_failures > 5)
+			{
+				bool inserted = smc_hotspots.insert(addr).second;
+				if (inserted)
+					DEBUG_LOG(DYNAREC, "rdv_BlockCheckFail SMC hotspot @ %08x fails %d", addr, blockcheck_failures);
+			}
+			bm_DiscardBlock(block.get());
 		}
-		bm_DiscardBlock(block.get());
 	}
 	else
 	{

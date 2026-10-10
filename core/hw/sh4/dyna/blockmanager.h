@@ -12,11 +12,19 @@ typedef std::shared_ptr<RuntimeBlockInfo> RuntimeBlockInfoPtr;
 
 #define CODE_SIZE   (16*1024*1024)
 
-#ifdef NO_MMU
-#define TEMP_CODE_SIZE (0)
-#else
+/* For the blocks whose code keeps being rewritten (smc_hotspots). A build
+ * with NO_MMU has them as well - it used to have no room here at all, and
+ * would have been given a block to write into it all the same. */
 #define TEMP_CODE_SIZE (1024*1024)
-#endif
+
+/* The room there has to be in a code cache before a block is compiled into
+ * it: more than any one block comes to. A block is up to 511 operations,
+ * and with the MMU on a load or store can be over a hundred bytes of code.
+ * The largest seen here is 10 KB (Sega Rally 2); it was 16 KB that was
+ * asked for, and upstream went to 32 KB after Tomb Raider: The Last
+ * Revelation, another Windows CE game, ran past it. 64 KB of 16 MB is
+ * nothing to give for not having to wonder. */
+#define CODE_MARGIN (64*1024)
 
 extern u8* CodeCache;
 
