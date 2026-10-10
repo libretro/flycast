@@ -26,6 +26,7 @@
 #include "hw/holly/holly_intc.h"
 #include "hw/sh4/sh4_sched.h"
 #include <libretro.h>
+#include <features/features_cpu.h>
 #include <pico_config.h>
 #include "network/picoppp.h"
 
@@ -118,6 +119,80 @@ static void DSPTestEnd();
 
 static u64 last_dial_time;
 static u64 connected_time;
+
+/* The telephone line.
+ *
+ * A save state holds the modem - its registers, the DSP's memory, how far a
+ * call has got - but not the line: the PPP stack at the far end and the
+ * host's sockets behind it are this process's, and cannot be put back. So a
+ * modem that is connected says in the state which line it is connected over,
+ * by a number no other line has, and the modem of a state that is loaded is
+ * only on the line again if that line is the one this process has up:
+ *
+ * - it is (run-ahead and rewind load states of a moment ago): the line is
+ *   left alone. What the game took from it since the state was made is
+ *   given to it again from rx_log, in the same order, and what it sent since
+ *   then, and now sends again, is not sent twice;
+ * - it is not (a state of another session or of an earlier call, or one from
+ *   too long ago for rx_log): a line that is up now is hung up, since the
+ *   game of the state knows nothing of it, and the state's own line is dead.
+ *   Nothing comes over a dead line, and after as long as a modem waits for a
+ *   carrier that has gone, the modem reports the far end's hanging up: the
+ *   game can dial again. */
+#define LINE_WINDOW 4096
+// Steps of 238 us without a carrier before the modem gives the line up: 1.4 s
+#define DEAD_LINE_STEPS 5880
+static u32 line_id;			// the line the modem is connected over, 0 when it is not connected (in the state)
+static u32 rx_pos;			// bytes the modem has taken from that line (in the state)
+static u32 tx_pos;			// bytes the modem has given to it (in the state)
+static u16 dead_steps;		// steps a connected modem has gone without its line (in the state)
+static u32 live_line;		// the line this process has up, 0 for none
+static u32 rx_taken;		// bytes taken from the live line
+static u32 tx_sent;			// bytes given to the live line
+static u8 rx_log[LINE_WINDOW];	// the last bytes taken from the live line
+
+static bool line_is_live()
+{
+	return live_line != 0 && line_id == live_line;
+}
+
+// The line is hung up, if one is up
+static void line_close()
+{
+	stop_pico();
+	live_line = 0;
+}
+
+// The next byte from the live line, -1 if there is none
+static int line_read()
+{
+	int c;
+
+	if (rx_pos != rx_taken)
+		c = rx_log[rx_pos % LINE_WINDOW];
+	else
+	{
+		c = read_pico();
+		if (c < 0)
+			return c;
+		rx_log[rx_taken % LINE_WINDOW] = (u8)c;
+		rx_taken++;
+	}
+	rx_pos++;
+	return c;
+}
+
+static void line_write(u8 b)
+{
+	if (tx_pos == tx_sent)
+	{
+		write_pico(b);
+		tx_sent++;
+	}
+	tx_pos++;
+}
+
+static void line_lost();
 
 #ifndef NDEBUG
 static unsigned long last_comm_stats;
@@ -260,6 +335,15 @@ static int modem_sched_func(int tag, int cycles, int jitter)
 			dspram[0x209] = 0xbf;	// 21.6 - 33.6 kpbs supported, asymmetric supported
 
 			start_pico();
+			// The time is the line's number: no other line, of this
+			// process or of another, was made at this microsecond
+			live_line = (u32)cpu_features_get_time_usec();
+			if (live_line == 0)
+				live_line = 1;
+			line_id = live_line;
+			rx_pos = rx_taken = 0;
+			tx_pos = tx_sent = 0;
+			dead_steps = 0;
 			connect_state = CONNECTED;
 			callback_cycles = SH4_MAIN_CLOCK / 1000000 * 238;	// 238 us
 			connected_time = 0;
@@ -278,9 +362,18 @@ static int modem_sched_func(int tag, int cycles, int jitter)
 #endif
 			if (connected_time == 0)
 				connected_time = sh4_sched_now64();
-			if (!modem_regs.reg1e.RDBF)
+			if (!line_is_live())
 			{
-				int c = read_pico();
+				// The line of a state that was loaded, which is not up
+				if (++dead_steps >= DEAD_LINE_STEPS)
+				{
+					line_lost();
+					break;
+				}
+			}
+			else if (!modem_regs.reg1e.RDBF)
+			{
+				int c = line_read();
 				// Delay reading from ppp to avoid choking WinCE
 				if (c >= 0 && sh4_sched_now64() - connected_time >= SH4_MAIN_CLOCK / 4)
 				{
@@ -320,7 +413,9 @@ void ModemInit()
 
 void ModemTerm()
 {
-	stop_pico();
+	line_close();
+	line_id = 0;
+	dead_steps = 0;
 	/* A reset of the console calls this as well. The step of the chip's
 	 * self test or of a call that was due is not to come: it used to, after
 	 * the reset and with the registers the game before had left, and when
@@ -344,6 +439,30 @@ void ModemTerm()
 static void schedule_callback(int ms)
 {
    sh4_sched_request(modem_sched, SH4_MAIN_CLOCK / 1000 * ms);
+}
+
+/* The far end has hung up: the carrier and what comes with it are gone, the
+ * abort code says that a cleardown was asked for, and the modem is ready to
+ * dial again. */
+static void line_lost()
+{
+	connect_state = DISCONNECTED;
+	line_id = 0;
+	dead_steps = 0;
+
+	modem_regs.reg14 = 0x96;			// ABCODE: cleardown
+	if (modem_regs.reg1f.NSIE)
+	{
+		// ABCODE
+		if (dspram[regs_int_mask_addr[0x014]])
+			modem_regs.reg1f.NSIA = 1;
+	}
+	modem_regs.reg1f.NEWS = 1;
+	SET_STATUS_BIT(0x0f, modem_regs.reg0f.RLSD, 0);
+	SET_STATUS_BIT(0x0f, modem_regs.reg0f.FED, 0);
+	SET_STATUS_BIT(0x0f, modem_regs.reg0f.DSR, 0);
+	SET_STATUS_BIT(0x0f, modem_regs.reg0f.RTSDT, 0);
+	modem_regs.reg1e.TDBE = 1;
 }
 
 #define SetReg16(rh,rl,v) {modem_regs.ptr[rh]=(v)>>8;modem_regs.ptr[rl]=(v)&0xFF; }
@@ -444,7 +563,9 @@ static void modem_reset(u32 v)
 		LOG("Modem reset start ...");
 		// The line drops as soon as reset is asserted: some games never
 		// release it again
-		stop_pico();
+		line_close();
+		line_id = 0;
+		dead_steps = 0;
 	}
 	else
 	{
@@ -535,7 +656,9 @@ static void ModemNormalWrite(u32 reg, u32 data)
 			if (sent_fp)
 				fputc(data, sent_fp);
 #endif
-			write_pico(data);
+			// (what is sent over a dead line is lost)
+			if (line_is_live())
+				line_write(data);
 			modem_regs.reg1e.TDBE = 0;
 		}
 		break;
@@ -769,4 +892,88 @@ void ModemWriteMem_A0_006(u32 addr, u32 data, u32 size)
 	}
 
 	LOG("modem reg %03X write %X -- wtf is it?",reg,data);
+}
+
+/* The modem in a save state, since version 21 of the format: everything a
+ * game can see through the registers, and which line the modem is on (see
+ * line_id). The step that is due next is the scheduler's, and has been in
+ * the state all along. Only a Dreamcast has a modem. */
+void modem_serialize_v21(void **data, unsigned int *total_size)
+{
+	if (settings.System != DC_PLATFORM_DREAMCAST)
+		return;
+
+	u8 state8 = (u8)state;
+	u8 connect_state8 = (u8)connect_state;
+	u8 word_dspram_write8 = word_dspram_write;
+	u8 module_download8 = module_download;
+	u8 reg1b_save8 = (u8)reg1b_save;
+
+	LIBRETRO_SA(modem_regs.ptr, sizeof(modem_regs.ptr));
+	LIBRETRO_SA(dspram, sizeof(dspram));
+	LIBRETRO_S(state8);
+	LIBRETRO_S(connect_state8);
+	LIBRETRO_S(word_dspram_write8);
+	LIBRETRO_S(module_download8);
+	LIBRETRO_S(reg1b_save8);
+	LIBRETRO_S(download_crc);
+	LIBRETRO_S(dead_steps);
+	LIBRETRO_S(line_id);
+	LIBRETRO_S(rx_pos);
+	LIBRETRO_S(tx_pos);
+	LIBRETRO_S(last_dial_time);
+	LIBRETRO_S(connected_time);
+}
+
+bool modem_unserialize_v21(void **data, unsigned int *total_size)
+{
+	if (settings.System != DC_PLATFORM_DREAMCAST)
+		return true;
+
+	u8 state8;
+	u8 connect_state8;
+	u8 word_dspram_write8;
+	u8 module_download8;
+	u8 reg1b_save8;
+
+	LIBRETRO_USA(modem_regs.ptr, sizeof(modem_regs.ptr));
+	LIBRETRO_USA(dspram, sizeof(dspram));
+	LIBRETRO_US(state8);
+	LIBRETRO_US(connect_state8);
+	LIBRETRO_US(word_dspram_write8);
+	LIBRETRO_US(module_download8);
+	LIBRETRO_US(reg1b_save8);
+	LIBRETRO_US(download_crc);
+	LIBRETRO_US(dead_steps);
+	LIBRETRO_US(line_id);
+	LIBRETRO_US(rx_pos);
+	LIBRETRO_US(tx_pos);
+	LIBRETRO_US(last_dial_time);
+	LIBRETRO_US(connected_time);
+
+	// Any byte is a register's or the DSP memory's; the rest is checked
+	state = state8 <= MS_NORMAL ? (ModemStates)state8 : MS_INVALID;
+	connect_state = connect_state8 <= CONNECTED ? (ConnectState)connect_state8 : DISCONNECTED;
+	word_dspram_write = word_dspram_write8 != 0;
+	module_download = module_download8 != 0;
+	reg1b_save = reg1b_save8;
+	// Only a modem that is connected is on a line
+	if (state != MS_NORMAL || connect_state != CONNECTED)
+		line_id = 0;
+
+	// The line that is up is not the state's, or the state is from too long
+	// ago on it for the game to be given again what it has taken since
+	if (live_line != 0
+			&& (line_id != live_line
+				|| rx_taken - rx_pos > LINE_WINDOW
+				|| tx_sent - tx_pos > LINE_WINDOW))
+		line_close();
+
+	return true;
+}
+
+/* A state from before version 21 has nothing of the modem but its next step:
+ * the modem, and the line, stay as they are. */
+void modem_state_before_v21(void)
+{
 }
