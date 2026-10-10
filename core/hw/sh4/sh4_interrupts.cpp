@@ -72,7 +72,13 @@ void SIIDRebuild(void)
 	//rebuild interrupt table
 	for (u32 ilevel=0;ilevel<16;ilevel++)
 	{
-	   for (u32 isrc=0;isrc<28;isrc++)
+	   /* Among sources of one level the first in the list of sources
+	    * (in interrupts_init) comes first - IRL before the on-chip ones,
+	    * a DMAC channel before the timers, timer 0 before timer 1: so it
+	    * is given the highest bit of the level, and the list is gone
+	    * through from its end. (It was gone through from its start, and
+	    * the order within a level was the reverse of the processor's.) */
+	   for (u32 isrc=28;isrc-->0;)
        {
 	      if (InterruptSourceList[isrc].GetPrLvl()==ilevel)
 	      {
@@ -214,7 +220,7 @@ void interrupts_init(void)
 		{GIPB(1),0x4E0},//sh4_SCI1_ERI      = KMIID(sh4_int,0x4E0,17),
 		{GIPB(1),0x500},//sh4_SCI1_RXI      = KMIID(sh4_int,0x500,18),
 		{GIPB(1),0x520},//sh4_SCI1_TXI      = KMIID(sh4_int,0x520,19),
-		{GIPB(1),0x540},//sh4_SCI1_TEI      = KMIID(sh4_int,0x540,29),
+		{GIPB(1),0x540},//sh4_SCI1_TEI      = KMIID(sh4_int,0x540,20),
 
 		//SCIF
 		{GIPC(1),0x700},//sh4_SCIF_ERI      = KMIID(sh4_int,0x700,21),
@@ -227,7 +233,7 @@ void interrupts_init(void)
 
 		//REF
 		{GIPB(2),0x580},//sh4_REF_RCMI      = KMIID(sh4_int,0x580,26),
-		{GIPA(2),0x5A0},//sh4_REF_ROVI      = KMIID(sh4_int,0x5A0,27),
+		{GIPB(2),0x5A0},//sh4_REF_ROVI      = KMIID(sh4_int,0x5A0,27),
 	};
 
 	verify(sizeof(InterruptSourceList)==sizeof(InterruptSourceList2));

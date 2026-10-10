@@ -60,7 +60,7 @@ enum InterruptID
 		sh4_SCI1_ERI        = KMIID(sh4_int,0x4E0,17),
 		sh4_SCI1_RXI        = KMIID(sh4_int,0x500,18),
 		sh4_SCI1_TXI        = KMIID(sh4_int,0x520,19),
-		sh4_SCI1_TEI        = KMIID(sh4_int,0x540,29),
+		sh4_SCI1_TEI        = KMIID(sh4_int,0x540,20),
 
 		//SCIF
 		sh4_SCIF_ERI        = KMIID(sh4_int,0x700,21),
