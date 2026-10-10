@@ -164,7 +164,6 @@ ROM board internal layouts:
 #include "awave_regs.h"
 
 u32 AWCartridge::ReadMem(u32 address, u32 size) {
-	verify(size != 1);
 	switch(address & 255)
 	{
 //	case AW_EPR_OFFSETH_addr:
@@ -441,6 +440,9 @@ void AWCartridge::Unserialize(void **data, unsigned int *total_size)
 {
 	LIBRETRO_US(mpr_offset);
 	LIBRETRO_US(mpr_bank);
+	// (two bits of what the game writes: more would take a read of the
+	// ROMs' words past the end of them)
+	mpr_bank &= 3;
 	LIBRETRO_US(epr_offset);
 	LIBRETRO_US(mpr_file_offset);
 	LIBRETRO_US(mpr_record_index);

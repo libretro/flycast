@@ -58,13 +58,6 @@ protected:
 	u32 DmaOffset;
 	u32 DmaCount;
 	u32 key = 0;
-	// Naomi 840-0001E communication board
-	u16 comm_ctrl = 0xC000;
-	u16 comm_offset = 0;
-	u16 comm_status0 = 0;
-	u16 comm_status1 = 0;
-	u16 m68k_ram[128 * 1024 / sizeof(u16)];
-	u16 comm_ram[64 * 1024 / sizeof(u16)];
 };
 
 class DecryptedCartridge : public NaomiCartridge

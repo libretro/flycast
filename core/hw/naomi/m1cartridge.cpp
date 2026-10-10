@@ -164,6 +164,9 @@ void M1Cartridge::Unserialize(void** data, unsigned int* total_size) {
 	// on it)
 	if (buffer_actual_size > sizeof(buffer) || (encryption && buffer_actual_size < 2))
 		buffer_actual_size = sizeof(buffer);
+	// (bits waiting in avail_val: never more than a refill on top of seven)
+	if (avail_bits > 39)
+		avail_bits = 0;
 
    NaomiCartridge::Unserialize(data, total_size);
 }

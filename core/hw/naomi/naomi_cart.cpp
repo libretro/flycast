@@ -391,7 +391,10 @@ static void naomi_copy_interleaved(u16 *to, const u8 *blob, u32 len)
       const __m128i zero  = _mm_setzero_si128();
       const __m128i other = _mm_set1_epi32((int)0xFFFF0000u);
 
-      for (; i >= 8; i -= 8, from += 8, to += 16)
+      /* (never the last word this way: the sixteen words stored reach one
+       * past the eighth one read, and after the last word of the second
+       * ROM of a pair that is the end of the cartridge) */
+      for (; i > 8; i -= 8, from += 8, to += 16)
       {
          const __m128i words = _mm_loadu_si128((const __m128i *)from);
          const __m128i low   = _mm_unpacklo_epi16(words, zero);
@@ -1266,11 +1269,10 @@ bool Cartridge::Read(u32 offset, u32 size, void* dst)
 	offset &= 0x1FFFFFFF;
 	if (offset >= RomSize || (offset + size) > RomSize)
 	{
-		static u32 ones = 0xffffffff;
-
 		// Makes Outtrigger boot
 		INFO_LOG(NAOMI, "offset %d > %d", offset, RomSize);
-		memcpy(dst, &ones, size);
+		// (as many bytes of ones as were asked for: this copied them out of four, however many that was)
+		memset(dst, 0xff, size);
 	}
 	else
 	{
@@ -1337,7 +1339,6 @@ void NaomiCartridge::AdvancePtr(u32 size) {
 
 u32 NaomiCartridge::ReadMem(u32 address, u32 size)
 {
-	verify(size!=1);
 	//printf("+naomi?WTF? ReadMem: %X, %d\n", address, size);
 	switch(address & 255)
 	{
@@ -1405,35 +1406,8 @@ u32 NaomiCartridge::ReadMem(u32 address, u32 size)
 		DEBUG_LOG(NAOMI, "naomi ReadBoardId: %X, %d", address, size);
 		return 1;
 
-	case NAOMI_COMM2_CTRL_addr & 255:
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_CTRL read");
-		return comm_ctrl;
-
-	case NAOMI_COMM2_OFFSET_addr & 255:
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_OFFSET read");
-		return comm_offset;
-
-	case NAOMI_COMM2_DATA_addr & 255:
-		{
-			DEBUG_LOG(NAOMI, "NAOMI_COMM2_DATA read @ %04x", comm_offset);
-			u16 value;
-			if (comm_ctrl & 1)
-				value = m68k_ram[comm_offset / 2];
-			else {
-				// TODO u16 *commram = (u16*)membank("comm_ram")->base();
-				value = comm_ram[comm_offset / 2];
-			}
-			comm_offset += 2;
-			return value;
-		}
-
-	case NAOMI_COMM2_STATUS0_addr & 255:
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_STATUS0 read");
-		return comm_status0;
-
-	case NAOMI_COMM2_STATUS1_addr & 255:
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_STATUS1 read");
-		return comm_status1;
+	// (the communication board's registers, 5f7018 to 5f7028, never get
+	// here on a NAOMI: see ReadMem_naomi())
 
 	default: break;
 	}
@@ -1552,36 +1526,6 @@ void NaomiCartridge::WriteMem(u32 address, u32 data, u32 size)
 		//This should be valid
 	case NAOMI_BOARDID_READ_addr&255:
 		DEBUG_LOG(NAOMI, "naomi WriteMem: %X <= %X, %d", address, data, size);
-		return;
-
-	case NAOMI_COMM2_CTRL_addr & 255:
-		comm_ctrl = (u16)data;
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_CTRL set to %x", comm_ctrl);
-		return;
-
-	case NAOMI_COMM2_OFFSET_addr & 255:
-		comm_offset = (u16)data;
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_OFFSET set to %x", comm_offset);
-		return;
-
-	case NAOMI_COMM2_DATA_addr & 255:
-		if (comm_ctrl & 1)
-			m68k_ram[comm_offset / 2] = (u16)data;
-		else {
-			// TODO u16 *commram = (u16*)membank("comm_ram")->base();
-			comm_ram[comm_offset / 2] = (u16)data;
-		}
-		comm_offset += 2;
-		return;
-
-	case NAOMI_COMM2_STATUS0_addr & 255:
-		comm_status0 = (u16)data;
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_STATUS0 set to %x", comm_status0);
-		return;
-
-	case NAOMI_COMM2_STATUS1_addr & 255:
-		comm_status1 = (u16)data;
-		DEBUG_LOG(NAOMI, "NAOMI_COMM2_STATUS1 set to %x", comm_status1);
 		return;
 
 	default:

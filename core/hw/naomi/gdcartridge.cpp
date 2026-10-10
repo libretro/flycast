@@ -508,8 +508,11 @@ bool GDCartridge::device_start()
 			gdrom = OpenDisc((std::string(g_roms_dir) + "/" + g_parent_name + "/" + gdrom_name + ".chd").c_str());
 		if (gdrom == NULL)
 		{
-		   ERROR_LOG(NAOMI, "Naomi GD-ROM: can't open %s", gdrom_path.c_str());
-		   return true;
+		   // The game is on the disc and nowhere else: with nothing in the
+		   // board's memory neither the BIOS nor the built-in boot has
+		   // anything to start.
+		   ERROR_LOG(NAOMI, "Naomi GD-ROM: cannot open the disc image %s.chd (or .gdi): the game cannot start without it", gdrom_path.c_str());
+		   return false;
 		}
 		// primary volume descriptor
 		// read frame 0xb06e (frame=sector+150)
@@ -598,7 +601,10 @@ bool GDCartridge::device_start()
 		delete gdrom;
 
 		if (!dimm_data)
-			ERROR_LOG(NAOMI, "Naomi GDROM: Could not find the file to decrypt.");
+		{
+			ERROR_LOG(NAOMI, "Naomi GDROM: Could not find the file to decrypt on the disc image %s", gdrom_path.c_str());
+			return false;
+		}
 	}
 	return true;
 }
