@@ -104,12 +104,12 @@ int NaomiNetwork::waitReadable(const sock_t *socks, int count, int64_t usec)
 	FD_ZERO(&readable);
 	for (int i = 0; i < count; i++)
 	{
-		if (socks[i] == INVALID_SOCKET)
+		if (socks[i] == INVALID_SOCKET || !fits_select(socks[i]))
 			continue;
 		FD_SET(socks[i], &readable);
 		max_fd = std::max(max_fd, (int)socks[i]);
 	}
-	if (wake_sock != INVALID_SOCKET)
+	if (wake_sock != INVALID_SOCKET && fits_select(wake_sock))
 	{
 		FD_SET(wake_sock, &readable);
 		max_fd = std::max(max_fd, (int)wake_sock);
@@ -128,7 +128,7 @@ int NaomiNetwork::waitReadable(const sock_t *socks, int count, int64_t usec)
 	if (select(max_fd + 1, &readable, nullptr, nullptr, usec >= 0 ? &tv : nullptr) <= 0)
 		return 0;
 	for (int i = 0; i < count; i++)
-		if (socks[i] != INVALID_SOCKET && FD_ISSET(socks[i], &readable))
+		if (socks[i] != INVALID_SOCKET && fits_select(socks[i]) && FD_ISSET(socks[i], &readable))
 			found++;
 	return found;
 }
@@ -471,7 +471,9 @@ bool NaomiNetwork::startNetwork()
 
 void NaomiNetwork::pipeSlaves()
 {
-	if (!isMaster() || slot_count < 3)
+	// The slot numbers are the server's word: one that is told it is the
+	// master has no ring of slaves to pass anything round
+	if (!isMaster() || slot_count < 3 || slaves.size() < 2)
 		return;
 	char buf[16384];
 	for (auto it = slaves.begin(); it != slaves.end() - 1; it++)
@@ -569,7 +571,7 @@ void NaomiNetwork::send(u8 *data, u32 size)
 		}
 		return;
 	}
-	if (::send(sockfd, (const char *)data, size, L_MSG_NOSIGNAL) < size)
+	if (::send(sockfd, (const char *)data, size, L_MSG_NOSIGNAL) < (ssize_t)size)
 	{
 		WARN_LOG(NETWORK, "send failed. errno=%d", get_last_error());
 		if (isMaster())

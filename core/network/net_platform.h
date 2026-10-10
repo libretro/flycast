@@ -73,6 +73,47 @@ static inline void set_no_sigpipe(sock_t fd)
 #endif
 }
 
+/* A listening port can be bound again as soon as its socket is closed,
+ * though connections accepted on it are still winding down: without this
+ * the bind fails for a minute or more after a game is restarted. Not on
+ * Windows: a port can be bound again there without it, and with it any
+ * other program could bind the port while it is in use here. */
+static inline void set_reuse_addr(sock_t fd)
+{
+#ifndef _WIN32
+	int optval = 1;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(optval));
+#else
+	(void)fd;
+#endif
+}
+
+/* Whether a socket can be waited on with select(). A descriptor set has
+ * room for the numbers below FD_SETSIZE and FD_SET does not look: a higher
+ * one is written outside the set. Windows' sets hold the sockets themselves
+ * and FD_SET leaves out what does not fit. */
+static inline bool fits_select(sock_t fd)
+{
+#ifndef _WIN32
+	return fd < FD_SETSIZE;
+#else
+	(void)fd;
+	return true;
+#endif
+}
+
+/* The socket if it is valid and select() can wait on it; otherwise it is
+ * closed and INVALID_SOCKET is returned. */
+static inline sock_t selectable_socket(sock_t fd)
+{
+	if (VALID(fd) && !fits_select(fd))
+	{
+		closesocket(fd);
+		return INVALID_SOCKET;
+	}
+	return fd;
+}
+
 static inline void set_non_blocking(sock_t fd)
 {
 #ifndef _WIN32

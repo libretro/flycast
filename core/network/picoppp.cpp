@@ -228,7 +228,8 @@ struct socket_pair
 			len = r;
 			data = buf;
 		}
-		if (pico_sock->remote_port == short_be(5011) && len >= 5)
+		// What is waiting in in_buffer went through here when it was received
+		if (data == buf && pico_sock->remote_port == short_be(5011) && len >= 5)
 		{
 			// Visual Concepts sport games
 			if (buf[0] == 1)
@@ -463,7 +464,7 @@ static void tcp_callback(uint16_t ev, pico_socket *s)
 	//		ka_val = 5000;
 	//		pico_socket_setoption(sock_a, PICO_SOCKET_OPT_KEEPINTVL, &ka_val);
 
-			sock_t sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			sock_t sockfd = selectable_socket(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
 			if (!VALID(sockfd))
 			{
 				perror("socket");
@@ -564,7 +565,7 @@ static sock_t find_udp_socket(uint16_t src_port)
 	if (it != udp_sockets.end())
 		return it->second;
 
-	sock_t sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	sock_t sockfd = selectable_socket(socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
 	if (!VALID(sockfd))
 	{
 		perror("socket");
@@ -650,7 +651,7 @@ static void read_native_sockets()
 	{
 		addr_len = sizeof(src_addr);
 		memset(&src_addr, 0, addr_len);
-		sock_t sockfd = accept(it->second, (sockaddr *)&src_addr, &addr_len);
+		sock_t sockfd = selectable_socket(accept(it->second, (sockaddr *)&src_addr, &addr_len));
 		if (!VALID(sockfd))
 		{
 			if (get_last_error() != L_EAGAIN && get_last_error() != L_EWOULDBLOCK)
@@ -1255,7 +1256,13 @@ static void *pico_thread_func(void *)
 		{
 			uint16_t port = short_be(ports->tcpPorts[i]);
 			saddr.sin_port = port;
-			sock_t sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			sock_t sockfd = selectable_socket(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+			if (!VALID(sockfd))
+			{
+				perror("socket");
+				continue;
+			}
+			set_reuse_addr(sockfd);
 			if (::bind(sockfd, (sockaddr *)&saddr, saddr_len) < 0)
 			{
 				perror("bind");
@@ -1327,7 +1334,7 @@ static bool make_wake_socket()
 	if (WSAStartup(MAKEWORD(2, 0), &wsaData) != 0)
 		return false;
 #endif
-	sock_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	sock_t sock = selectable_socket(socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
 	if (!VALID(sock))
 		return false;
 	memset(&addr, 0, sizeof(addr));

@@ -32,7 +32,6 @@ extern "C" {
 
 void get_host_by_name(const char *name, struct pico_ip4 dnsaddr);
 int get_dns_answer(struct pico_ip4 *address, struct pico_ip4 dnsaddr);
-char *read_name(char *reader, char *buffer, int *count);
 void set_non_blocking(sock_t fd);
 
 static sock_t sock_fd = INVALID_SOCKET;
@@ -44,7 +43,7 @@ void get_host_by_name(const char *host, struct pico_ip4 dnsaddr)
 	DEBUG_LOG(MODEM, "get_host_by_name: %s", host);
 	if (!VALID(sock_fd))
 	{
-		sock_fd = socket(AF_INET , SOCK_DGRAM , IPPROTO_UDP);
+		sock_fd = selectable_socket(socket(AF_INET , SOCK_DGRAM , IPPROTO_UDP));
 		set_non_blocking(sock_fd);
 	}
 
@@ -90,6 +89,30 @@ sock_t get_dns_socket(void)
 	return sock_fd;
 }
 
+/* The length of the name at @p: labels, each behind its length, up to a zero
+ * byte or to a pointer to an earlier name (two bytes). 0 if the name does
+ * not end before @end. */
+static int dns_name_len(const u8 *p, const u8 *end)
+{
+	const u8 *start = p;
+
+	while (p < end)
+	{
+		if ((*p & 0xC0) == 0xC0)
+			return end - p >= 2 ? (int)(p - start) + 2 : 0;
+		if (*p == 0)
+			return (int)(p - start) + 1;
+		// A label is 63 bytes at most: a length above that is of a kind
+		// not known here
+		if (*p & 0xC0)
+			return 0;
+		if (end - p <= *p)
+			return 0;
+		p += *p + 1;
+	}
+	return 0;
+}
+
 int get_dns_answer(struct pico_ip4 *address, struct pico_ip4 dnsaddr)
 {
 	struct sockaddr_in peer;
@@ -106,48 +129,39 @@ int get_dns_answer(struct pico_ip4 *address, struct pico_ip4 dnsaddr)
 	if (peer.sin_addr.s_addr != dnsaddr.addr)
 		return -1;
 
+	if (r < (int)sizeof(pico_dns_packet))
+		return -1;
+
 	pico_dns_packet *dns = (pico_dns_packet*) buf;
 
+	// Every count, length and name in it is the sender's word: nothing is
+	// read past the bytes that were received
+	const u8 *end = (const u8 *)buf + r;
 	// move to the first answer
-	char *reader = &buf[sizeof(pico_dns_packet) + qname_len + sizeof(struct pico_dns_question_suffix)];
-
-	int stop = 0;
+	const u8 *reader = (const u8 *)&buf[sizeof(pico_dns_packet) + qname_len + sizeof(struct pico_dns_question_suffix)];
 
 	for (int i = 0; i < ntohs(dns->ancount); i++)
 	{
 		// FIXME Check name?
-		free(read_name(reader, buf, &stop));
-		reader = reader + stop;
+		const int name_len = reader < end ? dns_name_len(reader, end) : 0;
+		if (name_len == 0 || (size_t)(end - reader) - name_len < sizeof(struct pico_dns_record_suffix))
+			return -1;
+		reader = reader + name_len;
 
-		struct pico_dns_record_suffix *record = (struct pico_dns_record_suffix *)reader;
-		reader = reader + sizeof(struct pico_dns_record_suffix);
+		struct pico_dns_record_suffix record;
+		memcpy(&record, reader, sizeof(record));
+		reader = reader + sizeof(record);
 
-		if (ntohs(record->rtype) == PICO_DNS_TYPE_A) // Address record
+		const u32 rdlength = ntohs(record.rdlength);
+		if ((size_t)(end - reader) < rdlength)
+			return -1;
+		if (ntohs(record.rtype) == PICO_DNS_TYPE_A && rdlength >= 4) // Address record
 		{
 			memcpy(&address->addr, reader, 4);
 
 			return 0;
 		}
-		reader = reader + ntohs(record->rdlength);
+		reader = reader + rdlength;
 	}
 	return -1;
-}
-
-char *read_name(char *reader, char *buffer, int *count)
-{
-	char *name = (char *)malloc(128);
-	if ((uint8_t)reader[0] & 0xC0)
-	{
-		int offset = (((uint8_t)reader[0] & ~0xC0) << 8) + (uint8_t)reader[1];
-		reader = &buffer[offset];
-		*count = 2;
-	}
-	else
-	{
-		*count = strlen(reader) + 1;
-	}
-	pico_dns_notation_to_name(reader, 128);
-	strcpy(name, reader + 1);
-
-	return name;
 }
