@@ -567,7 +567,8 @@ struct ChannelEx
 
 			/* In the envelope's units, all 10 bits of it. The envelope
 			 * used to be brought down to the 8 of the others, and the level
-			 * went by steps of 0.375 dB where the chip's are 0.094. */
+			 * went by steps of 0.375 dB where the chip's are 0.094.
+			 * The amplitude LFO is in those units too: see UpdateLFO(). */
 			u32 ofsatt;
 			if (ccd->VOFF == 1)
 			{
@@ -575,7 +576,7 @@ struct ChannelEx
 			}
 			else
 			{
-				ofsatt = (lfo.alfo << 2) + AEG.GetValue();
+				ofsatt = lfo.alfo + AEG.GetValue();
 				ofsatt = std::min(ofsatt, (u32)1023); // make sure it never gets more 1023 -- it can happen with some alfo/aeg combinations
 			}
 			u32 const max_att = 1023 - ofsatt;
@@ -830,7 +831,14 @@ struct ChannelEx
 				lfo.SetStartValue(O);
 		}
 
-		lfo.alfo_shft=8-ccd->ALFOS;
+		/* The wave, 0 to 255, comes down by 7 - ALFOS and is added to the
+		 * attenuation in the envelope's units, 64 to 6 dB: at 7 that is up
+		 * to 255 of them, 24 dB, and half as many for each setting below,
+		 * which is what the chip's table of depths says (0.4, 0.8, 1.5, 3,
+		 * 6, 12 and 24 dB). At 0 there is none. It used to come down by
+		 * 8 - ALFOS and be added in units four times as big, which was
+		 * twice as deep at every setting: 47.6 dB at 7. */
+		lfo.alfo_shft = ccd->ALFOS ? 7 - ccd->ALFOS : 8;
 
 		lfo.alfo_calc=ALFOWS_CALC[ccd->ALFOWS];
 		lfo.plfo_calc=PLFOWS_CALC[ccd->PLFOWS];
@@ -1207,7 +1215,9 @@ void CalcAlfo(ChannelEx* ch)
 		break;
 
 	case 3:// Random ! .. not :p
-		rv=(ch->lfo.state>>3)^(ch->lfo.state<<3)^(ch->lfo.state&0xE3);
+		// (8 bits, as the other waves are: the shift up made 11 of it, and
+		// the top three came through at every depth but the deepest)
+		rv=((ch->lfo.state>>3)^(ch->lfo.state<<3)^(ch->lfo.state&0xE3))&0xFF;
 		break;
 	}
 	ch->lfo.alfo=rv>>ch->lfo.alfo_shft;
