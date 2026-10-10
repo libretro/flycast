@@ -149,7 +149,8 @@ static void AicaInternalDMA()
 		{
 			// to wave mem
 			u32 addr = ((CommonData->DMEA_hi << 16) | (CommonData->DMEA_lo << 2)) & ARAM_MASK;
-			u32 len = std::min(CommonData->DLG, ARAM_SIZE - addr);
+			// (DLG counts 32-bit words; what is left of memory is in bytes)
+			u32 len = std::min(CommonData->DLG, (ARAM_SIZE - addr) / 4);
 			memset(&aica_ram.data[addr], 0, len * 4);
 		}
 		else
@@ -165,7 +166,7 @@ static void AicaInternalDMA()
 		// Data xfer
 		u32 waddr = ((CommonData->DMEA_hi << 16) | (CommonData->DMEA_lo << 2)) & ARAM_MASK;
 		u32 raddr = CommonData->DRGA << 2;
-		u32 len = std::min(CommonData->DLG, ARAM_SIZE - waddr);
+		u32 len = std::min(CommonData->DLG, (ARAM_SIZE - waddr) / 4);
 		if (CommonData->DDIR)
 		{
 			// reg to wave mem

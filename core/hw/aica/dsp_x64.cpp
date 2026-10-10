@@ -428,7 +428,9 @@ private:
 		// RBP is constant for this program
 		add(ADDR, DSP->RBP);
 		// ADDR & ARAM_MASK
-		and_(ADDR, ARAM_MASK);
+		// (and even: it is a 16-bit word there, and RBP is only as good as
+		// the save state it may have come out of)
+		and_(ADDR, ARAM_MASK & ~1);
 	}
 
 	template<class Ret, class... Params>
@@ -465,7 +467,11 @@ void dsp_init()
 	dsp.regs.MDEC_CT = 1;
 	dsp.dyndirty = true;
 
-	if (!vmem_platform_prepare_jit_block(CodeBuffer, sizeof(CodeBuffer), (void**)&pCodeBuffer))
+	/* Once: this is called on every reset, and on Windows the code does
+	 * not go in CodeBuffer but in memory allocated here, which nothing gave
+	 * back. The same block serves until the program ends. */
+	if (pCodeBuffer == nullptr
+			&& !vmem_platform_prepare_jit_block(CodeBuffer, sizeof(CodeBuffer), (void**)&pCodeBuffer))
 		die("mprotect failed in x64 dsp");
 }
 

@@ -640,7 +640,8 @@ void compile()
 	for (u32 ops = 0; ops < 32; ops++)
 	{
 		//Read opcode ...
-		u32 opcd = *(u32*)&aica_ram[pc & ARAM_MASK];
+		// (a whole word inside memory, whatever the low bits of pc are)
+		u32 opcd = *(u32*)&aica_ram[pc & ARAM_MASK & ~3];
 
 #if 0
 		std::ostringstream ostr;
@@ -722,8 +723,14 @@ void flush()
 
 void init()
 {
-	bool rc = vmem_platform_prepare_jit_block(ARM7_TCB, ICacheSize, (void**)&ICache);
-	verify(rc);
+	/* Once: this is called for every game that is loaded, and on Windows
+	 * the code does not go in ARM7_TCB but in memory allocated here, which
+	 * nothing gave back. The same block serves until the program ends. */
+	if (ICache == nullptr)
+	{
+		bool rc = vmem_platform_prepare_jit_block(ARM7_TCB, ICacheSize, (void**)&ICache);
+		verify(rc);
+	}
 
 	flush();
 }

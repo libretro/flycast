@@ -238,7 +238,9 @@ void dsp_rec_DRAM_CI(x86_block& x86e,_INST& prev_op,u32 step,x86_gpr_reg MEM_RD_
 	{
 		//Get and mask ram address :)
 		x86e.Emit(op_mov32,EAX,&dsp.regs.MEM_ADDR);
-		x86e.Emit(op_and32, EAX, ARAM_MASK);
+		// (and even: it is a 16-bit word there, and MEM_ADDR is only as
+		// good as the save state it may have come out of)
+		x86e.Emit(op_and32, EAX, ARAM_MASK & ~1);
 
 		x86e.Emit(op_add32,EAX,(unat)aica_ram.data);
 

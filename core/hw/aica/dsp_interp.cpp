@@ -299,6 +299,10 @@ void dsp_step()
 	if (dsp.dyndirty)
 	{
 		dsp.dyndirty = false;
+		/* (The ring buffer is 16-bit words: its start is even when it comes
+		 * from the register, and a state's is made so, or the last word
+		 * could end a byte past sound memory.) */
+		dsp.RBP &= ~1;
 		AICADSP_Start(&dsp);
 	}
 	AICADSP_Step(&dsp);

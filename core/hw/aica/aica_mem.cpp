@@ -79,11 +79,15 @@ void WriteReg(u32 addr,u32 data)
 		WriteAicaReg<2>(addr,data);
 }
 //Aica reads (both sh4&arm)
+/* The registers are 16 bits wide, each at an even address: anything wider
+ * than a byte is for the register the address is in. An odd address used
+ * to go through as it was, and one at 0x7FFF read or wrote a byte past
+ * the end of aica_reg. */
 u32 libAICA_ReadReg(u32 addr, u32 size)
 {
    if (size == 1)
       return ReadReg<1>(addr & 0x7FFF);
-   return ReadReg<2>(addr & 0x7FFF);
+   return ReadReg<2>(addr & 0x7FFE);
 }
 
 void libAICA_WriteReg(u32 addr,u32 data,u32 size)
@@ -91,7 +95,7 @@ void libAICA_WriteReg(u32 addr,u32 data,u32 size)
    if (size==1)
 		WriteReg<1>(addr & 0x7FFF,data);
 	else
-		WriteReg<2>(addr & 0x7FFF,data);
+		WriteReg<2>(addr & 0x7FFE,data);
 }
 
 //Map using _vmem .. yay

@@ -396,7 +396,9 @@ private:
 		Lsl(ADDR, ADDR, 1);
 		//ADDR += DSP->RBP;			// RBP is already a byte address
 		// RBP is constant for this program
-		Add(ADDR, ADDR, DSP->RBP);
+		// (kept even: it is a 16-bit word there, and RBP is only as good
+		// as the save state it may have come out of)
+		Add(ADDR, ADDR, DSP->RBP & ~1);
 		// ADDR & ARAM_MASK
 		if (ARAM_SIZE == 2*1024*1024)
 			Bfc(ADDR, 21, 11);

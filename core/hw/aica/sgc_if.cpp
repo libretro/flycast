@@ -920,12 +920,12 @@ struct ChannelEx
 			UpdateAtts();
 			break;
 
-		case 0x28://Q, LPOFF
+		case 0x28://Q, LPOFF, VOFF
 		case 0x29://TL
 			if (size == 2 || offset == 0x28)
 				UpdateFEG();
-			if (size == 2 || offset == 0x29)
-				UpdateAtts();
+			// (either byte: VOFF takes TL out of the levels)
+			UpdateAtts();
 			break;
 
 		case 0x2C: //FLV0
@@ -1480,7 +1480,9 @@ void AICA_Sample()
 	//OK , generated all Channels  , now DSP/ect + final mix ;p
 	//CDDA EXTS input
 	
-	if (cdda_index>=CDDA_SIZE)
+	/* (Two samples are taken, at an even place. A save state could put this
+	 * on the last, odd one, and the second was then past the sector.) */
+	if (cdda_index >= CDDA_SIZE - 1)
 	{
 		cdda_index=0;
 		cdda_src = libCore_CDDA_Sector(cdda_sector);
@@ -1633,6 +1635,8 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 
 		LIBRETRO_US(Chans[i].AEG.val) ;
 		LIBRETRO_US(Chans[i].AEG.state) ;
+		// (one of the four: the step function is looked up by it)
+		Chans[i].AEG.state = (_EG_state)((u32)Chans[i].AEG.state & 3);
 		/* Only what the envelope steps by. SetAegState() does one thing more
 		 * for a channel that is released, which every idle one is: it clears
 		 * the channel's key-on bit. A game sets that bit on the channels it
@@ -1650,6 +1654,7 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 		Chans[i].UpdateAEG();
 		LIBRETRO_US(Chans[i].FEG.value);
 		LIBRETRO_US(Chans[i].FEG.state);
+		Chans[i].FEG.state = (_EG_state)((u32)Chans[i].FEG.state & 3);
 		if (ver >= V8)
 		{
 			LIBRETRO_US(Chans[i].FEG.prev1);
