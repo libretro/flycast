@@ -199,13 +199,27 @@ RuntimeBlockInfoPtr bm_GetBlock2(void* dynarec_code)
 	return iter->second;
 }
 
-// where in del_blocks the blocks thrown out by the last bm_ResetCache() start, if they are still there
+/* Which of the blocks in del_blocks still have their code to themselves,
+ * and can be relinked if one of them turns out to be the block that is
+ * running (bm_ResetCache()):
+ *  - where the blocks thrown out by the last bm_ResetCache() start, if
+ *    they are still there. Theirs until something is compiled;
+ *  - where they end. What comes after was discarded on its own since, and
+ *    its place in the main cache is not given to anyone before the cache
+ *    is emptied again;
+ *  - where the list ended when the temporary cache was last started again
+ *    from its beginning. A temporary block before that may have been
+ *    written over. */
 static size_t reset_batch = (size_t)-1;
+static size_t reset_end;
+static size_t temp_reset_end;
 
 static void bm_CleanupDeletedBlocks()
 {
 	del_blocks.clear();
 	reset_batch = (size_t)-1;
+	reset_end = 0;
+	temp_reset_end = 0;
 }
 
 // Takes RX pointer and returns a RW pointer
@@ -404,20 +418,26 @@ void bm_ResetCache(bool nothing_since)
 	 * running when this happens. Left as it was it went on by the rules of
 	 * the first time: into a block compiled for the MMU, under a main loop
 	 * made for a machine without one. (A program that turns translation
-	 * on and loads its TLB after does both in one block: two of these.) */
-	if (nothing_since && reset_batch <= del_blocks.size())
-	{
-		for (size_t i = reset_batch; i < del_blocks.size(); i++)
-		{
-			RuntimeBlockInfo *block = del_blocks[i].get();
+	 * on and loads its TLB after does both in one block: two of these.)
+	 *
+	 * The same goes for a block that was discarded on its own since the
+	 * last time and may be running still: one that wrote to the page its
+	 * own code is in - a variable next to it will do - and then did what
+	 * brings this about. */
+	const bool again = nothing_since && reset_batch <= del_blocks.size();
 
-			block->relink_data = 0;
-			block->pNextBlock = 0;
-			block->pBranchBlock = 0;
-			block->Relink();
-		}
+	for (size_t i = again ? reset_batch : reset_end; i < del_blocks.size(); i++)
+	{
+		RuntimeBlockInfo *block = del_blocks[i].get();
+
+		if (!again && block->temp_block && i < temp_reset_end)
+			continue;
+		block->relink_data = 0;
+		block->pNextBlock = 0;
+		block->pBranchBlock = 0;
+		block->Relink();
 	}
-	else
+	if (!again)
 		reset_batch = del_blocks.size();
 
 	for (const auto& it : blkmap)
@@ -432,6 +452,8 @@ void bm_ResetCache(bool nothing_since)
 		block->Discard();
 		del_blocks.push_back(block);
 	}
+
+	reset_end = del_blocks.size();
 
 	blkmap.clear();
 	// blkmap includes temp blocks as well
@@ -483,8 +505,11 @@ void bm_ResetTempCache(bool full)
 	// (put in front: what bm_ResetCache() keeps note of is that much further on)
 	if (reset_batch != (size_t)-1)
 		reset_batch += all_temp_blocks.size();
+	reset_end += all_temp_blocks.size();
 	del_blocks.insert(del_blocks.begin(),all_temp_blocks.begin(),all_temp_blocks.end());
 	all_temp_blocks.clear();
+	// (the temporary blocks there are now may be written over from here on)
+	temp_reset_end = del_blocks.size();
 }
 
 void bm_Init()

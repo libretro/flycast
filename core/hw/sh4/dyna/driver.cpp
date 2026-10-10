@@ -286,7 +286,12 @@ void (*ngen_FailedToFindBlock)() = &ngen_FailedToFindBlock_internal;
 u32 DYNACALL rdv_DoInterrupts(void* block_cpde)
 {
 	RuntimeBlockInfoPtr rbi = bm_GetBlock2(block_cpde);
-	return rdv_DoInterrupts_pc(rbi->vaddr);
+	/* The block may have been discarded while it ran (it wrote over its own
+	 * code, or the cache was emptied): it is among those waiting to be
+	 * freed then, and still knows its address. */
+	if (!rbi)
+		rbi = bm_GetStaleBlock(block_cpde);
+	return rdv_DoInterrupts_pc(rbi ? rbi->vaddr : next_pc);
 }
 
 // addr must be the physical address of the start of the block
