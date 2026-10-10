@@ -400,15 +400,24 @@ void GDCartridge::find_file(const char *name, const u8 *dir_sector, u32 &file_st
 	DEBUG_LOG(NAOMI, "Looking for file [%s]", name);
 	for(u32 pos = 0; pos < 2048; pos += dir_sector[pos]) {
 		int fnlen = 0;
+		// A record starts with its length, and is whole inside the sector:
+		// 33 bytes and a name. One that is not ends the list (as the
+		// padding at the end of the sector does, whose length is 0).
+		const u32 reclen = dir_sector[pos];
+		if (reclen < 34 || reclen > 2048 - pos)
+			break;
 		if(!(dir_sector[pos+25] & 2)) {
 			int len = dir_sector[pos+32];
 //          printf("file: [%s]\n", &dir_sector[pos+33+fnlen]);
 			for(fnlen=0; fnlen < FILENAME_LENGTH; fnlen++) {
-				if((dir_sector[pos+33+fnlen] == ';') && (name[fnlen] == 0)) {
+				// (the name is compared up to one byte past its end, which
+				// may be past the sector's: nothing follows there)
+				const u8 c = pos+33+fnlen < 2048 ? dir_sector[pos+33+fnlen] : 0;
+				if((c == ';') && (name[fnlen] == 0)) {
 					fnlen = FILENAME_LENGTH+1;
 					break;
 				}
-				if(dir_sector[pos+33+fnlen] != name[fnlen])
+				if(c != name[fnlen])
 					break;
 				if(fnlen == len) {
 					if(name[fnlen] == 0)
@@ -432,8 +441,6 @@ void GDCartridge::find_file(const char *name, const u8 *dir_sector, u32 &file_st
 			DEBUG_LOG(NAOMI, "start %08x size %08x", file_start, file_size);
 			break;
 		}
-		if (dir_sector[pos] == 0)
-			break;
 	}
 }
 
@@ -493,7 +500,9 @@ bool GDCartridge::device_start()
 
 		DEBUG_LOG(NAOMI, "key is %08x%08x", (u32)((key & 0xffffffff00000000ULL)>>32), (u32)(key & 0x00000000ffffffffULL));
 
+		// (as dir_sector below: nothing in it if a sector cannot be read)
 		u8 buffer[2048];
+		memset(buffer, 0, sizeof(buffer));
 		std::string gdrom_dir;
 		char *pdot = strrchr(g_base_name, '.');
 		if (pdot != NULL)
@@ -525,8 +534,10 @@ bool GDCartridge::device_start()
 		// path table
 		read_gdrom(gdrom, path_table, buffer);
 
-		// directory
+		// directory (empty until one is read: a disc whose path table
+		// has no ROM directory, or a sector that cannot be read)
 		u8 dir_sector[2048];
+		memset(dir_sector, 0, sizeof(dir_sector));
 		// find data of file
 		u32 file_start, file_size;
 
@@ -548,7 +559,8 @@ bool GDCartridge::device_start()
 			}
 		} else {
 			u32 i = 0;
-			while (i < 2048 && buffer[i] != 0)
+			// (an entry is 8 bytes and its name, whole inside the sector)
+			while (i < 2048 && buffer[i] != 0 && 8u + buffer[i] <= 2048 - i)
 			{
 				if (buffer[i] == 3 && buffer[i + 8] == 'R' && buffer[i + 9] == 'O' && buffer[i + 10] == 'M')    // find ROM dir
 				{

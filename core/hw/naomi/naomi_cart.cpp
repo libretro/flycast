@@ -59,6 +59,7 @@ typedef int fd_t;
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <errno.h>
 #endif
 #include <unistd.h>
@@ -1002,8 +1003,8 @@ static bool naomi_cart_LoadRom(const char* file)
 	u32 setsize = 0;
 	bool raw_bin_file = false;
 
+	// (a line of a list. The path, which may be longer, is not put here.)
 	char t[512];
-	strcpy(t, file);
 
 	const char *ext = path_get_extension(file);
 
@@ -1036,7 +1037,7 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	if (!strcasecmp(ext, "lst"))
 	{
-	   RFILE* fl = filestream_open(t, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	   RFILE* fl = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	   if (!fl)
 		   return false;
 
@@ -1079,6 +1080,15 @@ static bool naomi_cart_LoadRom(const char* file)
 		   u32 addr, sz;
 		   if (sscanf(line, "\"%[^\"]\",%x,%x", filename, &addr, &sz) == 3)
 		   {
+			  // A cartridge's addresses have 29 bits. A piece past them is
+			  // not mapped: it would be mapped outside the range that is
+			  // set aside for the cartridge, over whatever is there.
+			  if (addr > 0x20000000 || sz > 0x20000000 - addr)
+			  {
+				  WARN_LOG(NAOMI, "Warning: .lst file: %s is outside the cartridge (%x, %x bytes)", filename, addr, sz);
+				  line = filestream_gets(fl, t, 512);
+				  continue;
+			  }
 			  files.push_back(filename);
 			  fstart.push_back(addr);
 			  fsize.push_back(sz);
@@ -1095,12 +1105,17 @@ static bool naomi_cart_LoadRom(const char* file)
 	else
 	{
 	   // BIN loading
-	   RFILE* fp = filestream_open(t, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	   RFILE* fp = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	   if (fp == NULL)
 		  return false;
-	   u32 file_size = (u32)filestream_get_size(fp);
+	   const int64_t whole_size = filestream_get_size(fp);
 	   filestream_close(fp);
-	   files.push_back(t);
+	   // (a size that is not known is no image; one past a cartridge's 29
+	   // bits of address is read as far as those go)
+	   if (whole_size <= 0)
+		  return false;
+	   u32 file_size = whole_size > 0x20000000 ? 0x20000000 : (u32)whole_size;
+	   files.push_back(file);
 	   fstart.push_back(0);
 	   fsize.push_back(file_size);
 	   setsize = file_size;
@@ -1121,29 +1136,22 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	RomCacheMapCount = (u32)files.size();
 	RomCacheMap = new fd_t[files.size()]();
+	// (none is open yet: 0 is a file of the frontend's, and would be closed for one of these)
+	for (size_t i = 0; i < files.size(); i++)
+		RomCacheMap[i] = INVALID_FD;
 
 	//Allocate space for the ram, so we are sure we have a segment of continuous ram
 	RomPtr = (u8*)mem_region_reserve(NULL, RomSize);
 	verify(RomPtr != NULL);
-	strcpy(t, file);
 
 	bool load_error = false;
 
 	//Create File Mapping Objects
 	for (size_t i = 0; i<files.size(); i++)
 	{
-		if (!raw_bin_file)
-		{
-		   strncpy(t, file, sizeof(t));
-		   t[sizeof(t) - 1] = '\0';
-		   t[folder_pos] = 0;
-		   strcat(t, files[i].c_str());
-		}
-		else
-		{
-		   strncpy(t, files[i].c_str(), sizeof(t));
-		   t[sizeof(t) - 1] = '\0';
-		}
+		// (a piece of a list is beside the list)
+		const std::string piece = raw_bin_file ? files[i] : std::string(file, folder_pos) + files[i];
+		const char *t = piece.c_str();
 		fd_t RomCache;
 
 		if (strcmp(files[i].c_str(), "null") == 0)
@@ -1169,6 +1177,17 @@ static bool naomi_cart_LoadRom(const char* file)
 		verify(CloseHandle(RomCache));
 #else
 		RomCacheMap[i] = RomCache;
+		{
+			// A file shorter than the list says: the pages past its end
+			// cannot be read, and reading them stops the program.
+			struct stat st;
+			if (fstat(RomCache, &st) != 0 || (((u64)st.st_size + 4095) & ~(u64)4095) < fsize[i])
+			{
+				ERROR_LOG(NAOMI, "-File %s is shorter than %x bytes", t, fsize[i]);
+				load_error = true;
+				break;
+			}
+		}
 #endif
 
 		verify(RomCacheMap[i] != INVALID_FD);
@@ -1178,13 +1197,10 @@ static bool naomi_cart_LoadRom(const char* file)
 	//Release the segment we reserved so we can map the files there
 	mem_region_release(RomPtr, RomSize);
 
+	// (the files that were opened are closed with the cartridge, once:
+	// naomi_cart_Close())
 	if (load_error)
-	{
-	   for (size_t i = 0; i < files.size(); i++)
-		  if (RomCacheMap[i] != INVALID_FD)
-			 CloseFile(RomCacheMap[i]);
 	   return false;
-	}
 	//We have all file mapping objects, we start to map the ram
 
 	//Map the files into the segment of the ram that was reserved
