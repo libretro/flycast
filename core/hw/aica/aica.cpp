@@ -163,8 +163,11 @@ static void AicaInternalDMA()
 		else
 		{
 			// to regs
+			// (the length is taken once: it is one of the registers
+			// this may clear)
 			u32 addr = CommonData->DRGA << 2;
-			for (u32 i = 0; i < CommonData->DLG; i++, addr += 4)
+			const u32 len = CommonData->DLG;
+			for (u32 i = 0; i < len; i++, addr += 4)
 				WriteMem_aica_reg(addr, 0, 4);
 		}
 	}
