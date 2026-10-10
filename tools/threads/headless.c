@@ -22,6 +22,14 @@
  *   HEADLESS_SAVE    frame to save a state before
  *   HEADLESS_LOAD    frame to load that state back before
  *   HEADLESS_DUMP    "frame:file": a state saved before that frame, written to the file
+ *   HEADLESS_AHEAD   frame from which the frames are run as a frontend's
+ *                    run-ahead of one frame runs them: the frame with its
+ *                    sound thrown away, a state saved, the frame after it
+ *                    for its sound, and the state loaded. The sound is then
+ *                    that of the plain run less one frame's where this
+ *                    began: whatever else differs is something a state does
+ *                    not carry. (The verdict word and the stage word are
+ *                    not looked at in such a run.)
  *   HEADLESS_UNDUMP  "frame:file": the state in that file loaded before that
  *                    frame. "state loaded" or "state refused" is printed,
  *                    and the run goes on either way.
@@ -63,6 +71,7 @@ static void *core;
 static struct retro_hw_render_callback hw;
 static int have_hw;
 static FILE *sound;
+static int sound_off;   /* the frame being run is one whose sound is not wanted: HEADLESS_AHEAD */
 static char **options;
 static int option_count;
 static int gles;
@@ -276,13 +285,13 @@ static void audio_sample(int16_t left, int16_t right)
    int16_t frame[2];
    frame[0] = left;
    frame[1] = right;
-   if (sound)
+   if (sound && !sound_off)
       fwrite(frame, sizeof(frame), 1, sound);
 }
 
 static size_t audio_sample_batch(const int16_t *data, size_t frames)
 {
-   if (sound)
+   if (sound && !sound_off)
       fwrite(data, 2 * sizeof(int16_t), frames, sound);
    return frames;
 }
@@ -409,6 +418,9 @@ int main(int argc, char **argv)
          int swap_at = getenv("HEADLESS_SWAP") ? atoi(getenv("HEADLESS_SWAP")) : -1;
          int save_at = getenv("HEADLESS_SAVE") ? atoi(getenv("HEADLESS_SAVE")) : -1;
          int load_at = getenv("HEADLESS_LOAD") ? atoi(getenv("HEADLESS_LOAD")) : -1;
+         int ahead_at = getenv("HEADLESS_AHEAD") ? atoi(getenv("HEADLESS_AHEAD")) : -1;
+         void *ahead_state = NULL;
+         size_t ahead_room = 0;
          void *state = NULL;
          size_t state_size = 0;
          clock_t t0 = clock();
@@ -473,6 +485,41 @@ int main(int argc, char **argv)
             if (have_disk && swap_at >= 0 && i == swap_at + 20)
                disk.set_eject_state(false);
             run_frame = i;
+            if (ahead_at >= 0 && i >= ahead_at)
+            {
+               size_t ahead_size;
+
+               /* The frame itself, unheard; a state of the machine after
+                * it; the frame after it, heard; and back to the state. */
+               sound_off = 1;
+               retro_run();
+               sound_off = 0;
+               ahead_size = retro_serialize_size();
+               if (ahead_size > ahead_room)
+               {
+                  /* (the size a frontend is told first has to do for good) */
+                  if (ahead_state)
+                  {
+                     fprintf(stderr, "a state grew from %lu to %lu bytes\n",
+                           (unsigned long)ahead_room, (unsigned long)ahead_size);
+                     return 1;
+                  }
+                  ahead_state = malloc(ahead_size);
+                  ahead_room = ahead_size;
+               }
+               if (!ahead_state || !retro_serialize(ahead_state, ahead_room))
+               {
+                  fprintf(stderr, "the state could not be saved (frame %d)\n", i);
+                  return 1;
+               }
+               retro_run();
+               if (!retro_unserialize(ahead_state, ahead_room))
+               {
+                  fprintf(stderr, "the state could not be loaded (frame %d)\n", i);
+                  return 1;
+               }
+               continue;
+            }
             retro_run();
             if (!stage_at)
                continue;

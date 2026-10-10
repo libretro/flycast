@@ -4,6 +4,7 @@ it: signed 16-bit stereo, the samples the core sent the frontend.
 
 Usage: live_audio.py sound.pcm
        live_audio.py --reloaded sound.pcm reloaded.pcm
+       live_audio.py --ahead sound.pcm ahead.pcm
 
 The disc plays its audio track, looping, with the sound chip set to pass
 it through at full level, left to the left and right to the right. So
@@ -41,6 +42,14 @@ second has to pick the first up again at some earlier point and go on
 exactly as the first did from there - every channel, the filter with
 what it had in it, the disc where it was. There has to be at least one
 such place, and nothing else may differ.
+
+--ahead compares a run made as a frontend's run-ahead makes it (headless.c,
+HEADLESS_AHEAD: every frame run for the machine's sake with its sound
+thrown away, a state saved, the next frame run for its sound, the state
+loaded) with the first. What is heard is then the first run's with the
+one frame left out that was not heard when this began, and from there on
+every sample of it: a state that does not carry something the sound
+depends on, or a load that moves time, shows as anything else.
 """
 import struct
 import sys
@@ -139,9 +148,37 @@ def reloaded(plain_path, got_path):
     return 0
 
 
+def ahead(plain_path, got_path):
+    plain = open(plain_path, 'rb').read()
+    got = open(got_path, 'rb').read()
+    plain = plain[:len(plain) & ~3]
+    got = got[:len(got) & ~3]
+    both = min(len(plain), len(got))
+    at = next((i for i in range(0, both, 4) if plain[i:i + 4] != got[i:i + 4]),
+              None)
+    if at is None:
+        print('the run-ahead run is the first run over again: no frame was '
+              'run ahead while it played')
+        return 1
+    # one frame is 735 samples, give or take the sound chip's 32 at a time
+    for gap in range(4 * 600, 4 * 900, 4):
+        rest = min(len(plain) - at - gap, len(got) - at)
+        if rest >= 4 * RATE and plain[at + gap:at + gap + rest] == got[at:at + rest]:
+            print('sound: with frames run ahead it is the first run\'s less one '
+                  'frame (%d samples), sample for sample for the %.1f s after'
+                  % (gap // 4, rest / 4 / RATE))
+            return 0
+    print('at %.3f s (sample %d) the run-ahead run parts from the first run, '
+          'and is not the first run less one frame from there'
+          % (at / 4 / RATE, at // 4))
+    return 1
+
+
 def main():
     if sys.argv[1:2] == ['--reloaded']:
         return reloaded(sys.argv[2], sys.argv[3])
+    if sys.argv[1:2] == ['--ahead']:
+        return ahead(sys.argv[2], sys.argv[3])
     data = open(sys.argv[1], 'rb').read()
     count = len(data) // 4
     samples = struct.unpack('<%dh' % (2 * count), data[:4 * count])

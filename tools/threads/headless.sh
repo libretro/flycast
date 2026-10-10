@@ -121,26 +121,40 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # the disc's sound plays: from the load on, the sound has to be the first
 # run's from where the state was saved. (A channel the program has marked
 # to start and not yet started is among what the state has to carry.)
-# The seventh changes the Internal Resolution option to 2x and turns the
+# The seventh is made as a frontend's run-ahead makes one: from the
+# sixtieth frame on, each frame is run with its sound thrown away, a state
+# is saved, the next frame is run for its sound and the state is loaded -
+# 240 states saved and loaded, at whatever the machine is in the middle
+# of. The program has to reach its verdict as if nothing had happened - its
+# timers, its reads from the disc, its memory card - and the sound has to
+# be the first run's less the one frame that was not heard, every sample.
+# The eighth changes the Internal Resolution option to 2x and turns the
 # widescreen hack on 120 frames in, as from the frontend's menu: the core has
 # to tell the frontend the new size - 1280x960, a third wider - and the
 # disc's program has to go on as if nothing had happened.
-# The eighth turns threaded rendering on 120 frames in and off again at 200:
+# The ninth turns threaded rendering on 120 frames in and off again at 200:
 # the emulation thread is started and stopped between two frames, and the
 # disc's program has to go on as if nothing had happened.
-# The ninth asks for video on one frame in four, as fast-forward's frameskip
+# The tenth asks for video on one frame in four, as fast-forward's frameskip
 # does: the renders in between are not drawn, and the program and its sound
 # have to be what they are with every frame drawn. (A frame the program
 # writes to the framebuffer itself is still handed over: it is not written
 # again. Nearly every frame is handed over when all are asked for.)
-for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy resize" "legacy threads" "legacy skip"; do
+for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legacy state" "legacy ahead" "legacy resize" "legacy threads" "legacy skip"; do
    set -- $RUN_AS
    TIMING=$1
    NAME=$TIMING
    FRAMES=300
-   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP HEADLESS_AHEAD
    SIZE_TOLD=
-   if [ "$2" = skip ]; then
+   if [ "$2" = ahead ]; then
+      NAME=$TIMING-ahead
+      WINCE=disabled
+      GOOD=600d600d
+      HEADLESS_AHEAD=60
+      export HEADLESS_AHEAD
+      echo "== headless: $TIMING SH4 timing, with every frame run ahead"
+   elif [ "$2" = skip ]; then
       NAME=$TIMING-skip
       WINCE=disabled
       GOOD=600d600d
@@ -261,7 +275,12 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       exit 1
    }
    # (the sound of a run with a reset or a disc change in it is not the plain one: not looked at)
-   if [ -n "$HEADLESS_SAVE" ]; then
+   if [ -n "$HEADLESS_AHEAD" ]; then
+      python3 "$T/live_audio.py" --ahead "$WORK/sound-plain.pcm" "$SOUND" || {
+         echo "FAIL: with frames run ahead the sound is not the plain run's" >&2
+         exit 1
+      }
+   elif [ -n "$HEADLESS_SAVE" ]; then
       python3 "$T/live_audio.py" --reloaded "$WORK/sound-plain.pcm" "$SOUND" || {
          echo "FAIL: the sound did not go on from a loaded state as it had from there" >&2
          exit 1
@@ -301,7 +320,7 @@ for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a s
    "with a TLB of its own" "with a TLB of its own and a state loaded" \
    "with a TLB of its own loaded late"; do
    echo "== headless: code that is rewritten while it is in use, $SMC"
-   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+   unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP HEADLESS_AHEAD
    WINCE=disabled
    SMC_WANT=600d5ac0
    SMC_ELF=$WORK/smc.elf
@@ -352,7 +371,7 @@ unset HEADLESS_SAVE HEADLESS_LOAD
 # the same routine - as the game once more, each time as the real BIOS
 # starts them. naomi_prog.c has what it looks at.
 echo "== headless: a NAOMI cartridge, into its test program and back"
-unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP HEADLESS_AHEAD
 python3 "$T/naomi_cart.py" "$WORK/naomi-test.bin"
 if [ -n "$WINDOWS" ]; then
    :
@@ -386,7 +405,7 @@ tr -d '\r' < "$WORK/naomi.out" | grep -q "= 600d7e57\$" || {
 # the run has to end without stopping the emulator, whatever the program
 # then makes of what is in its memory.
 echo "== headless: a state of another machine, refused"
-unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP
+unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP HEADLESS_AHEAD
 if [ -n "$WINDOWS" ]; then
    :
 elif [ -z "$GLES" ]; then
