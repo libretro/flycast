@@ -416,6 +416,8 @@ static void GD_HLE_Command(u32 cc)
 
 	case GDCC_SEEK:
 		debugf("GDROM: CMD SEEK");
+		// the drive goes where it is sent, and is paused there
+		cdda.CurrAddr.FAD = cdda.StartAddr.FAD = gd_hle_state.params[0] & 0xffffff;
 		cdda.status = cdda_t::Paused;
 		SecNumber.Status = GD_PAUSE;
 		break;
@@ -442,8 +444,13 @@ static void GD_HLE_Command(u32 cc)
 			cdda.StartAddr.FAD = start_fad;
 			cdda.EndAddr.FAD = end_fad;
 			cdda.repeats = repeats;
-			if (SecNumber.Status != GD_PAUSE || cdda.CurrAddr.FAD < start_fad || cdda.CurrAddr.FAD > end_fad)
-				cdda.CurrAddr.FAD = start_fad;
+			/* From the start of what was asked for, as the drive's own
+			 * play command does: going on from where a pause left off is
+			 * RELEASE. (A paused drive kept its place here when that
+			 * was inside the tracks asked for, and a game that pauses
+			 * its music and then plays the track again got the rest of
+			 * it and not the start.) */
+			cdda.CurrAddr.FAD = start_fad;
 			SecNumber.Status = GD_PLAY;
 		}
 		break;
@@ -556,8 +563,14 @@ static void GD_HLE_Command(u32 cc)
 			// 0     | subcode q track number
 			// ------------------------------------------------------
 			// 1-3   |  0  |  0  |  0  |  0  |  0  |  0  |  0  |  0
+			/* Where the drive is: in the music while it plays or is paused
+			 * in it, and otherwise where it last read - what the drive's
+			 * own status command gives. (It was always the last read, so
+			 * a game watching its music saw it stand still.) */
+			const u32 fad = cdda.status == cdda_t::Playing || cdda.status == cdda_t::Paused
+					? cdda.CurrAddr.FAD : gd_hle_state.cur_sector;
 			u32 elapsed;
-			u32 tracknum = libGDR_GetTrackNumber(gd_hle_state.cur_sector, elapsed);
+			u32 tracknum = libGDR_GetTrackNumber(fad, elapsed);
 			WriteMem32(dst1, tracknum);
 
 			// bit   |  7  |  6  |  5  |  4  |  3  |  2  |  1  |  0
@@ -566,8 +579,11 @@ static void GD_HLE_Command(u32 cc)
 			// 0-2  | fad (little-endian)
 			// ------------------------------------------------------
 			// 3    | address                | control
-			u32 out = (((SecNumber.DiscFormat == 0 ? 0 : 0x40) | 1) << 24)
-					| (gd_hle_state.cur_sector & 0x00ffffff);
+			// (of the track the drive is on: an audio track on a disc with data is still audio)
+			u8 adr, ctrl;
+			libGDR_GetTrackAdrAndControl(tracknum, adr, ctrl);
+			u32 out = ((u32)(u8)((ctrl << 4) | adr) << 24)
+					| (fad & 0x00ffffff);
 			WriteMem32(dst2, out);
 
 			// bit   |  7  |  6  |  5  |  4  |  3  |  2  |  1  |  0
@@ -844,6 +860,11 @@ void gdrom_hle_op()
 				Sh4cntx.pc = gd_hle_state.multi_callback;
 				gd_hle_state.dma_trans_ended = false;
 			}
+			/* The BIOS's routine also says the end-of-transfer interrupt
+			 * has been seen to, and a game that leaves that to it had
+			 * the interrupt stay up: Metropolis Street Racer, Psychic
+			 * Force 2012, Pro Pinball and Sega Swirl do. */
+			WriteMem32_nommu(0xa05f6900, 1 << (u8)holly_GDROM_DMA);	// SB_ISTNRM: a 1 clears
 			break;
 
 		case GDROM_REQ_DMA_TRANS:

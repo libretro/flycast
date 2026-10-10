@@ -22,6 +22,7 @@
 #include "hw/sh4/sh4_mmr.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/holly/sb_mem.h"
+#include "hw/holly/sb.h"
 #include "hw/naomi/naomi_cart.h"
 #include "emulator.h"
 #include "hw/pvr/pvr_regs.h"
@@ -51,6 +52,8 @@
 static MemChip *flashrom;
 static u32 base_fad = 45150;
 static bool descrambl = false;
+// how many sectors of boot file were read to 8c010000 (not part of a save state)
+static u32 boot_sectors;
 
 extern char game_dir_no_slash[1024];
 
@@ -188,6 +191,7 @@ static bool reios_locate_bootfile(const char* bootfile)
 				delete[] temp;
 				return false;
 			}
+			boot_sectors = (len + 2047) / 2048;
 			if (descrambl)
 				descrambl_file(lba + 150, len, GetMemPtr(0x8c010000, 0));
 			else
@@ -450,7 +454,33 @@ static void reios_sys_misc()
 	INFO_LOG(REIOS, "reios_sys_misc - r7: 0x%08X, r4 0x%08X, r5 0x%08X, r6 0x%08X", r[7], r[4], r[5], r[6]);
 	switch (r[4])
 	{
+	case 0:	// normal init
+		/* The machine as the BIOS hands it over: the drive's DMA address
+		 * where reading the boot file to 8c010000 left it, nothing let
+		 * through at interrupt level 2, and the border in the colour that
+		 * is also what the call answers. */
+		SB_GDSTARD = 0x0c010000 + boot_sectors * 2048;
+		WriteMem32_nommu(0xa0000000 | SB_IML2NRM_addr, 0);
+		r[0] = 0xc0bebc;
+		VO_BORDER_COL.full = r[0];
+		break;
+
+	case 1:	// exit to the BIOS's menu
+		/* There is no menu here to go to. The call comes back, as it
+		 * always has: the boot code of a Windows CE disc makes it on its
+		 * way in, here (Sega Rally 2 does), and starting the machine
+		 * again for it - which is what upstream does - is starting it
+		 * again for ever. */
+		INFO_LOG(REIOS, "SYS_MISC 1: exit to BIOS, ignored");
+		break;
+
 	case 2:	// check disk
+		if (libGDR_GetDiscType() == NoDisk || libGDR_GetDiscType() == Open)
+		{
+			// (no disc to check: it said yes, and read nothing)
+			r[0] = -1;
+			break;
+		}
 		r[0] = 0;
 		// Reload part of IP.BIN bootstrap
 		libGDR_ReadSector(GetMemPtr(0x8c008100, 0), base_fad, 7, 2048);
