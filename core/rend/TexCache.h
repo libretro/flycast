@@ -171,6 +171,8 @@ struct PixelCursor
 
 void palette_update();
 void texcache_scratch_free();
+// Stops the custom texture loader, which then has no texture: see BaseTextureCache::Clear()
+void texcache_stop_custom_loads();
 
 #define clamp(minv, maxv, x) (x < minv ? minv : x > maxv ? maxv : x)
 
@@ -1069,6 +1071,7 @@ public:
 		// Some palette textures are handled on the GPU
 		// This is currently limited to textures using nearest filtering and not mipmapped.
 		// Enabling texture upscaling or dumping also disables this mode.
+		// So do custom textures: a replacement is colours, not indices to look up.
 		/* And to a polygon's first texture. The shaders have one palette
 		 * position to look colours up from, the first texture's: a second
 		 * volume's texture left as indices was looked up with that, or, with
@@ -1077,6 +1080,7 @@ public:
 		return (tcw.PixelFmt == PixelPal4 || tcw.PixelFmt == PixelPal8)
 				&& settings.rend.TextureUpscale == 1
 				&& !settings.rend.DumpTextures
+				&& !settings.rend.CustomTextures
 				&& tsp.FilterMode == 0
 				&& !tcw.MipMapped
 				&& !tcw.VQ_Comp
@@ -1150,6 +1154,24 @@ public:
 
 	void Clear()
 	{
+		/* A texture whose custom image is still being loaded is the
+		 * loader's as well as the cache's: the loader has a pointer to it
+		 * and writes to it when it is done. Delete() refuses those, and
+		 * they were destroyed here all the same. If there is one, the
+		 * loader is stopped first, which leaves it with none; it starts
+		 * again with the next texture that asks.
+		 *
+		 * A count at zero is a texture the loader has finished with or
+		 * never had: only the renderer raises it from zero, and bringing
+		 * it back there is the last thing the loader does to a texture. */
+		for (auto& pair : cache)
+		{
+			if (retro_atomic_load_acquire_int(&pair.second.custom_load_in_progress) > 0)
+			{
+				texcache_stop_custom_loads();
+				break;
+			}
+		}
 		for (auto& pair : cache)
 			pair.second.Delete();
 

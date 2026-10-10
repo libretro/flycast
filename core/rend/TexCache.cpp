@@ -461,6 +461,11 @@ bool BaseTextureCacheData::NeedsUpdate() {
 	return rc;
 }
 
+void texcache_stop_custom_loads()
+{
+	custom_texture.Terminate();
+}
+
 bool BaseTextureCacheData::Delete()
 {
 	if (retro_atomic_load_acquire_int(&custom_load_in_progress) > 0)
