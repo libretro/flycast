@@ -196,8 +196,14 @@ void mmu_raise_exception(u32 mmu_error, u32 address, u32 am)
 
 		//TLB Multihit
 	case MMU_ERROR_TLB_MHIT:
+		/* Two entries of the TLB for one address. On the machine that is
+		 * a reset; here it used to be the end of the emulator (die()),
+		 * which a program could then bring about at will. An exception
+		 * with its own code, as upstream has it: the program is no
+		 * better off, the frontend is. */
 		INFO_LOG(SH4, "MMU_ERROR_TLB_MHIT @ 0x%X", address);
-		break;
+		RaiseException(0x140, 0x100);
+		return;
 
 		//Mem is read/write protected (depends on translation type)
 	case MMU_ERROR_PROTECTED:
@@ -278,8 +284,10 @@ void DoMMUException(u32 address, u32 mmu_error, u32 access_type)
 
 		//TLB Multihit
 	case MMU_ERROR_TLB_MHIT:
+		// (see mmu_raise_exception())
 		INFO_LOG(SH4, "MMU_ERROR_TLB_MHIT @ 0x%X", address);
-		break;
+		Do_Exception(next_pc, 0x140, 0x100);
+		return;
 
 		//Mem is read/write protected (depends on translation type)
 	case MMU_ERROR_PROTECTED:

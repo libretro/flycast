@@ -1047,7 +1047,9 @@ union CCN_MMUCR_type
 		u32 SV    : 1;
 		u32 SQMD  : 1;
 		u32 URC   : 6;
+		u32 res_3 : 2;
 		u32 URB   : 6;
+		u32 res_4 : 2;
 		u32 LRUI  : 6;
 	};
 	u32 reg_data;

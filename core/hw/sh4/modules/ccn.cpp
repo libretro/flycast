@@ -82,7 +82,11 @@ void CCN_PTEH_write(u32 addr, u32 value)
 void CCN_MMUCR_write(u32 addr, u32 value)
 {
 	CCN_MMUCR_type temp;
-	temp.reg_data=value;
+	/* The bits there are: LRUI 31-26, URB 23-18, URC 15-10, SQMD, SV, TI
+	 * and AT. The rest read as 0. (URB and LRUI used to be laid out two
+	 * and four bits low, in the gaps: the URB a program wrote was not the
+	 * one URC was held against.) */
+	temp.reg_data = value & 0xFCFCFF05;
 
 	bool mmu_changed_state = temp.AT != CCN_MMUCR.AT;
 	if (temp.SV != CCN_MMUCR.SV)
