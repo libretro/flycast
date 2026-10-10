@@ -37,6 +37,27 @@ void NaomiM3Comm::closeNetwork()
 	network.closeSockets();
 }
 
+/* Emulation thread: the board as it is when the machine is switched on, for
+ * a reset of the machine. (The game's own reset of the board's CPU is not
+ * this: the game has written that CPU's RAM by then.) */
+void NaomiM3Comm::reset()
+{
+	closeNetwork();
+	comm_ctrl = 0xC000;
+	comm_offset = 0;
+	comm_status0 = 0;
+	comm_status1 = 0;
+	memset(m68k_ram, 0, sizeof(m68k_ram));
+	memset(comm_ram, 0, sizeof(comm_ram));
+	slot_count = 0;
+	slot_id = 0;
+	seen_packet_number = 0;
+	// No network thread now: the link is down until the game starts it,
+	// with nothing of the last one for syncNetwork() to pick up
+	retro_atomic_int_init(&net_state, NET_DOWN);
+	retro_atomic_int_init(&net_slot_size, 0);
+}
+
 /* Network thread. */
 void NaomiM3Comm::connectNetwork()
 {

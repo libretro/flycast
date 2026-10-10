@@ -28,6 +28,7 @@ public:
 	bool DmaStart(u32 addr, u32 data);
 
 	void closeNetwork();
+	void reset();
 
 private:
 	void initNetwork();

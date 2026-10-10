@@ -26,6 +26,7 @@ int GControl=0,GCmd=0,GLastCmd=0;
 int SerStep=0,SerStep2=0;
 
 static bool aw_ram_test_skipped = false;
+static u8 aw_maple_devs;
 
 #ifdef NAOMI_COMM
 	u32 CommOffset;
@@ -570,6 +571,9 @@ void naomi_reg_Reset(bool hard)
 	SB_GDEN = 0;
 
 	aw_ram_test_skipped = false;
+	// (the kinds of device the last game had on ports 3 and 4: the next one
+	// may leave the register alone and want plain controllers)
+	aw_maple_devs = 0;
 	GSerialBuffer = 0;
 	BSerialBuffer = 0;
 	GBufPos = 0;
@@ -591,10 +595,9 @@ void naomi_reg_Reset(bool hard)
 	reg_dimm_parameterl = 0;
 	reg_dimm_parameterh = 0;
 	reg_dimm_status = 0x11;
-	m3comm.closeNetwork();
+	m3comm.reset();
 }
 
-static u8 aw_maple_devs;
 extern u32 kcode[4];
 static int coin_chute[4];
 
