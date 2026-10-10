@@ -988,10 +988,10 @@ static bool RenderFrame(void)
 				/* Five or six bits a channel is what the game asked for, and
 				 * what the picture is cut down to when it goes to video
 				 * memory. As a texture it does not have to lose them: eight
-				 * bits a channel, as the Vulkan renderer keeps it, where the
-				 * driver is sure to render to that (OpenGL 3 and OpenGL ES 3
-				 * on). */
-				format = gl.gl_major < 3 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
+				 * bits a channel, as the Vulkan renderer keeps it. (Where a
+				 * driver will not render to that, BindRTT() goes back to
+				 * 5-6-5.) */
+				format = GL_UNSIGNED_BYTE;
 				break;
 
 			case 2: //0x2   4444 ARGB 16 bit
@@ -1200,6 +1200,12 @@ struct glesrend : Renderer
          return false;
 
       glcache.EnableCache();
+      /* A new context has dithering on, and a driver may then dither what
+       * is drawn (to a target of less than eight bits a channel, as a rule).
+       * Nothing here wants it: what the console dithers is dithered when
+       * the picture is packed for video memory. (The function itself: the
+       * name as a macro goes through a table that has no entry for this.) */
+      (glDisable)(GL_DITHER);
 
 #ifdef HAVE_OPENGLES
       glHint(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);

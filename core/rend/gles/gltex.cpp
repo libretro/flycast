@@ -382,8 +382,15 @@ void gl_carry_picture(int from_w, int from_h, int to_w, int to_h)
 #endif
 }
 
+/* OpenGL ES 2 promises a render to a 5-6-5 texture and to nothing finer:
+ * set once a driver has refused one of eight bits a channel. */
+static bool rtt_rgb_bytes_refused;
+
 void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 {
+	if (rtt_rgb_bytes_refused && channels == GL_RGB)
+		fmt = GL_UNSIGNED_SHORT_5_6_5;
+
 	if (gl.rtt.fbo)
       glDeleteFramebuffers(1,&gl.rtt.fbo);
 	if (gl.rtt.tex)
@@ -449,6 +456,14 @@ void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 
 	/* Check that our FBO creation was successful */
 	GLuint uStatus = glCheckFramebufferStatus(RARCH_GL_FRAMEBUFFER);
+
+	if (uStatus != RARCH_GL_FRAMEBUFFER_COMPLETE && channels == GL_RGB && fmt == GL_UNSIGNED_BYTE)
+	{
+		/* (the texture is still the one bound, and stays attached) */
+		rtt_rgb_bytes_refused = true;
+		glTexImage2D(GL_TEXTURE_2D, 0, channels, fbw2, fbh2, 0, channels, GL_UNSIGNED_SHORT_5_6_5, 0);
+		uStatus = glCheckFramebufferStatus(RARCH_GL_FRAMEBUFFER);
+	}
 
 	verify(uStatus == RARCH_GL_FRAMEBUFFER_COMPLETE);
 
