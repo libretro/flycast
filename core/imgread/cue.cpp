@@ -72,6 +72,11 @@ Disc* cue_parse(const char* file)
    std::istringstream cuesheet(cue_data);
 
 	char path[512];
+	if (len >= sizeof(path))
+	{
+		WARN_LOG(GDROM, "CUE: path too long");
+		return nullptr;
+	}
 	strcpy(path, file);
 	const char* delim = path_get_archive_delim(file);
 	ssize_t dir_end = (ssize_t)len;
@@ -134,18 +139,18 @@ Disc* cue_parse(const char* file)
 		}
 		else if (token == "FILE")
 		{
-			char last;
+			char last = 0;
 
 			do {
 				cuesheet >> last;
-			} while (isspace(last));
+			} while (cuesheet && isspace((unsigned char)last));
 
 			if (last == '"')
 			{
 				cuesheet >> std::noskipws;
 				for (;;) {
-					cuesheet >> last;
-					if (last == '"')
+					// (to the closing quote, or the end of a file that has none)
+					if (!(cuesheet >> last) || last == '"')
 						break;
 					track_filename += last;
 				}
@@ -176,6 +181,12 @@ Disc* cue_parse(const char* file)
 				t.StartFAD = current_fad;
 				t.CTRL = (track_type == "AUDIO" || track_type == "CDG") ? 0 : 4;
 
+				if (track_filename.size() >= sizeof(path) - dir_end)
+				{
+					WARN_LOG(GDROM, "CUE file: track %d: file name too long", track_number);
+					delete disc;
+					return nullptr;
+				}
 				strcpy(pathptr, track_filename.c_str());
 
 				core_file* track_file = core_fopen(path);

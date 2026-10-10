@@ -35,6 +35,11 @@ Disc* load_gdi(const char* file)
 	INFO_LOG(GDROM, "GDI : %d tracks", iso_tc);
 
 	char path[512];
+	if (strlen(file) >= sizeof(path))
+	{
+		WARN_LOG(GDROM, "GDI: path too long");
+		return nullptr;
+	}
 	strcpy(path,file);
 	ssize_t len=strlen(file);
 	const char* delim = path_get_archive_delim(file);
@@ -60,18 +65,21 @@ Disc* load_gdi(const char* file)
 		gdi >> CTRL;
 		gdi >> SSIZE;
 
-		char last;
+		/* (A file that ends here - in the middle of a line, or of a name
+		 * in quotes that is never closed - ends the reading: these loops
+		 * went on for ever on one, the second adding to the name until
+		 * there was no memory left.) */
+		char last = 0;
 
 		do {
 			gdi >> last;
-		} while (isspace(last));
+		} while (gdi && isspace((unsigned char)last));
 		
 		if (last == '"')
 		{
 			gdi >> std::noskipws;
 			for(;;) {
-				gdi >> last;
-				if (last == '"')
+				if (!(gdi >> last) || last == '"')
 					break;
 				track_filename += last;
 			}
@@ -96,8 +104,25 @@ Disc* load_gdi(const char* file)
 
 		if (SSIZE!=0)
 		{
+			/* (a name that does not fit is not copied past the end of
+			 * the path; and a track whose file is not there is the image
+			 * not loading, as for a cue sheet - it used to be a track
+			 * with no file behind it, found out at the first read) */
+			if (track_filename.size() >= sizeof(path) - len)
+			{
+				WARN_LOG(GDROM, "GDI: track %d: file name too long", TRACK);
+				delete disc;
+				return nullptr;
+			}
 			strcpy(pathptr, track_filename.c_str());
-			t.file = new RawTrackFile(core_fopen(path),OFFSET,t.StartFAD,SSIZE);	
+			core_file *track_file = core_fopen(path);
+			if (track_file == nullptr)
+			{
+				WARN_LOG(GDROM, "GDI: cannot open track %d: %s", TRACK, path);
+				delete disc;
+				return nullptr;
+			}
+			t.file = new RawTrackFile(track_file,OFFSET,t.StartFAD,SSIZE);
 		}
 		if (!disc->tracks.empty())
 			disc->tracks.back().EndFAD = t.StartFAD - 1;

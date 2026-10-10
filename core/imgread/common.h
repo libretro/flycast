@@ -279,20 +279,27 @@ struct Disc
 	{
 		Session ses;
 
+		if (tracks.empty())
+			return;
+
 		//session 1 : start @ track 1, and its fad
 		ses.FirstTrack=1;
 		ses.StartFAD=tracks[0].StartFAD;
 		sessions.push_back(ses);
 
 		//session 2 : start @ track 3, and its fad
-		ses.FirstTrack=3;
-		ses.StartFAD=tracks[2].StartFAD;
+		/* (An image with fewer tracks is no GD-ROM, and gets here all the
+		 * same - a cue sheet with one file, a CHD of a CD: its last track
+		 * then, where the third of two was read. Such an image is not
+		 * made a CD of yet.) */
+		ses.FirstTrack = tracks.size() < 3 ? (u32)tracks.size() : 3;
+		ses.StartFAD = tracks[ses.FirstTrack - 1].StartFAD;
 		sessions.push_back(ses);
 
 		//this isn't always true for gdroms, depends on area look @ the get-toc code
 		type=GdRom;
-		LeadOut.ADDR=0;
-		LeadOut.CTRL=0;
+		LeadOut.ADDR=1;	// subcode-q channel
+		LeadOut.CTRL=4;	// data
 		LeadOut.StartFAD=549300;
 
 		EndFAD=549300;

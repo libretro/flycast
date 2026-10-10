@@ -286,8 +286,12 @@ void GetDriveToc(u32* to,DiskArea area)
 		return;
 	memset(to, 0xFF, 102 * 4);
 
-	//can't get toc on the second area on discs that don't have it
-	verify(area != DoubleDensity || disc->type == GdRom);
+	/* can't get toc on the second area on discs that don't have it: there
+	 * is none to give. (This was a verify(), which checks nothing in a
+	 * build that is not for debugging, and the third track of a disc with
+	 * one or two was read all the same.) */
+	if (area == DoubleDensity && disc->type != GdRom)
+		return;
 
 	//normal CDs: 1 .. tc
 	//GDROM: area0 is 1 .. 2, area1 is 3 ... tc
@@ -299,23 +303,29 @@ void GetDriveToc(u32* to,DiskArea area)
 	else if (disc->type==GdRom)
 		last_track=2;
 
-	//Generate the TOC info
+	if (first_track - 1 >= disc->tracks.size() || last_track - 1 >= disc->tracks.size())
+		return;
+
+	/* Generate the TOC info. ADR is 1 in every entry - "what follows is a
+	 * position" - whatever the image said or did not say of it: it was 0
+	 * for gdi, cue and chd images, and upstream has Eldorado Gate 4 to 7
+	 * and V-Rally 2's music down to that. */
+	const u32 adr = 1;
 
 	//-1 for 1..99 0 ..98
-	to[99]  = CreateTrackInfo_se(disc->tracks[first_track-1].CTRL,disc->tracks[first_track-1].ADDR,first_track); 
-	to[100] = CreateTrackInfo_se(disc->tracks[last_track-1].CTRL,disc->tracks[last_track-1].ADDR,last_track); 
+	to[99]  = CreateTrackInfo_se(disc->tracks[first_track-1].CTRL, adr, first_track);
+	to[100] = CreateTrackInfo_se(disc->tracks[last_track-1].CTRL, adr, last_track);
 	
-	if (disc->type==GdRom)
-	{
+	if (disc->type==GdRom && area==SingleDensity)
 		//use smaller LEADOUT
-		if (area==SingleDensity)
-			to[101] = CreateTrackInfo(disc->LeadOut.CTRL,disc->LeadOut.ADDR,13085);
-	}
+		to[101] = CreateTrackInfo(disc->LeadOut.CTRL, adr, 13085);
 	else
-		to[101] = CreateTrackInfo(disc->LeadOut.CTRL, disc->LeadOut.ADDR, disc->LeadOut.StartFAD);
+		/* (a GD-ROM's second area had none at all: the entry was left as
+		 * the 0xFFFFFFFF the table is filled with) */
+		to[101] = CreateTrackInfo(disc->LeadOut.CTRL, adr, disc->LeadOut.StartFAD);
 
 	for (u32 i=first_track-1;i<last_track;i++)
-		to[i] = CreateTrackInfo(disc->tracks[i].CTRL,disc->tracks[i].ADDR,disc->tracks[i].StartFAD); 
+		to[i] = CreateTrackInfo(disc->tracks[i].CTRL, adr, disc->tracks[i].StartFAD);
 }
 
 void GetDriveSessionInfo(u8* to,u8 session)
@@ -331,6 +341,11 @@ void GetDriveSessionInfo(u8* to,u8 session)
 		to[3]=disc->EndFAD>>16;//fad is sessions end
 		to[4]=disc->EndFAD>>8;
 		to[5]=disc->EndFAD>>0;
+	}
+	else if (session > disc->sessions.size())
+	{
+		// no such session (upstream)
+		to[2] = to[3] = to[4] = to[5] = 0;
 	}
 	else
 	{
