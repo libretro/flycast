@@ -954,6 +954,44 @@ static void lcp_optflags_print(struct pico_device_ppp *ppp, uint8_t *opts, uint3
 }
 #endif
 
+/* The length an LCP, IPCP or CHAP packet gives for itself, its header
+ * included. The frame it came in may be longer - the rest is padding - but
+ * not shorter. 0 for a packet that says it is longer than what was received
+ * or shorter than its own header: such a packet is dropped without an
+ * answer, and the replies, which are sized by that length, are never built
+ * from it. */
+static uint32_t ppp_ctl_len(const uint8_t *pkt, uint32_t len)
+{
+    uint32_t hdr_len;
+
+    if (len < sizeof(struct pico_lcp_hdr))
+        return 0;
+
+    hdr_len = ((uint32_t)pkt[2] << 8) | pkt[3];
+    if (hdr_len < sizeof(struct pico_lcp_hdr) || hdr_len > len)
+        return 0;
+
+    return hdr_len;
+}
+
+/* The options of a Configure packet: a type, a length that counts the type
+ * and itself, then the value. The loops that walk them step by that length,
+ * so one under 2 would keep them where they are for good. 0 if an option is
+ * shorter than those two bytes or runs past the end of the packet. */
+static int ppp_options_ok(const uint8_t *pkt, uint32_t len)
+{
+    const uint8_t *p = pkt + sizeof(struct pico_lcp_hdr);
+    const uint8_t *end = pkt + len;
+
+    while (p < end) {
+        if ((end - p) < 2 || p[1] < 2u || p[1] > (end - p))
+            return 0;
+
+        p += p[1];
+    }
+    return 1;
+}
+
 /* setting adjust_opts will adjust our options to the ones supplied */
 static uint16_t lcp_optflags(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t len, int adjust_opts)
 {
@@ -1060,7 +1098,8 @@ static void lcp_send_terminate_ack(struct pico_device_ppp *ppp)
 
 static void lcp_send_configure_nack(struct pico_device_ppp *ppp)
 {
-    uint8_t reject[64];
+    /* The rejected options are some of the request's: never more than it holds */
+    uint8_t reject[ppp->len + PPP_HDR_SIZE + PPP_PROTO_SLOT_SIZE + sizeof(struct pico_lcp_hdr) + PPP_FCS_SIZE + 1];
     uint8_t *p = ppp->pkt +  sizeof(struct pico_lcp_hdr);
     struct pico_lcp_hdr *lcpreq = (struct pico_lcp_hdr *)ppp->pkt;
     struct pico_lcp_hdr *lcprej = (struct pico_lcp_hdr *)(reject + PPP_HDR_SIZE + PPP_PROTO_SLOT_SIZE);
@@ -1110,6 +1149,18 @@ static void lcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t l
     uint16_t optflags;
     if (!ppp)
         return;
+
+    len = ppp_ctl_len(pkt, len);
+    if (!len)
+        return;
+
+    /* Only the four Configure packets hold options */
+    if (pkt[0] >= PICO_CONF_REQ && pkt[0] <= PICO_CONF_REJ && !ppp_options_ok(pkt, len))
+        return;
+
+    /* The replies are built from the packet being answered */
+    ppp->pkt = pkt;
+    ppp->len = len;
 
     if (pkt[0] == PICO_CONF_REQ) {
         uint16_t rejected = 0;
@@ -1196,9 +1247,16 @@ static void chap_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
     if (ppp->auth != 0xc223)
         return;
 
+    len = ppp_ctl_len(pkt, len);
+    if (!len)
+        return;
+
     switch(ch->code) {
     case CHAP_CHALLENGE:
         ppp_dbg("Received CHAP CHALLENGE\n");
+        /* The challenge value, behind its length byte, has to be in the packet */
+        if (len < sizeof(struct pico_chap_hdr) + 1u || pkt[sizeof(struct pico_chap_hdr)] > len - sizeof(struct pico_chap_hdr) - 1u)
+            break;
         ppp->pkt = pkt;
         ppp->len = len;
         evaluate_auth_state(ppp, PPP_AUTH_EVENT_RAC);
@@ -1349,6 +1407,11 @@ static void ipcp_process_in(struct pico_device_ppp *ppp, uint8_t *pkt, uint32_t 
     uint8_t *p = pkt + sizeof(struct pico_ipcp_hdr);
     int reject = 0;
     int nak = 0;
+
+    len = ppp_ctl_len(pkt, len);
+    if (!len || !ppp_options_ok(pkt, len))
+        return;
+
     while (p < pkt + len) {
         if (p[0] == IPCP_OPT_VJ && dont_reject_opt_vj_hack == 0) {
             reject++;
@@ -1505,10 +1568,15 @@ static void ppp_process_packet(struct pico_device_ppp *ppp, uint8_t *pkt, uint32
     len -= 2;
 
     /* Remove ADDR/CTRL, then process */
-    if ((pkt[0] == PPPF_ADDR) && (pkt[1] == PPPF_CTRL)) {
+    if ((len >= 2) && (pkt[0] == PPPF_ADDR) && (pkt[1] == PPPF_CTRL)) {
         pkt += 2;
         len -= 2;
     }
+
+    /* Too short for a protocol number and anything behind it: the lengths
+     * worked out from here on would wrap around. */
+    if (len < 2)
+        return;
 
     ppp_process_packet_payload(ppp, pkt, len);
 
@@ -2181,6 +2249,9 @@ static int pico_ppp_poll(struct pico_device *dev, int loop_score)
     static uint32_t len = 0;
     int r;
     if (ppp->serial_recv) {
+        /* A frame that filled the buffer without an end flag is dropped: the loop below stops when the buffer is full, and the next byte would land past it. */
+        if (len >= ARRAY_SIZE(ppp_recv_buf))
+            len = 0;
         do {
             r = ppp->serial_recv(&ppp->dev, &ppp_recv_buf[len], 1);
             if (r <= 0)

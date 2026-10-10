@@ -295,7 +295,7 @@ static int pico_ethernet_ipv6_dst(struct pico_frame *f, struct pico_eth *const d
 
 /* Ethernet send, first attempt: try our own address.
  * Returns 0 if the packet is not for us.
- * Returns 1 if the packet is cloned to our own receive queue, so the caller can discard the original frame.
+ * Returns 1 if the packet is cloned to our own receive queue; the original frame is then discarded here.
  * */
 static int32_t pico_ethsend_local(struct pico_frame *f, struct pico_eth_hdr *hdr)
 {
@@ -309,6 +309,7 @@ static int32_t pico_ethsend_local(struct pico_frame *f, struct pico_eth_hdr *hdr
         if (pico_ethernet_receive(clone) < 0) {
             dbg("pico_ethernet_receive() failed\n");
         }
+        pico_frame_discard(f);
         return 1;
     }
 
@@ -317,12 +318,13 @@ static int32_t pico_ethsend_local(struct pico_frame *f, struct pico_eth_hdr *hdr
 
 /* Ethernet send, second attempt: try bcast.
  * Returns 0 if the packet is not bcast, so it will be handled somewhere else.
- * Returns 1 if the packet is handled by the pico_device_broadcast() function, so it can be discarded.
+ * Returns 1 if the packet is handled by the pico_device_broadcast() function; it is then discarded here.
  * */
 static int32_t pico_ethsend_bcast(struct pico_frame *f)
 {
     if (IS_LIMITED_BCAST(f)) {
         (void)pico_device_broadcast(f); /* We can discard broadcast even if it's not sent. */
+        pico_frame_discard(f);
         return 1;
     }
 
@@ -414,6 +416,7 @@ int32_t MOCKABLE pico_ethernet_send(struct pico_frame *f)
     /* This sets destination and source address, then pushes the packet to the device. */
     if (dstmac_valid) {
         struct pico_eth_hdr *hdr;
+        int32_t len;
         if (!eth_check_headroom(f)) {
             hdr = (struct pico_eth_hdr *) f->datalink_hdr;
             if ((f->start > f->buffer) && ((f->start - f->buffer) >= PICO_SIZE_ETHHDR))
@@ -427,11 +430,13 @@ int32_t MOCKABLE pico_ethernet_send(struct pico_frame *f)
                 hdr->proto = proto;
             }
 
+            /* Taken now: a frame for ourselves or a broadcast is gone once delivered */
+            len = (int32_t)f->len;
             if (pico_ethsend_local(f, hdr) || pico_ethsend_bcast(f) || pico_ethsend_dispatch(f)) {
                 /* one of the above functions has delivered the frame accordingly.
                  * (returned != 0). It is safe to directly return successfully.
                  * Lower level queue has frame, so don't discard */
-                return (int32_t)f->len;
+                return len;
             }
         }
     }
