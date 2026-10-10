@@ -305,6 +305,10 @@ struct ChannelEx;
 
 static void (* STREAM_STEP_LUT[5][2][2])(ChannelEx* ch);
 static void (* STREAM_INITAL_STEP_LUT[5])(ChannelEx* ch);
+/* The same for a channel that could read past the end of sound memory, by
+ * format: see UpdateStreamStep(). */
+static void (* STREAM_STEP_WRAP_LUT[4])(ChannelEx* ch);
+static void (* STREAM_INITAL_STEP_WRAP_LUT[4])(ChannelEx* ch);
 static void (* AEG_STEP_LUT[4])(ChannelEx* ch);
 static void (* FEG_STEP_LUT[4])(ChannelEx* ch);
 static void (* ALFOWS_CALC[4])(ChannelEx* ch);
@@ -690,7 +694,7 @@ struct ChannelEx
       SetFegState(EG_Release);
    }
 
-	//PCMS,SSCTL,LPCTL,LPSLNK
+	//PCMS,SSCTL,LPCTL,LPSLNK, and SA,LSA,LEA for where the samples end
 	void UpdateStreamStep()
 	{
 		s32 fmt=ccd->PCMS;
@@ -699,6 +703,37 @@ struct ChannelEx
 
 		StepStream=STREAM_STEP_LUT[fmt][ccd->LPCTL][ccd->LPSLNK];
 		StepStreamInitial=STREAM_INITAL_STEP_LUT[fmt];
+
+		if (fmt == 4)
+			return;	// noise: nothing is read
+		/* The last sample the channel can get to with its registers as they
+		 * are: the one before the loop end, where the position goes back to
+		 * the loop start or the channel stops, or the loop start itself if
+		 * that is further on. An ADPCM stream may get three past the loop
+		 * end, see StreamStep(). The sample after the one playing is read
+		 * as well, and is one of these too.
+		 *
+		 * If that sample ends beyond sound memory the channel gets the
+		 * functions that bring every address back round to the start of
+		 * memory, as the chip does. No real program has such a channel, and
+		 * all the others are spared a check on each sample they read: this
+		 * is done again whenever one of those registers is written. */
+		u32 last = 0;
+		if (loop.LEA != 0)
+		{
+			last = loop.LEA - 1;
+			if (fmt == 3)
+				last |= 3;
+		}
+		if (last < loop.LSA)
+			last = loop.LSA;
+		// in bytes: a sample is two, one, or half of one
+		u32 end = fmt == 0 ? last * 2 + 2 : fmt == 1 ? last + 1 : last / 2 + 1;
+		if ((u32)(SA - aica_ram.data) + end > ARAM_SIZE)
+		{
+			StepStream = STREAM_STEP_WRAP_LUT[fmt];
+			StepStreamInitial = STREAM_INITAL_STEP_WRAP_LUT[fmt];
+		}
 	}
 	//SA,PCMS
 	void UpdateSA()
@@ -860,8 +895,8 @@ struct ChannelEx
 		{
 		case 0x00:
 		case 0x01:
-			UpdateStreamStep();
 			UpdateSA();
+			UpdateStreamStep();
 			if ((offset == 0x01 || size == 2) && ccd->KYONEX)
 			{
 				ccd->KYONEX=0;
@@ -878,6 +913,7 @@ struct ChannelEx
 		case 0x04:
 		case 0x05:
 			UpdateSA();
+			UpdateStreamStep();
 			break;
 
 		case 0x08://LSA
@@ -885,6 +921,7 @@ struct ChannelEx
 		case 0x0C://LEA
 		case 0x0D://LEA
 			UpdateLoop();
+			UpdateStreamStep();
 			break;
 
 		case 0x10://D1R,AR
@@ -968,15 +1005,25 @@ static __forceinline SampleType DecodeADPCM(u32 sample,s32 prev,s32& quant)
 	return rv;
 }
 
-template<s32 PCMS,bool last>
+/* Where a channel's sample data is, @offset bytes on from its start
+ * address. With @wrap, for a channel that UpdateStreamStep() found could get
+ * past the end of sound memory, the address comes back round to the start
+ * of memory; it stays even for 16-bit samples, whose start address is.
+ * Every other channel reads straight from its pointer. */
+template<bool wrap>
+static __forceinline u8* SampleData(ChannelEx* ch, size_t offset)
+{
+	if (wrap)
+		return &aica_ram.data[(ch->SA - aica_ram.data + offset) & ARAM_MASK];
+	return ch->SA + offset;
+}
+
+template<s32 PCMS,bool last,bool wrap>
 __forceinline void StepDecodeSample(ChannelEx* ch,u32 CA)
 {
 	if (!last && PCMS<2)
 		return ;
 
-	s16* sptr16=(s16*)ch->SA;
-	s8* sptr8=(s8*)sptr16;
-	u8* uptr8=(u8*)sptr16;
 	u32 next_addr = CA + 1;
 	if (next_addr >= ch->loop.LEA)
 		next_addr = ch->loop.LSA;
@@ -995,20 +1042,20 @@ __forceinline void StepDecodeSample(ChannelEx* ch,u32 CA)
 		break;
 
 	case 0:
-s0 = sptr16[CA];
-s1 = sptr16[next_addr];
+s0 = *(s16*)SampleData<wrap>(ch, (size_t)CA * 2);
+s1 = *(s16*)SampleData<wrap>(ch, (size_t)next_addr * 2);
 		break;
 
 	case 1:
-      s0 = sptr8[CA] << 8;
-      s1 = sptr8[next_addr] << 8;
+      s0 = *(s8*)SampleData<wrap>(ch, CA) << 8;
+      s1 = *(s8*)SampleData<wrap>(ch, next_addr) << 8;
 		break;
 
 	case 2:
 	case 3:
 		{
-			u8 ad1=uptr8[CA>>1];
-			u8 ad2 = uptr8[next_addr >> 1];
+			u8 ad1=*SampleData<wrap>(ch, CA>>1);
+			u8 ad2 = *SampleData<wrap>(ch, next_addr >> 1);
 
 			ad1 >>= (CA & 1) * 4;
 			ad2 >>= (next_addr & 1) * 4;
@@ -1055,13 +1102,14 @@ s1 = sptr16[next_addr];
 
 
 
-template<s32 PCMS>
+template<s32 PCMS,bool wrap=false>
 void StepDecodeSampleInitial(ChannelEx* ch)
 {
-	StepDecodeSample<PCMS,true>(ch,0);
+	StepDecodeSample<PCMS,true,wrap>(ch,0);
 }
-template<s32 PCMS,u32 LPCTL,u32 LPSLNK>
-void StreamStep(ChannelEx* ch)
+/* What StreamStep() and StreamStepWrap() below are made of. */
+template<s32 PCMS,bool wrap>
+static __forceinline void StreamStepAny(ChannelEx* ch, const u32 LPCTL, const u32 LPSLNK)
 {
 	ch->step.full += (ch->update_rate * ch->lfo.plfo_step.full) >> 10;
 	fp_22_10 sp=ch->step;
@@ -1109,12 +1157,25 @@ void StreamStep(ChannelEx* ch)
 
 		//keep adpcm up to date
 		if (sp.ip==0)
-			StepDecodeSample<PCMS,true>(ch,CA);
+			StepDecodeSample<PCMS,true,wrap>(ch,CA);
 		else
-			StepDecodeSample<PCMS,false>(ch,CA);
+			StepDecodeSample<PCMS,false,wrap>(ch,CA);
 	}
 
 
+}
+template<s32 PCMS,u32 LPCTL,u32 LPSLNK>
+void StreamStep(ChannelEx* ch)
+{
+	StreamStepAny<PCMS,false>(ch, LPCTL, LPSLNK);
+}
+/* For the channel that could read past the end of sound memory. Its loop
+ * mode is looked up as it goes rather than built in: how fast this one is
+ * does not matter. */
+template<s32 PCMS>
+void StreamStepWrap(ChannelEx* ch)
+{
+	StreamStepAny<PCMS,true>(ch, ch->ccd->LPCTL, ch->ccd->LPSLNK);
 }
 
 template<s32 ALFOWS>
@@ -1299,6 +1360,16 @@ static void staticinitialise()
 	STREAM_INITAL_STEP_LUT[2]=&StepDecodeSampleInitial<2>;
 	STREAM_INITAL_STEP_LUT[3]=&StepDecodeSampleInitial<3>;
 	STREAM_INITAL_STEP_LUT[4]=&StepDecodeSampleInitial<-1>;
+
+	STREAM_STEP_WRAP_LUT[0]=&StreamStepWrap<0>;
+	STREAM_STEP_WRAP_LUT[1]=&StreamStepWrap<1>;
+	STREAM_STEP_WRAP_LUT[2]=&StreamStepWrap<2>;
+	STREAM_STEP_WRAP_LUT[3]=&StreamStepWrap<3>;
+
+	STREAM_INITAL_STEP_WRAP_LUT[0]=&StepDecodeSampleInitial<0,true>;
+	STREAM_INITAL_STEP_WRAP_LUT[1]=&StepDecodeSampleInitial<1,true>;
+	STREAM_INITAL_STEP_WRAP_LUT[2]=&StepDecodeSampleInitial<2,true>;
+	STREAM_INITAL_STEP_WRAP_LUT[3]=&StepDecodeSampleInitial<3,true>;
 
 	AEG_STEP_LUT[0]=&AegStep<0>;
 	AEG_STEP_LUT[1]=&AegStep<1>;
@@ -1591,7 +1662,12 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 	for ( i = 0 ; i < 64 ; i++)
 	{
 		LIBRETRO_US(addr);
-		Chans[i].SA = addr + (&(aica_ram.data[0])) ;
+		/* From the channel's registers, as when they are written, and not
+		 * the state's own figure: nothing says that one is inside sound
+		 * memory, or even for 16-bit samples, and states made before the
+		 * start address was kept to the size of memory hold some that are
+		 * not. */
+		Chans[i].UpdateSA();
 
 		LIBRETRO_US(Chans[i].CA) ;
 		LIBRETRO_US(Chans[i].step) ;
