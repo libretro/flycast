@@ -45,7 +45,7 @@ httpWrite(SOCKET fd, const char * body, int bodysize,
 	memcpy(p, headers, headerssize);
 	memcpy(p+headerssize, body, bodysize);
 	/*n = write(fd, p, headerssize+bodysize);*/
-	n = send(fd, p, headerssize+bodysize, 0);
+	n = send(fd, p, headerssize+bodysize, MINIUPNPC_MSG_NOSIGNAL);
 	if(n<0) {
 	  PRINT_SOCKET_ERROR("send");
 	}

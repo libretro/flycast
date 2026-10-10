@@ -178,6 +178,7 @@ connectToMiniSSDPD(const char * socketpath)
 		perror("socket(unix)");
 		return MINISSDPC_SOCKET_ERROR;
 	}
+	MINIUPNPC_SET_NOSIGPIPE(s);
 #if defined(MINIUPNPC_SET_SOCKET_TIMEOUT) && !defined(__sun)
 	/* setting a 3 seconds timeout */
 	/* not supported for AF_UNIX sockets under Solaris */
@@ -246,7 +247,7 @@ requestDevicesFromMiniSSDPD(int s, const char * devtype)
 	}
 	memcpy(p, devtype, stsize);
 	p += stsize;
-	if(write(s, buffer, p - buffer) < 0)
+	if(send(s, buffer, p - buffer, MINIUPNPC_MSG_NOSIGNAL) < 0)
 	{
 		/*syslog(LOG_ERR, "write(): %m");*/
 		perror("minissdpc.c: write()");

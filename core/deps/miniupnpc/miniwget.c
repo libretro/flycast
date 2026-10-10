@@ -457,7 +457,7 @@ miniwget3(const char * host,
 	/* sending the HTTP request */
 	while(sent < len)
 	{
-		n = send(s, buf+sent, len-sent, 0);
+		n = send(s, buf+sent, len-sent, MINIUPNPC_MSG_NOSIGNAL);
 		if(n < 0)
 		{
 			perror("send");

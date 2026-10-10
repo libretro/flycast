@@ -28,6 +28,24 @@
 
 #endif
 
+/* A send on a connection the other end has closed raises SIGPIPE, and a
+ * SIGPIPE nothing handles ends the whole process. It is never raised: by a
+ * flag on each send where the system has one, by an option set on the socket
+ * when it is made where it has that (Apple, the BSDs). */
+#ifndef _WIN32
+#include <sys/socket.h>
+#endif
+#if !defined(_WIN32) && defined(MSG_NOSIGNAL)
+#define MINIUPNPC_MSG_NOSIGNAL MSG_NOSIGNAL
+#else
+#define MINIUPNPC_MSG_NOSIGNAL 0
+#endif
+#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
+#define MINIUPNPC_SET_NOSIGPIPE(s) do { int nosigpipe_ = 1; setsockopt((s), SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe_, sizeof(nosigpipe_)); } while(0)
+#else
+#define MINIUPNPC_SET_NOSIGPIPE(s) do { } while(0)
+#endif
+
 #ifdef _MSC_VER
 #define MSC_CAST_INT (int)
 #else

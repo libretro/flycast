@@ -87,6 +87,7 @@ SOCKET connecthostport(const char * host, unsigned short port,
 		PRINT_SOCKET_ERROR("socket");
 		return INVALID_SOCKET;
 	}
+	MINIUPNPC_SET_NOSIGPIPE(s);
 #ifdef MINIUPNPC_SET_SOCKET_TIMEOUT
 	/* setting a 3 seconds timeout for the connect() call */
 	timeout.tv_sec = 3;
@@ -202,6 +203,7 @@ SOCKET connecthostport(const char * host, unsigned short port,
 		s = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 		if(ISINVALID(s))
 			continue;
+		MINIUPNPC_SET_NOSIGPIPE(s);
 		if(p->ai_addr->sa_family == AF_INET6 && scope_id > 0) {
 			struct sockaddr_in6 * addr6 = (struct sockaddr_in6 *)p->ai_addr;
 			addr6->sin6_scope_id = scope_id;
