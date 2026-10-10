@@ -81,7 +81,9 @@ bool reios_loadElf(const std::string& elf, u32* entry)
          memlen = len;
       /* ...and where they go, with the zeroes after them, has to be in
        * main memory, all of it: GetMemPtr() looks only at where it starts. */
-      u8* ptr = dest <= 0xFFFFFFFFu ? GetMemPtr((u32)dest, (u32)len) : NULL;
+      /* (asked first whether it is main memory at all: GetMemPtr() stops
+       * the emulator when handed an address in the CPU's own area) */
+      u8* ptr = dest <= 0xFFFFFFFFu && IsOnRam((u32)dest) ? GetMemPtr((u32)dest, (u32)len) : NULL;
       if (ptr == NULL || memlen > RAM_SIZE - ((u32)dest & RAM_MASK))
       {
          WARN_LOG(REIOS, "Invalid load address for section %d: %08lx", i, (unsigned long)dest);
@@ -99,7 +101,7 @@ bool reios_loadElf(const std::string& elf, u32* entry)
    {
       uint64_t start = elf_getEntryPoint(elfFile);
 
-      if (start <= 0xFFFFFFFFu && GetMemPtr((u32)start, 4) != NULL)
+      if (start <= 0xFFFFFFFFu && IsOnRam((u32)start))
          *entry = (u32)start;
    }
 

@@ -74,7 +74,8 @@ static void descrambl_buffer(u8* src, unsigned char *dst, unsigned long filesz)
 }
 
 void descrambl_file(u32 FAD, u32 file_size, u8* dst) {
-	u8* temp_file = new u8[file_size + 2048];
+	// (zeroed: sectors the drive does not give are not whatever was in the block)
+	u8* temp_file = new u8[file_size + 2048]();
 	libGDR_ReadSector(temp_file, FAD, (file_size+2047) / 2048, 2048);
 
 	descrambl_buffer(temp_file, dst, file_size);

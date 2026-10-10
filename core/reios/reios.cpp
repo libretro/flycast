@@ -56,6 +56,28 @@ static bool descrambl = false;
 static u32 boot_sectors;
 
 extern char game_dir_no_slash[1024];
+extern DCFlashChip sys_nvmem_flash;
+
+/* The console's flash memory, for the calls that work on it - or NULL when
+ * there is none. The calls can be made in a session that did not set this
+ * BIOS up (a state saved under it and loaded with a BIOS file in use has
+ * its entry points in memory), and then the flash was never handed over;
+ * and a NAOMI has no such flash at all, though a program on one can get
+ * here. */
+static DCFlashChip *reios_flash()
+{
+	if (settings.System != DC_PLATFORM_DREAMCAST)
+		return NULL;
+	DCFlashChip *flash = flashrom != NULL ? static_cast<DCFlashChip*>(flashrom) : &sys_nvmem_flash;
+	return (flash->data != NULL && flash->size >= 0x20000) ? flash : NULL;
+}
+
+/* The flash chip does not let the sector with the factory settings (the
+ * system ID, the region) be written or erased. */
+static inline bool reios_flash_protected(u32 offs)
+{
+	return (offs & 0x1e000) == 0x1a000;
+}
 
 static void reios_pre_init()
 {
@@ -164,7 +186,11 @@ static bool reios_locate_bootfile(const char* bootfile)
 			u32 lba = decode_iso733(dir->extent);
 			u32 len = decode_iso733(dir->size);
 
-			if (!memcmp(bootfile, "0WINCEOS.BIN", 12))
+			/* (on a GD-ROM. The boot file of a CD-R is scrambled from its
+			 * first byte to its last, whatever it is called, and the BIOS
+			 * unscrambles all of it to 8c010000: with a sector left out,
+			 * what came of the rest was not the program.) */
+			if (!descrambl && !memcmp(bootfile, "0WINCEOS.BIN", 12))
 			{
 				/* (its first sector is not part of the program) */
 				if (len < 2048)
@@ -211,7 +237,8 @@ static bool reios_locate_bootfile(const char* bootfile)
 			// system settings
 			// if the flash has them: a damaged one is not a reason to put junk there
 			flash_syscfg_block syscfg = {};
-			if (static_cast<DCFlashChip*>(flashrom)->ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg))
+			DCFlashChip *flash = reios_flash();
+			if (flash != NULL && flash->ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg))
 				memcpy(&data[16], &syscfg.time_lo, 8);
 			else
 				WARN_LOG(REIOS, "Can't read system settings from flash");
@@ -238,7 +265,8 @@ void reios_disk_id()
 	}
 	reios_pre_init();
 
-	u8 buf[2048];
+	// (zeroed: a drive that reads nothing leaves it as it was)
+	u8 buf[2048] = {0};
 	libGDR_ReadSector(buf, base_fad, 1, sizeof(buf));
 	memcpy(&ip_meta, buf, sizeof(ip_meta));
 	INFO_LOG(REIOS, "hardware %.16s maker %.16s ks %.5s type %.6s num %.5s area %.8s ctrl %.4s dev %c vga %c wince %c "
@@ -251,6 +279,15 @@ void reios_disk_id()
 
 static void reios_sys_system() {
 	u32 cmd = r[7];
+	DCFlashChip *flash = reios_flash();
+
+	// (the BIOS has four of these, and answers -1 to any other number)
+	if (cmd >= 4 || (flash == NULL && cmd != 3))
+	{
+		WARN_LOG(REIOS, "reios_sys_system: unhandled cmd %d", cmd);
+		r[0] = -1;
+		return;
+	}
 
 	switch (cmd)
 	{
@@ -265,11 +302,11 @@ static void reios_sys_system() {
 
 			// read system_id from 0x0001a056
 			for (int i  = 0; i < 8; i++)
-				data[i] = flashrom->Read8(0x1a056 + i);
+				data[i] = flash->Read8(0x1a056 + i);
 
 			// read system_props from 0x0001a000
 			for (int i  = 0; i < 5; i++)
-				data[8 + i] = flashrom->Read8(0x1a000 + i);
+				data[8 + i] = flash->Read8(0x1a000 + i);
 
 			// 0x0d-0x17: padding (zeroed out)
 
@@ -283,6 +320,20 @@ static void reios_sys_system() {
 		debugf("reios_sys_system: SYSINFO_ICON");
 		// r4 = icon number (0-9, but only 5-9 seems to really be icons)
 		// r5 = destination buffer (704 bytes in size)
+		if (r[4] >= 10)
+		{
+			r[0] = -1;
+			break;
+		}
+		/* The ten icons are the last 7040 bytes of the factory partition
+		 * of the flash, and the BIOS reads the one asked for from there.
+		 * (The call said it had, and left the buffer as it was.) */
+		{
+			const u32 icon = 0x1a480 + r[4] * 704;
+			u32 dest = r[5];
+			for (u32 i = 0; i < 704; i++)
+				WriteMem8(dest++, flash->data[icon + i]);
+		}
 		r[0] = 704;
 		break;
 
@@ -325,6 +376,14 @@ static void reios_sys_font() {
 
 static void reios_sys_flashrom() {
 	u32 cmd = r[7];
+	DCFlashChip *flash = reios_flash();
+
+	if (flash == NULL)
+	{
+		WARN_LOG(REIOS, "reios_sys_flashrom: cmd %d and no flash", cmd);
+		r[0] = -1;
+		return;
+	}
 
 	switch (cmd)
 	{
@@ -346,7 +405,7 @@ static void reios_sys_flashrom() {
 				if (part < FLASH_PT_NUM)
 				{
 					int offset, size;
-					static_cast<DCFlashChip*>(flashrom)->GetPartitionInfo(part, &offset, &size);
+					flash->GetPartitionInfo(part, &offset, &size);
 					WriteMem32(dest, offset);
 					WriteMem32(dest + 4, size);
 
@@ -373,13 +432,13 @@ static void reios_sys_flashrom() {
 
 				debugf("reios_sys_flashrom: FLASHROM_READ offs %x dest %08x size %x", offset, dest, size);
 				// (more than the flash holds is not a read of it, and went round it for as long as that took)
-				if (size > flashrom->size)
+				if (size > flash->size)
 				{
 					r[0] = -1;
 					break;
 				}
 				for (int i = 0; i < size; i++)
-					WriteMem8(dest++, flashrom->Read8(offset + i));
+					WriteMem8(dest++, flash->Read8(offset + i));
 
 				// 0 for success, not the number of bytes: Slave Zero (PAL) goes by it
 				r[0] = 0;
@@ -406,14 +465,18 @@ static void reios_sys_flashrom() {
 				/* Into the flash and nowhere else: the place and the length
 				 * are the game's, and were written to wherever they came to
 				 * past the end of it. */
-				if (offs >= flashrom->size || size > flashrom->size - offs)
+				if (offs >= flash->size || size > flash->size - offs)
 				{
 					WARN_LOG(REIOS, "reios_sys_flashrom: FLASHROM_WRITE outside the flash: offs %x size %x", offs, size);
 					r[0] = -1;
 					break;
 				}
-				for (int i = 0; i < size; i++)
-					flashrom->data[offs + i] &= ReadMem8(src + i);
+				for (u32 i = 0; i < size; i++)
+				{
+					u8 v = ReadMem8(src + i);
+					if (!reios_flash_protected(offs + i))
+						flash->data[offs + i] &= v;
+				}
 
 				r[0] = size;
 			}
@@ -436,11 +499,12 @@ static void reios_sys_flashrom() {
 				{
 					int part_offset;
 					int size;
-					static_cast<DCFlashChip*>(flashrom)->GetPartitionInfo(part, &part_offset, &size);
-					if (offset == part_offset)
+					flash->GetPartitionInfo(part, &part_offset, &size);
+					if (offset == (u32)part_offset)
 					{
 						found = true;
-						memset(flashrom->data + offset, 0xFF, size);
+						if (!reios_flash_protected(offset))
+							memset(flash->data + offset, 0xFF, size);
 					}
 				}
 
@@ -461,7 +525,14 @@ static void reios_sys_gd()
 
 static void reios_sys_gd2()
 {
+	/* This is the drive's own entry, the one the first goes on to for
+	 * super function 0: r7 picks the routine and r6 is not looked at. A
+	 * call made here with something else in r6 is still a call to the
+	 * drive, and was taken for one of the other kind. */
+	const u32 super = r[6];
+	r[6] = 0;
 	gdrom_hle_op();
+	r[6] = super;
 }
 
 static void reios_sys_misc()
@@ -497,6 +568,9 @@ static void reios_sys_misc()
 			break;
 		}
 		r[0] = 0;
+		// (where its boot sectors are goes by the disc in the drive now,
+		// which is not always the one that was booted)
+		reios_pre_init();
 		// Reload part of IP.BIN bootstrap
 		libGDR_ReadSector(GetMemPtr(0x8c008100, 0), base_fad, 7, 2048);
 		break;
@@ -1643,6 +1717,10 @@ static void reios_boot()
 	}
 	else {
 		if (settings.System == DC_PLATFORM_DREAMCAST) {
+			/* The boot file is the one named by the disc in the drive
+			 * now: after a change of disc and a reset that is not the
+			 * disc the name was last read from. */
+			reios_disk_id();
 			char bootfile[sizeof(ip_meta.boot_filename) + 1] = {0};
 			memcpy(bootfile, ip_meta.boot_filename, sizeof(ip_meta.boot_filename));
 			bool no_disc = libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk;
@@ -1735,6 +1813,8 @@ void reios_reset(u8* rom, MemChip* flash)
 {
 	flashrom = flash;
 	reios_rom = rom;
+	// (nothing booted yet: the last content's boot file is not this one's)
+	boot_sectors = 0;
 
 	memset(rom, 0x00, BIOS_SIZE);
 	memset(GetMemPtr(0x8C000000, 0), 0, RAM_SIZE);
@@ -1755,23 +1835,53 @@ void reios_reset(u8* rom, MemChip* flash)
 	// 288 12 × 24 pixels (36 bytes) characters
 	// 7078 24 × 24 pixels (72 bytes) characters
 	// 129 32 × 32 pixels (128 bytes) characters
-	memset(pFont, 0, 536496);
+	/* That is the font, and no more than that is put there whatever the
+	 * size of the file: a longer one was read past the end of the ROM. */
+	const size_t font_at = FONT_TABLE_ADDR % BIOS_SIZE;
+	const size_t font_size = std::min<size_t>(536496, BIOS_SIZE - font_at);
+	memset(pFont, 0, font_size);
 	std::string font_file(game_dir_no_slash);
 	font_file += "/font.bin";
 	RFILE *font = filestream_open(font_file.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (font == NULL)
 	{
 		INFO_LOG(REIOS, "font.bin not found. Using built-in font");
-		memcpy(pFont, builtin_font, sizeof(builtin_font));
+		memcpy(pFont, builtin_font, std::min(sizeof(builtin_font), font_size));
 	}
 	else
 	{
-		size_t size = (size_t)filestream_get_size(font);
-		size_t nread = (size_t)filestream_read(font, pFont, size);
+		int64_t file_size = filestream_get_size(font);
+		size_t size = file_size <= 0 ? 0 : (size_t)std::min<int64_t>(file_size, (int64_t)font_size);
+		size_t nread = size == 0 ? 0 : (size_t)filestream_read(font, pFont, size);
 		filestream_close(font);
 		if (nread != size)
 			WARN_LOG(REIOS, "font.bin: read truncated");
 		else
 			INFO_LOG(REIOS, "font.bin: loaded %zd bytes", size);
 	}
+}
+
+/* What of this BIOS is live and was not in a state before V21: how long the
+ * boot file was, in sectors, which is where "normal init" (system call 0 of
+ * the last vector) says the drive's DMA stopped. The disc's own particulars
+ * (where its boot sectors are, whether it is scrambled) are read off the
+ * disc when they are wanted, and are not kept. */
+void reios_serialize_v21(void **data, unsigned int *total_size)
+{
+	LIBRETRO_S(boot_sectors);
+}
+
+bool reios_unserialize_v21(void **data, unsigned int *total_size)
+{
+	LIBRETRO_US(boot_sectors);
+	// a boot file is no longer than main memory above 8c010000
+	if (boot_sectors > (RAM_SIZE - 0x10000) / 2048)
+		boot_sectors = 0;
+	return true;
+}
+
+void reios_state_before_v21(void)
+{
+	/* An older state says nothing about it. What this session's own boot
+	 * found stays, as it did when such a state was loaded before. */
 }
