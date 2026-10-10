@@ -25,14 +25,25 @@ void DMAC_Ch2St()
 	u32 src = DMAC_SAR(2) & 0x1fffffe0;
    u32 dst = SB_C2DSTAT & 0x01ffffe0;
    u32 len = SB_C2DLEN  & 0x00ffffe0;
-	// where SAR2 is left: as far on as the transfer is long
-	const u32 sar_end = DMAC_SAR(2) + len;
 
    if (0x8201 != (dmaor & DMAOR_MASK))
 	{
 		INFO_LOG(SH4, "DMAC: DMAOR has invalid settings (%X) !", dmaor);
 		return;
 	}
+
+	/* A length of 0 is the most there is, 16 MB, and not nothing: when the
+	 * DMAC's own count says 16 MB too, as it has to for such a transfer.
+	 * Otherwise the 0 is what the last transfer left in the register, or
+	 * what a reset did, and a transfer started with nothing set up is
+	 * what it has always been here: nothing is moved, and the end is
+	 * signalled. */
+	if (len == 0 && (DMAC_DMATCR(2) & 0x00ffffff) == 0x01000000 / 32)
+		len = 0x01000000;
+	// where SAR2 is left: as far on as the transfer is long
+	const u32 sar_end = DMAC_SAR(2) + len;
+	// and the destination, which moves on only when it is texture memory
+	const u32 dstat_end = 0x10000000 | ((SB_C2DSTAT + len) & 0x03ffffe0);
 
    DEBUG_LOG(SH4, ">> DMAC: Ch2 DMA SRC=%X DST=%X LEN=%X", src, SB_C2DSTAT, SB_C2DLEN);
 
@@ -114,7 +125,12 @@ void DMAC_Ch2St()
 				dst += 4;
 			}
 		}
-		SB_C2DSTAT = dst;
+		/* (It was left as the address the copy above ended at, a4xxxxxx
+		 * or a5xxxxxx: not an address this register can hold, and a
+		 * transfer that went on from it without writing it again was taken
+		 * for one to the Tile Accelerator, or went by the other bus
+		 * selection.) */
+		SB_C2DSTAT = dstat_end;
 	}
 
 	// Setup some of the regs so it thinks we've finished DMA
@@ -134,6 +150,8 @@ static const InterruptID dmac_itr[] = { sh4_DMAC_DMTE0, sh4_DMAC_DMTE1, sh4_DMAC
 template<u32 ch>
 void WriteCHCR(u32 addr, u32 data)
 {
+	// TE is cleared by writing 0 to it: writing 1 leaves it as it is
+	data &= DMAC_CHCR(ch).full | ~2u;
    if (ch == 0 || ch == 1)
 		DMAC_CHCR(ch).full = data & 0xff0ffff7;
 	else
@@ -193,14 +211,22 @@ void WriteCHCR(u32 addr, u32 data)
 			DMAC_DMATCR(ch) = 0;
 		}
 		InterruptPend(dmac_itr[ch], DMAC_CHCR(ch).TE);
-		InterruptMask(dmac_itr[ch], DMAC_CHCR(ch).IE);
 	}
+	/* The interrupt is asked for while TE and IE are both set. It used to
+	 * be looked at only by a write that enabled the channel: one that
+	 * cleared TE and the enable bit together left it asked for, for good. */
+	else if (DMAC_CHCR(ch).TE == 0)
+		InterruptPend(dmac_itr[ch], 0);
+	InterruptMask(dmac_itr[ch], DMAC_CHCR(ch).IE);
 }
 
 void WriteDMAOR(u32 addr, u32 data)
 {
 	// DDT, PR, AE, NMIF and DME: the rest read as 0
-	DMAC_DMAOR.full = data & 0x8307;
+	data &= 0x8307;
+	// AE and NMIF are cleared by writing 0 to them: writing 1 does not set them
+	data &= DMAC_DMAOR.full | ~6u;
+	DMAC_DMAOR.full = data;
 }
 
 //Init term res
