@@ -230,26 +230,50 @@ void mem_Term()
 	_vmem_term();
 }
 
+/* How many bytes of plain memory lie in a row from an address on, the byte
+ * at that address being the first of them: as far as the end of the memory
+ * it is in, or of its 16 MB of the address space if that comes first. A copy
+ * no longer than that is one memcpy. A longer one goes on at the address
+ * that follows, as the bus would: the start of the same memory again where
+ * it is mirrored, its next 16 MB, or something that is not memory at all. */
+static INLINE u32 mem_run_read(u32 addr, void *ptr)
+{
+	bool ismem;
+	return (u32)((u8 *)_vmem_read_const(addr | 0x00FFFFFF, ismem, 4) - (u8 *)ptr) + 1;
+}
+
+static INLINE u32 mem_run_write(u32 addr, void *ptr)
+{
+	bool ismem;
+	return (u32)((u8 *)_vmem_write_const(addr | 0x00FFFFFF, ismem, 4) - (u8 *)ptr) + 1;
+}
+
 void WriteMemBlock_nommu_dma(u32 dst, u32 src, u32 size)
 {
-	bool dst_ismem, src_ismem;
-	void* dst_ptr = _vmem_write_const(dst, dst_ismem, 4);
+	bool src_ismem;
 	void* src_ptr = _vmem_read_const(src, src_ismem, 4);
 
-	if (dst_ismem && src_ismem)
+	while (src_ismem)
 	{
-		memcpy(dst_ptr, src_ptr, size);
+		const u32 run = mem_run_read(src, src_ptr);
+
+		if (likely(size <= run))
+		{
+			WriteMemBlock_nommu_ptr(dst, (u32*)src_ptr, size);
+			return;
+		}
+		// The source runs off the end of its memory: this much of it, then
+		// the rest from wherever the address leads.
+		WriteMemBlock_nommu_ptr(dst, (u32*)src_ptr, run);
+		dst += run;
+		src += run;
+		size -= run;
+		src_ptr = _vmem_read_const(src, src_ismem, 4);
 	}
-	else if (src_ismem)
-	{
-		WriteMemBlock_nommu_ptr(dst, (u32*)src_ptr, size);
-	}
-	else
-	{
-		verify(size % 4 == 0);
-		for (u32 i = 0; i < size; i += 4)
-			WriteMem32_nommu(dst + i, ReadMem32_nommu(src + i));
-	}
+
+	verify(size % 4 == 0);
+	for (u32 i = 0; i < size; i += 4)
+		WriteMem32_nommu(dst + i, ReadMem32_nommu(src + i));
 }
 
 void WriteMemBlock_nommu_ptr(u32 dst, u32* src, u32 size)
@@ -258,30 +282,42 @@ void WriteMemBlock_nommu_ptr(u32 dst, u32* src, u32 size)
 
 	void* dst_ptr = _vmem_write_const(dst, dst_ismem, 4);
 
-	if (dst_ismem)
+	while (dst_ismem)
 	{
-		memcpy(dst_ptr, src, size);
-	}
-	else
-	{
-		for (u32 i = 0; i < size;)
+		const u32 run = mem_run_write(dst, dst_ptr);
+
+		if (likely(size <= run))
 		{
-			u32 left = size - i;
-			if (left >= 4)
-			{
-				WriteMem32_nommu(dst + i, src[i >> 2]);
-				i += 4;
-			}
-			else if (left >= 2)
-			{
-				WriteMem16_nommu(dst + i, ((u16 *)src)[i >> 1]);
-				i += 2;
-			}
-			else
-			{
-				WriteMem8_nommu(dst + i, ((u8 *)src)[i]);
-				i++;
-			}
+			memcpy(dst_ptr, src, size);
+			return;
+		}
+		// The copy runs off the end of the memory it starts in: fill that,
+		// and go on at the address that follows instead of past the end of
+		// the host's block.
+		memcpy(dst_ptr, src, run);
+		dst += run;
+		src = (u32 *)((u8 *)src + run);
+		size -= run;
+		dst_ptr = _vmem_write_const(dst, dst_ismem, 4);
+	}
+
+	for (u32 i = 0; i < size;)
+	{
+		u32 left = size - i;
+		if (left >= 4)
+		{
+			WriteMem32_nommu(dst + i, src[i >> 2]);
+			i += 4;
+		}
+		else if (left >= 2)
+		{
+			WriteMem16_nommu(dst + i, ((u16 *)src)[i >> 1]);
+			i += 2;
+		}
+		else
+		{
+			WriteMem8_nommu(dst + i, ((u8 *)src)[i]);
+			i++;
 		}
 	}
 }
