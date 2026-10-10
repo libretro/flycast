@@ -80,7 +80,11 @@ void Sh4_int_Run()
 void Sh4_int_Stop()
 {
 	if (sh4_int_bCpuRun)
+	{
 		sh4_int_bCpuRun=false;
+		// and the time slice ends with the instruction being executed
+		l = 0;
+	}
 }
 
 void Sh4_int_Start()
@@ -164,14 +168,28 @@ void ExecuteDelayslot()
 
 void ExecuteDelayslot_RTE()
 {
+	// In an RTE delay slot, status register (SR) bits are referenced as follows.
+	// In instruction access, the MD bit is used before modification, and in data access,
+	// the MD bit is accessed after modification.
+	// The other bits - S, T, M, Q, FD, BL, and RB - after modification are used for delay slot
+	// instruction execution. The STC and STC.L SR instructions access all SR bits after modification.
+	bool fetched = false;
 #if !defined(NO_MMU)
    try {
 #endif
-      ExecuteDelayslot();
+      u32 op = ReadNexOp();
+
+      // Fetched as RTE was, in privileged mode. Now SR is as it was saved.
+      fetched = true;
+      sh4_sr_SetFull(ssr);
+      ExecuteOpcode(op);
 #if !defined(NO_MMU)
    }
    catch (SH4ThrownException& ex) {
       ERROR_LOG(INTERPRETER, "Exception in RTE delay slot");
+      // the return is made all the same: with SR as it was saved
+      if (!fetched)
+         sh4_sr_SetFull(ssr);
    }
 #endif
 }

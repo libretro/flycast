@@ -418,8 +418,9 @@ sh4op(i1111_nnnn_0101_1101)
 
 	/* The sign is in the register the instruction names, whichever the
 	 * precision: a double's is in the even one of its pair, which is the
-	 * one named. (An odd one with PR set is not defined; recompiled code
-	 * takes the one named, and so does this now.) */
+	 * one named. (An odd one with PR set is not defined: the one named is
+	 * taken then too. Recompiled code has no form of its own for FABS with
+	 * PR set: it calls this.) */
 	fr_hex[n]&=0x7FFFFFFF;
 }
 
@@ -509,9 +510,10 @@ sh4op(i1111_nnmm_1110_1101)
 	 * to work in floats elsewhere, and the interpreter came out
 	 * different from recompiled code.
 	 *
-	 * With FPSCR.PR set the instruction is not defined. Recompiled code
-	 * does the same sum either way, so this does too: it used to end the
-	 * emulator there (die()), which a program could then do at will. */
+	 * With FPSCR.PR set the instruction is not defined, and recompiled
+	 * code calls this for it. The same sum is done either way: it used to
+	 * end the emulator there (die()), which a program could then do at
+	 * will. */
 	double idp = (double)fr[n + 0] * fr[m + 0];
 	idp += (double)fr[n + 1] * fr[m + 1];
 	idp += (double)fr[n + 2] * fr[m + 2];

@@ -829,6 +829,24 @@ sh4op(i0000_0000_0010_1000)
 	mac.full=0;
 }
 
+/* A jump whose address comes out of a register has just been made to
+ * @newpc. An odd one is an address error at the instruction to be fetched
+ * there. With the MMU on the fetch finds that out by itself; with it off
+ * the fetch tests nothing, so the places that can make the address odd do.
+ * (Only when it is the interpreter that runs the program: recompiled code
+ * has its own forms of these jumps, and nothing round it to catch this.) */
+static INLINE void JumpedTo(u32 newpc)
+{
+#if !defined(NO_MMU)
+	if (unlikely(newpc & 1) && !mmu_enabled() && !settings.dynarec.Enable)
+	{
+		CCN_TEA = newpc;
+		SH4ThrownException ex = { newpc, 0xE0, 0x100 };
+		throw ex;
+	}
+#endif
+}
+
 //braf <REG_N>
 sh4op(i0000_nnnn_0010_0011)
 {
@@ -836,6 +854,7 @@ sh4op(i0000_nnnn_0010_0011)
 	u32 newpc = r[n] + next_pc + 2;//
 	ExecuteDelayslot();	//WARN : r[n] can change here
 	next_pc = newpc;
+	JumpedTo(newpc);
 }
 //bsrf <REG_N>
 sh4op(i0000_nnnn_0000_0011)
@@ -849,6 +868,7 @@ sh4op(i0000_nnnn_0000_0011)
 	
 	pr = newpr;
 	next_pc = newpc;
+	JumpedTo(newpc);
 }
 
 
@@ -856,17 +876,17 @@ sh4op(i0000_nnnn_0000_0011)
 sh4op(i0000_0000_0010_1011)
 {
 	u32 newpc = spc;
-	// FIXME In an RTE delay slot, status register (SR) bits are referenced as follows.
-	// In instruction access, the MD bit is used before modification, and in data access, 
-	// the MD bit is accessed after modification.
-	// The other bits—S, T, M, Q, FD, BL, and RB—after modification are used for delay slot
-	// instruction execution. The STC and STC.L SR instructions access all SR bits after modification.
-	sh4_sr_SetFull(ssr);
+	// (SR is restored there, between fetching the next instruction and executing it)
 	ExecuteDelayslot_RTE();
 	next_pc = newpc;
 	if (UpdateSR())
 	{
 		UpdateINTC();
+	}
+	else
+	{
+		// (an interrupt comes before the instruction is fetched)
+		JumpedTo(newpc);
 	}
 }
 
@@ -877,6 +897,7 @@ sh4op(i0000_0000_0000_1011)
 	u32 newpc=pr;
 	ExecuteDelayslot(); //WARN : pr can change here
 	next_pc=newpc;
+	JumpedTo(newpc);
 }
 
 u32 branch_target_s8(u32 op)
@@ -972,6 +993,7 @@ sh4op(i0100_nnnn_0010_1011)
 	u32 newpc=r[n];
 	ExecuteDelayslot(); //r[n] can change here
 	next_pc=newpc;
+	JumpedTo(newpc);
 }
 
 //jsr @<REG_N>
@@ -986,6 +1008,7 @@ sh4op(i0100_nnnn_0000_1011)
 
 	pr = newpr;
 	next_pc=newpc;
+	JumpedTo(newpc);
 }
 
 //sleep
