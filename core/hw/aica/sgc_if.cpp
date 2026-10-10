@@ -56,7 +56,10 @@ static const u32 SendLevel[16] =
 	255, 14 << 3, 13 << 3, 12 << 3, 11 << 3, 10 << 3, 9 << 3, 8 << 3,
 	7 << 3, 6 << 3, 5 << 3, 4 << 3, 3 << 3, 2 << 3, 1 << 3, 0 << 3
 };
-static s32 tl_lut[256 + 768];	//xx.15 format. >=255 is muted
+/* xx.15 format, by attenuation in the envelope's units: it has 10 bits, 64
+ * of its steps to 6 dB, and TL and the send levels are a quarter as fine, 16
+ * to 6 dB. The last entries, from 961, are 0. */
+static s32 tl_lut[1024];
 
 //in ms :)
 static const double AEG_Attack_Time[64] =
@@ -559,10 +562,12 @@ struct ChannelEx
 			//Volume & Mixer processing
 			//All attenuations are added together then applied and mixed :)
 			
-			//offset is up to 511
-			//*Att is up to 511
-			//logtable handles up to 1024, anything >=255 is mute
+			//offset is up to 1023
+			//logtable handles up to 1023, anything >=961 is mute
 
+			/* In the envelope's units, all 10 bits of it. The envelope
+			 * used to be brought down to the 8 of the others, and the level
+			 * went by steps of 0.375 dB where the chip's are 0.094. */
 			u32 ofsatt;
 			if (ccd->VOFF == 1)
 			{
@@ -570,10 +575,10 @@ struct ChannelEx
 			}
 			else
 			{
-				ofsatt = lfo.alfo + (AEG.GetValue() >> 2);
-				ofsatt = std::min(ofsatt, (u32)255); // make sure it never gets more 255 -- it can happen with some alfo/aeg combinations
+				ofsatt = (lfo.alfo << 2) + AEG.GetValue();
+				ofsatt = std::min(ofsatt, (u32)1023); // make sure it never gets more 1023 -- it can happen with some alfo/aeg combinations
 			}
-			u32 const max_att = ((16 << 4) - 1) - ofsatt;
+			u32 const max_att = 1023 - ofsatt;
 			
 			s32* logtable = ofsatt + tl_lut;
 
@@ -848,11 +853,12 @@ struct ChannelEx
 		VolMix.DSPOut = &dsp.MIXS[ccd->ISEL];
 	}
 	//TL,DISDL,DIPAN,IMXL
+	//(in the envelope's units, a quarter of TL's: see Step())
 	void UpdateAtts()
 	{
-		u32 total_level = ccd->VOFF ? 0 : ccd->TL;
-		u32 attFull = total_level + SendLevel[ccd->DISDL];
-		u32 attPan=attFull+SendLevel[(~ccd->DIPAN)&0xF];
+		u32 total_level = ccd->VOFF ? 0 : (ccd->TL << 2);
+		u32 attFull = total_level + (SendLevel[ccd->DISDL] << 2);
+		u32 attPan=attFull+(SendLevel[(~ccd->DIPAN)&0xF] << 2);
 
 		//0x1* -> R decreases
 		if (ccd->DIPAN&0x10)
@@ -866,7 +872,7 @@ struct ChannelEx
 			VolMix.DRAtt=attFull;
 		}
 
-		VolMix.DSPAtt = total_level + SendLevel[ccd->IMXL];
+		VolMix.DSPAtt = total_level + (SendLevel[ccd->IMXL] << 2);
 	}
 
 	//Q,FLV0,FLV1,FLV2,FLV3,FLV4,FAR,FD1R,FD2R,FRR, LPOFF
@@ -1438,12 +1444,8 @@ void sgc_Init()
 			volume_lut[i]=0;
 	}
 
-	for (int i=0;i<256;i++)
-		tl_lut[i]=(s32)((1<<15)/pow(2.0,i/16.0));
-
-	//tl entries 256 to 1023 are 0
-	for (int i=256;i<1024;i++)
-		tl_lut[i]=0;
+	for (int i=0;i<1024;i++)
+		tl_lut[i]=(s32)((1<<15)/pow(2.0,i/64.0));
 
 	for (int vol=0;vol<16;vol++)
 	{
