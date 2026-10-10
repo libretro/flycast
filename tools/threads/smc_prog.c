@@ -203,8 +203,35 @@ __asm__(".text\n.align 2\n.global smc_shifts\nsmc_shifts:\n"
         "  mov #32, r1\n  mov r4, r0\n  shld r1, r0\n  mov.l r0, @(8,r5)\n"
         "  mov r4, r0\n  shad r1, r0\n"
         "  rts\n  mov.l r0, @(12,r5)\n");
+/* smc_mmu_turn(x): x to MMUCR, in a block that counts how often it is run -
+ * in a word of its own page, so that writing the count is writing to the
+ * page the block's code is in - and leaves by a jump whose address is in
+ * the code. In a page to itself: the rest of the program is not to lose
+ * its protection with it. */
+__asm__(".text\n.align 12\n.global smc_mmu_turn\n.global smc_mmu_turns\nsmc_mmu_turn:\n"
+        "  mova smc_mmu_turns, r0\n  mov.l @r0, r1\n  add #1, r1\n  mov.l r1, @r0\n"
+        "  mov.l 1f, r2\n  mov.l r4, @r2\n"
+        "  bra 2f\n  nop\n  .align 2\n"
+        "1: .long 0xFF000010\n"
+        "smc_mmu_turns: .long 0\n"
+        "2: rts\n  nop\n  .align 12\n");
+/* smc_mac(io, how): MAC.L (MAC.W if @how has 2 in it) of the two numbers at
+ * io[2] and io[3], with the S flag set if @how has 1 in it, added to the
+ * MACH and MACL at io[0] and io[1] - where what they come to is left. */
+__asm__(".text\n.align 2\n.global smc_mac\nsmc_mac:\n"
+        "  mov.l @r4, r0\n  lds r0, mach\n  mov.l @(4,r4), r0\n  lds r0, macl\n"
+        "  mov r4, r1\n  add #8, r1\n  mov r4, r2\n  add #12, r2\n"
+        "  clrs\n  mov r5, r0\n  tst #1, r0\n  bt 1f\n  sets\n"
+        "1: mov r5, r0\n  tst #2, r0\n  bf 2f\n"
+        "  mac.l @r1+, @r2+\n  bra 3f\n  nop\n"
+        "2: mac.w @r1+, @r2+\n"
+        "3: clrs\n  sts mach, r0\n  mov.l r0, @r4\n  sts macl, r0\n"
+        "  rts\n  mov.l r0, @(4,r4)\n");
 extern char smc_vbr[];
 extern const u32 smc_own_tlb;
+extern void smc_mmu_turn(u32 mmucr);
+extern volatile u32 smc_mmu_turns;
+extern void smc_mac(volatile u32 *io, u32 how);
 extern u32 smc_negc_twice(u32 x, volatile u32 *to);
 extern u32 smc_where(void);
 extern char smc_where_mark[];
@@ -313,6 +340,9 @@ static void write_w(void)
 /* (volatile: they change under the code that reads them) */
 volatile u32 smc_shift;
 volatile u32 smc_misses, smc_first_writes, smc_reads_refused, smc_writes_refused, smc_traps;
+/* not 0: the entry a page goes into is left to the processor's counter, and
+ * this many more pages may be asked for before that is taken to have failed */
+volatile u32 smc_by_counter;
 
 /* Every exception there is with the MMU on, and the TLB miss.
  *
@@ -332,6 +362,9 @@ volatile u32 smc_misses, smc_first_writes, smc_reads_refused, smc_writes_refused
  *   0x18000000 on   for privileged mode only
  *   0x19000000 on   each page where its neighbour would be: the first and
  *                   second of an 8K change places
+ *
+ * and, while smc_by_counter is not 0, in the entry the processor's own
+ * counter chooses (MMUCR.URC, which is then left alone).
  *
  * A page that was not to be touched the way it was - the exceptions for a
  * first write and for the two refusals - is counted and given again with
@@ -388,7 +421,17 @@ void smc_fault(void)
    if (top == 0x13 || top == 0xC9 || top == 0xCD)
       to += smc_shift;
    *WORD(0xFF000004) = 0x0C000000 | to | flags;     /* PTEL */
-   *MMUCR = (*MMUCR & 0xFFFF03FF) | (entry << 10);  /* MMUCR.URC */
+   if (smc_by_counter)
+   {
+      if (--smc_by_counter == 0)
+      {
+         *((volatile u32 *)0x8c00f800) = 0xBAD01650;
+         for (;;)
+            ;
+      }
+   }
+   else
+      *MMUCR = (*MMUCR & 0xFFFF03FF) | (entry << 10);  /* MMUCR.URC */
    __asm__ volatile (".word 0x0038");               /* ldtlb */
 }
 
@@ -413,7 +456,7 @@ static u32 mmu_on(void)
    if (smc_own_tlb == 2)
    {
       /* the other order: on with the TLB empty, and the page after */
-      *MMUCR = 0x00000005;
+      smc_mmu_turn(0x00000005);
       *TLB_ADDRESS((PAGES_MAPPED >> 12) & 0x3F) = PAGES_MAPPED | 0x300;
       *TLB_DATA((PAGES_MAPPED >> 12) & 0x3F) = (PAGES_IN_MEMORY & 0x00FFF000) | 0x0C000176;
    }
@@ -422,10 +465,15 @@ static u32 mmu_on(void)
       *MMUCR = 0x00000004;                          /* the TLB emptied */
       *TLB_ADDRESS((PAGES_MAPPED >> 12) & 0x3F) = PAGES_MAPPED | 0x300;
       *TLB_DATA((PAGES_MAPPED >> 12) & 0x3F) = (PAGES_IN_MEMORY & 0x00FFF000) | 0x0C000176;
-      *MMUCR = 0x00000001;                          /* on */
+      smc_mmu_turn(0x00000001);                     /* on */
    }
    else
-      *MMUCR = 0x00000005;                          /* on, and the TLB emptied */
+      smc_mmu_turn(0x00000005);                     /* on, and the TLB emptied */
+   /* (once: an emulator that compiles a block for the machine as it is, and
+    * finds a different machine when the block is done, has been known to
+    * run the block again to be sure) */
+   if (smc_mmu_turns != 1)
+      fail(1, smc_mmu_turns);
    if (mmu_probe())
       return smc_own_tlb ? 2 : 1;
    *MMUCR = 0;                                      /* nobody translates: as it was */
@@ -1007,6 +1055,32 @@ static u32 __attribute__((noinline)) user_mode(void)
    return 0;
 }
 
+/* The entry a page goes into left to the processor: its counter moves on
+ * each time the TLB is looked in, so two pages asked for one after the
+ * other do not get the same entry. A function in one page that reads a
+ * word in another needs both at once - with one entry for the two it
+ * would ask for each in turn for ever, and smc_fault() gives up long before
+ * that. Eight such pairs, twice. */
+static u32 __attribute__((noinline)) by_the_counter(void)
+{
+   u32 code[8], data[8], i, r = 0;
+
+   for (i = 0; i < 8; i++)
+   {
+      code[i] = page();
+      data[i] = page();
+      *WORD(0x8c000000 + code[i]) = 0x000B6042;     /* mov.l @r4,r0 ; rts */
+      *WORD(0x8c000000 + code[i] + 4) = 0x00090009; /* nop ; nop */
+      *WORD(0x8c000000 + data[i]) = 0x7700 + i;
+   }
+   smc_by_counter = 200;
+   for (i = 0; i < 16 && r == 0; i++)
+      if (call2(0x1A000000 + code[i & 7], 0x1A000000 + data[i & 7], 0) != 0x7700 + (i & 7))
+         r = 1 + (i & 7);
+   smc_by_counter = 0;
+   return r;
+}
+
 /* Code that is at two addresses, and was never written: this program's
  * own, where it was loaded and where the MMU has that memory as well. An
  * emulator finds what it compiled by where the code is in memory, which
@@ -1303,6 +1377,8 @@ void cmain(void)
          fail(22, 0x30 | r);
       if ((r = off_and_on()) != 0)
          fail(22, 0x40 | r);
+      if ((r = by_the_counter()) != 0)
+         fail(22, 0x50 | r);
    }
 
    *VERDICT = 23;
@@ -1342,6 +1418,33 @@ void cmain(void)
          fail(25, 3);
       if (out[2] != 0x80000001 || out[3] != 0x80000001)
          fail(25, 4);
+   }
+
+   /* MAC.L and MAC.W with the S flag, which makes the sum stop at the ends
+    * of 48 bits and of 32 instead of going round - an emulator stopped at
+    * the second, itself. And without the flag, as they were. */
+   *VERDICT = 26;
+   {
+      static const u32 cases[7][7] = {
+         /* MACH        MACL        the two numbers       how  MACH        MACL */
+         { 0x00007FFF, 0xFFFFFFFF, 2,          3,          0, 0x00008000, 0x00000005 },
+         { 0x00007FFF, 0xFFFFFFFF, 2,          3,          1, 0x00007FFF, 0xFFFFFFFF },
+         { 0xFFFF8000, 0x00000001, 0xFFFFFFFF, 2,          1, 0xFFFF8000, 0x00000000 },
+         { 0x00000000, 0x00000005, 2,          3,          1, 0x00000000, 0x0000000B },
+         { 0x00001234, 0x7FFFFFF0, 0x10,       0x10,       3, 0x00001234, 0x7FFFFFFF },
+         { 0x00001234, 0x80000001, 0xFFFF,     2,          3, 0x00001234, 0x80000000 },
+         { 0x00000000, 0xFFFFFFFF, 1,          1,          2, 0x00000001, 0x00000000 },
+      };
+      static volatile u32 io[4];
+
+      for (i = 0; i < 7; i++)
+      {
+         for (j = 0; j < 4; j++)
+            io[j] = cases[i][j];
+         smc_mac(io, cases[i][4]);
+         if (io[0] != cases[i][5] || io[1] != cases[i][6])
+            fail(26, i);
+      }
    }
 
    /* And for ever, for whoever saves a state and loads it later. */
