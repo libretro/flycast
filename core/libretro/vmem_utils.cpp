@@ -419,7 +419,13 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
 	void *ptr_rx = code_area;
 #endif // HAVE_LIBNX
 	if (ptr_rx != code_area)
+	{
+#ifndef HAVE_LIBNX
+		close(shmem_fd2);
+		shmem_fd2 = -1;
+#endif
 		return false;
+	}
 
 #ifndef HAVE_LIBNX
 	// Now remap the same memory as RW in some location we don't really care at all.
@@ -430,6 +436,11 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
 	if(R_FAILED(svcMapProcessMemory(ptr_rw, envGetOwnProcessHandle(), (u64)code_area, size_aligned)))
 		printf("Failed to map jit rw block...\n");
 #endif // HAVE_LIBNX
+#ifndef HAVE_LIBNX
+	// (the two mappings keep the memory: the descriptor has done its work)
+	close(shmem_fd2);
+	shmem_fd2 = -1;
+#endif
 	*code_area_rw = ptr_rw;
 	*rx_offset = (char*)ptr_rx - (char*)ptr_rw;
 	INFO_LOG(DYNAREC, "Info: Using NO_RWX mode, rx ptr: %p, rw ptr: %p, offset: %lu\n", ptr_rx, ptr_rw, (unsigned long)*rx_offset);
@@ -730,12 +741,13 @@ static void* vmem_platform_prepare_jit_block_template(void *code_area, unsigned 
 		uintptr_t try_addr_below = base_addr - i;
 
 		// We need to make sure there's no address wrap around the end of the addrspace (meaning: int overflow).
-		if (try_addr_above > base_addr) {
+		// (Nor address 0, which asks for memory anywhere.)
+		if (try_addr_above != 0 && try_addr_above > base_addr) {
 			void *ptr = mapper((void*)try_addr_above, size);
 			if (ptr)
 				return ptr;
 		}
-		if (try_addr_below < base_addr) {
+		if (try_addr_below != 0 && try_addr_below < base_addr) {
 			void *ptr = mapper((void*)try_addr_below, size);
 			if (ptr)
 				return ptr;

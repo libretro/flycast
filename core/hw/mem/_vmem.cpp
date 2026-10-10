@@ -452,6 +452,8 @@ u8 *_vmem_elan_ram;
 bool _vmem_reserve(void)
 {
 	_vmem_elan_ram = NULL;
+	// (said again below if this load gets the 4 GB layout: the last one's does not count)
+	vmem_4gb_space = false;
 	static_assert((sizeof(Sh4RCB) % PAGE_SIZE) == 0, "sizeof(Sh4RCB) not multiple of PAGE_SIZE");
 
 	VMemType vmemstatus = MemTypeError;
