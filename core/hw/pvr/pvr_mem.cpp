@@ -49,6 +49,19 @@ void YUV_init(void)
    YUV_index = 0;
 }
 
+// Nothing set up and nothing half received: data is ignored until the game sets the converter up
+void YUV_reset(void)
+{
+   memset(YUV_tempdata, 0, sizeof(YUV_tempdata));
+   YUV_dest       = 0;
+   YUV_blockcount = 0;
+   YUV_x_curr     = 0;
+   YUV_y_curr     = 0;
+   YUV_x_size     = 0;
+   YUV_y_size     = 0;
+   YUV_index      = 0;
+}
+
 #ifdef HAVE_LIBNX
 #pragma GCC push_options
 #pragma GCC optimize ("-O2")

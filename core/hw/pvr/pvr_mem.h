@@ -14,6 +14,7 @@ void TAWrite(u32 address,u32* data,u32 count);
 extern "C" void DYNACALL TAWriteSQ(u32 address,u8* sqb);
 
 void YUV_init();
+void YUV_reset();
 
 template<typename T> T DYNACALL pvr_read_area1(u32 addr);
 template<typename T> void DYNACALL pvr_write_area1(u32 addr, T data);

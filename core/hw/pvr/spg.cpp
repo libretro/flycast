@@ -289,6 +289,15 @@ int spg_line_sched(int tag, int cycl, int jit)
 void read_lightgun_position(int x, int y)
 {
    static u8 flip;
+   /* The pending event was aimed without this line, or at the one asked
+    * for before it. As for a write to a timing register: where the beam is
+    * is worked out with things as they were, and the event is aimed again
+    * from there once the line is set. (Not when this is reached from the
+    * event itself, by the transfer that starts at vblank: that aims the
+    * next one when it returns.) */
+   const bool pending = sh4_sched_remaining(vblank_schid) != (u32)-1;
+   const u64 beam     = pending ? spg_beam() : 0;
+
    maple_int_pending = true;
 	if (y < 0 || y >= 480 || x < 0 || x >= 640)
    {
@@ -302,6 +311,8 @@ void read_lightgun_position(int x, int y)
 		lightgun_hpos = (x + 286) ^ flip;
 		flip ^= 1;
 	}
+   if (pending)
+      sh4_sched_request(vblank_schid, (int)(line_start(spg_next_line()) - beam));
 }
 
 int rend_end_sch(int tag, int cycl, int jitt)
@@ -328,6 +339,10 @@ void spg_Term()
 
 void spg_Reset(bool hard)
 {
+   // no light gun position is latched (before the first event is aimed, which looks at it)
+   maple_int_pending = false;
+   lightgun_line     = 0xffff;
+   lightgun_hpos     = 0;
    CalculateSync();
 }
 

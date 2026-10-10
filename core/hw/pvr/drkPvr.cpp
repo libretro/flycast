@@ -12,6 +12,8 @@
 #include "elan_host.h"
 #include "spg.h"
 #include "pvr_regs.h"
+#include "pvr_mem.h"
+#include "ta.h"
 #include "Renderer_if.h"
 #include "rend/CustomTexture.h"
 #include "rend/TexCache.h"
@@ -21,7 +23,12 @@ void libPvr_Reset(bool hard)
    KillTex = true;
    Regs_Reset(hard);
    spg_Reset(hard);
+   // what the last run left half sent to the tile accelerator is not this run's
+   tactx_Reset();
+   ta_vtx_Reset();
    elan_host_reset(hard);
+   if (hard)
+      YUV_reset();
 }
 
 

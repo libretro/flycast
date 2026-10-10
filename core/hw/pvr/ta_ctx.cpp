@@ -224,6 +224,17 @@ TA_context* tactx_Pop(u32 addr)
 	return 0;
 }
 
+/* The machine is reset: the frames it was writing are the last run's, and
+ * none is kept. (A frame handed over to be drawn is not one of these: it
+ * is whoever draws it's.) */
+void tactx_Reset(void)
+{
+	if (ta_ctx)
+		SetCurrentTARC(TACTX_NONE);
+	while (ctx_count)
+		tactx_Recycle(ctx_list[--ctx_count]);
+}
+
 const u32 NULL_CONTEXT = ~0u;
 
 void SerializeTAContext(void **data, unsigned int *total_size)

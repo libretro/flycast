@@ -274,6 +274,13 @@ void ta_vtx_SoftReset(void)
 	ta_cur_state=TAS_NS;
 }
 
+// The machine is reset: no list is open and no parameter is half sent
+void ta_vtx_Reset(void)
+{
+	ta_cur_state = TAS_NS;
+	ta_fsm_cl    = 7;
+}
+
 int ta_vtx_list(void)
 {
 	return ta_fsm_cl == 7 ? -1 : (int)ta_fsm_cl;
