@@ -1215,6 +1215,32 @@ public:
 		return MemOperand(x28, offset);
 	}
 
+	/* A place in memory that is known when the block is compiled, as a
+	 * load or store is to have it: so far from x26, which has the address
+	 * of the SH4's memory as the host has it mapped, wherever it is within
+	 * 4 GB above that - main memory and everything else of the machine's
+	 * that is laid out there. The distance is put into @scratch with one
+	 * or two instructions.
+	 *
+	 * It used to be the place's 64-bit address every time, read out of a
+	 * word left among the code: eight bytes and a load ahead of each load
+	 * or store. It is still that for a place that is not there (a host
+	 * with nothing laid out, where x26 points at nothing in particular -
+	 * the sum is the same place all the same, if it is in reach). */
+	MemOperand ConstMem(const void *ptr, const Register& scratch)
+	{
+		const u8 *const base = (const u8 *)&p_sh4rcb->cntx + sizeof(Sh4Context);
+		const u64 distance = (u64)((const u8 *)ptr - base);
+
+		if (distance <= 0xFFFFFFFFu)
+		{
+			Mov(Register::GetWRegFromCode(scratch.GetCode()), (u32)distance);
+			return MemOperand(MEM_BASE, Register::GetXRegFromCode(scratch.GetCode()));
+		}
+		Ldr(Register::GetXRegFromCode(scratch.GetCode()), reinterpret_cast<uintptr_t>(ptr));
+		return MemOperand(Register::GetXRegFromCode(scratch.GetCode()));
+	}
+
 	void GenReadMemorySlow(u32 size)
 	{
 		switch (size)
@@ -1728,24 +1754,25 @@ private:
 
 		if (isram)
 		{
-			Ldr(x1, reinterpret_cast<uintptr_t>(ptr));	// faster than Mov
+			const MemOperand at = ConstMem(ptr, x1);
+
 			if (regalloc.IsAllocAny(op.rd))
 			{
 				switch (size)
 				{
 				case 1:
-					Ldrsb(regalloc.MapRegister(op.rd), MemOperand(x1));
+					Ldrsb(regalloc.MapRegister(op.rd), at);
 					break;
 
 				case 2:
-					Ldrsh(regalloc.MapRegister(op.rd), MemOperand(x1));
+					Ldrsh(regalloc.MapRegister(op.rd), at);
 					break;
 
 				case 4:
 					if (op.rd.is_r32f())
-						Ldr(regalloc.MapVRegister(op.rd), MemOperand(x1));
+						Ldr(regalloc.MapVRegister(op.rd), at);
 					else
-						Ldr(regalloc.MapRegister(op.rd), MemOperand(x1));
+						Ldr(regalloc.MapRegister(op.rd), at);
 					break;
 
 				default:
@@ -1758,19 +1785,19 @@ private:
 				switch (size)
 				{
 				case 1:
-					Ldrsb(w1, MemOperand(x1));
+					Ldrsb(w1, at);
 					break;
 
 				case 2:
-					Ldrsh(w1, MemOperand(x1));
+					Ldrsh(w1, at);
 					break;
 
 				case 4:
-					Ldr(w1, MemOperand(x1));
+					Ldr(w1, at);
 					break;
 
 				case 8:
-					Ldr(x1, MemOperand(x1));
+					Ldr(x1, at);
 					break;
 
 				default:
@@ -2058,19 +2085,20 @@ private:
 		}
 		if (isram)
 		{
-			Ldr(x0, reinterpret_cast<uintptr_t>(ptr));
+			const MemOperand at = ConstMem(ptr, x0);
+
 			switch (size)
 			{
 			case 1:
-				Strb(reg2, MemOperand(x0));
+				Strb(reg2, at);
 				break;
 
 			case 2:
-				Strh(reg2, MemOperand(x0));
+				Strh(reg2, at);
 				break;
 
 			case 4:
-				Str(reg2, MemOperand(x0));
+				Str(reg2, at);
 				break;
 
 			case 8:
@@ -2080,7 +2108,7 @@ private:
 				Str(regalloc.MapVRegister(op.rs2, 1),  MemOperand(x1, 4));
 #else
 				shil_param_to_host_reg(op.rs2, x1);
-				Str(x1, MemOperand(x0));
+				Str(x1, at);
 #endif
 				break;
 
