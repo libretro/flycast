@@ -900,7 +900,7 @@ struct gl4rend : Renderer
 
 		glcache.DisableCache();
 		/* (a new context has dithering on: see the other OpenGL renderer) */
-		(glDisable)(GL_DITHER);
+		glDisable(GL_DITHER);
 
 		//    glEnable(GL_DEBUG_OUTPUT);
 		//    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);

@@ -1203,9 +1203,8 @@ struct glesrend : Renderer
       /* A new context has dithering on, and a driver may then dither what
        * is drawn (to a target of less than eight bits a channel, as a rule).
        * Nothing here wants it: what the console dithers is dithered when
-       * the picture is packed for video memory. (The function itself: the
-       * name as a macro goes through a table that has no entry for this.) */
-      (glDisable)(GL_DITHER);
+       * the picture is packed for video memory. */
+      glDisable(GL_DITHER);
 
 #ifdef HAVE_OPENGLES
       glHint(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);

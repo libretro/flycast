@@ -2702,6 +2702,7 @@ static void glsm_state_setup(void)
    gl_state.cap_translate[SGL_ALPHA_TEST]           = GL_ALPHA_TEST;
    gl_state.cap_translate[SGL_SCISSOR_TEST]         = GL_SCISSOR_TEST;
    gl_state.cap_translate[SGL_STENCIL_TEST]         = GL_STENCIL_TEST;
+   gl_state.cap_translate[SGL_DITHER]               = GL_DITHER;
 
 #ifndef HAVE_OPENGLES
    gl_state.cap_translate[SGL_COLOR_LOGIC_OP]       = GL_COLOR_LOGIC_OP;
