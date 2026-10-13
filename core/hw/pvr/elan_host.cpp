@@ -50,6 +50,7 @@ static u32 DYNACALL read_elanreg(u32 paddr)
 			if ((addr & pvr_RegMask) == SPG_STATUS_addr)
 				spg_sync();
 			return PvrReg(addr, u32);
+		}
 		break;
 	case 0x80:
 		return elan_reg_read(addr);
@@ -208,6 +209,40 @@ void elan_host_reset(bool hard)
 		if (sh4_sched_is_scheduled(elan_schid))
 			sh4_sched_request(elan_schid, -1);
 	}
+}
+
+/* The save state, from V23: the geometry processor's near and far planes
+ * (elan_get_planes()), two floats, on a NAOMI 2 only - nothing on any
+ * other machine. Read after the chip's state of V20, which they follow
+ * from where they do not stand alone: a machine loaded from a state
+ * clipped to the planes the machine before the load had last been given. */
+void pvr_serialize_v23(void **data, unsigned int *total_size)
+{
+	float planes[2];
+
+	if (settings.System != DC_PLATFORM_NAOMI2 || !elan_ram)
+		return;
+	elan_get_planes(planes);
+	LIBRETRO_SA(planes, 2);
+}
+
+bool pvr_unserialize_v23(void **data, unsigned int *total_size)
+{
+	float planes[2];
+
+	if (settings.System != DC_PLATFORM_NAOMI2 || !elan_ram)
+		return true;
+	// (any value is one a game can give: they only go into float arithmetic and comparisons)
+	if (!LIBRETRO_USA(planes, 2))
+		return false;
+	elan_set_planes(planes);
+	return true;
+}
+
+/* An older state: the planes stay as loading the chip's state left them,
+ * as they always have. */
+void pvr_state_before_v23(void)
+{
 }
 
 void elan_host_map_init()

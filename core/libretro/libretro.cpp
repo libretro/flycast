@@ -2624,7 +2624,10 @@ bool retro_unserialize(const void * data, size_t size)
      * were just restored from the savestate and must be preserved, otherwise
      * every load nudges SPG timing by up to one scanline and desyncs. */
     CalculateSync(false);
-    ResetAudioBuffer();
+    /* (the samples held back at the end of the state's frame come with the
+     * state, or are dropped by lr_state_before_v23() for an older one) */
+    if (!result)
+       ResetAudioBuffer();
 
     for ( i = 0 ; i < 4 ; i++)
     {
@@ -3320,10 +3323,11 @@ InputLatch input_latch;
 
 void UpdateInputState(u32 port);
 
+/* Mouse motion handed to the latch so far. */
+static u32 mo_x_total[MAPLE_PORTS], mo_y_total[MAPLE_PORTS], mo_wheel_total[MAPLE_PORTS];
+
 void CaptureInput(void)
 {
-   /* Mouse motion handed to the latch so far. */
-   static u32 mo_x_total[MAPLE_PORTS], mo_y_total[MAPLE_PORTS], mo_wheel_total[MAPLE_PORTS];
    InputLatch::State& next = input_latch.Next();
    /* An Atomiswave's trackball is a mouse on the bus whatever device the
     * player's port is set to. (Its motion went to the latch only if that
@@ -3396,6 +3400,85 @@ void UpdateInputStateMouse(u32 port)
    mouse_ports |= bit;
    mouse_ports_read |= bit;
    UpdateInputState(port);
+}
+
+/* The state's part of the libretro layer (V23): what has been read from the
+ * frontend and the machine has not yet been given, and what has been made
+ * and the frontend not yet sent.
+ *
+ * Mouse motion - a mouse's, a trackball's, a rotary encoder's - adds up
+ * until the game reads it, and a game does not read it every frame. What
+ * was still to be read stayed as it was through a load: under run-ahead,
+ * whatever the frames run ahead had left of it, so a frame run from a
+ * loaded state was given other motion than the same frame run without the
+ * load. With it go the ports a game has asked a mouse on, which say whether
+ * one is read at the end of a frame in which the game did not ask
+ * (os_DoEvents). The motion is whole steps of the frontend's, the same in a
+ * float as in the latch's counts. 49 bytes. */
+void AudioHoldbackSerialize(void **data, unsigned int *total_size);
+void AudioHoldbackUnserialize(void **data, unsigned int *total_size);
+
+void lr_serialize_v23(void **data, unsigned int *total_size)
+{
+   f32 pending[MAPLE_PORTS * 3];
+   u8 asked = (u8)(mouse_ports & 0xF);
+
+   for (u32 port = 0; port < MAPLE_PORTS; port++)
+   {
+      f32 x = mo_x_delta[port];
+      f32 y = mo_y_delta[port];
+      f32 wheel = mo_wheel_delta[port];
+#if !defined(TARGET_NO_THREADS)
+      if (settings.rend.ThreadedRendering)
+      {
+         u32 sx, sy, swheel;
+         input_latch.GetSeen(port, &sx, &sy, &swheel);
+         x     += (f32)(s32)(mo_x_total[port] - sx);
+         y     += (f32)(s32)(mo_y_total[port] - sy);
+         wheel += (f32)(s32)(mo_wheel_total[port] - swheel);
+      }
+#endif
+      pending[port * 3]     = x;
+      pending[port * 3 + 1] = y;
+      pending[port * 3 + 2] = wheel;
+   }
+   LIBRETRO_SA(pending, MAPLE_PORTS * 3);
+   LIBRETRO_S(asked);
+   AudioHoldbackSerialize(data, total_size);
+}
+
+bool lr_unserialize_v23(void **data, unsigned int *total_size)
+{
+   f32 pending[MAPLE_PORTS * 3];
+   u8 asked = 0;
+
+   LIBRETRO_USA(pending, MAPLE_PORTS * 3);
+   LIBRETRO_US(asked);
+   for (u32 i = 0; i < MAPLE_PORTS * 3; i++)
+      // (nothing that is not a number, nor more than a frontend's counts can come to)
+      if (!(pending[i] >= -1048576.f && pending[i] <= 1048576.f))
+         pending[i] = 0.f;
+   for (u32 port = 0; port < MAPLE_PORTS; port++)
+   {
+      /* All of it is to be read from the globals, where a frame without
+       * the latch takes it from, and a frame with it hands it to the latch
+       * first (CaptureInput()). */
+      mo_x_delta[port]     = pending[port * 3];
+      mo_y_delta[port]     = pending[port * 3 + 1];
+      mo_wheel_delta[port] = pending[port * 3 + 2];
+      input_latch.SetSeen(port, mo_x_total[port], mo_y_total[port], mo_wheel_total[port]);
+   }
+   mouse_ports      = asked & 0xF;
+   mouse_ports_read = 0;
+   AudioHoldbackUnserialize(data, total_size);
+   return true;
+}
+
+/* A state from before V23: what is to be read stays as it is, and the
+ * samples held back are dropped, as they were. */
+void lr_state_before_v23(void)
+{
+   ResetAudioBuffer();
 }
 
 void UpdateInputState(u32 port)

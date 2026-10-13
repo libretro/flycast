@@ -58,6 +58,35 @@ void NaomiM3Comm::reset()
 	retro_atomic_int_init(&net_slot_size, 0);
 }
 
+/* Emulation thread. Games write the board's memories and read them back
+ * later, frames later at times; and which way a DMA goes is a bit of its
+ * control word. (A link to other machines is not in a state.) */
+void NaomiM3Comm::serialize(void **data, unsigned int *total_size)
+{
+	u16 regs[4] = { comm_ctrl, comm_offset, comm_status0, comm_status1 };
+
+	LIBRETRO_SA(regs, 4);
+	LIBRETRO_SA(m68k_ram, sizeof(m68k_ram));
+	LIBRETRO_SA(comm_ram, sizeof(comm_ram));
+}
+
+bool NaomiM3Comm::unserialize(void **data, unsigned int *total_size)
+{
+	u16 regs[4];
+
+	if (!LIBRETRO_USA(regs, 4) || !LIBRETRO_USA(m68k_ram, sizeof(m68k_ram))
+			|| !LIBRETRO_USA(comm_ram, sizeof(comm_ram)))
+		return false;
+	// (every value is one the board can have: an offset is inside both memories)
+	comm_ctrl = regs[0];
+	comm_offset = regs[1];
+	comm_status0 = regs[2];
+	comm_status1 = regs[3];
+	// the slot size the network thread goes by, if there is one
+	retro_atomic_store_release_int(&net_slot_size, swap16(*(u16*)&m68k_ram[0x204]));
+	return true;
+}
+
 /* Network thread. */
 void NaomiM3Comm::connectNetwork()
 {

@@ -291,6 +291,19 @@ void mmu_state_before_v22(void);
 void pvr_serialize_v22(void **data, unsigned int *total_size);
 void pvr_unserialize_v22(void **data, unsigned int *total_size);
 void pvr_state_before_v22(void);
+/* and since V23: the NAOMI 2 geometry processor's clipping planes
+ * (elan_host.cpp), the NAOMI's communication board and the I/O board's
+ * program on its way (naomi.cpp), and the libretro layer's mouse motion
+ * not yet read and sound not yet sent (libretro.cpp) */
+void pvr_serialize_v23(void **data, unsigned int *total_size);
+bool pvr_unserialize_v23(void **data, unsigned int *total_size);
+void pvr_state_before_v23(void);
+void naomi_serialize_v23(void **data, unsigned int *total_size);
+bool naomi_unserialize_v23(void **data, unsigned int *total_size);
+void naomi_state_before_v23(void);
+void lr_serialize_v23(void **data, unsigned int *total_size);
+bool lr_unserialize_v23(void **data, unsigned int *total_size);
+void lr_state_before_v23(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -835,6 +848,10 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	// V22
 	pvr_serialize_v22(data, total_size);
 	mmu_serialize_v22(data, total_size);
+	// V23
+	pvr_serialize_v23(data, total_size);
+	naomi_serialize_v23(data, total_size);
+	lr_serialize_v23(data, total_size);
 
 	return true ;
 }
@@ -1555,6 +1572,18 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	{
 		pvr_state_before_v22();
 		mmu_state_before_v22();
+	}
+	if (version >= V23)
+	{
+		if (!pvr_unserialize_v23(data, total_size) || !naomi_unserialize_v23(data, total_size)
+				|| !lr_unserialize_v23(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+	{
+		pvr_state_before_v23();
+		naomi_state_before_v23();
+		lr_state_before_v23();
 	}
 	/* The timers: what follows from their registers is worked out again,
 	 * for a state of any version, and their events are asked for anew. */

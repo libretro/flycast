@@ -10,3 +10,8 @@ void elan_host_term();
 void elan_host_reset(bool hard);
 void elan_host_map_init();
 void elan_host_map(u32 base);
+
+// the save state from V23 (elan_host.cpp)
+void pvr_serialize_v23(void **data, unsigned int *total_size);
+bool pvr_unserialize_v23(void **data, unsigned int *total_size);
+void pvr_state_before_v23(void);

@@ -756,6 +756,37 @@ void naomi_state_before_v21(void)
 	naomi_dma_set_state(-1, -1);
 }
 
+void naomi_jvs_serialize_v23(void **data, unsigned int *total_size);
+bool naomi_jvs_unserialize_v23(void **data, unsigned int *total_size);
+
+/* What the save states before V23 did not hold, on a NAOMI and NAOMI 2
+ * (nothing is written for a Dreamcast or an Atomiswave, which have neither):
+ *   - the communication board's four registers and its two 128 KB
+ *     memories (NaomiM3Comm::serialize());
+ *   - the 64 KB program on its way to the I/O board's processor, all
+ *     zeroes when none is (maple_devs.cpp). */
+void naomi_serialize_v23(void **data, unsigned int *total_size)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	m3comm.serialize(data, total_size);
+	naomi_jvs_serialize_v23(data, total_size);
+}
+
+bool naomi_unserialize_v23(void **data, unsigned int *total_size)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return true;
+	return m3comm.unserialize(data, total_size)
+		&& naomi_jvs_unserialize_v23(data, total_size);
+}
+
+/* An older state: the board and the program on its way stay as the running
+ * machine has them, which is what loading such a state has always done. */
+void naomi_state_before_v23(void)
+{
+}
+
 extern u32 kcode[4];
 
 u32 libExtDevice_ReadMem_A0_006(u32 addr,u32 size) {

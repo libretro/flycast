@@ -2200,6 +2200,13 @@ private:
 	s8 axis_y = 0;
 };
 
+/* The program a game sends to the I/O board's processor, a piece at a time
+ * over many frames: which program it is decides how the board's requests
+ * are read (crazy_mode). All zeroes when none is being sent. In a save
+ * state from V23: a state loaded while one is on its way goes on with what
+ * had been sent by then. */
+static u8 jvs_firmware[0x10000];
+
 struct maple_naomi_jamma : maple_sega_controller
 {
 	const u8 ALL_NODES = 0xff;
@@ -2773,13 +2780,8 @@ struct maple_naomi_jamma : maple_sega_controller
 
 			case MDC_JVSUploadFirmware:
 			{
-				static u8 *ram;
-				static XXH32_state_t* state;
+				u8 *ram = jvs_firmware;
 
-				if (ram == NULL)
-					ram = (u8 *)calloc(0x10000, 1);
-				if (ram == NULL)
-					WARN_LOG(MAPLE, "JVS: no memory for the firmware");
 				if (dma_count_in < 4)
 				{
 					// (not long enough to say where its bytes go)
@@ -2792,8 +2794,7 @@ struct maple_naomi_jamma : maple_sega_controller
 
 				if (dma_buffer_in[1] == 0xff)
 				{
-					// (a firmware there was no memory for is none that is known)
-					u32 hash = ram != NULL ? XXH32(ram, 0x10000, 0) : 0;
+					u32 hash = XXH32(ram, 0x10000, 0);
 					LOGJVS("JVS Firmware hash %08x\n", hash);
 					hotd2p = hash == 0xa6784e26;
 					if (hash == 0xa7c50459			// CT
@@ -2822,8 +2823,8 @@ struct maple_naomi_jamma : maple_sega_controller
 						filestream_close(fw_dump);
 					}
 #endif
-					free(ram);
-					ram = NULL;
+					// (empty for the next one)
+					memset(ram, 0, 0x10000);
 					for (int i = 0; i < 32; i++)
 						jvs_repeat_request[i][0] = 0;
 
@@ -2843,10 +2844,12 @@ struct maple_naomi_jamma : maple_sega_controller
 				// (where the bytes go is the game's to say: what is past the end of the 64 KB is left out)
 				if (xfer_bytes > 0x10000 - addr)
 					xfer_bytes = 0x10000 - addr;
-				if (ram != NULL)
-					memcpy(ram + addr, &dma_buffer_in[4], xfer_bytes);
+				// (nor what is past the end of the frame, which may be the end of RAM)
+				if (xfer_bytes > (int)dma_count_in - 4)
+					xfer_bytes = (int)dma_count_in - 4;
+				memcpy(ram + addr, &dma_buffer_in[4], xfer_bytes);
 				u8 sum = 0;
-				for (int i = 0; i < 0x1C; i++)
+				for (u32 i = 0; i < 0x1C && i < dma_count_in; i++)
 					sum += dma_buffer_in[i];
 
 				w8(0x80);	// or 0x81 on bootrom?
@@ -2994,6 +2997,17 @@ struct maple_naomi_jamma : maple_sega_controller
 	   return true;
 	}
 };
+
+/* The I/O board's program on its way, for naomi_serialize_v23(). */
+void naomi_jvs_serialize_v23(void **data, unsigned int *total_size)
+{
+	LIBRETRO_SA(jvs_firmware, sizeof(jvs_firmware));
+}
+
+bool naomi_jvs_unserialize_v23(void **data, unsigned int *total_size)
+{
+	return LIBRETRO_USA(jvs_firmware, sizeof(jvs_firmware));
+}
 
 u16 jvs_io_board::read_analog_axis(int player_num, int player_axis, bool inverted)
 {

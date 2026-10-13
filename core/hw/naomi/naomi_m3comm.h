@@ -29,6 +29,9 @@ public:
 
 	void closeNetwork();
 	void reset();
+	// The board's registers and its two memories, in a save state from V23
+	void serialize(void **data, unsigned int *total_size);
+	bool unserialize(void **data, unsigned int *total_size);
 
 private:
 	void initNetwork();

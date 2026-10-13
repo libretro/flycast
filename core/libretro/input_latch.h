@@ -75,6 +75,22 @@ struct InputLatch
 		seen_wheel[port] = s.mo_wheel;
 	}
 
+	/* Libretro thread, while it holds the machine (the emulation thread is
+	 * asleep outside it): how much of @port's motion has been read, and
+	 * setting it - a loaded state says how much is still to be read. */
+	void GetSeen(u32 port, u32 *x, u32 *y, u32 *wheel) const
+	{
+		*x     = seen_x[port];
+		*y     = seen_y[port];
+		*wheel = seen_wheel[port];
+	}
+	void SetSeen(u32 port, u32 x, u32 y, u32 wheel)
+	{
+		seen_x[port]     = x;
+		seen_y[port]     = y;
+		seen_wheel[port] = wheel;
+	}
+
 private:
 	State         buf[3];
 	cTripleBuffer tri;

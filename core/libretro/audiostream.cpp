@@ -79,3 +79,43 @@ void ResetAudioBuffer(void)
 {
    writePtr = 0;
 }
+
+/* A state carries the samples held back at the end of its frame: they come
+ * from the part of the last tick that lies after the frame's end, which the
+ * AICA in the state has already made and will not make again. (A load
+ * dropped them, and the frontend heard a gap of up to a tick at every load:
+ * at every frame, under run-ahead.) Between two frames there are never more
+ * than a tick's worth; the room for a whole tick is always written, the part
+ * not used as zeroes, so that a state is the same size and the same bytes
+ * for the same machine. */
+void AudioHoldbackSerialize(void **data, unsigned int *total_size)
+{
+   s16 samples[AUDIO_TICK_SAMPLES * 2];
+   u32 count = writePtr <= AUDIO_TICK_SAMPLES ? writePtr : 0;
+
+   memset(samples, 0, sizeof(samples));
+   for (u32 i = 0; i < count; i++)
+   {
+      samples[i * 2]     = Buffer[i].l;
+      samples[i * 2 + 1] = Buffer[i].r;
+   }
+   LIBRETRO_S(count);
+   LIBRETRO_SA(samples, AUDIO_TICK_SAMPLES * 2);
+}
+
+void AudioHoldbackUnserialize(void **data, unsigned int *total_size)
+{
+   s16 samples[AUDIO_TICK_SAMPLES * 2];
+   u32 count = 0;
+
+   LIBRETRO_US(count);
+   LIBRETRO_USA(samples, AUDIO_TICK_SAMPLES * 2);
+   if (count > AUDIO_TICK_SAMPLES)
+      count = 0;
+   for (u32 i = 0; i < count; i++)
+   {
+      Buffer[i].l = samples[i * 2];
+      Buffer[i].r = samples[i * 2 + 1];
+   }
+   writePtr = count;
+}
