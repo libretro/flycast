@@ -14,6 +14,7 @@ class M1Cartridge : public NaomiCartridge
 {
 public:
 	M1Cartridge(u32 size);
+	virtual void Reset() override;
 
 	virtual u32 ReadMem(u32 address, u32 size) override
 	{

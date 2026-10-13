@@ -22,6 +22,20 @@ M1Cartridge::M1Cartridge(u32 size) : NaomiCartridge(size)
 	encryption = false;
 }
 
+void M1Cartridge::Reset()
+{
+	NaomiCartridge::Reset();
+	rom_cur_address = 0;
+	buffer_actual_size = 0;
+	has_history = false;
+	stream_ended = false;
+	memset(dict, 0, sizeof(dict));
+	memset(hist, 0, sizeof(hist));
+	avail_val = 0;
+	avail_bits = 0;
+	encryption = false;
+}
+
 void M1Cartridge::AdvancePtr(u32 size)
 {
 	if (encryption)

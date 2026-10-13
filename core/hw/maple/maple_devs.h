@@ -105,6 +105,7 @@ maple_device* maple_Create(MapleDeviceType type);
 void maple_jvs_serialize_v21(void **data, unsigned int *total_size);
 void maple_jvs_unserialize_v21(void **data, unsigned int *total_size);
 void maple_jvs_state_before_v21(void);
+void maple_jvs_firmware_reset(void);
 #define SIZE_OF_MIC_DATA	480 //ALSO DEFINED IN SipEmulator.java
 int get_mic_data(u8* buffer); //implemented in Android.cpp
 int push_vmu_screen(u8* buffer); //implemented in Android.cpp

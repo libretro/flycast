@@ -20,6 +20,7 @@ public:
 	AWCartridge(u32 size) : Cartridge(size) {}
 
 	virtual bool Init() override;
+	virtual void Reset() override { device_reset(); }
 	virtual u32 ReadMem(u32 address, u32 size) override;
 	virtual void WriteMem(u32 address, u32 data, u32 size) override;
 

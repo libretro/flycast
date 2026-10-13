@@ -511,21 +511,23 @@ bool NaomiNetwork::receive(u8 *data, u32 size)
 		}
 		return false;
 	}
-	packet_number = pktnum;
 
-	ssize_t received = 0;
-	while (received != size && !stopping())
+	/* The rest of what was begun: the packet's number can come in two
+	 * pieces as well as what follows it. */
+	auto receive_rest = [&](u8 *to, u32 count) -> bool
 	{
-		l = ::recv(sockfd, (char*)(data + received), size - received, 0);
-		if (l <= 0)
+		u32 received = 0;
+		while (received != count && !stopping())
 		{
-			if (l < 0 && (get_last_error() == L_EAGAIN || get_last_error() == L_EWOULDBLOCK))
+			ssize_t got = ::recv(sockfd, (char *)(to + received), count - received, 0);
+			if (got <= 0)
 			{
-				// The rest of the packet is on its way
-				waitReadable(&sockfd, 1, -1);
-				continue;
-			}
-			{
+				if (got < 0 && (get_last_error() == L_EAGAIN || get_last_error() == L_EWOULDBLOCK))
+				{
+					// The rest of the packet is on its way
+					waitReadable(&sockfd, 1, -1);
+					continue;
+				}
 				WARN_LOG(NETWORK, "receiveNetwork: read failed. errno=%d", get_last_error());
 				if (isMaster())
 				{
@@ -535,10 +537,17 @@ bool NaomiNetwork::receive(u8 *data, u32 size)
 				}
 				return false;
 			}
+			received += (u32)got;
 		}
-		else
-			received += l;
-	}
+		return received == count;
+	};
+
+	if (l < (ssize_t)sizeof(pktnum) && !receive_rest((u8 *)&pktnum + l, sizeof(pktnum) - (u32)l))
+		return false;
+	packet_number = pktnum;
+
+	if (!receive_rest(data, size))
+		return false;
 	DEBUG_LOG(NETWORK, "[%d] Received %d bytes", slot_id, size);
 	got_token = true;
 	return true;

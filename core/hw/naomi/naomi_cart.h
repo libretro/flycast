@@ -11,6 +11,9 @@ public:
 	virtual ~Cartridge();
 
 	virtual bool Init() { return true; }
+	/* The machine is reset as when it is switched on: the board's
+	 * registers are as they are then. (Its ROMs stay as they are.) */
+	virtual void Reset() {}
 	virtual u32 ReadMem(u32 address, u32 size) = 0;
 	virtual void WriteMem(u32 address, u32 data, u32 size) = 0;
 
@@ -50,6 +53,13 @@ public:
 	virtual void AdvancePtr(u32 size) override;
 	virtual void Serialize(void** data, unsigned int* total_size) override;
 	virtual void Unserialize(void** data, unsigned int* total_size) override;
+	virtual void Reset() override
+	{
+		RomPioOffset = 0;
+		RomPioAutoIncrement = false;
+		DmaOffset = 0;
+		DmaCount = 0xffff;
+	}
 
 	void SetKey(u32 key) override { this->key = key; }
 

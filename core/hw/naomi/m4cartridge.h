@@ -26,6 +26,11 @@ public:
 		device_reset();
 		return true;
 	}
+	virtual void Reset() override
+	{
+		NaomiCartridge::Reset();
+		device_reset();
+	}
 
 	virtual u32 ReadMem(u32 address, u32 size) override
 	{

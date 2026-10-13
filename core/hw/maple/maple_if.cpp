@@ -439,6 +439,7 @@ void maple_Reset(bool hard)
 	SB_MSHTCL = 0x00000000;
 	SB_MDAPRO = 0x00007F00;
 	SB_MMSEL  = 0x00000001;
+	maple_jvs_firmware_reset();
 }
 
 void maple_Term()

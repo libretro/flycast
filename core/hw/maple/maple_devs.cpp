@@ -3018,6 +3018,13 @@ bool naomi_jvs_unserialize_v23(void **data, unsigned int *total_size)
 	return LIBRETRO_USA(jvs_firmware, sizeof(jvs_firmware));
 }
 
+/* A reset: a program that was on its way to the board is sent again from
+ * its start, and what had come of it is not to be taken for part of it. */
+void maple_jvs_firmware_reset(void)
+{
+	memset(jvs_firmware, 0, sizeof(jvs_firmware));
+}
+
 u16 jvs_io_board::read_analog_axis(int player_num, int player_axis, bool inverted)
 {
 	u16 v;

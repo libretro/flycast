@@ -331,7 +331,8 @@ static void LoadSpecialSettingsNaomi(const char *name)
    NOTICE_LOG(BOOT, "[LUT]: Naomi ROM name is: %s.", name);
    for (i = 0; i < sizeof(lut_games_naomi)/sizeof(lut_games_naomi[0]); i++)
    {
-      if (strstr(lut_games_naomi[i].product_number, name))
+      /* (the whole name: one that is part of another game's is not that game) */
+      if (!strcmp(lut_games_naomi[i].product_number, name))
       {
       	INFO_LOG(BOOT, "[LUT]: Found game in LUT database..");
 

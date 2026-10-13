@@ -660,6 +660,8 @@ void naomi_reg_Reset(bool hard)
 	memset(coin_chute, 0, sizeof(coin_chute));
 	cryptoReset();
 	m3comm.reset();
+	if (hard && CurrentCartridge != NULL)
+		CurrentCartridge->Reset();
 }
 
 /* The cartridge transfer's event as a save state has it. With no transfer

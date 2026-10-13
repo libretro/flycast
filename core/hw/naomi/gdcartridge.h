@@ -32,6 +32,11 @@ public:
 		device_reset();
 		return true;
 	}
+	virtual void Reset() override
+	{
+		NaomiCartridge::Reset();
+		device_reset();
+	}
 	virtual void* GetDmaPtr(u32 &size) override;
 	virtual bool Read(u32 offset, u32 size, void* dst) override;
 	virtual std::string GetGameId() override;
