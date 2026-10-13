@@ -1952,7 +1952,8 @@ public:
 				mov(eax, dword[rax + call_regs64[0]]);
 				break;
 			}
-			jmp(lut_done);
+			// (past the call, and the registers saved round it)
+			jmp(lut_done, T_NEAR);
 			L(lut_miss);
 		}
 		if (mmu_enabled())
@@ -1963,14 +1964,14 @@ public:
 			if (!mmu_enabled())
 				GenCall(ReadMem8);
 			else
-				GenCall(ReadMemNoEx<u8>, true);
+				GenCall(ReadMemNoEx<u8>);
 			movsx(eax, al);
 			break;
 		case 2:
 			if (!mmu_enabled())
 				GenCall(ReadMem16);
 			else
-				GenCall(ReadMemNoEx<u16>, true);
+				GenCall(ReadMemNoEx<u16>);
 			movsx(eax, ax);
 			break;
 
@@ -1978,13 +1979,13 @@ public:
 			if (!mmu_enabled())
 				GenCall(ReadMem32);
 			else
-				GenCall(ReadMemNoEx<u32>, true);
+				GenCall(ReadMemNoEx<u32>);
 			break;
 		case 8:
 			if (!mmu_enabled())
 				GenCall(ReadMem64);
 			else
-				GenCall(ReadMemNoEx<u64>, true);
+				GenCall(ReadMemNoEx<u64>);
 			break;
 		default:
 			die("1..8 bytes");
@@ -2019,7 +2020,8 @@ public:
 				mov(dword[rax + call_regs64[0]], call_regs[1]);
 				break;
 			}
-			jmp(lut_done);
+			// (past the call, and the registers saved round it)
+			jmp(lut_done, T_NEAR);
 			L(lut_miss);
 		}
 		if (mmu_enabled())
@@ -2030,25 +2032,25 @@ public:
 			if (!mmu_enabled())
 				GenCall(WriteMem8);
 			else
-				GenCall(WriteMemNoEx<u8>, true);
+				GenCall(WriteMemNoEx<u8>);
 			break;
 		case 2:
 			if (!mmu_enabled())
 				GenCall(WriteMem16);
 			else
-				GenCall(WriteMemNoEx<u16>, true);
+				GenCall(WriteMemNoEx<u16>);
 			break;
 		case 4:
 			if (!mmu_enabled())
 				GenCall(WriteMem32);
 			else
-				GenCall(WriteMemNoEx<u32>, true);
+				GenCall(WriteMemNoEx<u32>);
 			break;
 		case 8:
 			if (!mmu_enabled())
 				GenCall(WriteMem64);
 			else
-				GenCall(WriteMemNoEx<u64>, true);
+				GenCall(WriteMemNoEx<u64>);
 			break;
 		default:
 			die("1..8 bytes");
@@ -2858,7 +2860,11 @@ public:
 #ifndef _WIN32
 		/* The floating-point registers handed out are xmm8 to xmm15, and
 		 * none of them is kept by a function on these hosts: the ones in
-		 * use at this point are saved round the call. */
+		 * use at this point are saved round the call. That goes for the
+		 * memory accesses made with the MMU on too: the registers are
+		 * written back before them but stay in use after, and what such an
+		 * access reaches (a register's handler, the tile accelerator, the
+		 * sound chip's channels) can use any of the eight. */
 		int saved[8];
 		int saved_count = 0;
 		u32 stack_size = 0;
