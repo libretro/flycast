@@ -31,6 +31,10 @@ static bm_Set all_temp_blocks;
 static bm_List del_blocks;
 
 static bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
+/* The pages of main memory that are locked against writing now: those code
+ * has been compiled from, and those it was compiled from once and that
+ * nothing has written to since. */
+static bool locked_pages[RAM_SIZE_MAX/PAGE_SIZE];
 static std::set<RuntimeBlockInfo*> blocks_per_page[RAM_SIZE_MAX/PAGE_SIZE];
 
 static bm_Map blkmap;
@@ -329,6 +333,7 @@ void bm_Reset()
 	bm_CleanupDeletedBlocks();
 	protected_blocks = 0;
 	unprotected_blocks = 0;
+	memset(locked_pages, 0, sizeof(locked_pages));
 
 	if (_nvmem_enabled())
 	{
@@ -364,6 +369,7 @@ static void bm_ProtectPage(u32 addr, bool protect)
 	u32 count, i, mirror;
 
 	addr = addr & (RAM_MASK - PAGE_MASK);
+	locked_pages[addr / PAGE_SIZE] = protect;
 	if (!_nvmem_enabled())
 	{
 		if (protect)
@@ -753,6 +759,47 @@ void bm_RamWriteAccess(u32 addr)
 		bm_DiscardBlock(block);
 	}
 	verify(block_list.empty());
+}
+
+/* A save state's main memory, @from, is put in place of the machine's.
+ *
+ * What has been compiled stays, where the code it was compiled from is
+ * the same in the state: a page that is locked - one code was compiled
+ * from - is held against the state's, and is left as it is, lock and all,
+ * when they are the same. One that differs is written to as a game writes
+ * to it, except that this is not taken for a page the game keeps writing
+ * to: its blocks go, it is unlocked, and the next block compiled from it
+ * locks it again. A block that checks its own code each time it is run -
+ * one in a page that is written to all the time - needs nothing done.
+ *
+ * Every block used to be thrown away at every load, and the whole of
+ * memory unlocked first so that it could be copied over: with a frontend
+ * running frames ahead, which loads a state for every frame shown, all
+ * that a frame runs was compiled again for every frame. */
+void bm_LoadRam(const u8 *from)
+{
+	u8 * const ram = &mem_b[0];
+	u32 run = 0;		// where the pages to be copied in one go start
+
+	for (u32 addr = 0; addr < RAM_SIZE; addr += PAGE_SIZE)
+	{
+		if (!locked_pages[addr / PAGE_SIZE])
+			continue;
+		if (addr > run)
+			memcpy(ram + run, from + run, addr - run);
+		run = addr + PAGE_SIZE;
+		if (memcmp(ram + addr, from + addr, PAGE_SIZE) == 0)
+			continue;
+
+		std::set<RuntimeBlockInfo*>& block_list = blocks_per_page[addr / PAGE_SIZE];
+		const std::vector<RuntimeBlockInfo*> list_copy(block_list.begin(), block_list.end());
+		for (auto& block : list_copy)
+			bm_DiscardBlock(block);
+		bm_UnlockPage(addr);
+		memcpy(ram + addr, from + addr, PAGE_SIZE);
+	}
+	if (RAM_SIZE > run)
+		memcpy(ram + run, from + run, RAM_SIZE - run);
 }
 
 bool bm_RamWriteAccess(void *p)

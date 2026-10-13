@@ -2562,16 +2562,24 @@ bool retro_unserialize(const void * data, size_t size)
 #if FEAT_AREC == DYNAREC_JIT
     FlushCache();
 #endif
+    /* What the SH4 recompiler has compiled is kept through a load, where
+     * the code it came from is the same in the state (bm_LoadRam(), from
+     * dc_unserialize()). All of it goes when the load fails, since memory
+     * is then neither one thing nor the other, and when the MMU is on in
+     * one of the two and off in the other, or on in another way: code is
+     * compiled for the way it is. */
+    const bool mmu_was = mmu_enabled();
+    const bool strict_was = mmu_strict;
 #ifndef NO_MMU
     mmu_flush_table();
 #endif
-    bm_Reset();
     custom_texture.Terminate();
 
     result = dc_unserialize(&data_ptr, &total_size, size) ;
 
     mmu_set_state();
-    sh4_cpu.ResetCache();
+    if (!result || mmu_enabled() != mmu_was || mmu_strict != strict_was)
+       sh4_cpu.ResetCache();
     dsp.dyndirty = true;
     sh4_sched_ffts();
     /* Recompute the derived video timing (Line_Cycles, scanline count) from

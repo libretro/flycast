@@ -373,6 +373,37 @@ bool ra_unserialize(void *src, unsigned int src_size, void **dest, unsigned int 
 	return true ;
 }
 
+/* Whether the state being read has @size more bytes at @data. */
+bool ra_unserialize_has(const void *data, size_t size)
+{
+	if (data == NULL || unserialize_base == NULL)
+		return false;
+
+	const size_t offset = (size_t)((const u8 *)data - unserialize_base);
+
+	return offset <= unserialize_limit && size <= unserialize_limit - offset;
+}
+
+/* Main memory from a state. With a recompiler it is not copied over
+ * blindly: what was compiled from memory that the state does not change is
+ * kept (bm_LoadRam()). A state that stops short of it leaves memory zeroed,
+ * as any read past the end does, and nothing compiled. */
+static void unserialize_ram(void **data, unsigned int *total_size)
+{
+#if FEAT_SHREC != DYNAREC_NONE
+	if (ra_unserialize_has(*data, mem_b.size))
+	{
+		bm_LoadRam((const u8 *)*data);
+		*data = (u8 *)*data + mem_b.size;
+		*total_size += mem_b.size;
+		return;
+	}
+	// (no telling what is in memory now: everything is unlocked, and the caller empties the code cache when a load fails)
+	bm_Reset();
+#endif
+	LIBRETRO_USA(mem_b.data, mem_b.size);
+}
+
 bool register_serialize(Array<RegisterStruct>& regs,void **data, unsigned int *total_size )
 {
 	int i = 0 ;
@@ -1090,7 +1121,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	else
 		ocache.Reset(true);
 
-	LIBRETRO_USA(mem_b.data, mem_b.size);
+	unserialize_ram(data, total_size);
 
 	if (version < V9)
 	{

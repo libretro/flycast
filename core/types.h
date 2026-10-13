@@ -767,6 +767,8 @@ bool dc_serialize(void **data, unsigned int *total_size);
 bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_size);
 void ra_unserialize_init(const void *base, size_t limit);
 bool ra_unserialize_failed(void);
+// whether the state being read has @size more bytes at @data: to look at them before they are read
+bool ra_unserialize_has(const void *data, size_t size);
 void ra_unserialize_fail(void);
 
 #define LIBRETRO_S(v) ra_serialize(&(v), sizeof(v), data, total_size)
