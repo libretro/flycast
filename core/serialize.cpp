@@ -883,7 +883,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_SKIP(1); // holdState
 	}
 
-	LIBRETRO_US(dsp);
+	/* The first thing in it is the code a DSP recompiler makes where it
+	 * keeps it there: this program's, with its addresses in it, and not
+	 * the one that saved the state's. It stays as it is; the rest is the
+	 * DSP's state. (Whether it still fits the program is the recompiler's
+	 * to find out: dsp.dyndirty is set after every load.) */
+	LIBRETRO_SKIP(sizeof(dsp.DynCode));
+	LIBRETRO_USA((u8 *)&dsp + sizeof(dsp.DynCode), sizeof(dsp) - sizeof(dsp.DynCode));
 
 	for ( i = 0 ; i < 3 ; i++)
 	{

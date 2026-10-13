@@ -443,6 +443,13 @@ private:
 	struct dsp_t *DSP = nullptr;
 };
 
+/* The program the code was made from. Asked to make it again from the
+ * same - a game that writes its program again, or a save state loaded that
+ * has the one that is running, which with run-ahead is every frame -
+ * nothing is made. */
+static u32 compiled_mpro[128 * 4];
+static bool compiled;
+
 void dsp_recompile()
 {
 	dsp.Stopped = true;
@@ -456,6 +463,10 @@ void dsp_recompile()
 			break;
 		}
 	}
+	if (compiled && memcmp(compiled_mpro, DSPData->MPRO, sizeof(compiled_mpro)) == 0)
+		return;
+	memcpy(compiled_mpro, DSPData->MPRO, sizeof(compiled_mpro));
+	compiled = true;
 	DSPAssembler assembler(pCodeBuffer, sizeof(CodeBuffer));
 	assembler.Compile(&dsp);
 }
