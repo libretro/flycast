@@ -54,6 +54,20 @@
 # OpenGL 4.3 from the frontend's driver; take "glcore" out where there is
 # none.
 #
+# Then the frontend's run-ahead, for each driver in $AHEAD_DRIVERS (default:
+# "gl vulkan"), with threaded rendering on and off: RetroArch runs every
+# frame without showing it, saves a state, runs the next frame for the
+# screen and loads the state - 300 states loaded in 300 frames, while the
+# disc repaints its texture and changes its palette. The core keeps its
+# textures through a load where the state has the same video memory under
+# them, so this is where a texture that should have been made again and
+# was not would show: the picture has to be the plain run's, byte for
+# byte. RetroArch says nothing when run-ahead works, so it is given
+# audio_tap.c to load in place of the core, which counts the states loaded
+# and has to have seen nearly one a frame. (RetroArch only runs frames
+# ahead for a core whose info file says its states are deterministic; with
+# no info file, as here, it takes the core's word.)
+#
 # Then the program without its disc: live_disc.py writes it as an ELF file,
 # and the core is given that as its content. The HLE BIOS has to load it
 # and start it with the drive empty; the program finds no disc to read and
@@ -87,6 +101,7 @@ RETROARCH=${RETROARCH:-retroarch}
 DRIVERS=${DRIVERS:-gl vulkan}
 RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}
 PIXEL_DRIVERS=${PIXEL_DRIVERS:-glcore vulkan}
+AHEAD_DRIVERS=${AHEAD_DRIVERS-gl vulkan}
 SOUND_DRIVER=${SOUND_DRIVER-gl}
 ELF_DRIVER=${ELF_DRIVER-gl}
 
@@ -354,6 +369,49 @@ for DRV in $DRIVERS; do
       echo "FAIL: with Force Texture LOD0 the mipmapped texture is not drawn with its largest level" >&2
       exit 1
    }
+done
+if [ -n "$AHEAD_DRIVERS" ]; then
+   "${CC:-cc}" -O1 -shared -fPIC -o "$WORK/audio_tap.so" \
+      "$ROOT/tools/threads/audio_tap.c" -ldl
+fi
+for DRV in $AHEAD_DRIVERS; do
+   for THREADS in on off; do
+      echo "== $DRV: every frame run ahead, threaded rendering $THREADS"
+      rm -rf "$WORK/states" "$WORK/saves"
+      mkdir -p "$WORK/states" "$WORK/saves"
+      # (what the plain picture is: the same run without run-ahead)
+      echo "video_driver = \"$DRV\"" > "$WORK/driver.cfg"
+      [ $THREADS = on ] || echo "core_options_path = \"$WORK/core-options-off.cfg\"" >> "$WORK/driver.cfg"
+      printf 'savestate_auto_save = "false"\nsavestate_auto_load = "false"\n' >> "$WORK/driver.cfg"
+      run $DRV-ahead-plain.log 300 "$WORK/test.gdi" "$WORK/$DRV-ahead-plain.png"
+      printf 'run_ahead_enabled = "true"\nrun_ahead_frames = "1"\nrun_ahead_secondary_instance = "false"\n' >> "$WORK/driver.cfg"
+      (
+         AUDIO_TAP_CORE=$CORE
+         AUDIO_TAP_OUT=$WORK/ahead.pcm
+         export AUDIO_TAP_CORE AUDIO_TAP_OUT
+         CORE=$WORK/audio_tap.so
+         run $DRV-ahead.log 300 "$WORK/test.gdi" "$WORK/$DRV-ahead.png"
+      ) || exit 1
+      if grep -aq "\[Run-Ahead\]" "$WORK/$DRV-ahead.log"; then
+         echo "FAIL: run-ahead did not work" >&2
+         grep -a "\[Run-Ahead\]" "$WORK/$DRV-ahead.log" | head -n 5 >&2
+         exit 1
+      fi
+      LOADS=$(sed -n 's/^audio_tap: \([0-9]*\) states loaded$/\1/p' "$WORK/$DRV-ahead.log")
+      echo "states loaded: ${LOADS:-none}"
+      [ -n "$LOADS" ] && [ "$LOADS" -ge 250 ] || {
+         echo "FAIL: frames were not run ahead" >&2
+         exit 1
+      }
+      python3 "$ROOT/tools/threads/live_shot.py" "$WORK/$DRV-ahead.png" || {
+         echo "FAIL: with frames run ahead the screen does not show the last texture written" >&2
+         exit 1
+      }
+      cmp "$WORK/$DRV-ahead-plain.png" "$WORK/$DRV-ahead.png" || {
+         echo "FAIL: with frames run ahead the picture is not the plain run's" >&2
+         exit 1
+      }
+   done
 done
 for DRV in $PIXEL_DRIVERS; do
    case $DRV in

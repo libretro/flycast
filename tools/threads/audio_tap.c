@@ -4,7 +4,9 @@
  * it, and writes every sample that core sends the frontend to the file
  * named by $AUDIO_TAP_OUT as it goes by: signed 16-bit stereo, as sent.
  * What the frontend then does with the sound, or whether it has a sound
- * driver at all, makes no difference to what is written.
+ * driver at all, makes no difference to what is written. It also counts
+ * the states the frontend has the core load, and says how many when the
+ * core is done with ("audio_tap: 299 states loaded", on stderr).
  *
  * tools/threads/live.sh builds this and has RetroArch load it in place of
  * the core, to check the sound the core makes.
@@ -81,11 +83,23 @@ void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
    ((void (*)(retro_audio_sample_batch_t))sym("retro_set_audio_sample_batch"))(tap_batch);
 }
 
+/* How many states the frontend has had the core load, said when the core
+ * is done with: a frontend that runs frames ahead loads one every frame,
+ * and says nothing about it. */
+static unsigned long loads;
+
+bool retro_unserialize(const void *data, size_t size)
+{
+   loads++;
+   return ((bool (*)(const void *, size_t))sym("retro_unserialize"))(data, size);
+}
+
 void retro_deinit(void)
 {
    ((void (*)(void))sym("retro_deinit"))();
    if (out)
       fflush(out);
+   fprintf(stderr, "audio_tap: %lu states loaded\n", loads);
 }
 
 /* Everything else goes straight through. */
@@ -111,7 +125,6 @@ PASS0(void, retro_reset)
 PASS0(void, retro_run)
 PASS0(size_t, retro_serialize_size)
 PASS2(bool, retro_serialize, void *, size_t)
-PASS2(bool, retro_unserialize, const void *, size_t)
 PASS0(void, retro_cheat_reset)
 PASS3(void, retro_cheat_set, unsigned, bool, const char *)
 PASS1(bool, retro_load_game, const struct retro_game_info *)
