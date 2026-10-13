@@ -641,10 +641,12 @@ void mmu_flush_table()
  * that every game loads, and not Windows CE, which is known by its disc
  * (settings.dreamcast.FullMMU) and gets here the same way after a state is
  * loaded. Asked when AT changes and when the machine's state is replaced
- * or reset, where the answer is no: that is how it ends. (While it is
- * such a program AT going off and on does not come here. And a state does
- * not say which way it was saved in: one saved with AT off, or with the
- * TLB just emptied, is not known for what it is until AT next comes on.) */
+ * or reset, where the answer is no: that is how it ends - but for a state
+ * that says it was saved from such a program (V22 on: mmu_serialize_v22()).
+ * (While it is such a program AT going off and on does not come here. A
+ * state of before V22 does not say which way it was saved in: one saved
+ * with AT off, or with the TLB just emptied, is not known for what it is
+ * until AT next comes on.) */
 static bool utlb_is_a_page(const TLB_Entry& tlb_entry)
 {
 	if (tlb_entry.Data.V == 0)
@@ -664,9 +666,138 @@ static bool utlb_has_a_page()
 	return false;
 }
 
+/* The save state, from V22: the translations that are kept.
+ *
+ * Windows CE's way keeps every translation it has been given until the
+ * program takes it back, far more than the TLB's 64, and a state had only
+ * the 64. After a load the rest were gone: each was found again - read
+ * out of Windows CE's page tables, or asked of its own handler, which is
+ * the game running code it would not have run - and a frontend that loads
+ * a state for every frame (run-ahead) had the game on another path from
+ * the one it takes left alone, and all of that work to do each frame.
+ *
+ * A count, and three words for each, in the order they are looked through:
+ * bucket by bucket, each from its first. Where two of a bucket answer for
+ * the same address the first one found is the answer, so a load has to
+ * put them back in that order, and does. (Which slot of the table each is
+ * in is not kept and makes no difference: the table is full when as many
+ * are kept as it has room for, wherever they are.) Room is taken for a
+ * full table, of which a game uses a few hundred. Only for Windows CE
+ * (settings.dreamcast.FullMMU): none of it is written otherwise.
+ *
+ * Before them, for every machine, a byte: whether this is a program with
+ * a TLB of its own, for which the whole MMU is done (mmu_strict). That is
+ * found out when the program turns translation on, and it stays so while
+ * the program has translation off - which such a program has all the
+ * time, for a moment - with everything compiled for it and timed for it.
+ * A state saved in such a moment did not say, and the machine loaded from
+ * it was one without an MMU until translation came on again: other code
+ * compiled, with other timing, than in the same machine left alone. */
+static int strict_in_state = -1;	// what the state just read said: 0 or 1, until mmu_detect_strict() has taken it
+
+void mmu_serialize_v22(void **data, unsigned int *total_size)
+{
+	u8 strict = mmu_strict;
+
+	LIBRETRO_S(strict);
+	if (!settings.dreamcast.FullMMU)
+		return;
+	if (*data == NULL)
+	{
+		// how much room a state needs: as much as one ever does
+		*total_size += 4 + ARRAY_SIZE(full_table) * 12;
+		return;
+	}
+
+	u32 * const count_at = (u32 *)*data;
+	u32 count = 0;
+
+	LIBRETRO_S(count);
+	for (u32 bucket = 0; bucket < NBUCKETS; bucket++)
+		for (const TLB_LinkedEntry *slot = entry_buckets[bucket]; slot != NULL
+				&& count < ARRAY_SIZE(full_table); slot = slot->next_entry)
+		{
+			u32 words[3] = { slot->entry.Address.reg_data, slot->entry.Data.reg_data, slot->entry.Assistance.reg_data };
+
+			LIBRETRO_SA(words, 3);
+			count++;
+		}
+	memcpy(count_at, &count, sizeof(count));
+}
+
+/* (After the TLB itself has been read, and with nothing kept: the load
+ * empties the table before it starts.) */
+bool mmu_unserialize_v22(void **data, unsigned int *total_size)
+{
+	u8 strict = 0;
+
+	LIBRETRO_US(strict);
+	strict_in_state = strict != 0;
+	if (!settings.dreamcast.FullMMU)
+		return true;
+
+	u32 count = 0;
+	LIBRETRO_US(count);
+	// (more than a state ever has: no telling where the rest of the state is)
+	if (count > ARRAY_SIZE(full_table))
+		return false;
+	flush_cache();
+
+	TLB_LinkedEntry *last = NULL;
+	u32 last_bucket = 0;
+
+	for (u32 i = 0; i < count; i++)
+	{
+		u32 words[3] = { 0, 0, 0 };
+		TLB_LinkedEntry * const slot = &full_table[full_table_size++];
+
+		LIBRETRO_USA(words, 3);
+		slot->entry.Address.reg_data = words[0];
+		slot->entry.Data.reg_data = words[1];
+		slot->entry.Assistance.reg_data = words[2];
+		slot->next_entry = NULL;
+
+		const u32 bucket = bucket_index(slot->entry.Address.VPN << 10, slot->entry.Data.SZ1 * 2 + slot->entry.Data.SZ0);
+
+		if (last != NULL && bucket == last_bucket)
+			last->next_entry = slot;
+		else if (entry_buckets[bucket] == NULL)
+			entry_buckets[bucket] = slot;
+		else
+		{
+			// (not as this writes them: after what the bucket has, all the same)
+			TLB_LinkedEntry *end = entry_buckets[bucket];
+
+			while (end->next_entry != NULL)
+				end = end->next_entry;
+			end->next_entry = slot;
+		}
+		last = slot;
+		last_bucket = bucket;
+	}
+	lru_entry = NULL;
+	return true;
+}
+
+/* A state from before V22 has only the TLB's 64, and what is kept is
+ * found again as it is asked for, as after any load so far. And it does
+ * not say whether the program is one with a TLB of its own: that is
+ * found out again, as it used to be. */
+void mmu_state_before_v22(void)
+{
+	strict_in_state = -1;
+}
+
 void mmu_detect_strict()
 {
-	const bool strict = CCN_MMUCR.AT == 1 && !settings.dreamcast.FullMMU && utlb_has_a_page();
+	bool strict = CCN_MMUCR.AT == 1 && !settings.dreamcast.FullMMU && utlb_has_a_page();
+
+	// (called when a state has been loaded: one from V22 on says which it is)
+	if (strict_in_state >= 0)
+	{
+		strict = strict_in_state == 1 && !settings.dreamcast.FullMMU;
+		strict_in_state = -1;
+	}
 
 	if (strict && !mmu_strict)
 	{

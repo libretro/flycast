@@ -283,6 +283,14 @@ V21_PART(gdhle);
 V21_PART(nbios);
 V21_PART(pvr);
 #undef V21_PART
+// and since V22: which way the MMU is done, and the translations Windows CE's way of it keeps (fastmmu.cpp)
+void mmu_serialize_v22(void **data, unsigned int *total_size);
+bool mmu_unserialize_v22(void **data, unsigned int *total_size);
+void mmu_state_before_v22(void);
+// and whether the game has written to the framebuffer since it was last shown (Renderer_if.cpp)
+void pvr_serialize_v22(void **data, unsigned int *total_size);
+void pvr_unserialize_v22(void **data, unsigned int *total_size);
+void pvr_state_before_v22(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -791,6 +799,9 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	gdhle_serialize_v21(data, total_size);
 	nbios_serialize_v21(data, total_size);
 	pvr_serialize_v21(data, total_size);
+	// V22
+	pvr_serialize_v22(data, total_size);
+	mmu_serialize_v22(data, total_size);
 
 	return true ;
 }
@@ -1495,6 +1506,17 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		gdhle_state_before_v21();
 		nbios_state_before_v21();
 		pvr_state_before_v21();
+	}
+	if (version >= V22)
+	{
+		pvr_unserialize_v22(data, total_size);
+		if (!mmu_unserialize_v22(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+	{
+		pvr_state_before_v22();
+		mmu_state_before_v22();
 	}
 	/* The timers: what follows from their registers is worked out again,
 	 * for a state of any version, and their events are asked for anew. */

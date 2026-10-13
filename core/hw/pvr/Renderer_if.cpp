@@ -432,6 +432,38 @@ bool rend_frame_produced(void)
 	return r;
 }
 
+/* The save state, from V22: whether the game has written to the
+ * framebuffer itself since that was last shown, and where the framebuffer
+ * was taken to be. A machine loaded from a state had these as the machine
+ * before the load left them, and showed the framebuffer at the next
+ * vblank, or did not, by that. */
+void pvr_serialize_v22(void **data, unsigned int *total_size)
+{
+	u8 dirty = fb_dirty;
+
+	LIBRETRO_S(dirty);
+	LIBRETRO_S(fb_watch_addr_start);
+	LIBRETRO_S(fb_watch_addr_end);
+}
+
+void pvr_unserialize_v22(void **data, unsigned int *total_size)
+{
+	u8 dirty = 0;
+
+	LIBRETRO_US(dirty);
+	LIBRETRO_US(fb_watch_addr_start);
+	LIBRETRO_US(fb_watch_addr_end);
+	fb_dirty = dirty != 0;
+}
+
+/* A state of before V22 does not say: nothing written, and the framebuffer
+ * where the registers have it. */
+void pvr_state_before_v22(void)
+{
+	fb_dirty = false;
+	check_framebuffer_write();
+}
+
 void check_framebuffer_write()
 {
    u32 fb_size = (FB_R_SIZE.fb_y_size + 1) * (FB_R_SIZE.fb_x_size + FB_R_SIZE.fb_modulus) * 4;
