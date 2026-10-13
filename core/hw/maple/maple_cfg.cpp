@@ -385,6 +385,7 @@ void mcfg_CreateDevices()
    {
       bus = 0;
       mcfg_Create(MDT_NaomiJamma, bus++, 5);
+      maple_naomi_eeprom_load();
       if (naomi_periph_rfid_game())
       {
          // an IC card reader for each player, and nothing else

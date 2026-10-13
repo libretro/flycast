@@ -2270,11 +2270,13 @@ struct maple_naomi_jamma : maple_sega_controller
 		EEPROM_loaded = false;
 	}
 
-	/* The EEPROM is read from its file once, the first time the game asks
-	 * for it or writes to it, and is in memory from then on. (It was read
-	 * again each time the game asked. What the game writes goes to the file
-	 * later, from the writer's thread: asked for before that, the file was
-	 * still the old one, and the old one was then what got written.) */
+	/* The EEPROM is read from its file once, when the machine starts
+	 * (maple_naomi_eeprom_load()), and is in memory from then on. (It was
+	 * read again each time the game asked. What the game writes goes to the
+	 * file later, from the writer's thread: asked for before that, the file
+	 * was still the old one, and the old one was then what got written.)
+	 * The game asking for it reads it here only after a state saved before
+	 * it had been read. */
 	void load_eeprom()
 	{
 		if (EEPROM_loaded)
@@ -3656,6 +3658,19 @@ static maple_naomi_jamma *jvs_state_device()
    if (dev != NULL && dev->get_device_type() == MDT_NaomiJamma)
 	  return (maple_naomi_jamma *)dev;
    return NULL;
+}
+
+/* The EEPROM read from its file as the machine starts, before a state can
+ * be saved: a state has it then, and not word that it is yet to be read.
+ * Read only when the game first asked, a state saved before that was loaded
+ * into a machine whose file the game had written to since - which run-ahead
+ * does every frame - and the game found what it had not yet written. */
+void maple_naomi_eeprom_load(void)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+
+   if (jamma != NULL)
+	  jamma->load_eeprom();
 }
 
 void maple_jvs_serialize_v21(void **data, unsigned int *total_size)
