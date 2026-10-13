@@ -2558,18 +2558,25 @@ bool retro_unserialize(const void * data, size_t size)
    /* video memory is replaced whole: nothing still on its way to it is wanted */
    rtt_watch_forget();
 
-    /* What the SH4 recompiler has compiled is kept through a load, where
-     * the code it came from is the same in the state (bm_LoadRam(), from
-     * dc_unserialize()). All of it goes when the load fails, since memory
-     * is then neither one thing nor the other, and when the MMU is on in
-     * one of the two and off in the other, or on in another way: code is
+    /* A frontend that runs frames ahead loads a state after every frame,
+     * and it is the state of a frame ago: what was made from the machine's
+     * memory is kept through a load wherever the state has the same
+     * memory. (All of it used to be thrown away and made again, each
+     * time: what the two recompilers had compiled, every texture, the
+     * memory cards read from their files.) dc_unserialize() sees to that
+     * as it reads each memory: bm_LoadRam() for the SH4's code,
+     * arm7_rec_same_code() for the sound processor's, vram_load() for the
+     * textures.
+     *
+     * All of the SH4's goes when the load fails, since memory is then
+     * neither one thing nor the other, and when the MMU is on in one of
+     * the two and off in the other, or on in another way: code is
      * compiled for the way it is. */
     const bool mmu_was = mmu_enabled();
     const bool strict_was = mmu_strict;
 #ifndef NO_MMU
     mmu_flush_table();
 #endif
-    custom_texture.Terminate();
 
     result = dc_unserialize(&data_ptr, &total_size, size) ;
 

@@ -944,6 +944,8 @@ void texture_VQ(PixelBuffer<pixel_type>* pb,u8* p_in,u32 Width,u32 Height)
 class BaseTextureCacheData;
 
 bool VramLockedWriteOffset(size_t offset);
+void VramLockedWriteRange(u32 offset, u32 size);
+void vram_load(const u8 *from);
 void libCore_vramlock_Lock(u32 start_offset, u32 end_offset, BaseTextureCacheData *texture);
 
 #ifdef HAVE_TEXUPSCALE

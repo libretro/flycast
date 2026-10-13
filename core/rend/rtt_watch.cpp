@@ -3,6 +3,7 @@
 #include "hw/mem/_vmem.h"
 #include "hw/pvr/pvr_mem.h"
 #include "hw/sh4/modules/mmu.h"
+#include "rend/TexCache.h"
 #include <cstdlib>
 #include <cstring>
 #if !defined(TARGET_NO_THREADS)
@@ -366,7 +367,14 @@ void rtt_watch_forget(void)
 {
 	for (RttWatch& s : slots)
 		if (s.used)
+		{
+			/* A texture that shows this picture shows what video memory
+			 * never had and now never will: it is made again, from what
+			 * is there. (Before textures were kept through the loading of
+			 * a state, they all were.) */
+			VramLockedWriteRange(s.addr, s.bytes);
 			drop(s);
+		}
 }
 
 void rtt_watch_term(void)

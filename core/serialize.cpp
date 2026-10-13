@@ -429,6 +429,22 @@ static void unserialize_aram(void **data, unsigned int *total_size)
 	LIBRETRO_USA(aica_ram.data, aica_ram.size);
 }
 
+/* Video memory from a state. The textures made from it are kept where the
+ * state has the same in their pages (vram_load()). */
+static void unserialize_vram(void **data, unsigned int *total_size)
+{
+	if (ra_unserialize_has(*data, vram.size))
+	{
+		vram_load((const u8 *)*data);
+		*data = (u8 *)*data + vram.size;
+		*total_size += vram.size;
+		return;
+	}
+	// (not all of it is there: the textures are made again from whatever this leaves)
+	KillTex = true;
+	LIBRETRO_USA(vram.data, vram.size);
+}
+
 bool register_serialize(Array<RegisterStruct>& regs,void **data, unsigned int *total_size )
 {
 	int i = 0 ;
@@ -1128,11 +1144,10 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		LIBRETRO_SKIP(4 * 1024); // palette32_ram
 		LIBRETRO_SKIP(4 * 1024 * 8 * 2); // detwiddle
 	}
-	KillTex = true;
 	if (version >= V10)
 		UnserializeTAContext(data, total_size, version);	// (the state's version, not this build's: a state of before V12 has no render passes to read)
 
-	LIBRETRO_USA(vram.data, vram.size);
+	unserialize_vram(data, total_size);
 
 	LIBRETRO_USA(OnChipRAM.data,OnChipRAM_SIZE);
 

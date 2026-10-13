@@ -278,6 +278,54 @@ bool VramLockedWriteOffset(size_t offset)
 	return true;
 }
 
+/* The same for a run of pages, with one change of protection for all of
+ * them. Any thread, the machine standing still. */
+void VramLockedWriteRange(u32 offset, u32 size)
+{
+	if (size == 0 || offset >= VRAM_SIZE)
+		return;
+	if (size > VRAM_SIZE - offset)
+		size = VRAM_SIZE - offset;
+
+	const u32 first = offset / PAGE_SIZE, last = (offset + size - 1) / PAGE_SIZE;
+
+	_vmem_unprotect_vram(first * PAGE_SIZE, (last - first + 1) * PAGE_SIZE);
+	for (u32 page = first; page <= last; page++)
+		vram_writes.Mark(page);
+}
+
+/* Video memory from a save state: @from is all of it. Any thread, the
+ * machine standing still.
+ *
+ * It used to be copied over whole and every texture thrown away, to be made
+ * again from the same bytes as often as not: with run-ahead a state is
+ * loaded every frame, and it is the state of one frame ago. Here a page
+ * that textures were made from - a protected one - is compared first. The
+ * same in the state, it is left alone and so are its textures; another, it
+ * is written as the game would have written it, which is what has them made
+ * again. The pages nothing was made from are copied as before, a run of
+ * them at a time. */
+void vram_load(const u8 *from)
+{
+	u8 * const to = &vram[0];
+	u32 run = 0;		// where the pages to be copied in one go start
+
+	for (u32 addr = 0; addr < VRAM_SIZE; addr += PAGE_SIZE)
+	{
+		if (!_vmem_vram_page_protected(addr / PAGE_SIZE))
+			continue;
+		if (addr > run)
+			memcpy(to + run, from + run, addr - run);
+		run = addr + PAGE_SIZE;
+		if (memcmp(to + addr, from + addr, PAGE_SIZE) == 0)
+			continue;
+		VramLockedWriteOffset(addr);
+		memcpy(to + addr, from + addr, PAGE_SIZE);
+	}
+	if (VRAM_SIZE > run)
+		memcpy(to + run, from + run, VRAM_SIZE - run);
+}
+
 bool VramLockedWrite(u8* address)
 {
 	u32 offset = _vmem_get_vram_offset(address);
