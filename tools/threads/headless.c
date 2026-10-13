@@ -29,7 +29,15 @@
  *                    that of the plain run less one frame's where this
  *                    began: whatever else differs is something a state does
  *                    not carry. (The verdict word and the stage word are
- *                    not looked at in such a run.)
+ *                    not looked at in such a run.) And each frame is
+ *                    then run twice from what should be one state - heard,
+ *                    from the machine as the frame before left it, and
+ *                    unheard, from the state loaded - so the states after
+ *                    the two are compared, byte for byte: a difference is
+ *                    something a load does not put back, whether or not
+ *                    it is ever heard, and the run ends badly. At the end,
+ *                    the processor time a frame, a save, the frame after
+ *                    it and a load each took is printed.
  *   HEADLESS_UNDUMP  "frame:file": the state in that file loaded before that
  *                    frame. "state loaded" or "state refused" is printed,
  *                    and the run goes on either way.
@@ -421,6 +429,14 @@ int main(int argc, char **argv)
          int ahead_at = getenv("HEADLESS_AHEAD") ? atoi(getenv("HEADLESS_AHEAD")) : -1;
          void *ahead_state = NULL;
          size_t ahead_room = 0;
+         /* the machine after the frame that was heard, which is the frame
+          * run again next from the state loaded */
+         unsigned char *ahead_heard = NULL;
+         int ahead_wrong = 0;
+         /* processor time spent, in turn: on the frame, on saving the state,
+          * on the frame after it, on loading the state */
+         clock_t ahead_spent[4] = { 0, 0, 0, 0 };
+         int ahead_count = 0;
          void *state = NULL;
          size_t state_size = 0;
          clock_t t0 = clock();
@@ -491,9 +507,12 @@ int main(int argc, char **argv)
 
                /* The frame itself, unheard; a state of the machine after
                 * it; the frame after it, heard; and back to the state. */
+               clock_t t1 = clock(), t2;
+
                sound_off = 1;
                retro_run();
                sound_off = 0;
+               t2 = clock(); ahead_spent[0] += t2 - t1; t1 = t2;
                ahead_size = retro_serialize_size();
                if (ahead_size > ahead_room)
                {
@@ -504,20 +523,49 @@ int main(int argc, char **argv)
                            (unsigned long)ahead_room, (unsigned long)ahead_size);
                      return 1;
                   }
-                  ahead_state = malloc(ahead_size);
+                  ahead_state = calloc(1, ahead_size);
+                  ahead_heard = calloc(1, ahead_size);
                   ahead_room = ahead_size;
                }
-               if (!ahead_state || !retro_serialize(ahead_state, ahead_room))
+               if (!ahead_state || !ahead_heard || !retro_serialize(ahead_state, ahead_room))
                {
                   fprintf(stderr, "the state could not be saved (frame %d)\n", i);
                   return 1;
                }
+               t2 = clock(); ahead_spent[1] += t2 - t1;
+               if (ahead_count && memcmp(ahead_state, ahead_heard, ahead_room) != 0)
+               {
+                  if (!ahead_wrong++)
+                  {
+                     size_t at = 0, n = 0, k;
+
+                     for (k = ahead_room; k-- > 0; )
+                        if (((unsigned char *)ahead_state)[k] != ahead_heard[k])
+                        {
+                           at = k;
+                           n++;
+                        }
+                     fprintf(stderr, "frame %d from the state loaded is not the frame it was: "
+                           "%lu bytes of the state after it differ, the first at %lu\n",
+                           i, (unsigned long)n, (unsigned long)at);
+                  }
+               }
+               t1 = clock();
                retro_run();
+               t2 = clock(); ahead_spent[2] += t2 - t1;
+               if (!retro_serialize(ahead_heard, ahead_room))
+               {
+                  fprintf(stderr, "the state could not be saved (frame %d)\n", i);
+                  return 1;
+               }
+               t1 = clock();
                if (!retro_unserialize(ahead_state, ahead_room))
                {
                   fprintf(stderr, "the state could not be loaded (frame %d)\n", i);
                   return 1;
                }
+               ahead_spent[3] += clock() - t1;
+               ahead_count++;
                continue;
             }
             retro_run();
@@ -543,6 +591,19 @@ int main(int argc, char **argv)
                }
                break;
             }
+         }
+         if (ahead_count)
+            printf("ahead: %d frames; ms each: frame %.2f, state saved %.2f, frame after it %.2f, state loaded %.2f\n",
+                  ahead_count,
+                  1000.0 * ahead_spent[0] / CLOCKS_PER_SEC / ahead_count,
+                  1000.0 * ahead_spent[1] / CLOCKS_PER_SEC / ahead_count,
+                  1000.0 * ahead_spent[2] / CLOCKS_PER_SEC / ahead_count,
+                  1000.0 * ahead_spent[3] / CLOCKS_PER_SEC / ahead_count);
+         if (ahead_wrong)
+         {
+            fprintf(stderr, "%d of %d frames run from the state loaded were not the frames they had been\n",
+                  ahead_wrong, ahead_count);
+            return 1;
          }
       }
 

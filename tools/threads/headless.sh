@@ -128,6 +128,9 @@ VERDICT=$(python3 "$T/live_disc.py" --verdict)
 # of. The program has to reach its verdict as if nothing had happened - its
 # timers, its reads from the disc, its memory card - and the sound has to
 # be the first run's less the one frame that was not heard, every sample.
+# And every frame is run twice there, once from the machine as it stood and
+# once from the state loaded: the frontend compares the states after the
+# two (headless.c), which have to be the same in every byte.
 # The eighth changes the Internal Resolution option to 2x and turns the
 # widescreen hack on 120 frames in, as from the frontend's menu: the core has
 # to tell the frontend the new size - 1280x960, a third wider - and the
@@ -303,20 +306,32 @@ done
 # written over by whatever road the write came: at any of the addresses the
 # same memory is at, by DMA, through a store queue, through the MMU.
 #
-# Seven times: as it is; with a state saved while it is at it and loaded a
+# Ten times: as it is; with a state saved while it is at it and loaded a
 # third of a second on, which is the code of the earlier moment back in
-# memory under whatever was compiled since; both with the MMU on the way a
-# Windows CE game has it (the core option), the program then mapping its
-# code somewhere else; both with the program bringing a TLB of its own
+# memory under whatever was compiled since; and as a frontend's run-ahead
+# runs it, a state loaded after every frame. What was compiled is kept
+# through a load where the state has the same code, so this is where that
+# has to be right: the code of a frame ago is back under what the frame
+# compiled, sixty times a second. And a frame run from the state loaded
+# has to leave the machine as the same frame left it before, in every byte
+# of the state after it - which is where what a state does not carry
+# shows, heard or not. All three with the MMU on the way a Windows CE game
+# has it (the core option), the program then mapping its code somewhere
+# else: every translation the program has given is kept there, thousands of
+# them, and a state has to have them all, in the order they are looked
+# through. All three with the program bringing a TLB of its own
 # (smc_elf.py --own-tlb), which the core has to notice and do the whole MMU
 # for - the exception for a first write, user mode, an address that is
-# mapped only while its entry is in the TLB; and once with that TLB loaded
-# after translation is turned on and not before (--late-tlb), which the
-# core has to notice as well.
+# mapped only while its entry is in the TLB, and the counter that says
+# which entry goes next, which is the machine's and not a count of how
+# often the host had to look. And once with that TLB loaded after
+# translation is turned on and not before (--late-tlb), which the core has
+# to notice as well.
 python3 "$T/smc_elf.py" "$WORK/smc.elf"
 python3 "$T/smc_elf.py" --own-tlb "$WORK/smc-own.elf"
 python3 "$T/smc_elf.py" --late-tlb "$WORK/smc-late.elf"
-for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a state loaded" \
+for SMC in "as it is" "with a state loaded" "with every frame run ahead" \
+   "with the MMU" "with the MMU and a state loaded" "with the MMU and every frame run ahead" \
    "with a TLB of its own" "with a TLB of its own and a state loaded" \
    "with a TLB of its own loaded late"; do
    echo "== headless: code that is rewritten while it is in use, $SMC"
@@ -340,6 +355,9 @@ for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a s
          HEADLESS_SAVE=20
          HEADLESS_LOAD=40
          export HEADLESS_SAVE HEADLESS_LOAD;;
+      *ahead*)
+         HEADLESS_AHEAD=1
+         export HEADLESS_AHEAD;;
    esac
    if [ -n "$WINDOWS" ]; then
       :
@@ -362,7 +380,7 @@ for SMC in "as it is" "with a state loaded" "with the MMU" "with the MMU and a s
       exit 1
    }
 done
-unset HEADLESS_SAVE HEADLESS_LOAD
+unset HEADLESS_SAVE HEADLESS_LOAD HEADLESS_AHEAD
 
 # And a NAOMI cartridge (naomi_cart.py), started without a BIOS: its program
 # asks the built-in one for the system menu, as a game does when the
