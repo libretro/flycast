@@ -1155,8 +1155,7 @@ Games[] =
             { "mpr-21738.ic11",  0x5800000, 0x800000, 0x95a592e8 },
             
             // on-cart X76F100 eeprom contents
-            //ROM_REGION( 0x84, "naomibd_eeprom", 0 )
-            //ROM_LOAD( "airlinepdx.sf",  0x000000, 0x000084, CRC(404b2add) SHA1(540c8474806775646ace111a2993397b1419fee3) )
+            { "airlinepdx.sf", 0x000000, 0x000084, 0x404b2add, Eeprom },
             
             { NULL, 0, 0 },
         },
@@ -1793,8 +1792,7 @@ Games[] =
             { "mpr-22120.ic21s", 0xa800000, 0x0800000, 0xa30facb4 },
 
             // on-cart X76F100 eeprom contents
-            //ROM_REGION( 0x84, "naomibd_eeprom", 0 )
-            //ROM_LOAD( "841-0003.sf",  0x000000, 0x000084, CRC(3a119a17) SHA1(d37a092cca7c9cfc5f2637b355af90a65d04013e) )
+            { "841-0003.sf", 0x000000, 0x000084, 0x3a119a17, Eeprom },
             
             { NULL, 0, 0 },
         }
@@ -1835,8 +1833,7 @@ Games[] =
             { "mpr-22120.ic21s", 0xa800000, 0x0800000, 0xa30facb4 },
             
             // on-cart X76F100 eeprom contents
-            //ROM_REGION( 0x84, "naomibd_eeprom", 0 )
-            //ROM_LOAD( "841-0003.sf",  0x000000, 0x000084, CRC(3a119a17) SHA1(d37a092cca7c9cfc5f2637b355af90a65d04013e) )
+            { "841-0003.sf", 0x000000, 0x000084, 0x3a119a17, Eeprom },
             
             { NULL, 0, 0 },
         }
@@ -1877,8 +1874,7 @@ Games[] =
             { "mpr-22120.ic21s",0xa800000, 0x0800000, 0xa30facb4 },
             
             // on-cart X76F100 eeprom contents
-            //ROM_REGION( 0x84, "naomibd_eeprom", 0 )
-            //ROM_LOAD( "841-0003.sf",  0x000000, 0x000084, CRC(3a119a17) SHA1(d37a092cca7c9cfc5f2637b355af90a65d04013e) )
+            { "841-0003.sf", 0x000000, 0x000084, 0x3a119a17, Eeprom },
             { NULL, 0, 0 },
         }
     },
@@ -3849,8 +3845,7 @@ Games[] =
             { "mpr-22077.ic4",  0x2000000, 0x400000, 0xf33d7620 },
             
             // on-cart X76F100 eeprom contents
-            //ROM_REGION( 0x84, "naomibd_eeprom", 0 )
-            //ROM_LOAD( "x76f100.ic37", 0x000000, 0x000084, CRC(c79251d5) SHA1(3e70bbbb6d28bade7eec7e27d716463045656f98) )
+            { "x76f100.ic37", 0x000000, 0x000084, 0xc79251d5, Eeprom },
             
             { NULL, 0, 0 },
         },

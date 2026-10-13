@@ -327,6 +327,7 @@ SOURCES_CXX += $(CORE_DIR)/core/hw/naomi/naomi.cpp \
 					$(CORE_DIR)/core/hw/naomi/m4cartridge.cpp \
 					$(CORE_DIR)/core/hw/naomi/awcartridge.cpp \
 					$(CORE_DIR)/core/hw/naomi/gdcartridge.cpp \
+					$(CORE_DIR)/core/hw/flashrom/x76f100.cpp \
 					$(CORE_DIR)/core/hw/naomi/naomi_m3comm.cpp \
 					$(CORE_DIR)/core/hw/naomi/card_reader.cpp \
 					$(CORE_DIR)/core/hw/naomi/touchscreen.cpp \

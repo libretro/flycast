@@ -186,11 +186,15 @@ static int naomi_count_roms(const archive_t *archive, int g, int *files, bool *f
 
 		if (Games[g].blobs[romid].blob_type == Copy)
 			continue;
-		(*files)++;
 		/* (by its checksum, else by its name: a ROM changed by a patch
 		 * or dumped another way is still the set's) */
-		if ((crc != 0 && archive_find_crc(archive, crc) >= 0)
-				|| naomi_find_named(archive, Games[g].name, Games[g].blobs[romid].filename) >= 0)
+		const bool there = (crc != 0 && archive_find_crc(archive, crc) >= 0)
+				|| naomi_find_named(archive, Games[g].name, Games[g].blobs[romid].filename) >= 0;
+		// (an EEPROM's contents are not required: a set without them is whole)
+		if (!there && Games[g].blobs[romid].blob_type == Eeprom)
+			continue;
+		(*files)++;
+		if (there)
 		{
 			found++;
 			if (romid == 0)
@@ -342,7 +346,12 @@ static bool naomi_clone_in(const archive_t *archive, int clone, int parent)
 			const int idx = naomi_find_named(archive, Games[clone].name, filename);
 
 			if (idx < 0)
+			{
+				// (an EEPROM's contents are not required: the set loads without them)
+				if (Games[clone].blobs[romid].blob_type == Eeprom)
+					continue;
 				return false;
+			}
 			for (int i = 0; Games[parent].blobs[i].filename != NULL && !parents; i++)
 				parents = Games[parent].blobs[i].blob_type != Copy
 					&& !stricmp(Games[parent].blobs[i].filename, filename);
@@ -863,6 +872,15 @@ static bool naomi_cart_LoadZip(const char *filename)
 				CurrentCartridge->SetKeyData(buf);
 				DEBUG_LOG(NAOMI, "Loaded %s: %x bytes cart key", game->blobs[romid].filename, read);
 			}
+			else if (game->blobs[romid].blob_type == Eeprom && len == 0x84)
+			{
+				// the X76F100 on the ROM board
+				if (read == len)
+					naomi_serial_id_load(blob);
+				else
+					WARN_LOG(NAOMI, "%s: %s is too short", filename, game->blobs[romid].filename);
+				DEBUG_LOG(NAOMI, "Loaded %s: %x bytes ROM board serial EEPROM", game->blobs[romid].filename, read);
+			}
 			else if (game->blobs[romid].blob_type == Eeprom)
 			{
 			    naomi_default_eeprom = (u8 *)malloc(len);
@@ -1122,6 +1140,8 @@ void naomi_cart_Close()
 static bool naomi_cart_LoadRom(const char* file)
 {
 	INFO_LOG(NAOMI, "nullDC-Naomi rom loader v1.2");
+	// (the serial EEPROMs' default contents: a set may give the ROM board's)
+	naomi_serial_id_load(NULL);
 
 	naomi_cart_Close();
 

@@ -333,6 +333,11 @@ void maple_jvs_state_before_v25(void);
 void naomi_gd_serialize_v25(void **data, unsigned int *total_size);
 bool naomi_gd_unserialize_v25(void **data, unsigned int *total_size);
 void naomi_gd_state_before_v25(void);
+/* and since V26: the NAOMI's two X76F100 serial flash chips, the main
+ * board's and the ROM board's (naomi.cpp) */
+void naomi_serial_serialize_v26(void **data, unsigned int *total_size);
+bool naomi_serial_unserialize_v26(void **data, unsigned int *total_size);
+void naomi_serial_state_before_v26(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -890,6 +895,8 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	systemsp_serialize_v25(data, total_size);
 	maple_jvs_serialize_v25(data, total_size);
 	naomi_gd_serialize_v25(data, total_size);
+	// V26
+	naomi_serial_serialize_v26(data, total_size);
 
 	return true ;
 }
@@ -1694,6 +1701,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		maple_jvs_state_before_v25();
 		naomi_gd_state_before_v25();
 	}
+	if (version >= V26)
+	{
+		if (!naomi_serial_unserialize_v26(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+		naomi_serial_state_before_v26();
 	sched_events_loaded();
 	/* A sound DMA is under way only while its end is to come: a start is
 	 * not taken while one is, and SB_ADST set with no end on its way would

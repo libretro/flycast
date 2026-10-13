@@ -692,23 +692,10 @@ GDCartridge::~GDCartridge()
 
 void GDCartridge::SetDimmBoard(bool on)
 {
-	static const u8 serial_data[0x84] = {
-		// response to reset
-		0x19, 0x00, 0xaa, 0x55,
-		// write password, read password
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x69, 0x79, 0x68, 0x6b, 0x74, 0x6d, 0x68, 0x6d,
-		// the data: the serial number is its last 16 bytes
-		0xa1, 0x09, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-		' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
-	};
-
 	if (on)
 	{
 		dimm_cart = this;
 		dimm_sched_id = sh4_sched_register(0, &GDCartridge::dimm_sched);
-		serial_id.setData(serial_data);
 	}
 	else if (dimm_cart == this)
 	{
@@ -717,13 +704,11 @@ void GDCartridge::SetDimmBoard(bool on)
 	}
 	dimm_board = on;
 	dimm_on = on;
-	serial_id.reset();
 }
 
 void GDCartridge::dimm_reset()
 {
 	dimm_on = dimm_board;
-	serial_id.reset();
 	if (dimm_cart == this)
 		sh4_sched_request(dimm_sched_id, -1);
 }
@@ -744,8 +729,6 @@ u32 GDCartridge::ReadMem(u32 address, u32 size)
 		return reg_dimm_parameterh & 0xffff;
 	case 0x4c:	// 5f704c: DIMM STATUS
 		return DIMM_STATUS & ~(((SB_ISTEXT >> 3) & 1) << 8);
-	case NAOMI_BOARDID_READ_addr & 255:
-		return serial_id.readSDA() ? 0x8000 : 0;
 	default:
 		return NaomiCartridge::ReadMem(address, size);
 	}
@@ -779,12 +762,6 @@ void GDCartridge::WriteMem(u32 address, u32 data, u32 size)
 			asic_CancelInterrupt(holly_EXP_PCI);
 		if ((data & 1) == 0)
 			dimm_process();
-		return;
-	case NAOMI_BOARDID_WRITE_addr & 255:
-		serial_id.writeCS(data & 4);
-		serial_id.writeRST(data & 8);
-		serial_id.writeSCL(data & 2);
-		serial_id.writeSDA(data & 1);
 		return;
 	default:
 		NaomiCartridge::WriteMem(address, data, size);
@@ -837,7 +814,7 @@ void GDCartridge::dimm_system_command(u32 cmd)
 				dimm_size = 2 << 16;
 			WriteMem32_nommu(0x0c01fc04, dimm_size | 0x60000000 | (dimm_data_size >> 20));
 			WriteMem32_nommu(0x0c01fc0c, 0x01020264);
-			const u8 *serial = serial_id.getProtectedData() + 0x20;
+			const u8 *serial = naomi_rom_serial_data() + 0x20;
 			for (u32 i = 0; i < 16; i += 4)
 			{
 				u32 v;
@@ -925,7 +902,7 @@ void GDCartridge::SerializeV25(void **data, unsigned int *total_size)
 	LIBRETRO_S(on);
 	LIBRETRO_S(start);
 	LIBRETRO_S(end);
-	serial_id.serialize(data, total_size);
+	naomi_rom_serial_serialize(data, total_size);
 }
 
 void GDCartridge::UnserializeV25(void **data, unsigned int *total_size)
@@ -936,7 +913,7 @@ void GDCartridge::UnserializeV25(void **data, unsigned int *total_size)
 	LIBRETRO_US(on);
 	LIBRETRO_US(start);
 	LIBRETRO_US(end);
-	serial_id.unserialize(data, total_size);
+	naomi_rom_serial_unserialize(data, total_size);
 	dimm_on = on != 0;
 	periph_sched_restore(dimm_sched_id, start, end);
 }
@@ -946,7 +923,7 @@ void GDCartridge::UnserializeV25(void **data, unsigned int *total_size)
 void GDCartridge::StateBeforeV25()
 {
 	dimm_on = false;
-	serial_id.reset();
+	naomi_rom_serial_reset();
 	sh4_sched_request(dimm_sched_id, -1);
 }
 
@@ -963,260 +940,15 @@ bool naomi_gd_unserialize_v25(void **data, unsigned int *total_size)
 	return true;
 }
 
+/* The ROM board's serial EEPROM is in the V25 part of the state, not the
+ * V26 one, when there is a DIMM board. */
+bool naomi_gd_serial_in_v25(void)
+{
+	return dimm_cart != NULL && dimm_cart == CurrentCartridge;
+}
+
 void naomi_gd_state_before_v25(void)
 {
 	if (dimm_cart != NULL && dimm_cart == CurrentCartridge)
 		dimm_cart->StateBeforeV25();
-}
-
-/* The X76F100. Each write to 5f7078 sets its four lines at once, chip
- * select and reset first, then the clock, then the data: a data line that
- * changes in the same write as the clock is not a start or a stop. */
-
-void GDCartridge::X76F100::setData(const u8 *src)
-{
-	memcpy(responseToReset, src, sizeof(responseToReset));
-	src += sizeof(responseToReset);
-	memcpy(writePassword, src, sizeof(writePassword));
-	src += sizeof(writePassword);
-	memcpy(readPassword, src, sizeof(readPassword));
-	src += sizeof(readPassword);
-	memcpy(data, src, sizeof(data));
-}
-
-void GDCartridge::X76F100::reset()
-{
-	lastSCL = false;
-	SCLChanged = false;
-	lastSDA = false;
-	sda = false;
-	lastRST = false;
-	lastCS = false;
-	state = STOP;
-	bit = 0;
-	byteOffset = 0;
-	command = 0;
-	shift = 0;
-	memset(writeBuffer, 0, sizeof(writeBuffer));
-}
-
-int GDCartridge::X76F100::dataOffset() const
-{
-	// (blocks 14 and 15 are past the 112 bytes)
-	const int offset = ((command >> 1) & 0x0f) * 8 + byteOffset;
-	return offset < (int)sizeof(data) ? offset : -1;
-}
-
-void GDCartridge::X76F100::writeCS(bool v)
-{
-	if (lastCS != v)
-		state = STOP;
-	if (!lastCS && v)
-		sda = false;
-	lastCS = v;
-}
-
-void GDCartridge::X76F100::writeRST(bool v)
-{
-	if (v && !lastRST && !lastCS)
-	{
-		state = RESPONSE_TO_RESET;
-		bit = 0;
-		byteOffset = 0;
-	}
-	lastRST = v;
-}
-
-void GDCartridge::X76F100::writeSCL(bool v)
-{
-	if (!lastCS)
-	{
-		switch (state)
-		{
-		case RESPONSE_TO_RESET:
-			if (lastSCL && !v)
-			{
-				if (bit == 0)
-					shift = responseToReset[byteOffset];
-				sda = shift & 1;
-				shift >>= 1;
-				if (++bit == 8)
-				{
-					bit = 0;
-					if (++byteOffset == sizeof(responseToReset))
-						byteOffset = 0;
-				}
-			}
-			break;
-
-		case LOAD_COMMAND:
-		case LOAD_PASSWORD:
-		case VERIFY_PASSWORD:
-		case WRITE_DATA:
-			if (!lastSCL && v)
-			{
-				if (bit < 8)
-				{
-					shift = (shift << 1) | (lastSDA ? 1 : 0);
-					bit++;
-					break;
-				}
-				// the ninth clock: the byte is in
-				sda = false;
-				switch (state)
-				{
-				case LOAD_COMMAND:
-					command = shift;
-					state = LOAD_PASSWORD;
-					break;
-
-				case LOAD_PASSWORD:
-					writeBuffer[byteOffset++] = shift;
-					if (byteOffset == sizeof(writeBuffer))
-						state = VERIFY_PASSWORD;
-					break;
-
-				case VERIFY_PASSWORD:
-					// the password acknowledge poll: any password is taken
-					if (shift == 0x55)
-					{
-						if ((command & 0x81) == 0x81)
-							state = READ_DATA;
-						else if ((command & 0x81) == 0x80)
-						{
-							state = WRITE_DATA;
-							// (the eight bytes of the password are not data)
-							byteOffset = 0;
-						}
-					}
-					break;
-
-				case WRITE_DATA:
-					writeBuffer[byteOffset++] = shift;
-					if (byteOffset == sizeof(writeBuffer))
-					{
-						if (command == 0xfc)
-							memcpy(writePassword, writeBuffer, sizeof(writePassword));
-						else if (command == 0xfe)
-							memcpy(readPassword, writeBuffer, sizeof(readPassword));
-						else
-						{
-							for (byteOffset = 0; byteOffset < sizeof(writeBuffer); byteOffset++)
-							{
-								const int offset = dataOffset();
-								if (offset == -1)
-									break;
-								data[offset] = writeBuffer[byteOffset];
-							}
-						}
-						byteOffset = 0;
-					}
-					break;
-				}
-				bit = 0;
-				shift = 0;
-			}
-			break;
-
-		case READ_DATA:
-			if (!lastSCL && v)
-			{
-				if (bit < 8)
-				{
-					if (bit == 0)
-					{
-						const int offset = dataOffset();
-						shift = offset != -1 ? data[offset] : 0;
-					}
-					sda = (shift >> 7) & 1;
-					shift <<= 1;
-					bit++;
-				}
-				else
-				{
-					// the ninth clock: the next byte if the NAOMI acknowledges
-					bit = 0;
-					sda = false;
-					if (!lastSDA)
-						byteOffset++;
-				}
-			}
-			break;
-
-		default:
-			break;
-		}
-	}
-	SCLChanged = lastSCL != v;
-	lastSCL = v;
-}
-
-void GDCartridge::X76F100::writeSDA(bool v)
-{
-	if (lastSCL && !SCLChanged && !lastCS)
-	{
-		if (!lastSDA && v)
-		{
-			// stop
-			state = STOP;
-			sda = false;
-		}
-		if (lastSDA && !v)
-		{
-			// start
-			if (state == STOP)
-				state = LOAD_COMMAND;
-			bit = 0;
-			byteOffset = 0;
-			shift = 0;
-			sda = false;
-		}
-	}
-	lastSDA = v;
-}
-
-void GDCartridge::X76F100::serialize(void **data, unsigned int *total_size)
-{
-	u8 regs[6];
-
-	regs[0] = lastSCL | (SCLChanged << 1) | (lastSDA << 2) | (sda << 3) | (lastRST << 4) | (lastCS << 5);
-	regs[1] = state;
-	regs[2] = command;
-	regs[3] = byteOffset;
-	regs[4] = bit;
-	regs[5] = shift;
-	LIBRETRO_SA(regs, 6);
-	LIBRETRO_SA(writeBuffer, 8);
-	LIBRETRO_SA(this->data, 112);
-	LIBRETRO_SA(readPassword, 8);
-	LIBRETRO_SA(writePassword, 8);
-}
-
-void GDCartridge::X76F100::unserialize(void **data, unsigned int *total_size)
-{
-	u8 regs[6] = { 0 };
-
-	LIBRETRO_USA(regs, 6);
-	LIBRETRO_USA(writeBuffer, 8);
-	LIBRETRO_USA(this->data, 112);
-	LIBRETRO_USA(readPassword, 8);
-	LIBRETRO_USA(writePassword, 8);
-	lastSCL = regs[0] & 1;
-	SCLChanged = (regs[0] >> 1) & 1;
-	lastSDA = (regs[0] >> 2) & 1;
-	sda = (regs[0] >> 3) & 1;
-	lastRST = (regs[0] >> 4) & 1;
-	lastCS = (regs[0] >> 5) & 1;
-	state = regs[1] <= WRITE_DATA ? regs[1] : (u8)STOP;
-	command = regs[2];
-	byteOffset = regs[3];
-	bit = std::min<u8>(regs[4], 8);
-	shift = regs[5];
-	// (where a byte goes into a buffer, its place is inside it)
-	if ((state == RESPONSE_TO_RESET && byteOffset >= sizeof(responseToReset))
-			|| ((state == LOAD_COMMAND || state == LOAD_PASSWORD || state == WRITE_DATA)
-				&& byteOffset >= sizeof(writeBuffer)))
-		byteOffset = 0;
-	if (state == RESPONSE_TO_RESET && bit >= 8)
-		bit = 0;
 }

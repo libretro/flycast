@@ -20,6 +20,7 @@
 #include "printer.h"
 #include "hw/sh4/modules/modules.h"
 #include "savewriter.h"
+#include "hw/flashrom/x76f100.h"
 #include <streams/file_stream.h>
 #include <algorithm>
 #include <vector>
@@ -28,7 +29,14 @@
 
 static NaomiM3Comm m3comm;
 
-static const u32 BoardID=0x980055AA;
+/* The serial EEPROMs of the main board (read through the SH4's port A) and
+ * of the ROM board (5f7078/5f707c), both X76F100. */
+static X76F100SerialFlash mainSerialId;
+static X76F100SerialFlash romSerialId;
+// what the ROM board's chip holds at the start: its set's or the default
+static u8 romSerialSet[0x84];
+/* What stood for them before, which the save state still holds: not used,
+ * and zeroes. */
 u32 GSerialBuffer=0,BSerialBuffer=0;
 int GBufPos=0,BBufPos=0;
 int GState=0,BState=0;
@@ -36,6 +44,8 @@ int GOldClk=0,BOldClk=0;
 int BControl=0,BCmd=0,BLastCmd=0;
 int GControl=0,GCmd=0,GLastCmd=0;
 int SerStep=0,SerStep2=0;
+unsigned char BSerial[70];
+unsigned char GSerial[70];
 
 static bool aw_ram_test_skipped = false;
 static u8 aw_maple_devs;
@@ -61,323 +71,76 @@ extern std::vector<sched_list> sch_list;
 	HANDLE CommMapFile=INVALID_HANDLE_VALUE;
 #endif
 
-/*
-El numero de serie solo puede contener:
-0-9		(0x30-0x39)
-A-H		(0x41-0x48)
-J-N		(0x4A-0x4E)
-P-Z		(0x50-0x5A)
-*/
-unsigned char BSerial[]="\xB7"/*CRC1*/"\x19"/*CRC2*/"0123234437897584372973927387463782196719782697849162342198671923649";
-unsigned char GSerial[]="\xB7"/*CRC1*/"\x19"/*CRC2*/"0123234437897584372973927387463782196719782697849162342198671923649";
+/* What both chips hold when the set gives the ROM board's none: the
+ * response to reset, the write and read passwords, and the data, the
+ * serial number in its bytes 0x20-0x2f. */
+static const u8 defaultSerialData[0x84] = {
+	0x19, 0x00, 0xaa, 0x55,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x69, 0x79, 0x68, 0x6b, 0x74, 0x6d, 0x68, 0x6d,
+	0xa1, 0x09, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+	' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+	'0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+};
 
-unsigned int ShiftCRC(unsigned int CRC,unsigned int rounds)
+/* A set is loaded: the main board's chip gets the default contents, the ROM
+ * board's those of the set (0x84 bytes) or the default. */
+void naomi_serial_id_load(const u8 *rom_board)
 {
-	const unsigned int Magic=0x10210000;
-	unsigned int i;
-	for(i=0;i<rounds;++i)
-	{
-		if(CRC&0x80000000)
-			CRC=(CRC<<1)+Magic;
-		else
-			CRC=(CRC<<1);
-	}
-	return CRC;
+	memcpy(romSerialSet, rom_board != NULL ? rom_board : defaultSerialData, sizeof(romSerialSet));
+	mainSerialId.setData(defaultSerialData);
+	romSerialId.setData(romSerialSet);
+	mainSerialId.reset();
+	romSerialId.reset();
 }
 
-unsigned short CRCSerial(const u8 *Serial,unsigned int len)
+const u8 *naomi_rom_serial_data(void)
 {
-	unsigned int CRC=0xDEBDEB00;
-	unsigned int i;
-
-	for(i=0;i<len;++i)
-	{
-		unsigned char c=Serial[i];
-		//CRC&=0xFFFFFF00;
-		CRC|=c;
-		CRC=ShiftCRC(CRC,8);
-	}
-	CRC=ShiftCRC(CRC,8);
-	return (u16)(CRC>>16);
+	return romSerialId.getProtectedData();
 }
 
-
-void NaomiInit()
+void naomi_rom_serial_reset(void)
 {
-	u16 CRC;
-	CRC=CRCSerial(BSerial+2,0x2E);
-	BSerial[0]=(u8)(CRC>>8);
-	BSerial[1]=(u8)(CRC);
-
-	CRC=CRCSerial(GSerial+2,0x2E);
-	GSerial[0]=(u8)(CRC>>8);
-	GSerial[1]=(u8)(CRC);
+	romSerialId.reset();
 }
 
+void naomi_rom_serial_serialize(void **data, unsigned int *total_size)
+{
+	romSerialId.serialize(data, total_size);
+}
 
-
+void naomi_rom_serial_unserialize(void **data, unsigned int *total_size)
+{
+	romSerialId.unserialize(data, total_size);
+}
 
 void NaomiBoardIDWrite(const u16 Data)
 {
-	int Dat=Data&8;
-	int Clk=Data&4;
-	int Rst=Data&0x20;
-	int Sta=Data&0x10;
-	
-
-	if(Rst)
-	{
-		BState=0;
-		BBufPos=0;
-	}
-
-	
-	if(Clk!=BOldClk && !Clk)	//Falling Edge clock
-	{
-		//State change
-		if(BState==0 && Sta) 
-			BState=1;		
-		if(BState==1 && !Sta)
-			BState=2;
-
-		if((BControl&0xfff)==0xFF0)	//Command mode
-		{
-			BCmd<<=1;
-			if(Dat)
-				BCmd|=1;
-			else
-				BCmd&=0xfffffffe;
-		}
-
-		//State processing
-		if(BState==1)		//LoadBoardID
-		{
-			BSerialBuffer=BoardID;
-			BBufPos=0;		//??
-		}
-		if(BState==2)		//ShiftBoardID
-		{
-			BBufPos++;
-		}
-	}
-	BOldClk=Clk;
+	// bit 2 the clock, bit 3 the data, bit 4 reset, bit 5 chip select
+	mainSerialId.writeCS(Data & 0x20);
+	mainSerialId.writeRST(Data & 0x10);
+	mainSerialId.writeSCL(Data & 4);
+	mainSerialId.writeSDA(Data & 8);
 }
 
 u16 NaomiBoardIDRead()
 {
-	if((BControl&0xff)==0xFE)
-		return 0xffff;
-	// (the count goes on for as long as the game clocks it: one of the 32 bits)
-	return (BSerialBuffer&(1u<<((31-BBufPos)&31)))?8:0;
+	// bit 0 set: the chip is an X76F100 (clear, the BIOS expects an
+	// AT93C46); bit 3 its data line
+	return (mainSerialId.readSDA() << 3) | 1;
 }
-
-static u32 AdaptByte(u8 val)
-{
-	return val<<24;
-}
-
-/* A byte of a serial number, as AdaptByte() gives it. The block is six bits
- * of a command the game shifts in (or whatever a save state has), and the
- * numbers end long before the last of those: nothing past the end. */
-static u32 SerialByte(const unsigned char *serial, int block, unsigned int byte)
-{
-	const unsigned int index = 8u * (unsigned int)block + byte;
-
-	return index < sizeof(GSerial) ? AdaptByte(serial[index]) : 0;
-}
-
-void NaomiBoardIDWriteControl(const u16 Data)
-{
-	if((Data&0xfff)==0xF30 && BCmd!=BLastCmd)
-	{
-		if((BCmd&0x81)==0x81)
-		{
-			SerStep2=(BCmd>>1)&0x3f;
-
-			BSerialBuffer=0x00000000;	//First block contains CRC
-			BBufPos=0;
-		}
-		if((BCmd&0xff)==0x55)	//Load Offset 0
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 0)>>1;
-		}
-		if((BCmd&0xff)==0xAA)	//Load Offset 1
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 1);
-		}
-		if((BCmd&0xff)==0x54)
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 2);
-		}
-		if((BCmd&0xff)==0xA8)
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 3);
-		}
-		if((BCmd&0xff)==0x50)
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 4);
-		}
-		if((BCmd&0xff)==0xA0)
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 5);
-		}
-		if((BCmd&0xff)==0x40)
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 6);
-		}
-		if((BCmd&0xff)==0x80)
-		{
-			BState=2;
-			BBufPos=0;
-			BSerialBuffer=SerialByte(BSerial, SerStep2, 7);
-		}
-		BLastCmd=BCmd;
-	}
-	BControl=Data;
-}
-
-void NaomiGameIDProcessCmd()
-{
-	if(GCmd!=GLastCmd)
-	{
-		if((GCmd&0x81)==0x81)
-		{
-			SerStep=(GCmd>>1)&0x3f;
-
-			GSerialBuffer=0x00000000;	//First block contains CRC
-			GBufPos=0;
-		}
-		if((GCmd&0xff)==0x55)	//Load Offset 0
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 0)>>0;
-		}
-		if((GCmd&0xff)==0xAA)	//Load Offset 1
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 1);
-		}
-		if((GCmd&0xff)==0x54)
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 2);
-		}
-		if((GCmd&0xff)==0xA8)
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 3);
-		}
-		if((GCmd&0xff)==0x50)
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 4);
-		}
-		if((GCmd&0xff)==0xA0)
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 5);
-		}
-		if((GCmd&0xff)==0x40)
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 6);
-		}
-		if((GCmd&0xff)==0x80)
-		{
-			GState=2;
-			GBufPos=0;
-			GSerialBuffer=SerialByte(GSerial, SerStep, 7);
-		}
-		GLastCmd=GCmd;
-	}
-}
-
 
 void NaomiGameIDWrite(const u16 Data)
 {
-	int Dat=Data&0x01;
-	int Clk=Data&0x02;
-	int Rst=Data&0x04;
-	int Sta=Data&0x08;
-	int Cmd=Data&0x10;
-	
-
-	if(Rst)
-	{
-		GState=0;
-		GBufPos=0;
-	}
-
-	
-	if(Clk!=GOldClk && !Clk)	//Falling Edge clock
-	{
-		//State change
-		if(GState==0 && Sta) 
-			GState=1;		
-		if(GState==1 && !Sta)
-			GState=2;
-		
-		
-		
-		
-
-		//State processing
-		if(GState==1)		//LoadBoardID
-		{
-			GSerialBuffer=BoardID;
-			GBufPos=0;		//??
-		}
-		if(GState==2)		//ShiftBoardID
-			GBufPos++;
-
-		if(GControl!=Cmd && !Cmd)
-		{
-			NaomiGameIDProcessCmd();
-		}
-		GControl=Cmd;
-	}
-	if(Clk!=GOldClk && Clk)	//Rising Edge clock
-	{
-		if(Cmd)	//Command mode
-		{
-			GCmd<<=1;
-			if(Dat)
-				GCmd|=1;
-			else
-				GCmd&=0xfffffffe;
-			GControl=Cmd;
-		}
-		
-	}
-
-	GOldClk=Clk;
-
+	romSerialId.writeCS(Data & 4);
+	romSerialId.writeRST(Data & 8);
+	romSerialId.writeSCL(Data & 2);
+	romSerialId.writeSDA(Data & 1);
 }
 
 u16 NaomiGameIDRead()
 {
-	return (GSerialBuffer&(1u<<((31-GBufPos)&31)))?1:0;
+	return romSerialId.readSDA() ? 1 : 0;
 }
 
 //DIMM board
@@ -602,7 +365,6 @@ void naomi_reg_Init()
 			printf("NAOMI: Mapped CommSharedMem\n");
 	}
 	#endif
-	NaomiInit();
 
 	naomi_dma_schid = sh4_sched_register(0, &naomi_dma_sched);
 
@@ -646,22 +408,6 @@ void naomi_reg_Reset(bool hard)
 	// (the kinds of device the last game had on ports 3 and 4: the next one
 	// may leave the register alone and want plain controllers)
 	aw_maple_devs = 0;
-	GSerialBuffer = 0;
-	BSerialBuffer = 0;
-	GBufPos = 0;
-	BBufPos = 0;
-	GState = 0;
-	BState = 0;
-	GOldClk = 0;
-	BOldClk = 0;
-	BControl = 0;
-	BCmd = 0;
-	BLastCmd = 0;
-	GControl = 0;
-	GCmd = 0;
-	GLastCmd = 0;
-	SerStep = 0;
-	SerStep2 = 0;
 	reg_dimm_command = 0;
 	reg_dimm_offsetl = 0;
 	reg_dimm_parameterl = 0;
@@ -673,6 +419,12 @@ void naomi_reg_Reset(bool hard)
 	m3comm.reset();
 	if (hard && CurrentCartridge != NULL)
 		CurrentCartridge->Reset();
+	// (the chips keep what they hold: only a power cycle stops what they were doing)
+	if (hard)
+	{
+		mainSerialId.reset();
+		romSerialId.reset();
+	}
 	// (a hard reset is a power cycle: the devices start again, from their files)
 	if (hard)
 		naomi_periph_init();
@@ -801,6 +553,63 @@ bool naomi_unserialize_v23(void **data, unsigned int *total_size)
  * machine has them, which is what loading such a state has always done. */
 void naomi_state_before_v23(void)
 {
+}
+
+bool naomi_gd_serial_in_v25(void);
+
+/* The old serial number's variables, which states before V26 load. */
+static void naomi_serial_legacy_clear(void)
+{
+	GSerialBuffer = BSerialBuffer = 0;
+	GBufPos = BBufPos = 0;
+	GState = BState = 0;
+	GOldClk = BOldClk = 0;
+	BControl = BCmd = BLastCmd = 0;
+	GControl = GCmd = GLastCmd = 0;
+	SerStep = SerStep2 = 0;
+	memset(BSerial, 0, sizeof(BSerial));
+	memset(GSerial, 0, sizeof(GSerial));
+}
+
+/* What the save states before V26 did not hold, on a NAOMI and NAOMI 2 (and
+ * a System SP): the main board's serial EEPROM, and the ROM board's unless
+ * the DIMM board's part of the state has it already (142 bytes each, see
+ * X76F100SerialFlash::serialize()). */
+void naomi_serial_serialize_v26(void **data, unsigned int *total_size)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	mainSerialId.serialize(data, total_size);
+	if (!naomi_gd_serial_in_v25())
+		romSerialId.serialize(data, total_size);
+}
+
+bool naomi_serial_unserialize_v26(void **data, unsigned int *total_size)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return true;
+	mainSerialId.unserialize(data, total_size);
+	if (!naomi_gd_serial_in_v25())
+		romSerialId.unserialize(data, total_size);
+	naomi_serial_legacy_clear();
+	return true;
+}
+
+/* An older state: both chips are idle and hold what the set gives them
+ * (the ROM board's of a GD-ROM game with a DIMM board came with the V25
+ * part of the state, or was made idle by naomi_gd_state_before_v25()). */
+void naomi_serial_state_before_v26(void)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	mainSerialId.setData(defaultSerialData);
+	mainSerialId.reset();
+	if (!naomi_gd_serial_in_v25())
+	{
+		romSerialId.setData(romSerialSet);
+		romSerialId.reset();
+	}
+	naomi_serial_legacy_clear();
 }
 
 extern u32 kcode[4];

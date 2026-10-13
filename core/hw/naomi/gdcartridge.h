@@ -43,8 +43,7 @@ public:
 
 	void SetGDRomName(const char *name) { this->gdrom_name = name; }
 	// The board answers as a DIMM board (firmware 1.02, no network) at
-	// 5f703c-5f704c, and its serial EEPROM at 5f7078/5f707c is an X76F100.
-	// Without it, both answer as they do for a ROM cartridge.
+	// 5f703c-5f704c. Without it, those answer as they do for a ROM cartridge.
 	void SetDimmBoard(bool on);
 
 	void SerializeV25(void **data, unsigned int *total_size);
@@ -52,45 +51,6 @@ public:
 	void StateBeforeV25();
 
 private:
-	/* The X76F100 secure serial flash: 112 bytes behind a read and a write
-	 * password. The password a game sends is not checked. */
-	class X76F100
-	{
-	public:
-		void reset();
-		void setData(const u8 *data);
-		const u8 *getProtectedData() const { return data; }
-		void writeCS(bool v);
-		void writeRST(bool v);
-		void writeSCL(bool v);
-		void writeSDA(bool v);
-		bool readSDA() const { return lastCS ? true : sda; }
-		void serialize(void **data, unsigned int *total_size);
-		void unserialize(void **data, unsigned int *total_size);
-
-	private:
-		enum { STOP, RESPONSE_TO_RESET, LOAD_COMMAND, LOAD_PASSWORD,
-			VERIFY_PASSWORD, READ_DATA, WRITE_DATA };
-		int dataOffset() const;
-
-		u8 data[112] {};
-		u8 readPassword[8] {};
-		u8 writePassword[8] {};
-		u8 responseToReset[4] {};
-		u8 writeBuffer[8] {};
-		bool lastSCL = false;
-		bool lastSDA = false;
-		bool sda = false;
-		bool lastRST = false;
-		bool lastCS = false;
-		bool SCLChanged = false;
-		u8 state = STOP;
-		u8 command = 0;
-		u8 byteOffset = 0;
-		u8 bit = 0;
-		u8 shift = 0;
-	};
-
 	void dimm_reset();
 	void dimm_process();
 	void dimm_system_command(u32 cmd);
@@ -101,7 +61,6 @@ private:
 	// the set has a DIMM board, and it answers (see StateBeforeV25())
 	bool dimm_board = false;
 	bool dimm_on = false;
-	X76F100 serial_id;
 
 	enum { FILENAME_LENGTH=24 };
 
@@ -141,5 +100,6 @@ private:
 void naomi_gd_serialize_v25(void **data, unsigned int *total_size);
 bool naomi_gd_unserialize_v25(void **data, unsigned int *total_size);
 void naomi_gd_state_before_v25(void);
+bool naomi_gd_serial_in_v25(void);
 
 #endif /* CORE_HW_NAOMI_GDCARTRIDGE_H_ */
