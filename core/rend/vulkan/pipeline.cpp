@@ -209,7 +209,9 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	else
 		depthOp = depthOps[pp.isp.DepthMode];
 	bool depthWriteEnable;
-	if (sortTriangles && !settings.pvr.Emulation.AlphaSortMode)
+	// Sorted translucent polygons, per triangle or per strip, do not write
+	// depth: a strip drawn in sorted order would hide parts of the ones after it.
+	if (sortTriangles)
 		// FIXME temporary work-around for intel driver bug
 		depthWriteEnable = GetContext()->GetVendorID() == VENDOR_INTEL;
 	else

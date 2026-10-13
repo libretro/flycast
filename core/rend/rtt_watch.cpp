@@ -91,14 +91,15 @@ static void pack_dithered(const RttWatch& s, const u8 *p, u16 *dst)
 
 	for (u32 l = 0; l < s.h; l++, dst += skip)
 	{
-		const u8 *row = dither_pattern[l & 3];
+		// (the pattern goes by the pixel's place in the frame)
+		const u8 *row = dither_pattern[(l + s.y0) & 3];
 
 		switch (s.packmode)
 		{
 		case 1:
 			for (u32 c = 0; c < s.w; c++, p += 4)
 			{
-				const u32 d = row[c & 3];
+				const u32 d = row[(c + s.x0) & 3];
 				*dst++ = (u16)(((dithered(p[0], d >> 1) >> 3) << 11) | ((dithered(p[1], d >> 2) >> 2) << 5)
 						| (dithered(p[2], d >> 1) >> 3));
 			}
@@ -107,7 +108,7 @@ static void pack_dithered(const RttWatch& s, const u8 *p, u16 *dst)
 			/* (alpha is not a colour: its low bits are dropped) */
 			for (u32 c = 0; c < s.w; c++, p += 4)
 			{
-				const u32 d = row[c & 3];
+				const u32 d = row[(c + s.x0) & 3];
 				*dst++ = (u16)(((dithered(p[0], d) >> 4) << 8) | ((dithered(p[1], d) >> 4) << 4) | (dithered(p[2], d) >> 4)
 						| ((p[3] >> 4) << 12));
 			}
@@ -115,7 +116,7 @@ static void pack_dithered(const RttWatch& s, const u8 *p, u16 *dst)
 		default:
 			for (u32 c = 0; c < s.w; c++, p += 4)
 			{
-				const u32 d = row[c & 3] >> 1;
+				const u32 d = row[(c + s.x0) & 3] >> 1;
 				*dst++ = (u16)(((dithered(p[0], d) >> 3) << 10) | ((dithered(p[1], d) >> 3) << 5) | (dithered(p[2], d) >> 3)
 						| (s.packmode == 0 ? s.kval_bit : p[3] >= s.alpha_threshold ? 0x8000 : 0));
 			}

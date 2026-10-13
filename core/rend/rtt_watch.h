@@ -27,6 +27,7 @@ struct RttWatch
 	u32 addr;            /* where in video memory, in bytes */
 	u32 bytes;           /* from its first pixel to its last */
 	u32 w, h;            /* pixels, the console's */
+	u32 x0, y0;          /* where in the picture they start (the pixel clip's first, which addr is) */
 	u32 stride;          /* bytes from one line to the next */
 	u32 packmode;        /* FB_W_CTRL: 0 0555, 1 565, 2 4444, 3 1555 */
 	u32 kval_bit;        /* the top bit of a 0555 pixel */

@@ -43,6 +43,12 @@ static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
 static bool maple_int_pending;
 static u8 lightgun_flip;
+/* A transfer has asked a gun where it points since the last vertical blank
+ * out: its end is reported then, with the interrupt, when the game started
+ * it itself. (A transfer the vertical blank starts, a hardware trigger,
+ * gets no interrupt: Virtua Cop 2 stops for a moment at every shot if it
+ * does; RevolveR, which starts its own, waits for one.) */
+static bool gun_dma_owed;
 
 static u32 spg_next_line();
 
@@ -159,7 +165,7 @@ static void spg_run_lines(u32 lines)
          if (maple_int_pending)
          {
             maple_int_pending = false;
-            maple_dma_done();
+            SB_MDST = 0;
          }
 
          asic_RaiseInterrupt(holly_SCANINT1);
@@ -167,7 +173,15 @@ static void spg_run_lines(u32 lines)
 
       /* Vblank Out */
 		if (SPG_VBLANK_INT.vblank_out_interrupt_line_number == pvr_cur_scanline)
+		{
+			if (SB_MDEN & 1)
+			{
+				if (gun_dma_owed && !(SB_MDTSEL & 1))
+					maple_dma_done();
+				gun_dma_owed = false;
+			}
 			asic_RaiseInterrupt(holly_SCANINT2);
+		}
 
 		if (SPG_VBLANK.vstart == pvr_cur_scanline)
 			in_vblank = 1;
@@ -209,7 +223,8 @@ static void spg_run_lines(u32 lines)
 		{
          maple_int_pending = false;
 			SPG_TRIGGER_POS = ((lightgun_line & 0x3FF) << 16) | (lightgun_hpos & 0x3FF);
-			maple_dma_done();
+			// the bus is free again; the answers and the interrupt come at vblank out
+			SB_MDST = 0;
 			lightgun_line = 0xffff;
 		}
 	}
@@ -299,6 +314,8 @@ void read_lightgun_position(int x, int y)
    const u64 beam     = pending ? spg_beam() : 0;
 
    maple_int_pending = true;
+   // (a transfer the vertical blank started is never reported)
+   gun_dma_owed      = gun_dma_owed || !(SB_MDTSEL & 1);
 	if (y < 0 || y >= 480 || x < 0 || x >= 640)
    {
 		// Off screen
@@ -367,6 +384,32 @@ void spg_gun_before_v21(void)
 	maple_int_pending = (SB_MDST & 1) != 0 && !sh4_sched_is_scheduled(maple_sched);
 }
 
+/* The light gun in a save state from version 28 (pvr_serialize_v28()): one
+ * byte, bit 0 being gun_dma_owed. */
+void spg_gun_serialize_v28(void **data, unsigned int *total_size)
+{
+	u8 flags = gun_dma_owed ? 1 : 0;
+
+	LIBRETRO_S(flags);
+}
+
+void spg_gun_unserialize_v28(void **data, unsigned int *total_size)
+{
+	u8 flags = 0;
+
+	LIBRETRO_US(flags);
+	gun_dma_owed = (flags & 1) != 0;
+}
+
+/* An older state: a transfer that asked a gun and has not ended yet ended
+ * at the gun's line then, with the interrupt; now it is reported at the
+ * next vertical blank out. One that has ended is reported already. (Called
+ * once the part of version 21, or spg_gun_before_v21(), has been read.) */
+void spg_gun_before_v28(void)
+{
+	gun_dma_owed = maple_int_pending;
+}
+
 int rend_end_sch(int tag, int cycl, int jitt)
 {
 	asic_RaiseInterruptBothCLX(holly_RENDER_DONE);
@@ -393,6 +436,7 @@ void spg_Reset(bool hard)
 {
    // no light gun position is latched (before the first event is aimed, which looks at it)
    maple_int_pending = false;
+   gun_dma_owed      = false;
    lightgun_line     = 0xffff;
    lightgun_hpos     = 0;
    lightgun_flip     = 0;
@@ -411,7 +455,12 @@ void SetREP(TA_context* cntx)
 	 * The Next Tetris, Nightmare Creatures 2) wants the interrupt sooner
 	 * than that for a scene with little in it, and Marvel vs. Capcom 2 wants
 	 * no less than these. */
-	if (cntx)
+	if (cntx && settings.System == DC_PLATFORM_NAOMI2)
+	{
+		// a NAOMI 2 frame is always given the longest time, however little is in it
+		sh4_sched_request(render_end_schid, 1500000);
+	}
+	else if (cntx)
 	{
 		const int size = (int)(cntx->tad.thd_data - cntx->tad.thd_root);
 		// (megabytes of it on a NAOMI 2: no overflow)

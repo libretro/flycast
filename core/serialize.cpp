@@ -350,6 +350,12 @@ void midiffb_state_before_v27(void);
 void naomi_printer_serialize_v27(void **data, unsigned int *total_size);
 bool naomi_printer_unserialize_v27(void **data, unsigned int *total_size);
 void naomi_printer_state_before_v27(void);
+/* and since V28: a light gun's transfer owed its end at vblank-out
+ * (spg.cpp) and how many renders ago each TA context was last used
+ * (ta_ctx.cpp) */
+void pvr_serialize_v28(void **data, unsigned int *total_size);
+bool pvr_unserialize_v28(void **data, unsigned int *total_size);
+void pvr_state_before_v28(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -913,6 +919,8 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	maple_jvs_serialize_v27(data, total_size);
 	midiffb_serialize_v27(data, total_size);
 	naomi_printer_serialize_v27(data, total_size);
+	// V28
+	pvr_serialize_v28(data, total_size);
 
 	return true ;
 }
@@ -1737,6 +1745,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		midiffb_state_before_v27();
 		naomi_printer_state_before_v27();
 	}
+	if (version >= V28)
+	{
+		if (!pvr_unserialize_v28(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+		pvr_state_before_v28();
 	sched_events_loaded();
 	/* A sound DMA is under way only while its end is to come: a start is
 	 * not taken while one is, and SB_ADST set with no end on its way would

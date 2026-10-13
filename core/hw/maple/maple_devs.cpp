@@ -1776,13 +1776,13 @@ protected:
 	// The cabinet's test switch, as the board reports it
 	virtual bool read_test_switch() { return !(kcode[0] & NAOMI_TEST_KEY); }
 	// Where a player's gun or finger is, as the board reports it
+	/* The 640x480 screen position as it is. (It was scaled to the range
+	 * Ninja Assault reads, and a gun pointed off the screen, 0,0, then read
+	 * as on it: the game's guns would not reload.) */
 	virtual void read_screen_position(int player_num, s16& x, s16& y)
 	{
-		// Correct for Ninja Assault. Revisit for other games
-		u32 xr = 0x19d - 0x37;
-		u32 yr = 0x1fe - 0x40;
-		x = mo_x_abs[player_num] * xr / 639 + 0x37;
-		y = mo_y_abs[player_num] * yr / 479 + 0x40;
+		x = (s16)mo_x_abs[player_num];
+		y = (s16)mo_y_abs[player_num];
 	}
 	// What a drive board last answered, on a board that is wired to one
 	virtual u8 get_drive_board() { return 0; }

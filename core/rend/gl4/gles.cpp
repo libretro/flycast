@@ -266,10 +266,6 @@ void main()
 				IF(cur_ignore_tex_alpha)
 					texcol.a=1.0;	
 			#endif
-			
-			#if cp_AlphaTest == 1
-				if (cp_AlphaTestValue>texcol.a) discard;
-			#endif 
 		#endif
       #if pp_ShadInstr==0 || pp_TwoVolumes == 1 // DECAL
       IF(cur_shading_instr == 0)
@@ -334,7 +330,11 @@ void main()
    
    color *= trilinear_alpha;
 	
+	// Punch-through polygons are tested on the alpha of the finished colour,
+	// after the texture and the vertex colours are combined and clamped.
 	#if cp_AlphaTest == 1
+      if (cp_AlphaTestValue > color.a)
+         discard;
       color.a=1.0;
 	#endif 
   

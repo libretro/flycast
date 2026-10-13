@@ -476,13 +476,14 @@ void retro_set_environment(retro_environment_t cb)
 		 { "Light Gun",		RETRO_DEVICE_LIGHTGUN },
 		 { "Twin Stick",	RETRO_DEVICE_TWINSTICK },
 		 { "Saturn Twin-Stick",	RETRO_DEVICE_TWINSTICK_SATURN },
+		 { "Pointer",		RETRO_DEVICE_POINTER },
 		 { 0 },
    };
    static const struct retro_controller_info ports[] = {
-           { ports_default,  7 },
-           { ports_default,  7 },
-           { ports_default,  7 },
-           { ports_default,  7 },
+           { ports_default,  8 },
+           { ports_default,  8 },
+           { ports_default,  8 },
+           { ports_default,  8 },
            { 0 },
    };
    environ_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
@@ -1773,6 +1774,7 @@ static uint32_t map_gamepad_button(unsigned device, unsigned id)
 	  switch (device)
 	  {
 	  case RETRO_DEVICE_JOYPAD:
+	  case RETRO_DEVICE_POINTER:
 		 joymap = dc_joymap;
 		 joymap_size = ARRAY_SIZE(dc_joymap);
 		 break;
@@ -1790,6 +1792,7 @@ static uint32_t map_gamepad_button(unsigned device, unsigned id)
 	  switch (device)
 	  {
 	  case RETRO_DEVICE_JOYPAD:
+	  case RETRO_DEVICE_POINTER:
 		 joymap = nao_joymap;
 		 joymap_size = ARRAY_SIZE(nao_joymap);
 		 break;
@@ -1806,6 +1809,7 @@ static uint32_t map_gamepad_button(unsigned device, unsigned id)
 	  switch (device)
 	  {
 	  case RETRO_DEVICE_JOYPAD:
+	  case RETRO_DEVICE_POINTER:
 		 joymap = aw_joymap;
 		 joymap_size = ARRAY_SIZE(aw_joymap);
 		 break;
@@ -3012,6 +3016,8 @@ void retro_set_controller_port_device(unsigned in_port, unsigned device)
 				maple_devices[in_port] = MDT_Mouse;
 				break;
 			case RETRO_DEVICE_LIGHTGUN:
+			// a touchscreen or a mouse pointing: a light gun to the game
+			case RETRO_DEVICE_POINTER:
 				maple_devices[in_port] = MDT_LightGun;
 				break;
 			default:
@@ -3300,6 +3306,72 @@ static void updateMouseState(u32 port)
 	  mo_wheel_delta[port] += 10;
 }
 
+/* Where a light gun, or a pointer standing for one, points: the game's
+ * 640x480, as mo_x_abs/mo_y_abs have it. With the widescreen hack the
+ * picture is a third wider than the game's, which is in the middle of it:
+ * what is pointed at is taken from the whole width the frontend shows. */
+static void updateLightgunCoordinates(u32 port)
+{
+   int x, y;
+
+   if (device_type[port] == RETRO_DEVICE_POINTER)
+   {
+      x = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
+      y = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+   }
+   else
+   {
+      x = input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X);
+      y = input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y);
+   }
+   if (settings.rend.WideScreen && !wide_by_cheat)
+      mo_x_abs[port] = 640.f * ((x + 0x8000) * 4.f / 3.f / 0x10000 - (4.f / 3.f - 1.f) / 2.f);
+   else
+      mo_x_abs[port] = (x + 0x8000) * 640.f / 0x10000;
+   mo_y_abs[port] = (y + 0x8000) * 480.f / 0x10000;
+
+   lightgun_params[port].offscreen = false;
+   lightgun_params[port].x = mo_x_abs[port];
+   lightgun_params[port].y = mo_y_abs[port];
+}
+
+// An arcade light gun game played with a gamepad: its left stick aims.
+static void updateLightgunCoordinatesFromAnalogStick(u32 port)
+{
+   int x = input_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+   int y = input_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
+
+   mo_x_abs[port] = 320 + x * 320 / 32767;
+   mo_y_abs[port] = 240 + y * 240 / 32767;
+
+   lightgun_params[port].offscreen = false;
+   lightgun_params[port].x = mo_x_abs[port];
+   lightgun_params[port].y = mo_y_abs[port];
+}
+
+/* A touchscreen standing for a light gun: a touch aims and fires, two
+ * fingers point off the screen (reload). @trigger is the game's trigger. */
+static void updatePointerAsLightgun(u32 port, u32 trigger, float offscreen)
+{
+   int pressed = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED);
+   int count = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_COUNT);
+
+   if (count > 1)
+   {
+      mo_x_abs[port] = offscreen;
+      mo_y_abs[port] = offscreen;
+      lightgun_params[port].offscreen = true;
+      lightgun_params[port].x = mo_x_abs[port];
+      lightgun_params[port].y = mo_y_abs[port];
+   }
+   else if (count == 1)
+      updateLightgunCoordinates(port);
+   if (pressed)
+      kcode[port] &= ~trigger;
+   else
+      kcode[port] |= trigger;
+}
+
 static void UpdateInputStateNaomi(u32 port)
 {
    int id;
@@ -3308,6 +3380,17 @@ static void UpdateInputStateNaomi(u32 port)
    switch (maple_devices[port])
    {
    case MDT_LightGun:
+	  if (device_type[port] == RETRO_DEVICE_POINTER)
+	  {
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_B);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_START);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_UP);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_DOWN);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_LEFT);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+		 updatePointerAsLightgun(port, SYSTEM_IS_NAOMI() ? NAOMI_BTN0_KEY : AWAVE_TRIGGER_KEY, 0);
+	  }
+	  else
 	  {
 		 //
 		 // -- buttons
@@ -3346,16 +3429,7 @@ static void UpdateInputStateNaomi(u32 port)
 			}
 		 }
 		 else
-		 {
-			int x = input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X);
-			int y = input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y);
-			mo_x_abs[port] = (x + 0x8000) * 640.f / 0x10000;
-			mo_y_abs[port] = (y + 0x8000) * 480.f / 0x10000;
-
-			lightgun_params[port].offscreen = false;
-			lightgun_params[port].x = mo_x_abs[port];
-			lightgun_params[port].y = mo_y_abs[port];
-		 }
+			updateLightgunCoordinates(port);
 	  }
 	  break;
 
@@ -3457,6 +3531,35 @@ static void UpdateInputStateNaomi(u32 port)
 
 	  // -- mouse, for rotary encoders
 	  updateMouseState(port);
+	  // -- a light gun game: the left stick aims
+	  if (settings.mapping.JammaSetup == JVS::LightGun || settings.mapping.JammaSetup == JVS::LightGunAsAnalog)
+	  {
+		 updateLightgunCoordinatesFromAnalogStick(port);
+		 if (input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_RELOAD))
+		 {
+			mo_x_abs[port] = 0;
+			mo_y_abs[port] = 0;
+			lightgun_params[port].offscreen = true;
+			if (SYSTEM_IS_NAOMI())
+			   kcode[port] &= ~NAOMI_BTN0_KEY;
+			else
+			   kcode[port] &= ~AWAVE_TRIGGER_KEY;
+		 }
+		 else if (!SYSTEM_IS_NAOMI())
+		 {
+			// the gun's buttons from the pad's: button 1 fires, button 2 is the gun's first, and so on
+			u32 k = kcode[port] | (AWAVE_BTN0_KEY | AWAVE_BTN1_KEY | AWAVE_BTN2_KEY | AWAVE_BTN3_KEY | AWAVE_TRIGGER_KEY);
+			if ((kcode[port] & AWAVE_BTN0_KEY) == 0)
+			   k &= ~AWAVE_TRIGGER_KEY;
+			if ((kcode[port] & AWAVE_BTN1_KEY) == 0)
+			   k &= ~AWAVE_BTN0_KEY;
+			if ((kcode[port] & AWAVE_BTN2_KEY) == 0)
+			   k &= ~AWAVE_BTN1_KEY;
+			if ((kcode[port] & AWAVE_BTN3_KEY) == 0)
+			   k &= ~AWAVE_BTN2_KEY;
+			kcode[port] = k;
+		 }
+	  }
 	  break;
    }
 
@@ -3940,6 +4043,17 @@ void UpdateInputState(u32 port)
 	break;
 	  
 	  case MDT_LightGun:
+	  if (device_type[port] == RETRO_DEVICE_POINTER)
+	  {
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_B);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_START);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_UP);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_DOWN);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_LEFT);
+		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+		 updatePointerAsLightgun(port, DC_BTN_A, -1000);
+	  }
+	  else
 	  {
 		 //
 		 // -- buttons
@@ -3969,14 +4083,7 @@ void UpdateInputState(u32 port)
 			lightgun_params[port].y = mo_y_abs[port];
 		 }
 		 else
-		 {
-			mo_x_abs[port] = (input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X) + 0x8000) * 640.f / 0x10000;
-			mo_y_abs[port] = (input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y) + 0x8000) * 480.f / 0x10000;
-
-			lightgun_params[port].offscreen = false;
-			lightgun_params[port].x = mo_x_abs[port];
-			lightgun_params[port].y = mo_y_abs[port];
-		 }
+			updateLightgunCoordinates(port);
 	  }
 	  break;
 

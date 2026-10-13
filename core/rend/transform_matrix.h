@@ -76,8 +76,12 @@ public:
 
 		if (renderingContext->isRTT)
 		{
-			dcViewport.x = renderingContext->fb_X_CLIP.max - renderingContext->fb_X_CLIP.min + 1;
-			dcViewport.y = renderingContext->fb_Y_CLIP.max - renderingContext->fb_Y_CLIP.min + 1;
+			/* The texture's first pixel is the frame's first, where the
+			 * game's coordinates start; the pixel clip only says which of
+			 * them are written. So the texture goes as far as the clip's
+			 * last pixel, from 0. */
+			dcViewport.x = renderingContext->fb_X_CLIP.max + 1;
+			dcViewport.y = renderingContext->fb_Y_CLIP.max + 1;
 			/* The horizontal scaler halves what is drawn on its way to the
 			 * framebuffer, for a texture as for the screen: the game draws
 			 * twice as wide as the texture is. (The clip registers, which the

@@ -1700,7 +1700,7 @@ FifoSplitter TAFifo0;
 int ta_parse_cnt = 0;
 
 //
-// Check if a vertex has huge x,y,z values or negative z
+// Check if a vertex has NaN or huge x,y,z values
 //
 /* Asked of the bits, not the values: a float's bits with the sign taken off
  * go up as its size does, with infinity and the NaNs above everything, so
@@ -1710,13 +1710,18 @@ int ta_parse_cnt = 0;
  * so that a vertex with a NaN in it went through to the renderer. */
 static bool is_vertex_inf(const Vertex& vtx)
 {
-	const u32 huge = float_bits(3.4e37f);
+	// Manic Panic Ghosts needs x and y dropped from 1e25 up
+	const u32 huge_xy = float_bits(1e25f);
+	const u32 huge_z = float_bits(3.4e37f);
 	const u32 z = float_bits(vtx.z);
 
-	return (float_bits(vtx.x) & 0x7fffffff) > huge
-			|| (float_bits(vtx.y) & 0x7fffffff) > huge
-			// negative too, which is every z with the sign bit but -0
-			|| (z > huge && z != 0x80000000);
+	return (float_bits(vtx.x) & 0x7fffffff) > huge_xy
+			|| (float_bits(vtx.y) & 0x7fffffff) > huge_xy
+			/* A negative z is drawn (the base runner views in World Series
+			 * Baseball 2K1): only a NaN of either sign, or a huge positive
+			 * value. */
+			|| (z & 0x7fffffff) > 0x7f800000
+			|| (z < 0x80000000 && z > huge_z);
 }
 
 //

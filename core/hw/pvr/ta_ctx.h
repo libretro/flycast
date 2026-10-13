@@ -185,6 +185,7 @@ struct TA_context
 	u8 *regs;
 
 	u32 data_size;		// of the tile accelerator data: ta_data_size() when this was allocated
+	u32 lastFrameUsed;	// tactx_frames when the game last selected it (tactx_Find())
 
 	tad_context tad;
 	rend_context rend;

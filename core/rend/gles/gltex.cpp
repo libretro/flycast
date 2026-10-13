@@ -196,6 +196,7 @@ static void rtt_gl_read(const RttWatch *watch, u8 *rgba)
 	GLint was_fbo = 0, was_pack = 4;
 	GLuint fbo = 0;
 	const u32 w = watch->w, h = watch->h, scale = watch->scale;
+	const u32 x0 = watch->x0 * (scale > 1 ? scale : 1), y0 = watch->y0 * (scale > 1 ? scale : 1);
 
 	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &was_fbo);
 	glGetIntegerv(GL_PACK_ALIGNMENT, &was_pack);
@@ -205,7 +206,7 @@ static void rtt_gl_read(const RttWatch *watch, u8 *rgba)
 	glFramebufferTexture2D(RARCH_GL_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, watch->tex, 0);
 
 	if (scale <= 1)
-		glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+		glReadPixels(x0, y0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 #if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER) && defined(GL_RGBA8)
 	else if (gl.gl_major >= 3)
 	{
@@ -223,7 +224,7 @@ static void rtt_gl_read(const RttWatch *watch, u8 *rgba)
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, small_fbo);
 		if (was_scissor)
 			glDisable(GL_SCISSOR_TEST);
-		glBlitFramebuffer(0, 0, w * scale, h * scale, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+		glBlitFramebuffer(x0, y0, x0 + w * scale, y0 + h * scale, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 		if (was_scissor)
 			glEnable(GL_SCISSOR_TEST);
 		glBindFramebuffer(RARCH_GL_FRAMEBUFFER, small_fbo);
@@ -239,7 +240,7 @@ static void rtt_gl_read(const RttWatch *watch, u8 *rgba)
 
 		for (u32 y = 0; y < h; y++)
 		{
-			glReadPixels(0, y * scale + scale / 2, w * scale, 1, GL_RGBA, GL_UNSIGNED_BYTE, line);
+			glReadPixels(x0, y0 + y * scale + scale / 2, w * scale, 1, GL_RGBA, GL_UNSIGNED_BYTE, line);
 			for (u32 x = 0; x < w; x++)
 				memcpy(rgba + (y * w + x) * 4, line + (x * scale + scale / 2) * 4, 4);
 		}
@@ -471,15 +472,22 @@ void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 }
 
 void ReadRTTBuffer() {
-	u32 w = pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1;
-	u32 h = pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1;
+	/* The texture is the frame from its first pixel (see TransformMatrix);
+	 * what goes to video memory is the pixel clip's part of it, at its
+	 * place in the frame. */
+	const u32 x0 = pvrrc.fb_X_CLIP.min;
+	const u32 y0 = pvrrc.fb_Y_CLIP.min;
+	const u32 tex_w = pvrrc.fb_X_CLIP.max + 1;
+	const u32 tex_h = pvrrc.fb_Y_CLIP.max + 1;
+	u32 w = tex_w - x0;
+	u32 h = tex_h - y0;
 
 	u32 stride = FB_W_LINESTRIDE.stride * 8;
 	if (stride == 0)
-		stride = w * 2;
-	else if (w * 2 > stride) {
+		stride = tex_w * 2;
+	else if (tex_w * 2 > stride) {
     	// Happens for Virtua Tennis
-    	w = stride / 2;
+	w = x0 * 2 >= stride ? 0 : stride / 2 - x0;
     }
 
 	const u8 fb_packmode = FB_W_CTRL.fb_packmode;
@@ -489,9 +497,11 @@ void ReadRTTBuffer() {
     /* The picture stays on the graphics card, and video memory gets it when
      * something first touches it there: see rend/rtt_watch.h. */
     RttWatch watch = {};
-    watch.addr = gl.rtt.TexAddr << 3;
+    watch.addr = (gl.rtt.TexAddr << 3) + y0 * stride + x0 * 2;
     watch.w = w;
     watch.h = h;
+    watch.x0 = x0;
+    watch.y0 = y0;
     watch.stride = stride;
     watch.bytes = h == 0 || w == 0 ? 0 : stride * (h - 1) + w * 2;
     watch.packmode = fb_packmode;
@@ -503,7 +513,7 @@ void ReadRTTBuffer() {
     if (watch.bytes != 0)
        rtt_watch_supersede(watch.addr, watch.bytes);
 
-    if (w > 1024 || h > 1024) {
+    if (tex_w > 1024 || tex_h > 1024) {
     	/* too large to be drawn with from here: kept for video memory alone */
     	watch.owned = true;
     	rtt_watch_add(&watch, &rtt_gl_backend);
@@ -525,8 +535,8 @@ void ReadRTTBuffer() {
     		break;
     	}
     	TSP tsp = { 0 };
-    	for (tsp.TexU = 0; tsp.TexU <= 7 && (8u << tsp.TexU) < w; tsp.TexU++);
-    	for (tsp.TexV = 0; tsp.TexV <= 7 && (8u << tsp.TexV) < h; tsp.TexV++);
+	for (tsp.TexU = 0; tsp.TexU <= 7 && (8u << tsp.TexU) < tex_w; tsp.TexU++);
+	for (tsp.TexV = 0; tsp.TexV <= 7 && (8u << tsp.TexV) < tex_h; tsp.TexV++);
 
     	TextureCacheData *texture_data = TexCache.getTextureCacheData(tsp, tcw);
     	if (texture_data->texID != 0)

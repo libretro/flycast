@@ -469,8 +469,11 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	matrices.CalcMatrices(&pvrrc);
 
 	textureAddr = FB_W_SOF1 & VRAM_MASK;
-	u32 origWidth = pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1;
-	u32 origHeight = pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1;
+	// the frame from its first pixel, as far as the pixel clip goes (see TransformMatrix)
+	u32 origWidth = pvrrc.fb_X_CLIP.max + 1;
+	u32 origHeight = pvrrc.fb_Y_CLIP.max + 1;
+	const u32 clipX = pvrrc.fb_X_CLIP.min, clipY = pvrrc.fb_Y_CLIP.min;
+	const u32 clipWidth = origWidth - clipX, clipHeight = origHeight - clipY;
 	u32 upscaledWidth = origWidth;
 	u32 upscaledHeight = origHeight;
 	u32 heightPow2 = 8;
@@ -508,7 +511,7 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	vk::ImageLayout colorImageCurrentLayout;
 
 	/* what an earlier render left waiting in this memory, while its picture is still what it was: see rtt_read.h */
-	vk_rtt_supersede(textureAddr, origWidth, origHeight);
+	vk_rtt_supersede(textureAddr, clipX, clipY, clipWidth, clipHeight);
 	// TexAddr : fb_rtt.TexAddr, Reserved : 0, StrideSel : 0, ScanOrder : 1
 	TCW tcw = { { textureAddr >> 3, 0, 0, 1 } };
 	switch (FB_W_CTRL.fb_packmode) {
@@ -579,7 +582,11 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	commandBuffer.beginRenderPass(vk::RenderPassBeginInfo(rttPipelineManager->GetRenderPass(),	*framebuffers[GetCurrentImage()],
 			vk::Rect2D( { 0, 0 }, { width, height }), 2, clear_colors), vk::SubpassContents::eInline);
 	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, (float)upscaledWidth, (float)upscaledHeight, 1.0f, 0.0f));
-	baseScissor = vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D(upscaledWidth, upscaledHeight));
+	{
+		// only the pixel clip is written
+		const u32 scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
+		baseScissor = vk::Rect2D(vk::Offset2D(clipX * scale, clipY * scale), vk::Extent2D(clipWidth * scale, clipHeight * scale));
+	}
 	commandBuffer.setScissor(0, baseScissor);
 	currentCommandBuffer = commandBuffer;
 
@@ -599,7 +606,8 @@ void TextureDrawer::EndRenderPass()
 	texture->stride_read = 0;	// (rendered, not read)
    libCore_vramlock_Lock(texture->sa_tex, texture->sa + texture->size - 1, texture);
 	/* video memory gets it when something first touches it there */
-	vk_rtt_watch(texture, textureAddr, pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
+	vk_rtt_watch(texture, textureAddr, pvrrc.fb_X_CLIP.min, pvrrc.fb_Y_CLIP.min,
+			pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
 }
 
 void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderManager)

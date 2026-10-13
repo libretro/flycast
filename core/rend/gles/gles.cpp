@@ -290,11 +290,6 @@ void main()
 			#if pp_IgnoreTexA==1
 				texcol.a=1.0;	
 			#endif
-			
-			#if cp_AlphaTest == 1
-				if (cp_AlphaTestValue > texcol.a)
-					discard;
-			#endif 
 		#endif
 		#if pp_ShadInstr==0
 		{
@@ -354,7 +349,11 @@ void main()
 	color *= trilinear_alpha;
 	#endif
 	
+	// Punch-through polygons are tested on the alpha of the finished colour,
+	// after the texture and the vertex colours are combined and clamped.
 	#if cp_AlphaTest == 1
+		if (cp_AlphaTestValue > color.a)
+			discard;
 		color.a=1.0;
 	#endif 
 	//color.rgb=vec3(gl_FragCoord.w * sp_FOG_DENSITY / 128.0);
@@ -1026,7 +1025,8 @@ static bool RenderFrame(void)
 		}
 		DEBUG_LOG(RENDERER, "RTT packmode=%d stride=%d - %d,%d -> %d,%d\n", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
  				FB_X_CLIP.min, FB_Y_CLIP.min, FB_X_CLIP.max, FB_Y_CLIP.max);
-		BindRTT(FB_W_SOF1 & VRAM_MASK, FB_X_CLIP.max - FB_X_CLIP.min + 1, FB_Y_CLIP.max - FB_Y_CLIP.min + 1, channels,format);
+		// (from the frame's first pixel: see TransformMatrix)
+		BindRTT(FB_W_SOF1 & VRAM_MASK, FB_X_CLIP.max + 1, FB_Y_CLIP.max + 1, channels,format);
 	}
 	else
 	{

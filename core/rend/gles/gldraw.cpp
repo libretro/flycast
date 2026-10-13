@@ -249,7 +249,9 @@ __forceinline
 		glcache.DepthFunc(Zfunction[gp->isp.DepthMode]);
 	}
 
-	if (SortingEnabled && settings.pvr.Emulation.AlphaSortMode == 0)
+	// Sorted translucent polygons, per triangle or per strip, do not write
+	// depth: a strip drawn in sorted order would hide parts of the ones after it.
+	if (SortingEnabled)
 		glcache.DepthMask(GL_FALSE);
 	else
 	{

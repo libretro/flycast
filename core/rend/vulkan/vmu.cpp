@@ -198,7 +198,9 @@ void VulkanOSD::DrawOSD(vk::CommandBuffer commandBuffer, vk::Extent2D viewport, 
 
 		float w = LIGHTGUN_CROSSHAIR_SIZE;
 		float h = LIGHTGUN_CROSSHAIR_SIZE;
-		float x = lightgun_params[i].x * viewport.width / 640 - w / 2;
+		// (the game's 640x480 is in the middle of a widescreen picture)
+		float sidebar = (viewport.width - viewport.height * 4.f / 3.f) / 2;
+		float x = sidebar + lightgun_params[i].x * viewport.height / 480 - w / 2;
 		float y = lightgun_params[i].y * viewport.height / 480 - h / 2;
 
 		vk::Viewport viewport(x, y, w, h);

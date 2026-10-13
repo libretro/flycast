@@ -212,11 +212,6 @@ void main()
 			#if pp_IgnoreTexA == 1
 				texcol.a = 1.0;
 			#endif
-			
-			#if cp_AlphaTest == 1
-				if (uniformBuffer.cp_AlphaTestValue > texcol.a)
-					discard;
-			#endif 
 		#endif
 		#if pp_ShadInstr == 0
 		{
@@ -276,7 +271,11 @@ void main()
 	color *= pushConstants.trilinearAlpha;
 	#endif
 	
+	// Punch-through polygons are tested on the alpha of the finished colour,
+	// after the texture and the vertex colours are combined and clamped.
 	#if cp_AlphaTest == 1
+		if (uniformBuffer.cp_AlphaTestValue > color.a)
+			discard;
 		color.a = 1.0;
 	#endif 
 	//color.rgb = vec3(gl_FragCoord.w * uniformBuffer.sp_FOG_DENSITY / 128.0);

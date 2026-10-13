@@ -140,6 +140,14 @@ static cSlotCache<TA_context, 3> ctx_pool;
 static TA_context **ctx_list;
 static unsigned ctx_count;
 static unsigned ctx_room;
+/* Renders started (tactx_Pop()), for the age of a frame: one the game has
+ * not selected for more than TA_CONTEXT_MAX_AGE of them is given to the
+ * next new address instead of a new one being made. A game that sends
+ * frames to ever different addresses and never draws some of them would
+ * otherwise keep one buffer (8 MB, 60 MB on a NAOMI 2) for each address it
+ * ever used. Counted on the emulation side, whatever is skipped or drawn. */
+static u32 tactx_frames;
+#define TA_CONTEXT_MAX_AGE 60
 
 TA_context* tactx_Alloc(void)
 {
@@ -178,10 +186,13 @@ void tactx_Recycle(TA_context* poped_ctx)
 
 TA_context* tactx_Find(u32 addr, bool allocnew)
 {
+   TA_context *old_ctx = 0;
+
    for (unsigned i=0; i<ctx_count; i++)
    {
       if (ctx_list[i]->Address==addr)
       {
+         ctx_list[i]->lastFrameUsed = tactx_frames;
          if (ctx_list[i]->data_size != ta_data_size())
          {
             // left by a machine whose frames are another size
@@ -197,11 +208,22 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
          }
          return ctx_list[i];
       }
+      if (tactx_frames - ctx_list[i]->lastFrameUsed > TA_CONTEXT_MAX_AGE
+            && ctx_list[i]->data_size == ta_data_size())
+         old_ctx = ctx_list[i];
    }
 
    if (allocnew)
    {
       TA_context *rv;
+      if (old_ctx)
+      {
+         // what the game sent to it long ago and never drew is dropped
+         old_ctx->Reset();
+         old_ctx->Address = addr;
+         old_ctx->lastFrameUsed = tactx_frames;
+         return old_ctx;
+      }
       if (ctx_count == ctx_room)
       {
          unsigned room = ctx_room ? ctx_room * 2 : 8;
@@ -215,6 +237,7 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
       if (!rv)
          return 0;
       rv->Address=addr;
+      rv->lastFrameUsed = tactx_frames;
       ctx_list[ctx_count++] = rv;
 
       return rv;
@@ -225,6 +248,8 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
 
 TA_context* tactx_Pop(u32 addr)
 {
+	// (called once for each render the game starts)
+	tactx_frames++;
 	for (unsigned i=0; i<ctx_count; i++)
    {
       if (ctx_list[i]->Address == addr)
@@ -579,4 +604,57 @@ void pvr_state_before_v21(void)
 	old_state_addr = NULL_CONTEXT;
 	if (addr != NULL_CONTEXT)
 		SetCurrentTARC(addr);
+}
+
+/* ---- From version 28 on ----
+ *
+ *   the light gun        1 byte, spg_gun_serialize_v28()
+ *   u8 age[16]           for each frame being written, by its address in
+ *                        megabytes (the key of pvr_serialize_v21()), how
+ *                        many renders have been started since the game last
+ *                        selected it, up to TA_CONTEXT_MAX_AGE + 1; 0 where
+ *                        there is no frame
+ * 17 bytes, always. Read after pvr_unserialize_v21(), which makes the
+ * frames. */
+void spg_gun_serialize_v28(void **data, unsigned int *total_size);
+void spg_gun_unserialize_v28(void **data, unsigned int *total_size);
+void spg_gun_before_v28(void);
+
+void pvr_serialize_v28(void **data, unsigned int *total_size)
+{
+	u8 ages[TA_STATE_CONTEXTS];
+
+	spg_gun_serialize_v28(data, total_size);
+	memset(ages, 0, sizeof(ages));
+	for (unsigned i = 0; i < ctx_count; i++)
+	{
+		const u32 age = tactx_frames - ctx_list[i]->lastFrameUsed;
+		ages[(ctx_list[i]->Address >> 20) & 15] = age > TA_CONTEXT_MAX_AGE ? TA_CONTEXT_MAX_AGE + 1 : (u8)age;
+	}
+	LIBRETRO_SA(ages, TA_STATE_CONTEXTS);
+}
+
+bool pvr_unserialize_v28(void **data, unsigned int *total_size)
+{
+	u8 ages[TA_STATE_CONTEXTS];
+
+	spg_gun_unserialize_v28(data, total_size);
+	LIBRETRO_USA(ages, TA_STATE_CONTEXTS);
+	for (unsigned i = 0; i < ctx_count; i++)
+	{
+		u32 age = ages[(ctx_list[i]->Address >> 20) & 15];
+		if (age > TA_CONTEXT_MAX_AGE)
+			age = TA_CONTEXT_MAX_AGE + 1;
+		ctx_list[i]->lastFrameUsed = tactx_frames - age;
+	}
+	return true;
+}
+
+/* An older state: every frame it has was selected just now, and a gun
+ * transfer under way is reported at the next vertical blank out. */
+void pvr_state_before_v28(void)
+{
+	spg_gun_before_v28();
+	for (unsigned i = 0; i < ctx_count; i++)
+		ctx_list[i]->lastFrameUsed = tactx_frames;
 }

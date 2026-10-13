@@ -20,6 +20,7 @@ static void vk_rtt_read(const RttWatch *watch, u8 *rgba)
 	VulkanContext *context = VulkanContext::Instance();
 	vk::Device device = context->GetDevice();
 	const u32 w = watch->w, h = watch->h, scale = watch->scale;
+	const s32 x0 = (s32)(watch->x0 * (scale > 1 ? scale : 1)), y0 = (s32)(watch->y0 * (scale > 1 ? scale : 1));
 	const vk::Format format = vk::Format::eR8G8B8A8Unorm;
 	const vk::ImageSubresourceLayers layers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
 
@@ -41,7 +42,7 @@ static void vk_rtt_read(const RttWatch *watch, u8 *rgba)
 	if (scale > 1)
 	{
 		/* made the console's size on the card, filtered, and read at that */
-		const std::array<vk::Offset3D, 2> from = { vk::Offset3D(0, 0, 0), vk::Offset3D(w * scale, h * scale, 1) };
+		const std::array<vk::Offset3D, 2> from = { vk::Offset3D(x0, y0, 0), vk::Offset3D(x0 + w * scale, y0 + h * scale, 1) };
 		const std::array<vk::Offset3D, 2> to = { vk::Offset3D(0, 0, 0), vk::Offset3D(w, h, 1) };
 
 		setImageLayout(cmd, staging->GetImage(), format, 1, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
@@ -50,8 +51,10 @@ static void vk_rtt_read(const RttWatch *watch, u8 *rgba)
 		setImageLayout(cmd, staging->GetImage(), format, 1, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal);
 		source = staging->GetImage();
 	}
+	// (from the staging image, made from the clip's part, at 0; from the texture at the clip)
+	const vk::Offset3D at = scale > 1 ? vk::Offset3D(0, 0, 0) : vk::Offset3D(x0, y0, 0);
 	cmd.copyImageToBuffer(source, vk::ImageLayout::eTransferSrcOptimal, *staging->GetBufferData()->buffer,
-			vk::BufferImageCopy(0, w, h, layers, vk::Offset3D(0, 0, 0), vk::Extent3D(w, h, 1)));
+			vk::BufferImageCopy(0, w, h, layers, at, vk::Extent3D(w, h, 1)));
 	vk::BufferMemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead,
 			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *staging->GetBufferData()->buffer, 0, VK_WHOLE_SIZE);
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, nullptr, barrier, nullptr);
@@ -105,35 +108,40 @@ static void vk_rtt_release(uintptr_t)
 
 static const RttWatchBackend vk_rtt_backend = { vk_rtt_read, vk_rtt_release };
 
-/* What the render covers of video memory, as EndRenderPass() has it. */
-static void covered(u32& width, u32 height, u32& stride, u32& bytes)
+/* What the render covers of video memory, as EndRenderPass() has it: the
+ * clip's pixels, from (x0, y0) of the frame at addr, which moves to the
+ * first of them. */
+static void covered(u32& addr, u32 x0, u32 y0, u32& width, u32 height, u32& stride, u32& bytes)
 {
 	stride = FB_W_LINESTRIDE.stride * 8;
 	if (stride == 0)
-		stride = width * 2;
-	else if (width * 2 > stride)
+		stride = (x0 + width) * 2;
+	else if ((x0 + width) * 2 > stride)
 		// Happens for Virtua Tennis
-		width = stride / 2;
+		width = x0 * 2 >= stride ? 0 : stride / 2 - x0;
+	addr += y0 * stride + x0 * 2;
 	bytes = width == 0 || height == 0 ? 0 : stride * (height - 1) + width * 2;
 }
 
-void vk_rtt_supersede(u32 addr, u32 width, u32 height)
+void vk_rtt_supersede(u32 addr, u32 x0, u32 y0, u32 width, u32 height)
 {
 	u32 stride, bytes;
 
-	covered(width, height, stride, bytes);
+	covered(addr, x0, y0, width, height, stride, bytes);
 	if (bytes != 0)
 		rtt_watch_supersede(addr, bytes);
 }
 
-void vk_rtt_watch(Texture *texture, u32 addr, u32 width, u32 height)
+void vk_rtt_watch(Texture *texture, u32 addr, u32 x0, u32 y0, u32 width, u32 height)
 {
 	RttWatch watch = {};
 
-	covered(width, height, watch.stride, watch.bytes);
+	covered(addr, x0, y0, width, height, watch.stride, watch.bytes);
 	watch.addr = addr;
 	watch.w = width;
 	watch.h = height;
+	watch.x0 = x0;
+	watch.y0 = y0;
 	watch.packmode = FB_W_CTRL.fb_packmode;
 	watch.kval_bit = (FB_W_CTRL.fb_kval & 0x80) << 8;
 	watch.alpha_threshold = FB_W_CTRL.fb_alpha_threshold;
