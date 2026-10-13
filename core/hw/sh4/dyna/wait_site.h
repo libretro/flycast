@@ -13,10 +13,13 @@
  * again, and again, until something from outside changes what it reads. In
  * this emulator that only happens between time slices - interrupts are
  * taken there, devices are run there, and the clock and timers a program
- * can read stand still within one. So the rest of the slice is given up at
- * once. The game cannot tell: it comes out of the loop in the same slice it
- * would have. All that differs is the slice's last few cycles, which the
- * loop would have overrun by part of a pass and now does not.
+ * can read stand still within one. So the passes that would still have
+ * been made in the slice are taken off its cycles at once, all but the
+ * last, which is run: every pass costs what the one between the two looks
+ * did, and the slice ends where, and with what left over, it would have
+ * ended had the loop gone round in full. The game cannot tell, and neither
+ * can a save state: what a site has seen is the host's, and is lost on a
+ * load, and whether it skips or not, the machine comes out the same.
  *
  * "Can change anything but registers" is a block with a store, a store
  * queue flush or an instruction the interpreter runs in it: such a block
@@ -42,6 +45,7 @@ struct WaitSite
 	u32 gen;			// sh4_write_gen when the copy was taken
 	bool valid;
 	u64 slice;			// the time slice the copy was taken in
+	s32 cycles;			// the cycle counter when the copy was taken
 	u8 regs[offsetof(Sh4Context, CpuRunning)];	// everything from the first register to FPSCR and its shadow
 };
 
@@ -60,8 +64,9 @@ void sh4_wait_sites_reset();
 bool sh4_block_writes(const RuntimeBlockInfo *block);
 
 extern "C" {
-// Called by a block going back, when its site's count has run out. Not
-// zero if the processor is going round in a loop that cannot end before the
-// time slice does.
-u32 sh4_wait_check(WaitSite *site);
+// Called by a block going back, when its site's count has run out, with
+// the cycle counter as the block has it there. Returns the counter to go on
+// with: less by whole passes if the processor is going round in a loop
+// that cannot end before the time slice does, else as it was.
+s32 sh4_wait_check(WaitSite *site, s32 cycles);
 }

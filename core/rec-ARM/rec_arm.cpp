@@ -1482,6 +1482,9 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 	bool isram = false;
 	// (the handler for the size of the store: a byte or a word got the 32-bit one's)
 	void* ptr = _vmem_write_const(op->rs1._imm, isram, std::min(4u, memop_bytes(optp)));
+	// 64 bits to a handler: the way for any address does it, as two writes
+	if (!isram && optp == SZ_64F)
+		return false;
 
 	eReg rs2 = r1;
 	eFSReg rs2f = f0;
@@ -1525,8 +1528,6 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 	}
 	else
 	{
-		if (optp == SZ_64F)
-			die("SZ_64F not supported");
 		MOV32(r0, op->rs1._imm);
 		/* (A handler takes the byte or the word it is given as it comes:
 		 * extending a small argument is the caller's job on this host, and
@@ -2814,12 +2815,11 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 				|| block->BlockType == BET_Cond_0 || block->BlockType == BET_Cond_1))
 	{
 		/* A block that can go back: every so often, see whether the game is
-		 * only waiting, and give up the rest of the time slice if it is.
-		 * See wait_site.h. This is ahead of the branch, so it is also
-		 * passed on the way out of a loop; that changes nothing, since a
-		 * pass that finds the registers as they were is one that goes round
-		 * again. The cycle counter is a register: at 0, the next block's
-		 * own subtraction ends the slice. */
+		 * only waiting, and take the passes it would still make in the time
+		 * slice off the cycle counter, which is a register, if it is. See
+		 * wait_site.h. This is ahead of the branch, so it is also passed on
+		 * the way out of a loop; that changes nothing, since a pass that
+		 * finds the registers as they were is one that goes round again. */
 		WaitSite *site = sh4_wait_site(block);
 		if (site != nullptr)
 		{
@@ -2837,12 +2837,14 @@ void ngen_Compile(RuntimeBlockInfo* block,bool force_checks, bool reset, bool st
 			u32 *branch = (u32 *)EMIT_GET_PTR();
 			MOV(r0, r0);
 			MOV32(r0, (u32)site);
-			CALL((u32)sh4_wait_check);
-			CMP(r0, 0);
 #ifdef __MACH__
-			MOVW(r11, 0, CC_NE);
+			MOV(r1, r11);
+			CALL((u32)sh4_wait_check);
+			MOV(r11, r0);
 #else
-			MOVW(rfp_r9, 0, CC_NE);
+			MOV(r1, rfp_r9);
+			CALL((u32)sh4_wait_check);
+			MOV(rfp_r9, r0);
 #endif
 			u32 *over = (u32 *)EMIT_GET_PTR();
 			*branch = 0x5A000000 | ((u32)(over - branch - 2) & 0x00FFFFFF);

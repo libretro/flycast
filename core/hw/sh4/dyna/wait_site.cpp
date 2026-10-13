@@ -88,7 +88,7 @@ bool sh4_block_writes(const RuntimeBlockInfo *block)
 	return false;
 }
 
-u32 sh4_wait_check(WaitSite *site)
+s32 sh4_wait_check(WaitSite *site, s32 cycles)
 {
 	const u64 now = sh4_sched_now64();
 
@@ -98,21 +98,32 @@ u32 sh4_wait_check(WaitSite *site)
 		{
 			site->backoff = 0;
 			site->skip = 0;
-			return 1;
+			/* What a pass costs. Every pass left would cost the same, and
+			 * the counter only falls on the way round, so each of the
+			 * passes skipped would have ended with at least one cycle left
+			 * and the slice would not have ended in it, whichever way a
+			 * recompiler tests the counter against 0. The pass that is left
+			 * is run, and ends the slice where it would have ended. */
+			const s32 pass = site->cycles - cycles;
+			if (pass > 0 && cycles > pass)
+				cycles -= (cycles - 1) / pass * pass;
+			site->cycles = cycles;
+			return cycles;
 		}
 		// it wrote something, or its registers moved: a loop with work to do
 		site->backoff = std::min(site->backoff * 2 + 1, 1023u);
 		site->skip = site->backoff;
 		site->valid = false;
-		return 0;
+		return cycles;
 	}
 	// nothing from this time slice to compare with: take it, and look at the next pass
 	memcpy(site->regs, &Sh4cntx, sizeof(site->regs));
 	site->gen = sh4_write_gen;
 	site->slice = now;
+	site->cycles = cycles;
 	site->valid = true;
 	site->skip = 0;
-	return 0;
+	return cycles;
 }
 
 #endif

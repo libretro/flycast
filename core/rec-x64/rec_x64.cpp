@@ -1830,11 +1830,9 @@ public:
 		dec(dword[rax]);
 		jns(over, T_NEAR);
 		mov(call_regs64[0], (uintptr_t)site);
+		mov(call_regs[1], r14d);
 		GenCall(sh4_wait_check);
-		test(eax, eax);
-		jz(over, T_NEAR);
-		// the block has yet to pay: this leaves the counter at 0 when it has
-		mov(r14d, charge_at_tail ? block_cycles : 0);
+		mov(r14d, eax);
 		L(over);
 	}
 
@@ -2419,10 +2417,24 @@ private:
 		else
 		{
 			// Not RAM: the returned pointer is a memory handler
+			if (size == 8)
+			{
+				// a 32-bit handler: called for each half, as for a read (only the first half was written)
+				mov(call_regs[0], addr);
+				mov(call_regs[1], Ctx(op.rs2.reg_ptr()));
+				GenCall((void (*)())ptr);
+
+				mov(call_regs[0], addr + 4);
+				mov(call_regs[1], Ctx((const u8 *)op.rs2.reg_ptr() + 4));
+				GenCall((void (*)())ptr);
+			}
+			else
+			{
 			mov(call_regs[0], addr);
 			shil_param_to_host_reg(op.rs2, call_regs[1]);
 
 			GenCall((void (*)())ptr);
+			}
 		}
 
 		return true;

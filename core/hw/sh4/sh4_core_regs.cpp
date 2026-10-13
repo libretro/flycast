@@ -106,7 +106,16 @@ static void setHostRoundingMode()
         if (fpscr.DN)
            y|=1<<24;
 
-
+#ifdef __ANDROID__
+        /* Written with the instructions below, the mode was found not to
+         * take on Android on 32-bit ARM (Soul Calibur, Sword of the
+         * Berserk): it is set the C library's way there, which does. */
+        fenv_t fenv;
+        fegetenv(&fenv);
+        fenv &= x;
+        fenv |= y;
+        fesetenv(&fenv);
+#else
         int raa;
 
         asm volatile
@@ -118,6 +127,7 @@ static void setHostRoundingMode()
             : "=r"(raa)
             : "r"(x), "r"(y)
            );
+#endif
 #elif HOST_CPU == CPU_ARM64
 		static const unsigned long off_mask = 0x04080000;
         unsigned long on_mask = 0x02000000;    // DN=1 Any operation involving one or more NaNs returns the Default NaN

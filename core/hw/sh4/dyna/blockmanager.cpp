@@ -826,9 +826,15 @@ bool bm_RamWriteAccess(void *p)
 	}
 	else
 	{
-		if ((u8 *)p < &mem_b[0] || (u8 *)p >= &mem_b[RAM_SIZE])
+		uintptr_t offset = (uintptr_t)p - (uintptr_t)&mem_b[0];
+#if defined(__aarch64__)
+		/* Memory from malloc() can have a tag in its address's top byte
+		 * (Android on ARM64), and the address of a fault comes without it. */
+		offset = ((uintptr_t)p & 0x00FFFFFFFFFFFFFFull) - ((uintptr_t)&mem_b[0] & 0x00FFFFFFFFFFFFFFull);
+#endif
+		if (offset >= RAM_SIZE)
 			return false;
-		bm_RamWriteAccess((u32)((u8 *)p - &mem_b[0]));
+		bm_RamWriteAccess((u32)offset);
 	}
 
 	return true;

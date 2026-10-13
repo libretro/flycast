@@ -1123,12 +1123,12 @@ public:
 					|| block->BlockType == BET_Cond_0 || block->BlockType == BET_Cond_1))
 		{
 			/* A block that can go back: every so often, see whether the
-			 * game is only waiting, and give up the rest of the time slice
-			 * if it is. See wait_site.h. This is ahead of the branch, so it
-			 * is also passed on the way out of a loop; that changes
-			 * nothing, since a pass that finds the registers as they were
-			 * is one that goes round again. The cycle counter is w27: at 0,
-			 * the next block's own subtraction ends the slice. */
+			 * game is only waiting, and take the passes it would still make
+			 * in the time slice off the cycle counter, w27, if it is. See
+			 * wait_site.h. This is ahead of the branch, so it is also
+			 * passed on the way out of a loop; that changes nothing, since
+			 * a pass that finds the registers as they were is one that goes
+			 * round again. */
 			WaitSite *site = sh4_wait_site(block);
 			if (site != nullptr)
 			{
@@ -1140,9 +1140,9 @@ public:
 				Str(w0, MemOperand(x1));
 				B(&over, pl);
 				Mov(x0, reinterpret_cast<uintptr_t>(site));
+				Mov(w1, w27);
 				GenCallRuntime(sh4_wait_check);
-				Cbz(w0, &over);
-				Mov(w27, 0);
+				Mov(w27, w0);
 				Bind(&over);
 			}
 		}
