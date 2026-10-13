@@ -475,7 +475,16 @@ void mcfg_UnserializeDevices(void **data, unsigned int *total_size)
 	const bool eeprom_loaded = EEPROM_loaded;
 	const bool atomiswave = settings.System == DC_PLATFORM_ATOMISWAVE;
 
-	mcfg_DestroyDevices();
+	/* The devices are made anew, as what the state says is there. Not the
+	 * memory cards: one that the state has too stays, and is given the
+	 * state's contents. Making a card is reading its file, after waiting
+	 * for everything still on its way there to be written - four or eight
+	 * times for every state loaded, which with run-ahead is every frame -
+	 * and all of what it then is comes from the state. */
+	for (int i = 0; i < MAPLE_PORTS; i++)
+		for (int j = 0; j < 6; j++)
+			if (MapleDevices[i][j] != NULL && MapleDevices[i][j]->get_device_type() != MDT_SegaVMU)
+				mcfg_DestroyDevice(i, j);
 	EEPROM_loaded = eeprom_loaded;
 
 	for (int i = 0; i < MAPLE_PORTS; i++)
@@ -496,10 +505,14 @@ void mcfg_UnserializeDevices(void **data, unsigned int *total_size)
 				ra_unserialize_fail();
 			}
 			MapleDeviceType device_type = (MapleDeviceType)type;
+			// (a card where the state has none, or something else)
+			if (MapleDevices[i][j] != NULL && device_type != MDT_SegaVMU)
+				mcfg_DestroyDevice(i, j);
 			if (device_type != MDT_None)
 			{
-				mcfg_Create(device_type, i, j,
-						atomiswave && i >= 2 && j == 5 ? mcfg_PlayerNum(device_type, i) : -1);
+				if (MapleDevices[i][j] == NULL)
+					mcfg_Create(device_type, i, j,
+							atomiswave && i >= 2 && j == 5 ? mcfg_PlayerNum(device_type, i) : -1);
 				MapleDevices[i][j]->maple_unserialize(data, total_size);
 			}
 		}

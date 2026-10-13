@@ -9,6 +9,7 @@
 #include "savewriter.h"
 #include <math.h>
 #include <time.h>
+#include <algorithm>
 
 #include <encodings/deflate.h>
 #include "deps/xxhash/xxhash.h"
@@ -607,7 +608,10 @@ struct maple_sega_vmu: maple_base
 	/* Bytes of flash_data changed since the last flush: [dirty_lo, dirty_hi) */
 	u32 dirty_lo;
 	u32 dirty_hi;
-	bool full_save_needed = false;
+	/* Bytes where the card is not what its file has because a state was
+	 * loaded: [loaded_lo, loaded_hi). See maple_unserialize(). */
+	u32 loaded_lo = 0;
+	u32 loaded_hi = 0;
 	MapleSaveState save_state;	// of the writes handed over: see FlushSave()
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
@@ -627,15 +631,52 @@ struct maple_sega_vmu: maple_base
 	}
 	virtual bool maple_unserialize(void **data, unsigned int *total_size)
 	{
-		/* What is on the card is about to be what the state says, all of it,
-		 * and the file is still what it was. Whatever was waiting to be
-		 * written belongs to the card as it was: out it goes first. And the
-		 * next thing the game writes cannot be patched into the file, which
-		 * would leave a card that is part one and part the other - a broken
-		 * file system. The whole card is written then. */
-		save_state.wait = 0;
-		FlushSave();
-		full_save_needed = true;
+		/* What is on the card is about to be what the state says, and the
+		 * file is still what it was. Loading a state does not write to the
+		 * file: where the two now differ is noted, and goes to the file
+		 * with the next thing the game writes to the card - or the file
+		 * would be the card in part and what it was before in part, a
+		 * broken file system. Whatever was waiting to be written belongs to
+		 * the card as it was: out it goes first.
+		 *
+		 * (The whole card used to be written then, and every load counted
+		 * as one that changed the card. A frontend's run-ahead loads a
+		 * state every frame, and it is the card as it is but for what the
+		 * game wrote in the last frame: usually nothing, and then there is
+		 * nothing to do; while a game saves, a block or two, where it was
+		 * 128K a frame.) */
+		u32 lo = 0, hi = sizeof(flash_data);
+
+		if (ra_unserialize_has(*data, sizeof(flash_data)))
+		{
+			const u8 * const from = (const u8 *)*data;
+
+			// (by the block: that is what a game writes)
+			while (lo < hi && memcmp(&flash_data[lo], &from[lo], 512) == 0)
+				lo += 512;
+			while (hi > lo && memcmp(&flash_data[hi - 512], &from[hi - 512], 512) == 0)
+				hi -= 512;
+		}
+		if (lo < hi)
+		{
+			save_state.wait = 0;
+			FlushSave();
+			if (dirty_lo < dirty_hi)
+			{
+				// (not taken: it waits with the rest)
+				lo = std::min(lo, dirty_lo);
+				hi = std::max(hi, dirty_hi);
+				dirty_lo = 0;
+				dirty_hi = 0;
+			}
+			if (loaded_lo < loaded_hi)
+			{
+				lo = std::min(lo, loaded_lo);
+				hi = std::max(hi, loaded_hi);
+			}
+			loaded_lo = lo;
+			loaded_hi = hi;
+		}
 		LIBRETRO_USA(flash_data,128*1024);
 		LIBRETRO_USA(lcd_data,192);
 		LIBRETRO_USA(lcd_data_decoded,48*32);
@@ -941,14 +982,7 @@ struct maple_sega_vmu: maple_base
 						rptr(&flash_data[write_adr],write_len);
 
 						/* Written out by FlushSave() between frames */
-						if (full_save_needed)
-						{
-							// the first write after a state was loaded: see maple_unserialize()
-							full_save_needed = false;
-							dirty_lo = 0;
-							dirty_hi = sizeof(flash_data);
-						}
-						else if (dirty_lo >= dirty_hi)
+						if (dirty_lo >= dirty_hi)
 						{
 							dirty_lo = write_adr;
 							dirty_hi = write_adr + write_len;
@@ -959,6 +993,14 @@ struct maple_sega_vmu: maple_base
 								dirty_lo = write_adr;
 							if (write_adr + write_len > dirty_hi)
 								dirty_hi = write_adr + write_len;
+						}
+						if (loaded_lo < loaded_hi)
+						{
+							// the first write after a state was loaded that changed the card: see maple_unserialize()
+							dirty_lo = std::min(dirty_lo, loaded_lo);
+							dirty_hi = std::max(dirty_hi, loaded_hi);
+							loaded_lo = 0;
+							loaded_hi = 0;
 						}
 						return MDRS_DeviceReply;//just ko
 					}
