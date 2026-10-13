@@ -284,6 +284,37 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "Default",
    },
+#ifdef ENABLE_MODEM
+   {
+      CORE_OPTION_NAME "_network_device",
+      "Expansion Port Device (Restart Required)",
+      NULL,
+      "The device in the Dreamcast's expansion port, for online games: the modem it came with, the Broadband Adapter (Ethernet), or none.",
+      NULL,
+      NULL,
+      {
+         { "modem", "Modem" },
+         { "bba",   "Broadband Adapter" },
+         { "none",  "None" },
+         { NULL, NULL },
+      },
+      "modem",
+   },
+   {
+      CORE_OPTION_NAME "_dcnet",
+      "Use DCNet",
+      NULL,
+      "Go online through the DCNet relay (dcnet.flyca.st) instead of the built-in network stack. Taken at the next connection.",
+      NULL,
+      NULL,
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
+#endif
    {
       CORE_OPTION_NAME "_region",
       "Region",

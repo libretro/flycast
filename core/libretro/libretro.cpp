@@ -67,6 +67,7 @@ extern bool naomi_card_button;
 #include "log/LogManager.h"
 #include "cheats.h"
 #include "rend/CustomTexture.h"
+#include "network/netservice.h"
 
 #if defined(_XBOX) || defined(_WIN32)
 char slash = '\\';
@@ -533,6 +534,12 @@ static void set_variable_visibility(void)
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = CORE_OPTION_NAME "_vmu_sound";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+#ifdef ENABLE_MODEM
+   option_display.key = CORE_OPTION_NAME "_network_device";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+   option_display.key = CORE_OPTION_NAME "_dcnet";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+#endif
 
    /* only show, if categories not supported */
    option_display.visible = ((settings.System == DC_PLATFORM_DREAMCAST) &&
@@ -915,6 +922,22 @@ static void update_variables(bool first_startup)
    }
    else
          settings.dreamcast.broadcast = 4;
+
+   /* The device in the expansion port: taken when the game starts and at a
+    * restart (net_device_reset()), DCNet when the game next goes online */
+   var.key = CORE_OPTION_NAME "_network_device";
+   net_device_option = NET_DEVICE_MODEM;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (!strcmp("bba", var.value))
+         net_device_option = NET_DEVICE_BBA;
+      else if (!strcmp("none", var.value))
+         net_device_option = NET_DEVICE_NONE;
+   }
+
+   var.key = CORE_OPTION_NAME "_dcnet";
+   net_dcnet_option = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("enabled", var.value);
 
    var.key = CORE_OPTION_NAME "_region";
 

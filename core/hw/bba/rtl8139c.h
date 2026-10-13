@@ -224,3 +224,6 @@ RTL8139State *rtl8139_init(NICConf *conf);
 void rtl8139_destroy(RTL8139State *state);
 void rtl8139_serialize(RTL8139State *state, void **data, unsigned int *total_size);
 bool rtl8139_unserialize(RTL8139State *state, void **data, unsigned int *total_size);
+// (since version 24: every field on its own, and checked when read)
+void rtl8139_serialize_v24(RTL8139State *state, void **data, unsigned int *total_size);
+void rtl8139_unserialize_v24(RTL8139State *state, void **data, unsigned int *total_size);

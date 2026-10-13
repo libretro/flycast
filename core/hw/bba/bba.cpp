@@ -20,6 +20,8 @@
 #include "rtl8139c.h"
 #include "hw/holly/holly_intc.h"
 #include "network/picoppp.h"
+#include <libretro.h>
+#include <features/features_cpu.h>
 
 static RTL8139State *rtl8139device;
 
@@ -48,6 +50,125 @@ static u8 GAPS_ram[GAPSPCI_RAM_SIZE];
 static u8 GAPS_regs[GAPSPCI_REGS_SIZE];
 static u32 dmaOffset;
 static bool interruptPending;
+static const u32 MAX_ETH_FRAME_SIZE = 1514;
+
+extern std::vector<sched_list> sch_list;
+
+/* The network session the adapter is on: the network thread (picoTCP or
+ * DCNet) that is up while the game uses the network, started when the
+ * game sends its first frame and stopped when it resets the adapter.
+ *
+ * As with the modem's line (see modem.cpp), a save state says which
+ * session its adapter is on, by a number no other session has, and how
+ * many frames it has received and sent on it. A state loaded on the
+ * session that is up - run-ahead, rewind - is given again the frames it
+ * received since it was made, at the same times, from eth_log, and the
+ * frames it sends again are not sent twice. A state of another session
+ * has the session that is up stopped: the game's next frame starts one. */
+#define ETH_LOG_FRAMES 128
+static u32 eth_session;		// the session the adapter is on, 0 for none (in the state)
+static u32 eth_rx_pos;		// frames received from it (in the state)
+static u32 eth_tx_pos;		// frames sent to it (in the state)
+static u32 live_session;	// the session up, 0 for none
+static u32 eth_rx_taken;	// frames taken from the live session
+static u32 eth_tx_sent;		// frames sent to it
+static u64 eth_looked;		// the last time the live session itself was read
+static u64 live_session_made;	// when the live session was started (emulated time)
+static u8 eth_log[ETH_LOG_FRAMES][NET_ETH_FRAME_MAX];	// the last frames taken from it
+static u16 eth_log_size[ETH_LOG_FRAMES];
+static u64 eth_log_time[ETH_LOG_FRAMES];		// and when
+static int deliver_schid = -1;
+
+static bool session_is_live()
+{
+	return live_session != 0 && eth_session == live_session;
+}
+
+static void session_stop()
+{
+	if (live_session != 0)
+	{
+		stop_pico();
+		live_session = 0;
+	}
+}
+
+static bool session_start()
+{
+	if (live_session != 0 && eth_session == 0 && live_session_made == sh4_sched_now64()
+			&& eth_rx_taken <= ETH_LOG_FRAMES)
+	{
+		/* Started at this very moment, by the machine of a state loaded
+		 * since (run-ahead): it is this one's, and what came from it is
+		 * given again as it came */
+		eth_session = live_session;
+		eth_rx_pos = 0;
+		eth_tx_pos = 0;
+		sh4_sched_request(deliver_schid, SH4_MAIN_CLOCK / 1000);
+		return true;
+	}
+	session_stop();
+	if (!start_pico())
+	{
+		WARN_LOG(NETWORK, "BBA: the network cannot be started");
+		return false;
+	}
+	// The time is the session's number: no other session, of this
+	// process or of another, was started at this microsecond
+	live_session = (u32)cpu_features_get_time_usec();
+	if (live_session == 0)
+		live_session = 1;
+	live_session_made = sh4_sched_now64();
+	eth_session = live_session;
+	eth_rx_pos = eth_rx_taken = 0;
+	eth_tx_pos = eth_tx_sent = 0;
+	eth_looked = 0;
+	sh4_sched_request(deliver_schid, SH4_MAIN_CLOCK / 1000);
+	return true;
+}
+
+static int bba_recv_frame(const u8 *data, u32 len);
+
+/* Once every millisecond of emulated time while the adapter is on a
+ * session: the frames that have come from the network are given to it, as
+ * many as it has room for. One it has no room for is offered again. */
+static int deliver_sched(int tag, int cycles, int jitter)
+{
+	if (!session_is_live())
+	{
+		eth_session = 0;
+		return 0;
+	}
+	const u64 now = sh4_sched_now64();
+	for (;;)
+	{
+		const u32 slot = eth_rx_pos % ETH_LOG_FRAMES;
+		if (eth_rx_pos != eth_rx_taken)
+		{
+			// Again: at the time it was taken the first time
+			if (eth_log_time[slot] > now)
+				break;
+		}
+		else
+		{
+			// The session had nothing more at this time when it was read
+			if (now <= eth_looked)
+				break;
+			const u32 size = net_eth_take(eth_log[slot]);
+			if (size == 0)
+				break;
+			eth_log_size[slot] = (u16)size;
+			eth_log_time[slot] = now;
+			eth_rx_taken++;
+		}
+		if (!bba_recv_frame(eth_log[slot], eth_log_size[slot]))
+			break;
+		eth_rx_pos++;
+	}
+	if (eth_rx_pos == eth_rx_taken && now > eth_looked)
+		eth_looked = now;
+	return SH4_MAIN_CLOCK / 1000;
+}
 
 static void setInterrupt()
 {
@@ -65,6 +186,10 @@ void pci_set_irq(PCIDevice *pci_dev, int level)
 
 void bba_Init()
 {
+	deliver_schid = sh4_sched_register(0, &deliver_sched);
+	eth_session = 0;
+	eth_rx_pos = 0;
+	eth_tx_pos = 0;
 	NICConf nicConf = { 0xc, 0xa, 0xf, 0xe, 0, 0 };
 	rtl8139device = rtl8139_init(&nicConf);
 	pci_rtl8139_realize(PCI_DEVICE(rtl8139device));
@@ -78,7 +203,10 @@ void bba_Term()
 {
 	if (rtl8139device != nullptr)
 	{
-		stop_pico();
+		session_stop();
+		eth_session = 0;
+		if (sh4_sched_is_scheduled(deliver_schid))
+			sh4_sched_request(deliver_schid, -1);
 		rtl8139_destroy(rtl8139device);
 		rtl8139device = nullptr;
 	}
@@ -178,9 +306,11 @@ void bba_WriteMem(u32 addr, u32 data, u32 sz)
 		case GAPS_RESET:
 			if (data & 1)
 			{
-				DEBUG_LOG(NETWORK, "GAPS reset");
+				INFO_LOG(NETWORK, "BBA: GAPS reset");
 				rtl8139_reset(rtl8139device);
-				start_pico();
+				// A new session is started by the next frame the game sends
+				session_stop();
+				eth_session = 0;
 			}
 			break;
 
@@ -207,13 +337,24 @@ void bba_WriteMem(u32 addr, u32 data, u32 sz)
 
 ssize_t qemu_send_packet(RTL8139State *s, const uint8_t *buf, int size)
 {
-	pico_receive_eth_frame(buf, size);
+	if (!session_is_live() && !session_start())
+		return size;
+	if (eth_tx_pos == eth_tx_sent)
+	{
+		pico_receive_eth_frame(buf, size);
+		eth_tx_sent++;
+	}
+	eth_tx_pos++;
 
 	return size;
 }
 
-int pico_send_eth_frame(const u8 *data, u32 len)
+// 0 if the adapter has no room for the frame now
+static int bba_recv_frame(const u8 *data, u32 len)
 {
+	// (what no Ethernet frame is, is dropped)
+	if (len < 6 || len > MAX_ETH_FRAME_SIZE)
+		return 1;
 	if (!rtl8139_can_receive(rtl8139device))
 		return 0;
 	rtl8139_receive(rtl8139device, data, len);
@@ -268,6 +409,61 @@ void bba_Unserialize(void **data, unsigned int *total_size)
 	// returns true if the receiver is enabled and the network stack must be started
 	if (rtl8139_unserialize(rtl8139device, data, total_size))
 		start_pico();
+}
+
+void bba_serialize_v24(void **data, unsigned int *total_size)
+{
+	u8 pending = interruptPending;
+	s32 deliver_start = sch_list[deliver_schid].start;
+	s32 deliver_end = sch_list[deliver_schid].end;
+
+	LIBRETRO_SA(GAPS_regs, GAPSPCI_REGS_SIZE);
+	LIBRETRO_SA(GAPS_ram, GAPSPCI_RAM_SIZE);
+	LIBRETRO_S(dmaOffset);
+	LIBRETRO_S(pending);
+	rtl8139_serialize_v24(rtl8139device, data, total_size);
+	LIBRETRO_S(deliver_start);
+	LIBRETRO_S(deliver_end);
+	LIBRETRO_S(eth_session);
+	LIBRETRO_S(eth_rx_pos);
+	LIBRETRO_S(eth_tx_pos);
+}
+
+bool bba_unserialize_v24(void **data, unsigned int *total_size)
+{
+	u8 pending = 0;
+	s32 deliver_start = -1;
+	s32 deliver_end = -1;
+
+	LIBRETRO_USA(GAPS_regs, GAPSPCI_REGS_SIZE);
+	LIBRETRO_USA(GAPS_ram, GAPSPCI_RAM_SIZE);
+	LIBRETRO_US(dmaOffset);
+	LIBRETRO_US(pending);
+	rtl8139_unserialize_v24(rtl8139device, data, total_size);
+	LIBRETRO_US(deliver_start);
+	LIBRETRO_US(deliver_end);
+	LIBRETRO_US(eth_session);
+	LIBRETRO_US(eth_rx_pos);
+	LIBRETRO_US(eth_tx_pos);
+
+	dmaOffset &= GAPSPCI_RAM_MASK;
+	interruptPending = pending != 0;
+	sch_list[deliver_schid].start = deliver_start;
+	sch_list[deliver_schid].end = deliver_end;
+	/* The session that is up is not the state's, or the state is from too
+	 * long ago on it for its frames to be given again: the state's adapter
+	 * is on none, and the game's next frame starts one */
+	if (live_session != 0
+			&& (eth_session != live_session
+				|| eth_rx_taken - eth_rx_pos > ETH_LOG_FRAMES
+				|| eth_tx_sent - eth_tx_pos > 0x40000000)
+			// (but a session started after the state's time, which its
+			// machine may start again at the same time: see session_start())
+			&& !(eth_session == 0 && live_session_made > sh4_sched_now64() && eth_rx_taken <= ETH_LOG_FRAMES))
+		session_stop();
+	if (!session_is_live())
+		eth_session = 0;
+	return true;
 }
 
 

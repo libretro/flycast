@@ -29,6 +29,9 @@
 #include <features/features_cpu.h>
 #include <pico_config.h>
 #include "network/picoppp.h"
+#include "reios/reios.h"
+#include "v42.h"
+#include <algorithm>
 
 #define MODEM_COUNTRY_RES 0
 #define MODEM_COUNTRY_JAP 1
@@ -43,7 +46,7 @@
 
 const static u32 MODEM_ID[2] =
 {
-	MODEM_COUNTRY_RES,
+	MODEM_COUNTRY_USA,
 	(MODEM_MAKER_ROCKWELL<<4) | (MODEM_DEVICE_TYPE_336K),
 };
 
@@ -75,8 +78,16 @@ enum ConnectState
 	HANDSHAKING,
 	PRE_CONNECTED,
 	CONNECTED,
+	NEGO_COMPLETE,			// the V.8 bis exchange is over: the game dials the line itself next
 };
 static ConnectState connect_state = DISCONNECTED;
+// The transmitter's FIFO: how many of the bytes the game wrote have not gone yet
+static float txFifoSize = 0.f;
+static modem::ByteFifo<16> rxFifo;
+// A byte at the speed of the connection, and the speed sent at over the one received at
+#define DEFAULT_CYCLES_PER_BYTE (SH4_MAIN_CLOCK / 1000000 * 238)
+static int cyclesPerByte = DEFAULT_CYCLES_PER_BYTE;
+static float txRxRatio = 1.f;
 
 static void schedule_callback(int ms);
 
@@ -139,10 +150,18 @@ static u64 connected_time;
  *   game of the state knows nothing of it, and the state's own line is dead.
  *   Nothing comes over a dead line, and after as long as a modem waits for a
  *   carrier that has gone, the modem reports the far end's hanging up: the
- *   game can dial again. */
+ *   game can dial again.
+ *
+ * What comes over the line is taken at each of the modem's steps into
+ * line_fifo, which is in the state, and all the modem does with it is done
+ * from there. Each byte's place in rx_log has the time it was taken at: a
+ * state loaded on the live line takes them again at the same times, and
+ * nothing from the line itself at a time the line was already looked at,
+ * so that what the game is given is the same, byte for byte and step for
+ * step. */
 #define LINE_WINDOW 4096
-// Steps of 238 us without a carrier before the modem gives the line up: 1.4 s
-#define DEAD_LINE_STEPS 5880
+// A modem gives the line up after this long without a carrier
+#define DEAD_LINE_CYCLES ((u64)SH4_MAIN_CLOCK * 14 / 10)
 static u32 line_id;			// the line the modem is connected over, 0 when it is not connected (in the state)
 static u32 rx_pos;			// bytes the modem has taken from that line (in the state)
 static u32 tx_pos;			// bytes the modem has given to it (in the state)
@@ -151,6 +170,10 @@ static u32 live_line;		// the line this process has up, 0 for none
 static u32 rx_taken;		// bytes taken from the live line
 static u32 tx_sent;			// bytes given to the live line
 static u8 rx_log[LINE_WINDOW];	// the last bytes taken from the live line
+static u64 rx_log_time[LINE_WINDOW];	// and when
+static u64 line_looked;		// the last time the live line itself was read
+static u64 live_line_made;	// when the live line was made (emulated time)
+static modem::ByteFifo<256> line_fifo;	// taken from the line, not yet used (in the state)
 
 static bool line_is_live()
 {
@@ -164,23 +187,39 @@ static void line_close()
 	live_line = 0;
 }
 
-// The next byte from the live line, -1 if there is none
-static int line_read()
+// What has come over the line, into line_fifo
+static void line_fetch()
 {
-	int c;
+	const u64 now = sh4_sched_now64();
 
-	if (rx_pos != rx_taken)
-		c = rx_log[rx_pos % LINE_WINDOW];
-	else
+	while (line_fifo.room() > 0)
 	{
-		c = read_pico();
-		if (c < 0)
-			return c;
-		rx_log[rx_taken % LINE_WINDOW] = (u8)c;
-		rx_taken++;
+		int c;
+
+		if (rx_pos != rx_taken)
+		{
+			// Again: at the time it was taken the first time
+			if (rx_log_time[rx_pos % LINE_WINDOW] > now)
+				break;
+			c = rx_log[rx_pos % LINE_WINDOW];
+		}
+		else
+		{
+			// The line had nothing more at this time when it was read
+			if (now <= line_looked)
+				break;
+			c = read_pico();
+			if (c < 0)
+				break;
+			rx_log[rx_taken % LINE_WINDOW] = (u8)c;
+			rx_log_time[rx_taken % LINE_WINDOW] = now;
+			rx_taken++;
+		}
+		rx_pos++;
+		line_fifo.push((u8)c);
 	}
-	rx_pos++;
-	return c;
+	if (rx_pos == rx_taken && now > line_looked)
+		line_looked = now;
 }
 
 static void line_write(u8 b)
@@ -194,6 +233,219 @@ static void line_write(u8 b)
 }
 
 static void line_lost();
+
+using namespace modem;
+
+/* The modem's end of the line: what has come over it, and what is sent. In
+ * synchronous mode the V.42 protocol is between these and the game. */
+class NetIn : public InStream
+{
+public:
+	int read() override {
+		return line_fifo.pop();
+	}
+	int available() override {
+		return line_fifo.size();
+	}
+};
+
+class NetOut : public OutStream
+{
+public:
+	void write(u8 v) override {
+		// (what is sent over a dead line is lost)
+		if (line_is_live())
+			line_write(v);
+	}
+};
+
+static NetIn netIn;
+static NetOut netOut;
+static InStream *curInput = &netIn;
+static OutStream *curOutput = &netOut;
+
+static V42Protocol v42Proto(netIn, netOut);
+
+static bool v8bis;
+static V8bisProtocol v8bisProto;
+
+static bool game_is(const char *id)
+{
+	std::string gameId(ip_meta.product_number, sizeof(ip_meta.product_number));
+	return trim_trailing_ws(gameId) == id;
+}
+
+static void updateRxFifoStatus()
+{
+	// The rx fifo timeout set in dspram[0x32c]:2-4 doesn't seem to be used
+	if (rxFifo.size() != 0)
+	{
+		modem_regs.reg00 = rxFifo.front();
+		modem_regs.reg1e.RDBF = (u8)((unsigned)rxFifo.size() >= rxFifoTrigger[(dspram[0x32c] >> 6) & 3]);
+		if (modem_regs.reg04.FIFOEN)
+			SET_STATUS_BIT(0x0c, modem_regs.reg0c.RXFNE, 1);
+		SET_STATUS_BIT(0x01, modem_regs.reg01.RXHF, rxFifo.size() >= 8);
+	}
+	else
+	{
+		modem_regs.reg1e.RDBF = 0;
+		if (modem_regs.reg04.FIFOEN)
+			SET_STATUS_BIT(0x0c, modem_regs.reg0c.RXFNE, 0);
+		SET_STATUS_BIT(0x01, modem_regs.reg01.RXHF, 0);
+	}
+}
+
+static void configureStreams()
+{
+	if (v8bis) {
+		curInput = &v8bisProto;
+		curOutput = &v8bisProto;
+	}
+	else if (modem_regs.reg08.ASYN == 0) {
+		// Synchronous: V.42 or V.14
+		curInput = &v42Proto;
+		curOutput = &v42Proto;
+	}
+	else {
+		curInput = &netIn;
+		curOutput = &netOut;
+	}
+}
+
+/* The speed of the connection, from the configuration the game has asked for
+ * (CONF). False if it is not one a connection can be made with. */
+static bool setModemSpeedFromCONF()
+{
+	static const int v90Speeds[] = {
+		0, 28800, 29333, 30667, 32000, 33333, 34667, 36000, 37333, 38667, 40000, 41333,
+		42667, 44000, 45333, 46667, 48000, 49333, 50667, 52000, 53333, 54667, 56000
+	};
+	static const int v34Speeds[] = {
+		0, 2400, 4800, 7200, 9600, 12000, 14400, 16800, 19200, 21600, 24000, 26400, 28800, 31200, 33600
+	};
+	const u8 conf = modem_regs.reg12;
+	modem_regs.reg0e.SPEED = 0;
+	int speed;
+	int rxSpeed = 0;
+	switch (conf)
+	{
+	default:
+		if (conf >= 0xe0 && conf <= 0xf6)
+		{
+			// V.90
+			rxSpeed = v90Speeds[conf - 0xe0];
+			if (rxSpeed == 0) {
+				speed = 0;
+			}
+			else
+			{
+				dspram[0x2e4] = conf - 0xe0;
+				speed = 33600;
+				modem_regs.reg0e.SPEED = 0x10;
+				dspram[0x2e5] = 0xd;
+			}
+		}
+		else if (conf >= 0x90 && conf <= 0x9d)
+		{
+			// K56flex
+			if (conf == 0x90) {
+				speed = 0;
+			}
+			else
+			{
+				rxSpeed = 30000 + (conf - 0x90) * 2000;
+				speed = 33600;
+				modem_regs.reg0e.SPEED = 0x10;
+			}
+		}
+		else if (conf >= 0xc0 && conf <= 0xce)
+		{
+			// V.34
+			speed = v34Speeds[conf - 0xc0];
+			if (speed != 0)
+				modem_regs.reg0e.SPEED = conf - 0xc0 + 2;
+			dspram[0x2e4] = conf - 0xc0;
+			dspram[0x2e5] = dspram[0x2e4];
+		}
+		else {
+			speed = 0;
+		}
+		break;
+
+	// V.33
+	case 0x31: speed = 14400; break;
+	case 0x32: speed = 12000; break;
+	case 0x34: speed = 9600; break;
+	case 0x38: speed = 7200; break;
+	// V.32 [bis]
+	case 0x76: speed = 14400; break;
+	case 0x72: speed = 12000; break;
+	case 0x74: speed = 9600; break;
+	case 0x75: speed = 9600; break;
+	case 0x78: speed = 7200; break;
+	case 0x71: speed = 4800; break;
+	case 0x70: speed = 0; break;
+	// V.17
+	case 0xb1: speed = 14400; break;
+	case 0xb2: speed = 12000; break;
+	case 0xb4: speed = 9600; break;
+	case 0xb8: speed = 7200; break;
+	// V.29
+	case 0x14: speed = 9600; break;
+	case 0x12: speed = 7200; break;
+	case 0x11: speed = 4800; break;
+	// V.27 ter, V.22 bis, V.22, V.21
+	case 0x02: speed = 4800; break;
+	case 0x01: speed = 2400; break;
+	case 0x84: speed = 2400; break;
+	case 0x82: speed = 1200; break;
+	case 0x52: speed = 1200; break;
+	case 0x51: speed = 600; break;
+	case 0xa0: speed = 300; break;
+	case 0xa8: speed = 300; break;
+	// Bell, V.23
+	case 0x23: speed = 4800; break;
+	case 0x62: speed = 1200; break;
+	case 0x60: speed = 300; break;
+	case 0xa4: speed = 1200; rxSpeed = 75; break;
+	case 0xa1: speed = 75; rxSpeed = 1200; break;
+	}
+
+	if (rxSpeed == 0)
+		rxSpeed = speed;
+	if (speed == 0)
+	{
+		modem_regs.reg0e.SPEED = 0;
+		cyclesPerByte = SH4_MAIN_CLOCK * 8 / 300;
+		txRxRatio = 1.f;
+	}
+	else
+	{
+		if (modem_regs.reg0e.SPEED == 0)
+		{
+			switch (speed)
+			{
+			case 14400: modem_regs.reg0e.SPEED = 7; break;
+			case 12000: modem_regs.reg0e.SPEED = 6; break;
+			case 9600: modem_regs.reg0e.SPEED = 5; break;
+			case 7200: modem_regs.reg0e.SPEED = 8; break;
+			case 4800: modem_regs.reg0e.SPEED = 4; break;
+			case 2400: modem_regs.reg0e.SPEED = 3; break;
+			case 1200: modem_regs.reg0e.SPEED = 2; break;
+			case 600: modem_regs.reg0e.SPEED = 1; break;
+			default: modem_regs.reg0e.SPEED = 0; break;
+			}
+		}
+		/* The modem steps at the speed it receives at, a byte to the game at
+		 * each step, and sends at its own speed: speed / rxSpeed bytes a
+		 * step. (Stepping at the sending speed, with that ratio, had a V.90
+		 * line receive at 33600 and send at 20160 bits a second.) */
+		cyclesPerByte = SH4_MAIN_CLOCK * 8 / rxSpeed;
+		txRxRatio = (float)speed / rxSpeed;
+	}
+	NOTICE_LOG(MODEM, "MODEM Connected %s %d/%d bps", modem_regs.reg08.ASYN ? "ASYNC" : "SYNC", rxSpeed, speed);
+	return speed != 0;
+}
 
 #ifndef NDEBUG
 static unsigned long last_comm_stats;
@@ -253,10 +505,11 @@ static int modem_sched_func(int tag, int cycles, int jitter)
 			}
 			break;
 		case RINGING:
+		case NEGO_COMPLETE:
 			last_dial_time = 0;
-			LOG("\t\t *** RINGING STATE ***");
+			LOG("\t\t *** %s STATE ***", connect_state == RINGING ? "RINGING" : "NEGO COMPLETE");
 			modem_regs.reg1f.NEWS = 1;
-			if (!modem_regs.reg09.DATA)
+			if (!modem_regs.reg09.DATA && connect_state == RINGING)
 			{
 				SET_STATUS_BIT(0x0f, modem_regs.reg0f.RI, 1);
 				SET_STATUS_BIT(0x0b, modem_regs.reg0b.ATV25, 1);
@@ -279,76 +532,123 @@ static int modem_sched_func(int tag, int cycles, int jitter)
 			break;
 
 		case PRE_CONNECTED:
-			INFO_LOG(MODEM, "MODEM Connected");
-			if (modem_regs.reg03.RLSDE)
-				SET_STATUS_BIT(0x0f, modem_regs.reg0f.RLSD, 1);
-			if (modem_regs.reg12 == 0xAA)
 			{
-				// V8 AUTO mode
-				dspram[0x302] |= 1 << 4;				// protocol octet received
-				dspram[0x302] = (dspram[0x302] & 0x1f) | (dspram[0x304] & 0xe0);	// Received Call Function
-				dspram[0x301] |= 1 << 4;				// JM detected
-				dspram[0x303] |= 0xE0;					// Received protocol bits (?)
-				dspram[0x2e3] = 5;						// Symbol rate 3429
-				dspram[0x2e4] = 0xe;					// V.34 Receiver Speed 33.6
-				dspram[0x2e5] = 0xe;					// V.34 Transmitter Speed 33.6
-				dspram[0x239] = 12;						// RTD 0 @ 3429 sym rate
-				if (modem_regs.reg08.ASYN)
+				if (modem_regs.reg03.RLSDE)
+					SET_STATUS_BIT(0x0f, modem_regs.reg0f.RLSD, 1);
+				bool validConfig;
+				if (modem_regs.reg12 == 0xAA)
 				{
-					modem_regs.reg12 = 0xce;		// CONF V34 - K56flex
-					modem_regs.reg0e.SPEED = 0x10;	// 33.6k
+					// V8 AUTO mode
+					dspram[0x302] |= 1 << 4;				// protocol octet received
+					dspram[0x302] = (dspram[0x302] & 0x1f) | (dspram[0x304] & 0xe0);	// Received Call Function
+					dspram[0x301] |= 1 << 4;				// JM detected
+					dspram[0x303] |= 0xE1;					// Received protocol bits (?), Received GSTN Octet
+					dspram[0x2e3] = 5;						// Symbol rate 3429
+					// set the negotiated speed to the max configured by the game
+					if ((dspram[0x6a3] & 1) == 1 && (dspram[0x6a2] & 0x20) == 0x20)
+					{
+						if (game_is("HDR-0113") || game_is("HDR-0091"))
+						{
+							// Set symmetric speed (V.34 33.6) for Power Smash and Pro Yakyuu Team to avoid lag
+							modem_regs.reg12 = 0xCE;
+						}
+						else
+						{
+							// V.90
+							modem_regs.reg12 = 0xE0 | (dspram[0x6a2] & 0x1F);
+							dspram[0x6c1] = 0xff;		// V90 Server DPCM Transmit Data Rate Mask
+							dspram[0x6c2] = 0xff;
+							dspram[0x6c3] = 0x3f;
+						}
+					}
+					else {
+						modem_regs.reg12 = dspram[0x309];
+					}
+					validConfig = setModemSpeedFromCONF();
+					dspram[0x239] = 12;						// RTD 0 @ 3429 sym rate
+					if (modem_regs.reg1f.NSIE)
+					{
+						// CONF
+						if (dspram[regs_int_mask_addr[0x12]] & (1 << 7))
+							modem_regs.reg1f.NSIA = 1;
+					}
 				}
-				else
-				{
-					// Force the driver to ASYN=1 so it sends raw data
-					modem_regs.reg12 = 0xa1;		// CONF V23 75 TX/1200 RX
-					modem_regs.reg0e.SPEED = 0x02;	// 1.2k
+				else {
+					validConfig = setModemSpeedFromCONF();
 				}
 				if (modem_regs.reg1f.NSIE)
 				{
-					// CONF
-					if (dspram[regs_int_mask_addr[0x12]] & (1 << 7))
-						modem_regs.reg1f.NSIA = 1;
 					// SPEED
 					if (dspram[regs_int_mask_addr[0x0e]] & 0x1f)
 						modem_regs.reg1f.NSIA = 1;
 				}
-				modem_regs.reg09.DATA = 1;
-				modem_regs.reg15.AUTO = 0;
+				if (modem_regs.reg15.AUTO == 1)
+				{
+					modem_regs.reg09.DATA = 1;
+					modem_regs.reg15.AUTO = 0;
+				}
+				if (!validConfig)
+				{
+					modem_regs.reg14 = 1;	// ABCODE: (fake) FED turned off while waiting to get into round trip delay estimate (RTDE)
+					connect_state = DISCONNECTED;
+				}
+				else
+				{
+					INFO_LOG(MODEM, "MODEM Connected");
+					modem_regs.reg14 = 0x00;			// ABCODE: no error
+					SET_STATUS_BIT(0x0f, modem_regs.reg0f.DSR, 1);
+					if (modem_regs.reg02.v0.RTSDE)
+						SET_STATUS_BIT(0x0f, modem_regs.reg0f.RTSDT, 1);
+
+					// Energy detected. Required for games to detect the connection
+					SET_STATUS_BIT(0x0f, modem_regs.reg0f.FED, 1);
+
+					if (live_line != 0 && line_id == 0 && live_line_made == sh4_sched_now64()
+							&& rx_taken <= LINE_WINDOW)
+					{
+						/* The line was made at this very moment, by the
+						 * machine of a state loaded since (run-ahead): it
+						 * is this call's, and what came over it is given
+						 * again as it came */
+						line_id = live_line;
+						rx_pos = 0;
+						tx_pos = 0;
+					}
+					else
+					{
+						line_close();
+						start_pico();
+						// The time is the line's number: no other line, of this
+						// process or of another, was made at this microsecond
+						live_line = (u32)cpu_features_get_time_usec();
+						if (live_line == 0)
+							live_line = 1;
+						live_line_made = sh4_sched_now64();
+						line_id = live_line;
+						rx_pos = rx_taken = 0;
+						tx_pos = tx_sent = 0;
+						line_looked = 0;
+					}
+					line_fifo.clear();
+					dead_steps = 0;
+					connect_state = CONNECTED;
+					connected_time = 0;
+				}
+				if (modem_regs.reg1f.NSIE)
+				{
+					// ABCODE
+					if (dspram[regs_int_mask_addr[0x014]])
+						modem_regs.reg1f.NSIA = 1;
+				}
+				modem_regs.reg1f.NEWS = 1;
+
+				// V.34 Remote Modem Data Rate Capability
+				dspram[0x208] = 0xff;	// 2.4 - 19.2 kpbs supported
+				dspram[0x209] = 0xbf;	// 21.6 - 33.6 kpbs supported, asymmetric supported
+
+				callback_cycles = SH4_MAIN_CLOCK / 1000000 * 238;	// 238 us
+				v42Proto.reset();
 			}
-			modem_regs.reg14 = 0x00;			// ABCODE: no error
-			if (modem_regs.reg1f.NSIE)
-			{
-				// ABCODE
-				if (dspram[regs_int_mask_addr[0x014]])
-					modem_regs.reg1f.NSIA = 1;
-			}
-			modem_regs.reg1f.NEWS = 1;
-			SET_STATUS_BIT(0x0f, modem_regs.reg0f.DSR, 1);
-			if (modem_regs.reg02.v0.RTSDE)
-				SET_STATUS_BIT(0x0f, modem_regs.reg0f.RTSDT, 1);
-
-			// Energy detected. Required for games to detect the connection
-			SET_STATUS_BIT(0x0f, modem_regs.reg0f.FED, 1);
-
-			// V.34 Remote Modem Data Rate Capability
-			dspram[0x208] = 0xff;	// 2.4 - 19.2 kpbs supported
-			dspram[0x209] = 0xbf;	// 21.6 - 33.6 kpbs supported, asymmetric supported
-
-			start_pico();
-			// The time is the line's number: no other line, of this
-			// process or of another, was made at this microsecond
-			live_line = (u32)cpu_features_get_time_usec();
-			if (live_line == 0)
-				live_line = 1;
-			line_id = live_line;
-			rx_pos = rx_taken = 0;
-			tx_pos = tx_sent = 0;
-			dead_steps = 0;
-			connect_state = CONNECTED;
-			callback_cycles = SH4_MAIN_CLOCK / 1000000 * 238;	// 238 us
-			connected_time = 0;
-
 			break;
 
 		case CONNECTED:
@@ -361,37 +661,39 @@ static int modem_sched_func(int tag, int cycles, int jitter)
 					LOG("modem_regs %02x == %02x", i, modem_regs.ptr[i]);
 			}
 #endif
-			if (connected_time == 0)
-				connected_time = sh4_sched_now64();
+			callback_cycles = cyclesPerByte;
 			if (!line_is_live())
 			{
 				// The line of a state that was loaded, which is not up
-				if (++dead_steps >= DEAD_LINE_STEPS)
+				if (++dead_steps >= DEAD_LINE_CYCLES / (u64)cyclesPerByte)
 				{
 					line_lost();
 					break;
 				}
 			}
-			else if (!modem_regs.reg1e.RDBF)
+			else
+				line_fetch();
+			txFifoSize = std::max(txFifoSize - txRxRatio, 0.f);
+			modem_regs.reg1e.TDBE = txFifoSize == 0.f;
+
+			if (v8bis && v8bisProto.completed())
 			{
-				int c = line_read();
-				// Delay reading from ppp to avoid choking WinCE
-				if (c >= 0 && sh4_sched_now64() - connected_time >= SH4_MAIN_CLOCK / 4)
+				connect_state = NEGO_COMPLETE;
+				v8bis = false;
+				configureStreams();
+			}
+			if (rxFifo.size() < 16)
+			{
+				int c = curInput->read();
+				if (c >= 0)
 				{
-					//LOG("pppd received %02x", c);
 #ifndef NDEBUG
 					recvd_bytes++;
 #endif
-					modem_regs.reg00 = c & 0xFF;
-					modem_regs.reg1e.RDBF = 1;
-					if (modem_regs.reg04.FIFOEN)
-						SET_STATUS_BIT(0x0c, modem_regs.reg0c.RXFNE, 1);
-					SET_STATUS_BIT(0x01, modem_regs.reg01.RXHF, 1);
+					rxFifo.push((u8)c);
+					updateRxFifoStatus();
 				}
 			}
-			modem_regs.reg1e.TDBE = 1;
-			callback_cycles = SH4_MAIN_CLOCK / 1000000 * 238;	// 238 us
-
 			break;
 
 		default:
@@ -426,6 +728,7 @@ void ModemTerm()
 	 * interrupt asked for. */
 	if (sh4_sched_is_scheduled(modem_sched))
 		sh4_sched_request(modem_sched, -1);
+	line_fifo.clear();
 	if (state != MS_INVALID)
 	{
 		memset(&modem_regs, 0, sizeof(modem_regs));
@@ -433,6 +736,14 @@ void ModemTerm()
 		connect_state = DISCONNECTED;
 		last_dial_time = 0;
 		connected_time = 0;
+		txFifoSize = 0.f;
+		rxFifo.clear();
+		cyclesPerByte = DEFAULT_CYCLES_PER_BYTE;
+		txRxRatio = 1.f;
+		v8bis = false;
+		v8bisProto.reset();
+		v42Proto.reset();
+		configureStreams();
 		update_interrupt();
 	}
 }
@@ -491,6 +802,10 @@ static void NormalDefaultRegs()
 	modem_regs.reg1e.TDBE = 1;
 	connect_state = DISCONNECTED;
 	last_dial_time = 0;
+	txFifoSize = 0.f;
+	rxFifo.clear();
+	v8bis = false;
+	configureStreams();
 }
 static void DSPTestEnd()
 {
@@ -567,6 +882,7 @@ static void modem_reset(u32 v)
 		line_close();
 		line_id = 0;
 		dead_steps = 0;
+		line_fifo.clear();
 	}
 	else
 	{
@@ -585,7 +901,7 @@ static void check_start_handshake()
 {
 	if (modem_regs.reg09.DTR
 			&& (modem_regs.reg09.DATA || modem_regs.reg15.AUTO)
-			&& connect_state == RINGING)
+			&& (connect_state == RINGING || connect_state == NEGO_COMPLETE))
 	{
 		LOG("DTR asserted. starting handshaking");
 		connect_state = HANDSHAKING;
@@ -628,14 +944,34 @@ static void ModemNormalWrite(u32 reg, u32 data)
 
 	case 0x08:
 		LOG("TPDM = %d ASYN = %d", modem_regs.reg08.TPDM, modem_regs.reg08.ASYN);
+		if ((old ^ modem_regs.ptr[reg]) & 0x80)
+			// ASYN changed
+			configureStreams();
 		break;
 
 	case 0x09:
 		check_start_handshake();	// DTR and DATA
+		if (connect_state == CONNECTED)
+		{
+			if (modem_regs.reg09.DTR) {
+				LOG("DTR asserted");
+				SET_STATUS_BIT(0x0f, modem_regs.reg0f.DSR, 1);
+			}
+			else
+			{
+				LOG("DTR reset");
+				SET_STATUS_BIT(0x0f, modem_regs.reg0f.DSR, 0);
+				SET_STATUS_BIT(0x0f, modem_regs.reg0f.RLSD, 0);
+			}
+		}
 		break;
 
 	case 0x10:	// TBUFFER
-		if (module_download)
+		if (v8bis && modem_regs.reg08.RTS == 0) {
+			// emit V8 bis tone
+			v8bisProto.emitTone((u8)data);
+		}
+		else if (module_download)
 		{
 			download_crc = (download_crc << 1) + ((download_crc & 0x80) >> 7) + (data & 0xFF);
 		}
@@ -646,6 +982,7 @@ static void ModemNormalWrite(u32 reg, u32 data)
 			{
 				INFO_LOG(MODEM, "MODEM Dialing");
 				connect_state = DIALING;
+				modem_regs.reg16 = 0;		// SECRXB
 			}
 			schedule_callback(100);
 		}
@@ -657,10 +994,18 @@ static void ModemNormalWrite(u32 reg, u32 data)
 			if (sent_fp)
 				fputc(data, sent_fp);
 #endif
-			// (what is sent over a dead line is lost)
-			if (line_is_live())
-				line_write(data);
+			curOutput->write((u8)data);
+
 			modem_regs.reg1e.TDBE = 0;
+			txFifoSize += 1.f;
+			if (modem_regs.reg04.FIFOEN) {
+				SET_STATUS_BIT(0x0d, modem_regs.reg0d.TXFNF, (u8)(txFifoSize <= 15.f));
+				SET_STATUS_BIT(0x01, modem_regs.reg01.TXHF, (u8)(txFifoSize >= 8.f));
+			}
+			else {
+				SET_STATUS_BIT(0x0d, modem_regs.reg0d.TXFNF, 0);
+				SET_STATUS_BIT(0x01, modem_regs.reg01.TXHF, 1);
+			}
 		}
 		break;
 
@@ -737,6 +1082,8 @@ static void ModemNormalWrite(u32 reg, u32 data)
 				}
 				else
 					dspram[dspram_addr] = modem_regs.reg18_19 & 0xFF;
+				if ((dspram_addr == 0x26B || dspram_addr == 0x26c) && (modem_regs.reg18_19 & 0xFF) != 0)
+					dspram[0x26F] = 1; // Saved Filtered EQM
 			}
 			else
 			{
@@ -772,6 +1119,15 @@ static void ModemNormalWrite(u32 reg, u32 data)
 					modem_regs.reg1f.NCIA = 1;
 				LOG("NEWC CONF=%x", modem_regs.reg12);
 			}
+			if (modem_regs.reg12 == 0x81 && !v8bis)
+			{
+				// V.8 bis detector
+				v8bis = (dspram[0x439] & 1) == 1;
+				if (v8bis) {
+					v8bisProto.reset();
+					configureStreams();
+				}
+			}
 		}
 		// Don't allow NEWS to be set if 0
 		if ((old & (1 << 3)) == 0)
@@ -806,30 +1162,45 @@ u32 ModemReadMem_A0_006(u32 addr, u32 size)
 				// Dial tone is detected if TONEA, TONEB and TONEC are set
 				//if (reg==0xF)
 				{
+					const bool tone = connect_state == DISCONNECTED || connect_state == NEGO_COMPLETE;
 					SET_STATUS_BIT(0x0f, modem_regs.reg0f.CTS, modem_regs.reg08.RTS && connect_state == CONNECTED);
-					SET_STATUS_BIT(0x0b, modem_regs.reg0b.TONEA, connect_state == DISCONNECTED);
-					SET_STATUS_BIT(0x0b, modem_regs.reg0b.TONEB, connect_state == DISCONNECTED);
-					SET_STATUS_BIT(0x0b, modem_regs.reg0b.TONEC, connect_state == DISCONNECTED);
-					// FIXME This should be reset if transmit buffer is full
-					if (modem_regs.reg04.FIFOEN || module_download)
-						SET_STATUS_BIT(0x0d, modem_regs.reg0d.TXFNF, 1);
+					SET_STATUS_BIT(0x0b, modem_regs.reg0b.TONEA, tone);
+					SET_STATUS_BIT(0x0b, modem_regs.reg0b.TONEB, tone);
+					SET_STATUS_BIT(0x0b, modem_regs.reg0b.TONEC, tone);
+					if (modem_regs.reg04.FIFOEN || module_download) {
+						SET_STATUS_BIT(0x0d, modem_regs.reg0d.TXFNF, (u8)(txFifoSize <= 15.f));
+						SET_STATUS_BIT(0x01, modem_regs.reg01.TXHF, (u8)(txFifoSize >= 8.f));
+					}
+					else {
+						SET_STATUS_BIT(0x0d, modem_regs.reg0d.TXFNF, (u8)(txFifoSize == 0.f));
+						SET_STATUS_BIT(0x01, modem_regs.reg01.TXHF, (u8)(txFifoSize >= 1.f));
+					}
 				}
 				u8 data = modem_regs.ptr[reg];
 				if (reg == 0x00)	// RBUFFER
 				{
 					//LOG("Read RBUFFER = %X", data);
-					modem_regs.reg1e.RDBF = 0;
-					SET_STATUS_BIT(0x0c, modem_regs.reg0c.RXFNE, 0);
-					SET_STATUS_BIT(0x01, modem_regs.reg01.RXHF, 0);
 #ifndef NDEBUG
 					if (connect_state == CONNECTED && recv_fp)
 						fputc(data, recv_fp);
 #endif
-					update_interrupt();
+					if (rxFifo.size() != 0)
+					{
+						rxFifo.pop();
+						updateRxFifoStatus();
+						update_interrupt();
+					}
 				}
-				else if (reg == 0x16 || reg == 0x17)
+				else if (reg == 0x16)	// SECRXB
 				{
-					//LOG("SECTXB / SECTXB being read %02x", reg)
+					if (v8bis)
+					{
+						if (connect_state == CONNECTED)
+							data = 0;
+						else
+							data = v8bisProto.detectTone();
+						modem_regs.reg16 = data;
+					}
 				}
 				//else
 				//	LOG("Read Reg %03x = %x", reg, data);
@@ -954,7 +1325,7 @@ bool modem_unserialize_v21(void **data, unsigned int *total_size)
 
 	// Any byte is a register's or the DSP memory's; the rest is checked
 	state = state8 <= MS_NORMAL ? (ModemStates)state8 : MS_INVALID;
-	connect_state = connect_state8 <= CONNECTED ? (ConnectState)connect_state8 : DISCONNECTED;
+	connect_state = connect_state8 <= NEGO_COMPLETE ? (ConnectState)connect_state8 : DISCONNECTED;
 	word_dspram_write = word_dspram_write8 != 0;
 	module_download = module_download8 != 0;
 	reg1b_save = reg1b_save8;
@@ -967,7 +1338,10 @@ bool modem_unserialize_v21(void **data, unsigned int *total_size)
 	if (live_line != 0
 			&& (line_id != live_line
 				|| rx_taken - rx_pos > LINE_WINDOW
-				|| tx_sent - tx_pos > LINE_WINDOW))
+				|| tx_sent - tx_pos > LINE_WINDOW)
+			// (but a line made after the state's time, which its machine
+			// may make again at the same time: see PRE_CONNECTED)
+			&& !(line_id == 0 && live_line_made > sh4_sched_now64() && rx_taken <= LINE_WINDOW))
 		line_close();
 
 	return true;
@@ -977,4 +1351,67 @@ bool modem_unserialize_v21(void **data, unsigned int *total_size)
  * the modem, and the line, stay as they are. */
 void modem_state_before_v21(void)
 {
+}
+
+/* What a state holds of the modem since version 24, in the network devices'
+ * part (net_serialize_v24()): what has come over the line and not been
+ * used yet, the receive FIFO, how full the transmit FIFO is, the speed of
+ * the connection, and the V.42 / V.42 bis and V.8 bis ends of it. */
+void modem_serialize_v24(void **data, unsigned int *total_size)
+{
+	s32 cpb = cyclesPerByte;
+	u8 v8 = v8bis;
+
+	line_fifo.serialize(data, total_size);
+	rxFifo.serialize(data, total_size);
+	LIBRETRO_S(txFifoSize);
+	LIBRETRO_S(cpb);
+	LIBRETRO_S(txRxRatio);
+	LIBRETRO_S(v8);
+	v42Proto.serialize(data, total_size);
+	v8bisProto.serialize(data, total_size);
+}
+
+bool modem_unserialize_v24(void **data, unsigned int *total_size)
+{
+	s32 cpb = DEFAULT_CYCLES_PER_BYTE;
+	u8 v8 = 0;
+
+	line_fifo.unserialize(data, total_size);
+	rxFifo.unserialize(data, total_size);
+	LIBRETRO_US(txFifoSize);
+	LIBRETRO_US(cpb);
+	LIBRETRO_US(txRxRatio);
+	LIBRETRO_US(v8);
+	v42Proto.unserialize(data, total_size);
+	v8bisProto.unserialize(data, total_size);
+
+	// (the comparisons are false for a NaN)
+	if (!(txFifoSize >= 0.f && txFifoSize <= 64.f))
+		txFifoSize = 0.f;
+	// From 56000 to 75 bits a second
+	cyclesPerByte = cpb >= SH4_MAIN_CLOCK * 8 / 56000 && cpb <= SH4_MAIN_CLOCK * 8 / 75 ? cpb : DEFAULT_CYCLES_PER_BYTE;
+	if (!(txRxRatio > 0.f && txRxRatio <= 16.f))
+		txRxRatio = 1.f;
+	v8bis = v8 != 0;
+	configureStreams();
+	return true;
+}
+
+/* An older state: the modem passed bytes straight between the game and the
+ * line, one each 238 us, and a byte in the receive buffer is all its FIFO
+ * holds. */
+void modem_state_before_v24(void)
+{
+	line_fifo.clear();
+	rxFifo.clear();
+	if (modem_regs.reg1e.RDBF)
+		rxFifo.push(modem_regs.reg00);
+	txFifoSize = 0.f;
+	cyclesPerByte = DEFAULT_CYCLES_PER_BYTE;
+	txRxRatio = 1.f;
+	v8bis = false;
+	v8bisProto.reset();
+	v42Proto.reset();
+	configureStreams();
 }

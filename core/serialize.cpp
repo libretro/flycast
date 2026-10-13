@@ -305,9 +305,13 @@ void naomi_state_before_v23(void);
 void lr_serialize_v23(void **data, unsigned int *total_size);
 bool lr_unserialize_v23(void **data, unsigned int *total_size);
 void lr_state_before_v23(void);
-/* and since V24: the VMU's beep (vmu_beep.cpp), the NAOMI's serial port
- * and the card readers, touchscreen and hopper on it (naomi_periph.h), and
- * a System SP's own hardware (systemsp.cpp) */
+/* and since V24: the network device in use and what the modem or the
+ * Broadband Adapter holds (netstate.cpp), the VMU's beep (vmu_beep.cpp),
+ * the NAOMI's serial port and the card readers, touchscreen and hopper on
+ * it (naomi_periph.h), and a System SP's own hardware (systemsp.cpp) */
+void net_serialize_v24(void **data, unsigned int *total_size);
+bool net_unserialize_v24(void **data, unsigned int *total_size);
+void net_state_before_v24(void);
 void vmu_beep_serialize_v24(void **data, unsigned int *total_size);
 bool vmu_beep_unserialize_v24(void **data, unsigned int *total_size);
 void vmu_beep_state_before_v24(void);
@@ -866,6 +870,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	naomi_serialize_v23(data, total_size);
 	lr_serialize_v23(data, total_size);
 	// V24
+	net_serialize_v24(data, total_size);
 	vmu_beep_serialize_v24(data, total_size);
 	naomi_periph_serialize_v24(data, total_size);
 	systemsp_serialize_v24(data, total_size);
@@ -1647,13 +1652,15 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	if (version >= V24)
 	{
-		if (!vmu_beep_unserialize_v24(data, total_size)
+		if (!net_unserialize_v24(data, total_size)
+				|| !vmu_beep_unserialize_v24(data, total_size)
 				|| !naomi_periph_unserialize_v24(data, total_size)
 				|| !systemsp_unserialize_v24(data, total_size))
 			ra_unserialize_fail();
 	}
 	else
 	{
+		net_state_before_v24();
 		vmu_beep_state_before_v24();
 		naomi_periph_state_before_v24();
 		systemsp_state_before_v24();

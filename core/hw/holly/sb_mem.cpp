@@ -16,6 +16,7 @@
 #include "hw/flashrom/flashrom.h"
 #include "reios/reios.h"
 #include "hw/bba/bba.h"
+#include "network/netservice.h"
 
 /*
 	Dreamcast 'area 0' emulation
@@ -413,7 +414,7 @@ T DYNACALL ReadMem_area0(u32 addr)
 	{
 		if (settings.System == DC_PLATFORM_DREAMCAST)
 #ifdef ENABLE_MODEM
-         if (!settings.network.EmulateBBA)
+         if (net_device == NET_DEVICE_MODEM)
             return (T)ModemReadMem_A0_006(addr, sz);
          else
             return (T)0;
@@ -457,7 +458,7 @@ T DYNACALL ReadMem_area0(u32 addr)
 		}
 		else
 #if defined(ENABLE_MODEM)
-         if (settings.network.EmulateBBA)
+         if (net_device == NET_DEVICE_BBA)
             return (T)bba_ReadMem(addr, sz);
          else
             return (T)0;
@@ -530,7 +531,7 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 		if (settings.System != DC_PLATFORM_DREAMCAST)
          libExtDevice_WriteMem_A0_006(addr,data,sz);
 #ifdef ENABLE_MODEM
-      else if (!settings.network.EmulateBBA)
+      else if (net_device == NET_DEVICE_MODEM)
 			ModemWriteMem_A0_006(addr, data, sz);
 #endif
 	}
@@ -565,7 +566,7 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 				libExtDevice_WriteMem_A0_010(addr, data, sz);
 		}
 #if defined(ENABLE_MODEM)
-      else if (settings.network.EmulateBBA)
+      else if (net_device == NET_DEVICE_BBA)
          bba_WriteMem(addr, data, sz);
 #endif
 	}

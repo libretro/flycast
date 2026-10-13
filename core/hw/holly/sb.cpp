@@ -17,6 +17,7 @@
 #include "hw/naomi/naomi.h"
 
 #include "hw/bba/bba.h"
+#include "network/netservice.h"
 
 Array<RegisterStruct> sb_regs(0x540, false);
 
@@ -737,11 +738,10 @@ void sb_Init(void)
 	aica_sb_Init();
 
 #ifdef ENABLE_MODEM
-   if (settings.network.EmulateBBA)
-		bba_Init();
-   else
-      ModemInit();
+   ModemInit();
 #endif
+   // The modem, the broadband adapter or nothing in a Dreamcast's expansion port
+   net_device_attach();
 }
 
 void sb_Reset(bool hard)
@@ -754,18 +754,8 @@ void sb_Reset(bool hard)
 	SB_ISTNRM = 0;
 	SB_FFST_rc = 0;
 	SB_FFST = 0;
-#ifdef ENABLE_MODEM
-	/* (The condition used to be outside the #ifdef: a build without a modem
-	 * - the Switch's - had it on the line below, and an arcade board's
-	 * interrupt controller was never reset.) */
-	if (settings.System == DC_PLATFORM_DREAMCAST)
-	{
-		if (settings.network.EmulateBBA)
-			bba_Reset(hard);
-		else
-			ModemTerm();
-	}
-#endif
+	// (a Dreamcast's only; the option's device is put in at a hard reset)
+	net_device_reset(hard);
 	asic_reg_Reset(hard);
 	if (settings.System == DC_PLATFORM_DREAMCAST)
 		gdrom_reg_Reset(hard);
@@ -778,12 +768,7 @@ void sb_Reset(bool hard)
 
 void sb_Term(void)
 {
-#ifdef ENABLE_MODEM
-   if (settings.network.EmulateBBA)
-      bba_Term();
-   else
-      ModemTerm();
-#endif
+	net_device_detach();
 	aica_sb_Term();
 	maple_Term();
 	pvr_sb_Term();

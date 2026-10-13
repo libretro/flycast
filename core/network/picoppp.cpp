@@ -51,6 +51,8 @@ extern "C" {
 
 #include "types.h"
 #include "picoppp.h"
+#include "netservice.h"
+#include "netthread.h"
 #include "network/miniupnp.h"
 #include "reios/reios.h"
 
@@ -74,6 +76,9 @@ static retro_spsc_t out_ring;	/* modem -> stack */
 static bool rings_ready;	/* emulation thread only */
 /* Where the stack sleeps while in_ring is full. */
 static cEventCount in_ring_ec;
+/* Set by a network thread that does not sleep on in_ring_ec (DCNet) when
+ * in_ring had no room: the modem wakes it once it has read some. */
+static retro_atomic_int_t in_ring_blocked;
 
 /* Ethernet frames, for the broadband adapter. The adapter is emulated on
  * the emulation thread and the stack runs on the pico thread, and neither
@@ -82,13 +87,21 @@ static cEventCount in_ring_ec;
  * other. So a frame crosses as bytes in a ring, a 16-bit length and then
  * the frame, written whole or not at all. */
 #define ETH_RING_BYTES 65536
-#define ETH_FRAME_MAX 1600
+#define ETH_FRAME_MAX NET_ETH_FRAME_MAX
 static retro_spsc_t eth_out_ring;	/* adapter -> stack */
 static retro_spsc_t eth_in_ring;	/* stack -> adapter */
 /* Set by the pico thread when the adapter's ring had no room for a frame;
  * the emulation thread wakes it once it has taken some out. */
 static retro_atomic_int_t eth_in_blocked;
-static int eth_schid = -1;		/* emulation thread */
+
+/* What the thread is for, set before it starts: the broadband adapter
+ * rather than the modem, DCNet rather than picoTCP. */
+static bool thread_bba;
+static bool thread_dcnet;
+/* PPP: the stack says nothing until the Dreamcast has sent something. What
+ * it sends before is dropped: Windows CE games, and a V.42 negotiation,
+ * would take it for line noise. (pico thread) */
+static bool ppp_passive;
 
 /* The pico thread does not tick on a timer. It waits, in select(), for the
  * things that give it work: its native sockets, the stack's next timer,
@@ -278,6 +291,36 @@ static GamePortList GamesPorts[] = {
 		{ 9789 },
 		{ },
 	},
+	{
+		{
+			"MK-51037", "HDR-0106",	// Daytona USA
+			"HDR-0073",				// Sega Tetris
+			"GENERIC", "T44501M"	// Golf Shiyouyo 2
+									// (the dreamcastlive patched versions are id'ed as GENERIC)
+		},
+		{ 12079, 20675 },
+		{ },
+	},
+	{ // Dee Dee Planet
+		{ "HDR-0041" },
+		{ 9879 },
+		{ },
+	},
+	{ // Driving Strikers online demo
+		{ "IND-161053" },
+		{ 30099 },
+		{ },
+	},
+	{ // Floigan Bros
+		{ "MK-51114" },
+		{ },
+		{ 37001 },
+	},
+	{ // Internet Game Pack
+		{ "MK-51138" },
+		{ 5656 },
+		{ 5011, 10500, 10501, 10502, 10503 },
+	},
 	{ // NBA 2K1,2K2 / NFL 2K1,2K2 / NCAA 2K2
 		{ "MK-51063", "HDR-0150",					// NBA 2K1
 		  "MK-51178", "HDR-0197", "MK-5117850",   // NBA 2K2
@@ -341,13 +384,19 @@ sock_t get_dns_socket(void);
 
 static int modem_read(pico_device *dev, void *data, int len)
 {
-	return (int)retro_spsc_read(&out_ring, data, len);
+	int r = (int)retro_spsc_read(&out_ring, data, len);
+	if (r > 0)
+		ppp_passive = false;
+	return r;
 }
 
 static int modem_write(pico_device *dev, const void *data, int len)
 {
 	const u8 *p = (const u8 *)data;
 	int left = len;
+
+	if (ppp_passive)
+		return len;
 
 	while (left > 0)
 	{
@@ -390,6 +439,11 @@ int read_pico()
 	if (!rings_ready || retro_spsc_read(&in_ring, &b, 1) != 1)
 		return -1;
 	in_ring_ec.Notify();
+	if (retro_atomic_load_acquire_int(&in_ring_blocked))
+	{
+		retro_atomic_store_release_int(&in_ring_blocked, 0);
+		wake_pico();
+	}
 	return b;
 }
 
@@ -415,7 +469,10 @@ static void read_from_dc_socket(socket_pair& pair)
 			tcp_sockets.erase(pico_sock);
 			return;
 		}
-	} while (r > 0 && pair.shut_wr);
+		/* All there is: a read event can stand for more than one read's
+		 * worth, and no other comes until more arrives (what the native
+		 * socket does not take is kept: see send_native()) */
+	} while (r > 0);
 	pair.reading = false;
 	pair.pass_close();
 }
@@ -985,48 +1042,26 @@ static int send_eth_frame(pico_device *dev, void *data, int len)
 	return len;
 }
 
-/* Emulation thread, once every millisecond of emulated time while the
- * adapter is in use: hand it the frames the stack has sent. A frame it has
- * no room for is kept and offered again. */
-static int eth_deliver_sched(int tag, int cycles, int jitter)
+/* Emulation thread: the next frame the stack has sent the adapter, into
+ * @frame (ETH_FRAME_MAX bytes). Its size, 0 if there is none. */
+u32 net_eth_take(u8 *frame)
 {
-	static u8 pending[ETH_FRAME_MAX];
-	static u32 pending_size;
-	bool took = false;
+	u8 len[2];
 
-	if (!rings_ready || !retro_atomic_load_acquire_int(&pico_thread_running))
-	{
-		pending_size = 0;
+	if (!rings_ready || retro_spsc_read(&eth_in_ring, len, 2) != 2)
 		return 0;
-	}
-	for (;;)
-	{
-		if (pending_size == 0)
-		{
-			u8 len[2];
-
-			if (retro_spsc_read(&eth_in_ring, len, 2) != 2)
-				break;
-			pending_size = len[0] | (len[1] << 8);
-			if (pending_size > ETH_FRAME_MAX
-					|| retro_spsc_read(&eth_in_ring, pending, pending_size) != pending_size)
-			{
-				pending_size = 0;
-				break;
-			}
-			took = true;
-		}
-		if (!pico_send_eth_frame(pending, pending_size))
-			break;
-		pending_size = 0;
-	}
-	if (took && retro_atomic_load_acquire_int(&eth_in_blocked))
+	u32 size = len[0] | (len[1] << 8);
+	// (frames are written whole: this cannot be short)
+	if (size > ETH_FRAME_MAX || retro_spsc_read(&eth_in_ring, frame, size) != size)
+		size = 0;
+	if (retro_atomic_load_acquire_int(&eth_in_blocked))
 	{
 		retro_atomic_store_release_int(&eth_in_blocked, 0);
 		wake_pico();
 	}
-	return SH4_MAIN_CLOCK / 1000;
+	return size;
 }
+
 /* Waits until the thread has something to do: a native socket to read,
  * accept on or finish connecting, a timer of the stack's come due,
  * something handed over by the emulation thread, or the order to stop.
@@ -1099,8 +1134,130 @@ static void wait_for_work(int kicks)
 		;
 }
 
+/* For DCNet (dcnet.cpp), which runs on this thread in place of the stack:
+ * the same rings, the same way of waiting. */
+bool netthread_running()
+{
+	return retro_atomic_load_acquire_int(&pico_thread_running) != 0;
+}
+
+int netthread_kicks()
+{
+	return retro_atomic_load_acquire_int(&pico_kicks);
+}
+
+size_t netthread_modem_take(u8 *buf, size_t len)
+{
+	return retro_spsc_read(&out_ring, buf, len);
+}
+
+size_t netthread_modem_give(const u8 *buf, size_t len)
+{
+	size_t n = retro_spsc_write(&in_ring, buf, len);
+	if (n < len)
+	{
+		// Full: the modem wakes the thread when it has read some (read_pico())
+		retro_atomic_store_release_int(&in_ring_blocked, 1);
+		n += retro_spsc_write(&in_ring, buf + n, len - n);
+	}
+	return n;
+}
+
+u32 netthread_eth_take(u8 *frame)
+{
+	u8 len[2];
+
+	if (retro_spsc_read(&eth_out_ring, len, 2) != 2)
+		return 0;
+	const u32 size = len[0] | (len[1] << 8);
+	if (size > ETH_FRAME_MAX || retro_spsc_read(&eth_out_ring, frame, size) != size)
+		return 0;
+	return size;
+}
+
+bool netthread_eth_give(const u8 *frame, u32 size)
+{
+	return send_eth_frame(nullptr, (void *)frame, (int)size) != 0;
+}
+
+void netthread_wait(int kicks, fd_set *readable, fd_set *writable, int max_fd, int timeout_ms)
+{
+	timeval tv;
+	char drain[64];
+
+	FD_SET(wake_sock, readable);
+	max_fd = std::max(max_fd, (int)wake_sock);
+	tv.tv_sec = timeout_ms / 1000;
+	tv.tv_usec = (timeout_ms % 1000) * 1000;
+	retro_atomic_fetch_add_int(&pico_waiting, 1);
+	if (retro_atomic_load_acquire_int(&pico_thread_running)
+			&& retro_atomic_load_acquire_int(&pico_kicks) == kicks)
+		select(max_fd + 1, readable, writable, NULL, &tv);
+	retro_atomic_store_release_int(&pico_waiting, 0);
+
+	while (recv(wake_sock, drain, sizeof(drain), 0) > 0)
+		;
+}
+
+/* The IPv4 address of @host, 0 if it has none. (This can take seconds: the
+ * emulation thread never waits for the network thread but at its next
+ * start, see stop_pico().) */
+u32 netthread_resolve(const char *host)
+{
+	u32 ip = 0;
+	addrinfo hints;
+	addrinfo *res = nullptr;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	if (getaddrinfo(host, nullptr, &hints, &res) == 0 && res != nullptr)
+	{
+		for (addrinfo *ai = res; ai != nullptr; ai = ai->ai_next)
+			if (ai->ai_family == AF_INET && ai->ai_addrlen >= sizeof(sockaddr_in))
+			{
+				ip = ((const sockaddr_in *)ai->ai_addr)->sin_addr.s_addr;
+				break;
+			}
+		freeaddrinfo(res);
+	}
+	return ip;
+}
+
+/* The Dreamcast's DNS server: the one asked for, the current default for
+ * the old one */
+static void find_dns_server()
+{
+	std::string name = settings.network.dns;
+	if (name == "46.101.91.123")
+		name = "dns.flyca.st";
+	u32 ip = 0;
+	if (pico_string_to_ipv4(name.c_str(), &ip) != 0 || ip == 0)
+		ip = netthread_resolve(name.c_str());
+	if (ip != 0)
+	{
+		char s[16];
+		memcpy(&dnsaddr.addr, &ip, sizeof(ip));
+		pico_ipv4_to_string(s, dnsaddr.addr);
+		NOTICE_LOG(MODEM, "%s IP is %s", name.c_str(), s);
+	}
+	else
+	{
+		pico_string_to_ipv4("46.101.91.123", &ip);
+		memcpy(&dnsaddr.addr, &ip, sizeof(ip));
+		WARN_LOG(MODEM, "Can't resolve %s. Using 46.101.91.123", name.c_str());
+	}
+}
+
 static void *pico_thread_func(void *)
 {
+	if (thread_dcnet)
+	{
+		dcnet_run(thread_bba);
+		return NULL;
+	}
+	const bool bba = thread_bba;
+	// (the PPP stack's first words are to wait for the Dreamcast's)
+	ppp_passive = !bba;
     if (!pico_stack_inited)
     {
     	pico_stack_init();
@@ -1136,12 +1293,14 @@ static void *pico_thread_func(void *)
 	
 	// Initialize miniupnpc and map network ports
 	MiniUPnP upnp;
+	bool upnp_mapped = false;
 	if (ports != nullptr)
 	{
 		if (!upnp.Init())
 			WARN_LOG(MODEM, "UPNP Init failed");
 		else
 		{
+			upnp_mapped = true;
 			for (u32 i = 0; i < ARRAY_SIZE(ports->udpPorts) && ports->udpPorts[i] != 0; i++)
 				if (!upnp.AddPortMapping(ports->udpPorts[i], false))
 					WARN_LOG(MODEM, "UPNP AddPortMapping UDP %d failed", ports->udpPorts[i]);
@@ -1152,11 +1311,10 @@ static void *pico_thread_func(void *)
 	}
 
 	u32 addr;
-	pico_string_to_ipv4(settings.network.dns.c_str(), &addr);
-	memcpy(&dnsaddr.addr, &addr, sizeof(addr));
+	find_dns_server();
 
 	// Create ppp/eth device
-	if (!settings.network.EmulateBBA)
+	if (!bba)
 	{
 		// PPP
 		pico_dev = pico_ppp_create();
@@ -1301,7 +1459,7 @@ static void *pico_thread_func(void *)
 
 	if (pico_dev)
 	{
-		if (!settings.network.EmulateBBA)
+		if (!bba)
 		{
 			pico_ppp_destroy(pico_dev);
 		}
@@ -1314,7 +1472,7 @@ static void *pico_thread_func(void *)
 		pico_dev = nullptr;
 	}
 	pico_stack_tick();
-	if (ports != nullptr)
+	if (upnp_mapped)
 		upnp.Term();
 
 	return NULL;
@@ -1356,6 +1514,8 @@ bool start_pico()
 {
 	if (retro_atomic_load_relaxed_int(&pico_thread_running))
 		return false;
+	// The last one, if it has not ended yet, is about to
+	pico_thread.WaitToEnd();
 	/* The pico thread is not running, so both rings are this thread's
 	 * alone: make them, or empty them of the last connection's bytes. */
 	if (!rings_ready)
@@ -1390,27 +1550,40 @@ bool start_pico()
 		retro_spsc_clear(&eth_in_ring);
 	}
 	retro_atomic_store_release_int(&eth_in_blocked, 0);
+	retro_atomic_store_release_int(&in_ring_blocked, 0);
 	if (!make_wake_socket())
 		return false;
+	thread_bba = net_device == NET_DEVICE_BBA;
+	{
+		std::string gameId(ip_meta.product_number, sizeof(ip_meta.product_number));
+		gameId = trim_trailing_ws(gameId);
+		thread_dcnet = net_dcnet_option
+				// these games' servers are reached through DCNet only
+				|| gameId == "HDR-0113"		// Power Smash
+				|| gameId == "HDR-0091";	// Pro Yakyuu Team de Asobou Net!
+		if (thread_dcnet)
+			NOTICE_LOG(MODEM, "Network through DCNet");
+	}
 	retro_atomic_store_release_int(&pico_waiting, 0);
 	retro_atomic_store_release_int(&pico_thread_running, 1);
 	pico_thread.Start();
-
-	if (settings.network.EmulateBBA)
-	{
-		if (eth_schid < 0)
-			eth_schid = sh4_sched_register(0, &eth_deliver_sched);
-		sh4_sched_request(eth_schid, SH4_MAIN_CLOCK / 1000);
-	}
     return true;
 }
 
+/* The thread is told to stop and is not waited for: it may be looking up a
+ * name or talking to the router (UPnP), which can take seconds. It is waited
+ * for before the next one starts, and when the machine stops. */
 void stop_pico()
 {
 	retro_atomic_store_release_int(&pico_thread_running, 0);
 	in_ring_ec.Notify();
 	if (VALID(wake_sock))
 		send(wake_sock, "", 1, L_MSG_NOSIGNAL);
+}
+
+void net_thread_join()
+{
+	stop_pico();
 	pico_thread.WaitToEnd();
 }
 
@@ -1420,7 +1593,10 @@ void stop_pico()
 
 bool start_pico() { return false; }
 void stop_pico() { }
+void net_thread_join() { }
 void write_pico(u8 b) { }
 int read_pico() { return -1; }
+u32 net_eth_take(u8 *frame) { return 0; }
+void pico_receive_eth_frame(const u8 *frame, u32 size) { }
 
 #endif

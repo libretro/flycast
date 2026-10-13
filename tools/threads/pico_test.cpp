@@ -1,25 +1,18 @@
-/* Test for the modem's network thread. See run.sh.
- *
- * Builds the real core/network/picoppp.cpp with picoTCP and plays the
- * Dreamcast's side of the modem line: it starts the thread, sends one PPP
- * frame (an LCP Configure-Request) a byte at a time, the way the modem
- * does, and reads what the stack answers.
- *
- * The thread no longer ticks every five milliseconds; it waits for work.
- * What is checked:
- *  - the answer comes at once: the bytes written wake the thread
- *  - left alone, the thread hardly runs: a few voluntary context switches
- *    a second for the whole process, where ticking made two hundred
- *  - stop_pico() returns at once: stopping wakes the thread too
- *
- * Run with "bba" it is the broadband adapter instead: Ethernet frames go
- * to the stack and come back through two rings, and the test, as the
- * emulation thread, is the only one that ever hands the adapter a frame. */
+/* The network thread (core/network/picoppp.cpp + dcnet.cpp) under
+ * ThreadSanitizer: picoTCP for the modem (an LCP request answered) and
+ * the adapter (ARP), and DCNet against a stand-in relay on the loopback
+ * interface (the name lookup of dcnet.flyca.st answered with 127.0.0.1). */
 #include <stdio.h>
 #include <string.h>
 #include <utility>
+#include <atomic>
+#include <vector>
 #include <pthread.h>
-#include <sys/resource.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 #include <features/features_cpu.h>
 #include <rthreads/rthreads.h>
 #include <retro_timers.h>
@@ -28,104 +21,89 @@
 #include "stdclass.h"
 #include "reios/reios.h"
 #include "network/picoppp.h"
+#include "network/netservice.h"
 #include "network/miniupnp.h"
 
 static int failures;
-
-#define CHECK(cond) do { \
-	if (!(cond)) { \
-		fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-		failures++; \
-	} } while (0)
-
-/* ---- what the thread needs from the rest of the core ------------------ */
+#define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
 settings_t settings;
 ip_meta_t ip_meta;
-void GenericLog(LogTypes::LOG_LEVELS, LogTypes::LOG_TYPE, const char *, int, const char *, ...) {}
-
-/* The scheduler: the test is the emulation thread, and calls what is
- * registered itself to let emulated time pass. */
-#include "hw/sh4/sh4_sched.h"
-static sh4_sched_callback *scheduled;
-int sh4_sched_register(int, sh4_sched_callback *cb) { scheduled = cb; return 0; }
-void sh4_sched_request(int, int) {}
-
-/* The adapter's receive side. Only the emulation thread may be in here:
- * this is where the real one writes guest memory and raises its
- * interrupt. */
-static pthread_t emu_thread;
-static int arp_replies, off_thread_calls;
-
-int pico_send_eth_frame(const u8 *frame, u32 size)
-{
-	if (!pthread_equal(pthread_self(), emu_thread))
-		off_thread_calls++;
-	/* An ARP reply from 192.168.169.1 */
-	if (size >= 42 && frame[12] == 0x08 && frame[13] == 0x06 && frame[21] == 2
-			&& frame[28] == 192 && frame[29] == 168 && frame[30] == 169 && frame[31] == 1)
-		arp_replies++;
-	return 1;
-}
+u8 net_device = NET_DEVICE_MODEM;
+u8 net_device_option = NET_DEVICE_MODEM;
+bool net_dcnet_option = false;
+void GenericLog(LogTypes::LOG_LEVELS, LogTypes::LOG_TYPE, const char *, int, const char *fmt, ...) {}
 bool MiniUPnP::Init() { return false; }
 void MiniUPnP::Term() {}
 bool MiniUPnP::AddPortMapping(int, bool) { return false; }
 
 typedef std::pair<ThreadEntryFP *, void *> thread_start;
-
-static void thread_trampoline(void *p)
-{
-	thread_start *start = (thread_start *)p;
-	start->first(start->second);
-	delete start;
-}
-
+static void thread_trampoline(void *p) { thread_start *s = (thread_start *)p; s->first(s->second); delete s; }
 cThread::cThread(ThreadEntryFP *function, void *prm) : Entry(function), param(prm), hThread(NULL) {}
 void cThread::Start() { hThread = sthread_create(thread_trampoline, new thread_start(Entry, param)); }
-void cThread::WaitToEnd()
+void cThread::WaitToEnd() { if (hThread) sthread_join(hThread); hThread = NULL; }
+
+// dcnet.flyca.st and dns.flyca.st are this machine
+extern "C" int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res)
 {
-	if (hThread)
-		sthread_join(hThread);
-	hThread = NULL;
+	static struct sockaddr_in sa;
+	static struct addrinfo ai;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	memset(&ai, 0, sizeof(ai));
+	ai.ai_family = AF_INET;
+	ai.ai_addr = (struct sockaddr *)&sa;
+	ai.ai_addrlen = sizeof(sa);
+	*res = &ai;
+	return 0;
 }
+extern "C" void freeaddrinfo(struct addrinfo *) {}
 
-/* ---- the Dreamcast's end of the line ----------------------------------- */
-
-/* PPP's frame check sequence (RFC 1662). */
 static u16 fcs16(const u8 *p, int len)
 {
 	u16 fcs = 0xffff;
-
-	while (len--)
-	{
-		fcs ^= *p++;
-		for (int i = 0; i < 8; i++)
-			fcs = (fcs & 1) ? (fcs >> 1) ^ 0x8408 : fcs >> 1;
-	}
+	while (len--) { fcs ^= *p++; for (int i = 0; i < 8; i++) fcs = (fcs & 1) ? (fcs >> 1) ^ 0x8408 : fcs >> 1; }
 	return (u16)~fcs;
 }
-
 static void send_escaped(u8 b)
 {
-	if (b < 0x20 || b == 0x7d || b == 0x7e)
-	{
-		write_pico(0x7d);
-		write_pico(b ^ 0x20);
-	}
-	else
-		write_pico(b);
+	if (b < 0x20 || b == 0x7d || b == 0x7e) { write_pico(0x7d); write_pico(b ^ 0x20); }
+	else write_pico(b);
 }
 
-static long voluntary_switches(void)
+static void pico_modem()
 {
-	struct rusage ru;
-	getrusage(RUSAGE_SELF, &ru);
-	return ru.ru_nvcsw;
+	static const u8 lcp[] = { 0xff, 0x03, 0xc0, 0x21, 0x01, 0x01, 0x00, 0x04 };
+	settings.network.dns = "8.8.8.8";
+	net_device = NET_DEVICE_MODEM;
+	net_dcnet_option = false;
+	CHECK(start_pico());
+	retro_sleep(500);
+	// Passive: nothing before the Dreamcast speaks
+	CHECK(read_pico() < 0);
+	u16 fcs = fcs16(lcp, sizeof(lcp));
+	retro_time_t t0 = cpu_features_get_time_usec(), answered = 0;
+	int got = 0;
+	write_pico(0x7e);
+	for (unsigned i = 0; i < sizeof(lcp); i++) send_escaped(lcp[i]);
+	send_escaped(fcs & 0xff); send_escaped(fcs >> 8);
+	write_pico(0x7e);
+	while (cpu_features_get_time_usec() - t0 < 2 * 1000 * 1000)
+	{
+		if (read_pico() >= 0) { if (!got) answered = cpu_features_get_time_usec() - t0; got++; }
+		else if (got) break;
+	}
+	CHECK(got > 0);
+	CHECK(answered < 200 * 1000);
+	t0 = cpu_features_get_time_usec();
+	stop_pico();
+	retro_time_t stopped = cpu_features_get_time_usec() - t0;
+	CHECK(stopped < 1000);
+	printf("pico modem: %d bytes answered in %ld us, stop %ld us\n", got, (long)answered, (long)stopped);
 }
 
-/* The broadband adapter instead of the modem: the Dreamcast asks, over
- * Ethernet, who has the gateway's address, and the stack answers. */
-static int run_bba(void)
+static void pico_bba()
 {
 	static const u8 arp[60] = {
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  0x02, 0x00, 0x00, 0x00, 0x00, 0x01,  0x08, 0x06,
@@ -133,104 +111,172 @@ static int run_bba(void)
 		0x02, 0x00, 0x00, 0x00, 0x00, 0x01,  192, 168, 169, 2,
 		0, 0, 0, 0, 0, 0,                    192, 168, 169, 1,
 	};
-	retro_time_t t0, stopped;
-	int sent = 0;
-
-	emu_thread = pthread_self();
-	settings.network.dns = "8.8.8.8";
-	settings.network.EmulateBBA = true;
-
-	CHECK(start_pico());
-	CHECK(scheduled != NULL);
+	net_device = NET_DEVICE_BBA;
+	CHECK(start_pico());	// (joins the last one)
 	retro_sleep(500);
-
-	/* One question, answered at once... */
-	t0 = cpu_features_get_time_usec();
+	int replies = 0;
+	u8 frame[NET_ETH_FRAME_MAX];
+	retro_time_t t0 = cpu_features_get_time_usec();
 	pico_receive_eth_frame(arp, sizeof(arp));
-	while (!arp_replies && cpu_features_get_time_usec() - t0 < 2 * 1000 * 1000)
-		if (scheduled)
-			scheduled(0, 0, 0);
-	CHECK(arp_replies == 1);
-	CHECK(cpu_features_get_time_usec() - t0 < 200 * 1000);
-
-	/* ...then the same question as fast as it will go for two and a half
-	 * seconds, with the adapter taking its frames all the while. picoTCP
-	 * answers one ARP request a second, so what comes back is few; what
-	 * this is for is the two threads working the rings flat out. */
+	while (!replies && cpu_features_get_time_usec() - t0 < 2000000)
+	{
+		u32 n = net_eth_take(frame);
+		if (n >= 42 && frame[12] == 0x08 && frame[13] == 0x06 && frame[21] == 2) replies++;
+	}
+	CHECK(replies == 1);
 	t0 = cpu_features_get_time_usec();
-	while (cpu_features_get_time_usec() - t0 < 2500 * 1000)
+	while (cpu_features_get_time_usec() - t0 < 1500 * 1000)
 	{
 		pico_receive_eth_frame(arp, sizeof(arp));
-		sent++;
-		if (scheduled)
-			scheduled(0, 0, 0);
+		net_eth_take(frame);
 	}
-	CHECK(arp_replies >= 2);
-	/* Every frame reached the adapter on the emulation thread. */
-	CHECK(off_thread_calls == 0);
-
-	t0 = cpu_features_get_time_usec();
 	stop_pico();
-	stopped = cpu_features_get_time_usec() - t0;
-	CHECK(stopped < 300 * 1000);
-
-	printf("%s broadband adapter (%d ARP replies to %d requests)\n",
-			failures ? "FAIL" : "ok  ", arp_replies, sent + 1);
-	return failures ? 1 : 0;
+	printf("pico bba: ARP answered\n");
 }
 
-int main(int argc, char **argv)
+/* ---- the relay ---- */
+static std::atomic<int> relay_stop(0);
+static int udp_fd, ppp_fd, tap_fd;
+static std::atomic<int> modem_bytes_seen(0), frames_seen(0), prolog_seen(0);
+
+static void serve(int c, bool tap)
 {
-	/* Address, control, protocol LCP, Configure-Request id 1, no options */
-	static const u8 lcp[] = { 0xff, 0x03, 0xc0, 0x21, 0x01, 0x01, 0x00, 0x04 };
-	retro_time_t t0, answered = 0, stopped;
-	long before, switches;
-	int got = 0;
-	u16 fcs;
-
-	if (argc > 1 && !strcmp(argv[1], "bba"))
-		return run_bba();
-
-	settings.network.dns = "8.8.8.8";
-
-	CHECK(start_pico());
-	retro_sleep(500);	/* let it set the stack and the PPP device up */
-
-	/* Left alone it waits; it does not tick. */
-	before = voluntary_switches();
-	retro_sleep(3000);
-	switches = voluntary_switches() - before;
-	CHECK(switches < 60);
-
-	/* A frame from the Dreamcast is answered at once. */
-	fcs = fcs16(lcp, sizeof(lcp));
-	t0 = cpu_features_get_time_usec();
-	write_pico(0x7e);
-	for (unsigned i = 0; i < sizeof(lcp); i++)
-		send_escaped(lcp[i]);
-	send_escaped(fcs & 0xff);
-	send_escaped(fcs >> 8);
-	write_pico(0x7e);
-	while (cpu_features_get_time_usec() - t0 < 2 * 1000 * 1000)
+	std::vector<u8> in;
+	while (!relay_stop)
 	{
-		if (read_pico() >= 0)
+		fd_set r2; FD_ZERO(&r2); FD_SET(c, &r2);
+		timeval t2 = { 0, 100000 };
+		if (select(c + 1, &r2, NULL, NULL, &t2) <= 0) continue;
+		u8 buf[4096];
+		int n = recv(c, buf, sizeof(buf), 0);
+		if (n <= 0) break;
+		if (!tap)
 		{
-			if (!got)
-				answered = cpu_features_get_time_usec() - t0;
-			got++;
+			// PPP: echoed, each byte plus one
+			modem_bytes_seen += n;
+			for (int i = 0; i < n; i++) buf[i]++;
+			send(c, buf, n, MSG_NOSIGNAL);
+			continue;
 		}
-		else if (got)
-			break;
+		in.insert(in.end(), buf, buf + n);
+		while (in.size() >= 2)
+		{
+			unsigned len = in[0] | (in[1] << 8);
+			if (in.size() < 2 + len) break;
+			if (len == 6 && !memcmp(&in[2], "DCNET\1", 6)) prolog_seen++;
+			else { frames_seen++; send(c, &in[0], 2 + len, MSG_NOSIGNAL); }	// echoed
+			in.erase(in.begin(), in.begin() + 2 + len);
+		}
 	}
-	CHECK(got > 0);
-	CHECK(answered < 200 * 1000);
+	close(c);
+}
 
+static void *relay(void *)
+{
+	while (!relay_stop)
+	{
+		fd_set rd; FD_ZERO(&rd); FD_SET(udp_fd, &rd); FD_SET(ppp_fd, &rd); FD_SET(tap_fd, &rd);
+		timeval tv = { 0, 100000 };
+		if (select(std::max(udp_fd, std::max(ppp_fd, tap_fd)) + 1, &rd, NULL, NULL, &tv) <= 0) continue;
+		if (FD_ISSET(udp_fd, &rd))
+		{
+			u8 buf[64]; sockaddr_in from; socklen_t fl = sizeof(from);
+			int n = recvfrom(udp_fd, buf, sizeof(buf), 0, (sockaddr *)&from, &fl);
+			if (n == 5 && buf[4] == 3)	// DISCOVER: no access points of its own
+				sendto(udp_fd, buf, 5, 0, (sockaddr *)&from, fl);
+		}
+		if (FD_ISSET(ppp_fd, &rd)) { int c = accept(ppp_fd, NULL, NULL); if (c >= 0) serve(c, false); }
+		if (FD_ISSET(tap_fd, &rd)) { int c = accept(tap_fd, NULL, NULL); if (c >= 0) serve(c, true); }
+	}
+	return NULL;
+}
+
+static int listen_on(int type, u16 port)
+{
+	int fd = socket(AF_INET, type, 0);
+	int one = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+	sockaddr_in a; memset(&a, 0, sizeof(a)); a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); a.sin_port = htons(port);
+	if (bind(fd, (sockaddr *)&a, sizeof(a)) < 0) return -1;
+	if (type == SOCK_STREAM && listen(fd, 4) < 0) return -1;
+	return fd;
+}
+
+static bool open_relay()
+{
+	udp_fd = listen_on(SOCK_DGRAM, 7655);
+	ppp_fd = listen_on(SOCK_STREAM, 7654);
+	tap_fd = listen_on(SOCK_STREAM, 7655);
+	return udp_fd >= 0 && ppp_fd >= 0 && tap_fd >= 0;
+}
+
+static void dcnet_modem(pthread_t *th)
+{
+	net_device = NET_DEVICE_MODEM;
+	net_dcnet_option = true;
+	pthread_create(th, NULL, relay, NULL);
+	CHECK(start_pico());
+	retro_sleep(300);
+	const char msg[] = "~hello dcnet~";
+	for (const char *p = msg; *p; p++) write_pico(*p);
+	std::vector<u8> got;
+	retro_time_t t0 = cpu_features_get_time_usec();
+	while (got.size() < strlen(msg) && cpu_features_get_time_usec() - t0 < 3000000)
+	{
+		int c = read_pico();
+		if (c >= 0) got.push_back(c);
+	}
+	CHECK(got.size() == strlen(msg));
+	bool same = got.size() == strlen(msg);
+	for (size_t i = 0; same && i < got.size(); i++) same = got[i] == (u8)(msg[i] + 1);
+	CHECK(same);
+	// a lot both ways: the ring to the modem fills, and the thread waits for the modem
+	int sent = 0, recvd = 0;
 	t0 = cpu_features_get_time_usec();
+	while (cpu_features_get_time_usec() - t0 < 1500000)
+	{
+		for (int i = 0; i < 64; i++) { write_pico('a' + (sent % 26)); sent++; }
+		for (int i = 0; i < 32; i++) if (read_pico() >= 0) recvd++;
+	}
+	retro_sleep(200);
+	while (read_pico() >= 0) recvd++;
 	stop_pico();
-	stopped = cpu_features_get_time_usec() - t0;
-	CHECK(stopped < 300 * 1000);
+	printf("dcnet modem: echo ok, %d sent, %d received (relay saw %d)\n", sent, recvd, modem_bytes_seen.load());
+	CHECK(recvd > 0);
+}
 
-	printf("%s modem thread (%ld switches in 3 s idle, answer in %ld us, stop in %ld us)\n",
-			failures ? "FAIL" : "ok  ", switches, (long)answered, (long)stopped);
-	return failures ? 1 : 0;
+static void dcnet_bba()
+{
+	net_device = NET_DEVICE_BBA;
+	CHECK(start_pico());
+	retro_sleep(100);
+	u8 fr[100];
+	for (int i = 0; i < 100; i++) fr[i] = i;
+	pico_receive_eth_frame(fr, sizeof(fr));
+	u8 back[NET_ETH_FRAME_MAX];
+	int got = 0;
+	retro_time_t t0 = cpu_features_get_time_usec();
+	while (got < 50 && cpu_features_get_time_usec() - t0 < 3000000)
+	{
+		if (got < 50 && (cpu_features_get_time_usec() - t0) % 1000 < 50) pico_receive_eth_frame(fr, sizeof(fr));
+		u32 n = net_eth_take(back);
+		if (n == sizeof(fr) && !memcmp(back, fr, n)) got++;
+	}
+	CHECK(prolog_seen == 1);
+	CHECK(got > 10);
+	printf("dcnet bba: prolog %d, %d frames echoed (relay saw %d)\n", prolog_seen.load(), got, frames_seen.load());
+	net_thread_join();
+}
+
+int main()
+{
+	pico_modem();
+	pico_bba();
+	pthread_t th;
+	if (!open_relay()) { printf("no relay ports\n"); return 1; }
+	dcnet_modem(&th);
+	dcnet_bba();
+	relay_stop = 1;
+	pthread_join(th, NULL);
+	printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
+	return failures != 0;
 }

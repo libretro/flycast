@@ -443,7 +443,13 @@ struct RTL8139State {
 
     MemoryRegion bar_io;
     MemoryRegion bar_mem;
+
+    int schedId;	/* the link change after a reset */
 };
+
+extern std::vector<sched_list> sch_list;
+/* The scheduler's callbacks have no argument: there is one adapter */
+static RTL8139State *link_device;
 
 static void rtl8139_set_next_tctr_time(RTL8139State *s);
 
@@ -898,6 +904,11 @@ static void rtl8139_reset_phy(RTL8139State *s)
     s->NWayExpansion = 0x0001; /* autonegotiation supported */
 
     s->CSCR = CSCR_F_LINK_100 | CSCR_HEART_BIT | CSCR_LD;
+
+    /* The link comes up a moment later, and that is an interrupt the
+     * drivers wait for (KallistiOS) */
+    if (s->schedId >= 0)
+        sh4_sched_request(s->schedId, SH4_MAIN_CLOCK / 100); /* 10 ms */
 }
 
 void rtl8139_reset(RTL8139State *s)
@@ -2191,6 +2202,16 @@ void pci_rtl8139_realize(PCIDevice *dev)
 #endif
 }
 
+static int rtl8139_link_sched(int tag, int cycles, int jitter)
+{
+	if (link_device != nullptr)
+	{
+		link_device->IntrStatus |= RxUnderrun;	// Link change
+		rtl8139_update_irq(link_device);
+	}
+	return 0;
+}
+
 RTL8139State *rtl8139_init(NICConf *conf)
 {
 	RTL8139State *state = (RTL8139State *)calloc(1, sizeof(RTL8139State));
@@ -2199,12 +2220,18 @@ RTL8139State *rtl8139_init(NICConf *conf)
 	state->parent_obj.config = (uint8_t *)calloc(256, 1);
 	state->parent_obj.wmask = (uint8_t *)calloc(256, 1);
 	state->parent_obj.cmask = (uint8_t *)calloc(256, 1);
+	state->schedId = sh4_sched_register(0, &rtl8139_link_sched);
+	link_device = state;
 	
 	return state;
 }
 
 void rtl8139_destroy(RTL8139State *state)
 {
+	if (sh4_sched_is_scheduled(state->schedId))
+		sh4_sched_request(state->schedId, -1);
+	if (link_device == state)
+		link_device = nullptr;
 	pci_rtl8139_uninit(PCI_DEVICE(state));
 	free(state->parent_obj.config);
 	free(state->parent_obj.wmask);
@@ -2340,4 +2367,141 @@ bool rtl8139_unserialize(RTL8139State *s, void **data, unsigned int *total_size)
 	LIBRETRO_US(s->TCTR_base);
 
 	return s->bChipCmdState & CmdRxEnb;
+}
+
+void rtl8139_serialize_v24(RTL8139State *s, void **data, unsigned int *total_size)
+{
+	s32 mode = s->eeprom.mode;
+	s32 link_start = sch_list[s->schedId].start;
+	s32 link_end = sch_list[s->schedId].end;
+
+	LIBRETRO_SA(s->parent_obj.config, 256);
+	LIBRETRO_SA(s->parent_obj.cmask, 256);
+	LIBRETRO_SA(s->parent_obj.wmask, 256);
+	for (int i = 0; i < PCI_NUM_REGIONS; i++)
+	{
+		LIBRETRO_S(s->parent_obj.io_regions[i].addr);
+		LIBRETRO_S(s->parent_obj.io_regions[i].size);
+		LIBRETRO_S(s->parent_obj.io_regions[i].type);
+	}
+	LIBRETRO_SA(s->phys, 8);
+	LIBRETRO_SA(s->mult, 8);
+	LIBRETRO_SA(s->TxStatus, 4);
+	LIBRETRO_SA(s->TxAddr, 4);
+	LIBRETRO_S(s->RxBuf);
+	LIBRETRO_S(s->RxBufferSize);
+	LIBRETRO_S(s->RxBufPtr);
+	LIBRETRO_S(s->RxBufAddr);
+	LIBRETRO_S(s->IntrStatus);
+	LIBRETRO_S(s->IntrMask);
+	LIBRETRO_S(s->TxConfig);
+	LIBRETRO_S(s->RxConfig);
+	LIBRETRO_S(s->RxMissed);
+	LIBRETRO_S(s->CSCR);
+	LIBRETRO_S(s->Cfg9346);
+	LIBRETRO_S(s->Config0);
+	LIBRETRO_S(s->Config1);
+	LIBRETRO_S(s->Config3);
+	LIBRETRO_S(s->Config4);
+	LIBRETRO_S(s->Config5);
+	LIBRETRO_S(s->clock_enabled);
+	LIBRETRO_S(s->bChipCmdState);
+	LIBRETRO_S(s->MultiIntr);
+	LIBRETRO_S(s->BasicModeCtrl);
+	LIBRETRO_S(s->BasicModeStatus);
+	LIBRETRO_S(s->NWayAdvert);
+	LIBRETRO_S(s->NWayLPAR);
+	LIBRETRO_S(s->NWayExpansion);
+	LIBRETRO_SA(s->conf.macaddr.a, 6);
+	LIBRETRO_S(s->currTxDesc);
+	LIBRETRO_SA(s->eeprom.contents, EEPROM_9346_SIZE);
+	LIBRETRO_S(mode);
+	LIBRETRO_S(s->eeprom.tick);
+	LIBRETRO_S(s->eeprom.address);
+	LIBRETRO_S(s->eeprom.input);
+	LIBRETRO_S(s->eeprom.output);
+	LIBRETRO_S(s->eeprom.eecs);
+	LIBRETRO_S(s->eeprom.eesk);
+	LIBRETRO_S(s->eeprom.eedi);
+	LIBRETRO_S(s->eeprom.eedo);
+	LIBRETRO_S(s->TCTR);
+	LIBRETRO_S(s->TimerInt);
+	LIBRETRO_S(s->TCTR_base);
+	LIBRETRO_S(link_start);
+	LIBRETRO_S(link_end);
+}
+
+void rtl8139_unserialize_v24(RTL8139State *s, void **data, unsigned int *total_size)
+{
+	s32 mode = 0;
+	s32 link_start = -1;
+	s32 link_end = -1;
+
+	LIBRETRO_USA(s->parent_obj.config, 256);
+	LIBRETRO_USA(s->parent_obj.cmask, 256);
+	LIBRETRO_USA(s->parent_obj.wmask, 256);
+	for (int i = 0; i < PCI_NUM_REGIONS; i++)
+	{
+		LIBRETRO_US(s->parent_obj.io_regions[i].addr);
+		LIBRETRO_US(s->parent_obj.io_regions[i].size);
+		LIBRETRO_US(s->parent_obj.io_regions[i].type);
+	}
+	LIBRETRO_USA(s->phys, 8);
+	LIBRETRO_USA(s->mult, 8);
+	LIBRETRO_USA(s->TxStatus, 4);
+	LIBRETRO_USA(s->TxAddr, 4);
+	LIBRETRO_US(s->RxBuf);
+	LIBRETRO_US(s->RxBufferSize);
+	LIBRETRO_US(s->RxBufPtr);
+	LIBRETRO_US(s->RxBufAddr);
+	LIBRETRO_US(s->IntrStatus);
+	LIBRETRO_US(s->IntrMask);
+	LIBRETRO_US(s->TxConfig);
+	LIBRETRO_US(s->RxConfig);
+	LIBRETRO_US(s->RxMissed);
+	LIBRETRO_US(s->CSCR);
+	LIBRETRO_US(s->Cfg9346);
+	LIBRETRO_US(s->Config0);
+	LIBRETRO_US(s->Config1);
+	LIBRETRO_US(s->Config3);
+	LIBRETRO_US(s->Config4);
+	LIBRETRO_US(s->Config5);
+	LIBRETRO_US(s->clock_enabled);
+	LIBRETRO_US(s->bChipCmdState);
+	LIBRETRO_US(s->MultiIntr);
+	LIBRETRO_US(s->BasicModeCtrl);
+	LIBRETRO_US(s->BasicModeStatus);
+	LIBRETRO_US(s->NWayAdvert);
+	LIBRETRO_US(s->NWayLPAR);
+	LIBRETRO_US(s->NWayExpansion);
+	LIBRETRO_USA(s->conf.macaddr.a, 6);
+	LIBRETRO_US(s->currTxDesc);
+	LIBRETRO_USA(s->eeprom.contents, EEPROM_9346_SIZE);
+	LIBRETRO_US(mode);
+	LIBRETRO_US(s->eeprom.tick);
+	LIBRETRO_US(s->eeprom.address);
+	LIBRETRO_US(s->eeprom.input);
+	LIBRETRO_US(s->eeprom.output);
+	LIBRETRO_US(s->eeprom.eecs);
+	LIBRETRO_US(s->eeprom.eesk);
+	LIBRETRO_US(s->eeprom.eedi);
+	LIBRETRO_US(s->eeprom.eedo);
+	LIBRETRO_US(s->TCTR);
+	LIBRETRO_US(s->TimerInt);
+	LIBRETRO_US(s->TCTR_base);
+	LIBRETRO_US(link_start);
+	LIBRETRO_US(link_end);
+
+	/* What indexes something or sizes the receive ring is one of the values
+	 * the chip can have */
+	const u32 ringSize = 8192 << ((s->RxConfig >> 11) & 0x3);
+	if (s->RxBufferSize != ringSize)
+		s->RxBufferSize = ringSize;
+	s->currTxDesc &= 3;
+	s->eeprom.address &= EEPROM_9346_ADDR_MASK;
+	s->eeprom.mode = mode >= Chip9346_none && mode <= Chip9346_data_write_all ? (Chip9346Mode)mode : Chip9346_none;
+	if (s->eeprom.tick > 16)
+		s->eeprom.tick = 0;
+	sch_list[s->schedId].start = link_start;
+	sch_list[s->schedId].end = link_end;
 }

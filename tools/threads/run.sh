@@ -58,7 +58,7 @@ for san in thread address,undefined; do
       -o "$WORK/naomi_net_test" tools/threads/naomi_net_test.cpp \
       core/network/naomi_network.cpp "$WORK/rthreads.o" "$WORK/features_cpu.o" \
       "$WORK/rtime.o" -lpthread
-   # The modem's network thread: the core's own picoppp.cpp with picoTCP,
+   # The network thread: the core's own picoppp.cpp and dcnet.cpp with picoTCP,
    # and the test playing the Dreamcast's end of the line. picoTCP itself
    # is built without UBSan, which it was not written to pass.
    mkdir -p "$WORK/pico"
@@ -78,7 +78,7 @@ for san in thread address,undefined; do
    $CXX -std=c++11 -fpermissive -O1 -g -w $DEFS \
       -fsanitize=$san -fno-sanitize-recover=undefined $INC -Icore/deps/miniupnpc \
       -Icore/deps/picotcp/include -Icore/deps/picotcp/modules \
-      -o "$WORK/pico_test" tools/threads/pico_test.cpp core/network/picoppp.cpp \
+      -o "$WORK/pico_test" tools/threads/pico_test.cpp core/network/picoppp.cpp core/network/dcnet.cpp \
       core/hw/modem/dns.cpp "$WORK"/pico/*.o "$WORK/rthreads.o" "$WORK/features_cpu.o" \
       "$WORK/rtime.o" -lpthread
    # The save writer: the core's own savewriter.c over libretro-common's
@@ -95,7 +95,6 @@ for san in thread address,undefined; do
    TSAN_OPTIONS=halt_on_error=1 "$WORK/threads_test"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/savewriter_test" "$WORK"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/pico_test"
-   TSAN_OPTIONS=halt_on_error=1 "$WORK/pico_test" bba
    TSAN_OPTIONS=halt_on_error=1 "$WORK/m3comm_test"
    TSAN_OPTIONS=halt_on_error=1 "$WORK/naomi_net_test"
 done

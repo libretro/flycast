@@ -26,3 +26,9 @@ u32 bba_ReadMem(u32 addr, u32 sz);
 void bba_WriteMem(u32 addr, u32 data, u32 sz);
 void bba_Serialize(void **data, unsigned int *total_size);
 void bba_Unserialize(void **data, unsigned int *total_size);
+
+/* The adapter in a save state, since version 24 (see net_serialize_v24()):
+ * its registers and memory, the network controller's, the times of its
+ * events, and which network session it is on. */
+void bba_serialize_v24(void **data, unsigned int *total_size);
+bool bba_unserialize_v24(void **data, unsigned int *total_size);

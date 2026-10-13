@@ -246,6 +246,9 @@ ifeq ($(ENABLE_MODEM), 1)
 						$(CORE_DIR)/core/hw/bba/rtl8139c.cpp \
 						$(CORE_DIR)/core/network/picoppp.cpp \
 						$(CORE_DIR)/core/network/miniupnp.cpp
+	SOURCES_CXX += $(CORE_DIR)/core/hw/modem/v42.cpp \
+						$(CORE_DIR)/core/hw/modem/v42bis.cpp \
+						$(CORE_DIR)/core/network/dcnet.cpp
 
 	SOURCES_C += \
 					 $(CORE_DIR)/core/deps/miniupnpc/addr_is_reserved.c \
@@ -331,6 +334,9 @@ SOURCES_CXX += $(CORE_DIR)/core/hw/naomi/naomi.cpp \
 					$(CORE_DIR)/core/hw/naomi/printer.cpp \
 					$(CORE_DIR)/core/hw/naomi/systemsp.cpp \
 					$(CORE_DIR)/core/network/naomi_network.cpp
+
+# The device in the Dreamcast's expansion port, in every build
+SOURCES_CXX += $(CORE_DIR)/core/network/netstate.cpp
 
 ifeq ($(HAVE_GENERIC_JIT), 1)
 	DYNAREC_USED = 1
