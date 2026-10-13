@@ -504,13 +504,35 @@ public:
 				verify(op.rd.is_reg());
 				verify(op.rs1.is_reg() || op.rs1.is_imm());
 
-#ifdef EXPLODE_SPANS
-				Fmov(regalloc.MapVRegister(op.rd, 0), regalloc.MapVRegister(op.rs1, 0));
-				Fmov(regalloc.MapVRegister(op.rd, 1), regalloc.MapVRegister(op.rs1, 1));
-#else
-				shil_param_to_host_reg(op.rs1, x15);
-				host_reg_to_shil_param(op.rd, x15);
-#endif
+				if (regalloc.IsAllocf(op.rd))
+				{
+					const VRegister& rd0 = regalloc.MapVRegister(op.rd, 0);
+					const VRegister& rd1 = regalloc.MapVRegister(op.rd, 1);
+					const VRegister& rs0 = regalloc.MapVRegister(op.rs1, 0);
+					const VRegister& rs1 = regalloc.MapVRegister(op.rs1, 1);
+					/* The allocator can give the first of the destination the
+					 * register the second of the source is in (a source used
+					 * for the last time gives its register up): that one is
+					 * moved out of the way first. */
+					if (rd0.Is(rs1))
+					{
+						Fmov(s0, rs1);
+						Fmov(rd0, rs0);
+						Fmov(rd1, s0);
+					}
+					else
+					{
+						if (!rd0.Is(rs0))
+							Fmov(rd0, rs0);
+						if (!rd1.Is(rs1))
+							Fmov(rd1, rs1);
+					}
+				}
+				else
+				{
+					shil_param_to_host_reg(op.rs1, x15);
+					host_reg_to_shil_param(op.rd, x15);
+				}
 				break;
 
 			case shop_readm:
@@ -1042,13 +1064,13 @@ public:
 					Add(x1, x1, Operand(regalloc.MapRegister(op.rs1), UXTH, 3));
 				else
 					Add(x1, x1, Operand(op.rs1.imm_value() << 3));
-#ifdef EXPLODE_SPANS
-				Ldr(regalloc.MapVRegister(op.rd, 0), MemOperand(x1, 4, PostIndex));
-				Ldr(regalloc.MapVRegister(op.rd, 1), MemOperand(x1));
-#else
-				Ldr(x2, MemOperand(x1));
-				Str(x2, sh4_context_mem_operand(op.rd.reg_ptr()));
-#endif
+				if (regalloc.IsAllocf(op.rd))
+					Ldp(regalloc.MapVRegister(op.rd, 0), regalloc.MapVRegister(op.rd, 1), MemOperand(x1));
+				else
+				{
+					Ldr(x2, MemOperand(x1));
+					Str(x2, sh4_context_mem_operand(op.rd.reg_ptr()));
+				}
 				break;
 
 			case shop_fipr:
@@ -1234,6 +1256,16 @@ public:
 			}
 		}
 		GenCallRuntime((void (*)())function);
+		/* A pair the function was given the address of to write (FSCA's,
+		 * where it is a call) is read again into the registers the block
+		 * has it in. */
+		for (const CC_PS& par : CC_pars)
+			if (par.type == CPT_ptr && par.prm->count() == 2 && regalloc.IsAllocf(*par.prm)
+					&& ((op->rd.is_reg() && op->rd._reg == par.prm->_reg) || (op->rd2.is_reg() && op->rd2._reg == par.prm->_reg)))
+			{
+				Ldr(regalloc.MapVRegister(*par.prm, 0), sh4_context_mem_operand(par.prm->reg_ptr()));
+				Ldr(regalloc.MapVRegister(*par.prm, 1), sh4_context_mem_operand((u8 *)par.prm->reg_ptr() + 4));
+			}
 	}
 
 	MemOperand sh4_context_mem_operand(void *p)
@@ -1738,16 +1770,7 @@ private:
 		if (size < 8)
 			host_reg_to_shil_param(op.rd, w0);
 		else
-		{
-#ifdef EXPLODE_SPANS
-			verify(op.rd.count() == 2 && regalloc.IsAllocf(op.rd, 0) && regalloc.IsAllocf(op.rd, 1));
-			Fmov(regalloc.MapVRegister(op.rd, 0), w0);
-			Lsr(x0, x0, 32);
-			Fmov(regalloc.MapVRegister(op.rd, 1), w0);
-#else
-			Str(x0, sh4_context_mem_operand(op.rd.reg_ptr()));
-#endif
-		}
+			host_reg_to_shil_param(op.rd, x0);
 	}
 
 	bool GenReadMemoryImmediate(const shil_opcode& op)
@@ -1812,6 +1835,17 @@ private:
 						Ldr(regalloc.MapRegister(op.rd), at);
 					break;
 
+				case 8:
+					// (a pair load has no register offset)
+					if (at.IsRegisterOffset())
+					{
+						Add(x1, at.GetBaseRegister(), at.GetRegisterOffset());
+						Ldp(regalloc.MapVRegister(op.rd, 0), regalloc.MapVRegister(op.rd, 1), MemOperand(x1));
+					}
+					else
+						Ldp(regalloc.MapVRegister(op.rd, 0), regalloc.MapVRegister(op.rd, 1), at);
+					break;
+
 				default:
 					die("Invalid size");
 					break;
@@ -1852,15 +1886,20 @@ private:
 			// Not RAM
 			if (size == 8)
 			{
-				verify(!regalloc.IsAllocAny(op.rd));
 				// Need to call the handler twice
 				Mov(w0, addr);
 				GenCallRuntime((void (*)())ptr);
-				Str(w0, sh4_context_mem_operand(op.rd.reg_ptr()));
+				if (regalloc.IsAllocf(op.rd))
+					Fmov(regalloc.MapVRegister(op.rd, 0), w0);
+				else
+					Str(w0, sh4_context_mem_operand(op.rd.reg_ptr()));
 
 				Mov(w0, addr + 4);
 				GenCallRuntime((void (*)())ptr);
-				Str(w0, sh4_context_mem_operand((u8*)op.rd.reg_ptr() + 4));
+				if (regalloc.IsAllocf(op.rd))
+					Fmov(regalloc.MapVRegister(op.rd, 1), w0);
+				else
+					Str(w0, sh4_context_mem_operand((u8*)op.rd.reg_ptr() + 4));
 			}
 			else
 			{
@@ -1946,17 +1985,13 @@ private:
 
 		if (!_nvmem_enabled() || mmu_enabled())
 			return false;
-#ifdef EXPLODE_SPANS
-		if (size == 8)
-			return false;
-#endif
 		// the register the block has the address in, or w0 with it worked out
 		const Register& addr = GenMemAddr(op);
 
 		if (size == 8)
 		{
 			GenFastAccess(MEM_LOAD64, addr, x0);
-			Str(x0, sh4_context_mem_operand(op.rd.reg_ptr()));
+			host_reg_to_shil_param(op.rd, x0);
 			return true;
 		}
 		const int kind = size == 1 ? MEM_LOAD8 : size == 2 ? MEM_LOAD16 : MEM_LOAD32;
@@ -1987,17 +2022,7 @@ private:
 		if (size != 8)
 			shil_param_to_host_reg(op.rs2, *call_regs[1]);
 		else
-		{
-#ifdef EXPLODE_SPANS
-			verify(op.rs2.count() == 2 && regalloc.IsAllocf(op.rs2, 0) && regalloc.IsAllocf(op.rs2, 1));
-			Fmov(*call_regs[1], regalloc.MapVRegister(op.rs2, 1));
-			Lsl(*call_regs64[1], *call_regs64[1], 32);
-			Fmov(w2, regalloc.MapVRegister(op.rs2, 0));
-			Orr(*call_regs64[1], *call_regs64[1], x2);
-#else
 			shil_param_to_host_reg(op.rs2, *call_regs64[1]);
-#endif
-		}
 		Label lut_miss, lut_done;
 
 		if (GenMmuLookup(mmu_write_lut, size, lut_miss))
@@ -2139,14 +2164,22 @@ private:
 				break;
 
 			case 8:
-#ifdef EXPLODE_SPANS
-				verify(op.rs2.count() == 2 && regalloc.IsAllocf(op.rs2, 0) && regalloc.IsAllocf(op.rs2, 1));
-				Str(regalloc.MapVRegister(op.rs2, 0),  MemOperand(x1));
-				Str(regalloc.MapVRegister(op.rs2, 1),  MemOperand(x1, 4));
-#else
-				shil_param_to_host_reg(op.rs2, x1);
-				Str(x1, at);
-#endif
+				if (regalloc.IsAllocf(op.rs2))
+				{
+					// (a pair store has no register offset)
+					if (at.IsRegisterOffset())
+					{
+						Add(x0, at.GetBaseRegister(), at.GetRegisterOffset());
+						Stp(regalloc.MapVRegister(op.rs2, 0), regalloc.MapVRegister(op.rs2, 1), MemOperand(x0));
+					}
+					else
+						Stp(regalloc.MapVRegister(op.rs2, 0), regalloc.MapVRegister(op.rs2, 1), at);
+				}
+				else
+				{
+					shil_param_to_host_reg(op.rs2, x1);
+					Str(x1, at);
+				}
 				break;
 
 			default:
@@ -2209,10 +2242,6 @@ private:
 
 		if (!_nvmem_enabled() || mmu_enabled())
 			return false;
-#ifdef EXPLODE_SPANS
-		if (size == 8)
-			return false;
-#endif
 		const Register& addr = GenMemAddr(op);
 
 		if (size == 8)
@@ -2373,7 +2402,15 @@ private:
 		}
 		else if (param.is_reg())
 		{
-			if (param.is_r64f())
+			if (param.is_r64f() && regalloc.IsAllocf(param))
+			{
+				// the first of the pair is the low half, as in memory
+				verify(reg.Is64Bits() && !reg.Is(x15));
+				Fmov(reg.W(), regalloc.MapVRegister(param, 0));
+				Fmov(w15, regalloc.MapVRegister(param, 1));
+				Bfi(reg.X(), x15, 32, 32);
+			}
+			else if (param.is_r64f())
 				Ldr(reg, sh4_context_mem_operand(param.reg_ptr()));
 			else if (param.is_r32f())
 			{
@@ -2400,7 +2437,15 @@ private:
 	{
 		if (reg.Is64Bits())
 		{
-			Str((const Register&)reg, sh4_context_mem_operand(param.reg_ptr()));
+			if (param.is_r64f() && regalloc.IsAllocf(param))
+			{
+				// (what was in reg is lost)
+				Fmov(regalloc.MapVRegister(param, 0), ((const Register&)reg).W());
+				Lsr(((const Register&)reg).X(), ((const Register&)reg).X(), 32);
+				Fmov(regalloc.MapVRegister(param, 1), ((const Register&)reg).W());
+			}
+			else
+				Str((const Register&)reg, sh4_context_mem_operand(param.reg_ptr()));
 		}
 		else if (regalloc.IsAllocg(param))
 		{

@@ -928,13 +928,35 @@ public:
 				  verify(op.rd.is_r64());
 				  verify(op.rs1.is_r64());
 
-#ifdef EXPLODE_SPANS
-				  movss(regalloc.MapXRegister(op.rd, 0), regalloc.MapXRegister(op.rs1, 0));
-				  movss(regalloc.MapXRegister(op.rd, 1), regalloc.MapXRegister(op.rs1, 1));
-#else
-				  mov(rax, qword[CtxAt(op.rs1.reg_ptr())]);
-				  mov(qword[CtxAt(op.rd.reg_ptr())], rax);
-#endif
+				  if (regalloc.IsAllocf(op.rd))
+				  {
+					  const Xbyak::Xmm rd0 = regalloc.MapXRegister(op.rd, 0);
+					  const Xbyak::Xmm rd1 = regalloc.MapXRegister(op.rd, 1);
+					  const Xbyak::Xmm rs0 = regalloc.MapXRegister(op.rs1, 0);
+					  const Xbyak::Xmm rs1 = regalloc.MapXRegister(op.rs1, 1);
+					  /* The allocator can give the first of the destination the
+					   * register the second of the source is in (a source used
+					   * for the last time gives its register up): that one is
+					   * moved out of the way first. */
+					  if (rd0 == rs1)
+					  {
+						  movss(xmm0, rs1);
+						  movss(rd0, rs0);
+						  movss(rd1, xmm0);
+					  }
+					  else
+					  {
+						  if (rd0 != rs0)
+							  movss(rd0, rs0);
+						  if (rd1 != rs1)
+							  movss(rd1, rs1);
+					  }
+				  }
+				  else
+				  {
+					  mov(rax, qword[CtxAt(op.rs1.reg_ptr())]);
+					  mov(qword[CtxAt(op.rd.reg_ptr())], rax);
+				  }
                }
                break;
 
@@ -948,20 +970,10 @@ public:
 						u32 size = op.flags & 0x7f;
 						if (size != 8)
 						host_reg_to_shil_param(op.rd, eax);
-						else {
-#ifdef EXPLODE_SPANS
-							if (op.rd.count() == 2 && regalloc.IsAllocf(op.rd, 0) && regalloc.IsAllocf(op.rd, 1))
-							{
-							movd(regalloc.MapXRegister(op.rd, 0), eax);
-							shr(rax, 32);
-							movd(regalloc.MapXRegister(op.rd, 1), eax);
-							}
-							else
-#endif
-							{
-								mov(qword[CtxAt(op.rd.reg_ptr())], rax);
-							}
-						}
+						else if (regalloc.IsAllocf(op.rd))
+							Reg64ToPair(op.rd, rax);
+						else
+							mov(qword[CtxAt(op.rd.reg_ptr())], rax);
                }
                break;
 
@@ -974,21 +986,10 @@ public:
 							u32 size = op.flags & 0x7f;
 							if (size != 8)
 								shil_param_to_host_reg(op.rs2, call_regs[1]);
-							else {
-#ifdef EXPLODE_SPANS
-								if (op.rs2.count() == 2 && regalloc.IsAllocf(op.rs2, 0) && regalloc.IsAllocf(op.rs2, 1))
-								{
-									movd(call_regs[1], regalloc.MapXRegister(op.rs2, 1));
-									shl(call_regs64[1], 32);
-									movd(eax, regalloc.MapXRegister(op.rs2, 0));
-									or_(call_regs64[1], rax);
-								}
-								else
-#endif
-								{
-									mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
-								}
-							}
+							else if (regalloc.IsAllocf(op.rs2))
+								PairToReg64(op.rs2, call_regs64[1]);
+							else
+								mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
 							GenWriteMemorySlow(op, block);
 						}
                }
@@ -1520,13 +1521,16 @@ public:
 				else
             		movzx(rax, regalloc.MapRegister(op.rs1).cvt16());
                mov(rcx, (uintptr_t)&sin_table);
-#ifdef EXPLODE_SPANS
-               movss(regalloc.MapXRegister(op.rd, 0), dword[rcx + rax * 8]);
-               movss(regalloc.MapXRegister(op.rd, 1), dword[rcx + (rax * 8) + 4]);
-#else
-               mov(rcx, qword[rcx + rax * 8]);
-               mov(qword[CtxAt(op.rd.reg_ptr())], rcx);
-#endif
+               if (regalloc.IsAllocf(op.rd))
+               {
+                  movss(regalloc.MapXRegister(op.rd, 0), dword[rcx + rax * 8]);
+                  movss(regalloc.MapXRegister(op.rd, 1), dword[rcx + rax * 8 + 4]);
+               }
+               else
+               {
+                  mov(rcx, qword[rcx + rax * 8]);
+                  mov(qword[CtxAt(op.rd.reg_ptr())], rcx);
+               }
                break;
 
             case shop_fipr:
@@ -2088,11 +2092,6 @@ public:
 		// store from xmm0
 		case CPT_f32rv:
 			host_reg_to_shil_param(prm, xmm0);
-#ifdef EXPLODE_SPANS
-			// The x86 dynarec saves to mem as well
-			//lea(rax, Ctx(prm.reg_ptr()));
-			//movd(dword[rax], xmm0);
-#endif
 			break;
 		}
 	}
@@ -2130,6 +2129,16 @@ public:
 			}
 		}
 		GenCall((void (*)())function);
+		/* A pair the function was given the address of to write (FSCA's,
+		 * where it is a call) is read again into the registers the block
+		 * has it in. */
+		for (const CC_PS& par : CC_pars)
+			if (par.type == CPT_ptr && par.prm->count() == 2 && regalloc.IsAllocf(*par.prm)
+					&& ((op.rd.is_reg() && op.rd._reg == par.prm->_reg) || (op.rd2.is_reg() && op.rd2._reg == par.prm->_reg)))
+			{
+				movss(regalloc.MapXRegister(*par.prm, 0), Ctx(par.prm->reg_ptr()));
+				movss(regalloc.MapXRegister(*par.prm, 1), Ctx((const u8 *)par.prm->reg_ptr() + 4));
+			}
 	}
 
 	// Something in the SH4's context, from r15: where it is, and 32 bits of it
@@ -2243,17 +2252,14 @@ private:
 				break;
 
 			case 8:
-				mov(rcx, qword[at]);
-#ifdef EXPLODE_SPANS
-				if (op.rd.count() == 2 && regalloc.IsAllocf(op.rd, 0) && regalloc.IsAllocf(op.rd, 1))
+				if (regalloc.IsAllocf(op.rd))
 				{
-					movd(regalloc.MapXRegister(op.rd, 0), ecx);
-					shr(rcx, 32);
-					movd(regalloc.MapXRegister(op.rd, 1), ecx);
+					movss(regalloc.MapXRegister(op.rd, 0), dword[at]);
+					movss(regalloc.MapXRegister(op.rd, 1), dword[at + 4]);
 				}
 				else
-#endif
 				{
+					mov(rcx, qword[at]);
 					mov(qword[CtxAt(op.rd.reg_ptr())], rcx);
 				}
 				break;
@@ -2268,16 +2274,20 @@ private:
 			// Not RAM: the returned pointer is a memory handler
 			if (size == 8)
 			{
-				verify(!regalloc.IsAllocAny(op.rd));
-
 				// Need to call the handler twice
 			mov(call_regs[0], addr);
 				GenCall((void (*)())ptr);
-				mov(Ctx(op.rd.reg_ptr()), eax);
+				if (regalloc.IsAllocf(op.rd))
+					movd(regalloc.MapXRegister(op.rd, 0), eax);
+				else
+					mov(Ctx(op.rd.reg_ptr()), eax);
 
 				mov(call_regs[0], addr + 4);
 				GenCall((void (*)())ptr);
-				mov(Ctx((const u8 *)op.rd.reg_ptr() + 4), eax);
+				if (regalloc.IsAllocf(op.rd))
+					movd(regalloc.MapXRegister(op.rd, 1), eax);
+				else
+					mov(Ctx((const u8 *)op.rd.reg_ptr() + 4), eax);
 			}
 			else
 			{
@@ -2393,16 +2403,12 @@ private:
 				break;
 
 			case 8:
-#ifdef EXPLODE_SPANS
-				if (op.rs2.count() == 2 && regalloc.IsAllocf(op.rs2, 0) && regalloc.IsAllocf(op.rs2, 1))
+				if (regalloc.IsAllocf(op.rs2))
 				{
-					movd(call_regs[1], regalloc.MapXRegister(op.rs2, 1));
-					shl(call_regs64[1], 32);
-					movd(eax, regalloc.MapXRegister(op.rs2, 0));
-					or_(call_regs64[1], rax);
+					movss(dword[at], regalloc.MapXRegister(op.rs2, 0));
+					movss(dword[at + 4], regalloc.MapXRegister(op.rs2, 1));
 				}
 				else
-#endif
 				{
 					mov(rcx, qword[CtxAt(op.rs2.reg_ptr())]);
 					mov(qword[at], rcx);
@@ -2421,11 +2427,17 @@ private:
 			{
 				// a 32-bit handler: called for each half, as for a read (only the first half was written)
 				mov(call_regs[0], addr);
-				mov(call_regs[1], Ctx(op.rs2.reg_ptr()));
+				if (regalloc.IsAllocf(op.rs2))
+					movd(call_regs[1], regalloc.MapXRegister(op.rs2, 0));
+				else
+					mov(call_regs[1], Ctx(op.rs2.reg_ptr()));
 				GenCall((void (*)())ptr);
 
 				mov(call_regs[0], addr + 4);
-				mov(call_regs[1], Ctx((const u8 *)op.rs2.reg_ptr() + 4));
+				if (regalloc.IsAllocf(op.rs2))
+					movd(call_regs[1], regalloc.MapXRegister(op.rs2, 1));
+				else
+					mov(call_regs[1], Ctx((const u8 *)op.rs2.reg_ptr() + 4));
 				GenCall((void (*)())ptr);
 			}
 			else
@@ -2662,16 +2674,15 @@ public:
 
 		if (!FastMemory())
 			return false;
-#ifdef EXPLODE_SPANS
-		if (size == 8)
-			return false;
-#endif
 		const int addr = GenFastAddr(op);
 
 		if (size == 8)
 		{
 			GenFastAccess(MEM_LOAD64, addr, Xbyak::Operand::RAX);
-			mov(qword[CtxAt(op.rd.reg_ptr())], rax);
+			if (regalloc.IsAllocf(op.rd))
+				Reg64ToPair(op.rd, rax);
+			else
+				mov(qword[CtxAt(op.rd.reg_ptr())], rax);
 			return true;
 		}
 		const int kind = size == 1 ? MEM_LOAD8 : size == 2 ? MEM_LOAD16 : MEM_LOAD32;
@@ -2694,15 +2705,14 @@ public:
 
 		if (!FastMemory())
 			return false;
-#ifdef EXPLODE_SPANS
-		if (size == 8)
-			return false;
-#endif
 		const int addr = GenFastAddr(op);
 
 		if (size == 8)
 		{
-			mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
+			if (regalloc.IsAllocf(op.rs2))
+				PairToReg64(op.rs2, call_regs64[1]);
+			else
+				mov(call_regs64[1], qword[CtxAt(op.rs2.reg_ptr())]);
 			GenFastAccess(MEM_STORE64, addr, call_regs64[1].getIdx());
 			return true;
 		}
@@ -2931,6 +2941,24 @@ public:
 	   {
 	   	verify(param.is_null());
 	   }
+	}
+
+	/* A pair of the SH4's floating-point registers (DRn, XDn) the block has
+	 * in two xmm registers, to and from 64 bits in a general register: the
+	 * first of the pair is the low half, as in memory. xmm0 is scratch. */
+	void PairToReg64(const shil_param& param, const Xbyak::Reg64& reg)
+	{
+		movaps(xmm0, regalloc.MapXRegister(param, 0));
+		unpcklps(xmm0, regalloc.MapXRegister(param, 1));
+		movq(reg, xmm0);
+	}
+
+	// (what is above the low 32 bits of a register the block has is not looked at)
+	void Reg64ToPair(const shil_param& param, const Xbyak::Reg64& reg)
+	{
+		const Xbyak::Xmm lo = regalloc.MapXRegister(param, 0);
+		movq(lo, reg);
+		pshufd(regalloc.MapXRegister(param, 1), lo, 0x55);
 	}
 
 	void host_reg_to_shil_param(const shil_param& param, const Xbyak::Reg& reg)

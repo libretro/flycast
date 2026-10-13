@@ -232,7 +232,10 @@ eReg alloc_regs[]={r5,r6,r7,r10,r11,(eReg)-1};
 eFSReg alloc_fpu[]={f16,f17,f18,f19,f20,f21,f22,f23,
 					f24,f25,f26,f27,f28,f29,f30,f31,(eFSReg)-1};
 
-struct arm_reg_alloc: RegAlloc<eReg,eFSReg,false>
+// A pair of the SH4's floating-point registers (DRn, XDn) is kept in two of alloc_fpu
+#define ALLOC_F64 true
+
+struct arm_reg_alloc: RegAlloc<eReg,eFSReg,ALLOC_F64>
 {
 	virtual void Preload(u32 reg,eReg nreg)
 	{
@@ -261,9 +264,10 @@ struct arm_reg_alloc: RegAlloc<eReg,eFSReg,false>
 
 		VSTR((nreg),r8,shRegOffs/4);
 	}
-	eFSReg mapfs(const shil_param& prm)
+	// index: which register of a pair
+	eFSReg mapfs(const shil_param& prm, int index = 0)
 	{
-		return mapf(prm);
+		return mapf(prm, index);
 	}
 
 };
@@ -910,6 +914,17 @@ void ngen_CC_Call(shil_opcode* op,void* function)
 	}
 	//printf("used reg r0 to r%d, %d params, calling %08X\n",rd-1,CC_pars.size(),function);
 	CALL((u32)function);
+
+	/* A pair the function was given the address of to write (FSCA's,
+	 * where it is a call) is read again into the registers the block
+	 * has it in. */
+	for (const CC_PS& param : CC_pars)
+		if (param.type == CPT_ptr && param.par->count() == 2 && reg.IsAllocf(*param.par)
+				&& ((op->rd.is_reg() && op->rd._reg == param.par->_reg) || (op->rd2.is_reg() && op->rd2._reg == param.par->_reg)))
+		{
+			VLDR(reg.mapfs(*param.par, 0), r8, param.par->reg_nofs() / 4);
+			VLDR(reg.mapfs(*param.par, 1), r8, param.par->reg_nofs() / 4 + 1);
+		}
 }
 
 void ngen_CC_Finish(shil_opcode* op) 
@@ -1376,6 +1391,32 @@ eReg GenMemAddr(shil_opcode* op,eReg raddr=r0)
 	return raddr;
 }
 
+/* A pair of the SH4's floating-point registers (DRn, XDn) to and from d0,
+ * where 64 bits are loaded, stored and handed to and from functions: s0 is
+ * the low half of d0, as the first of the pair is in memory. Or to and
+ * from the context, where the block does not have the pair. */
+static void D0ToPair(const shil_param& prm)
+{
+	if (reg.IsAllocf(prm))
+	{
+		VMOV(reg.mapfs(prm, 0), f0);
+		VMOV(reg.mapfs(prm, 1), f1);
+	}
+	else
+		VSTR(d0, r8, prm.reg_nofs() / 4);
+}
+
+static void PairToD0(const shil_param& prm)
+{
+	if (reg.IsAllocf(prm))
+	{
+		VMOV(f0, reg.mapfs(prm, 0));
+		VMOV(f1, reg.mapfs(prm, 1));
+	}
+	else
+		VLDR(d0, r8, prm.reg_nofs() / 4);
+}
+
 bool ngen_readm_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool staging, bool optimise)
 {
 	if (!op->rs1.is_imm())
@@ -1413,8 +1454,16 @@ bool ngen_readm_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool staging
 			break;
 
 		case SZ_64F:
-			VLDR(d0, r0, 0);
-			VSTR(d0, r8, op->rd.reg_nofs() / 4);
+			if (reg.IsAllocf(op->rd))
+			{
+				VLDR(reg.mapfs(op->rd, 0), r0, 0);
+				VLDR(reg.mapfs(op->rd, 1), r0, 1);
+			}
+			else
+			{
+				VLDR(d0, r0, 0);
+				VSTR(d0, r8, op->rd.reg_nofs() / 4);
+			}
 			break;
 		}
 	}
@@ -1423,15 +1472,20 @@ bool ngen_readm_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool staging
 		// Not RAM
 		if (optp == SZ_64F)
 		{
-			verify(!reg.IsAllocAny(op->rd));
 			// Need to call the handler twice
 			MOV32(r0, op->rs1._imm);
 			CALL((u32)ptr);
-			STR(r0, r8, op->rd.reg_nofs());
+			if (reg.IsAllocf(op->rd))
+				VMOV(reg.mapfs(op->rd, 0), r0);
+			else
+				STR(r0, r8, op->rd.reg_nofs());
 
 			MOV32(r0, op->rs1._imm + 4);
 			CALL((u32)ptr);
-			STR(r0, r8, op->rd.reg_nofs() + 4);
+			if (reg.IsAllocf(op->rd))
+				VMOV(reg.mapfs(op->rd, 1), r0);
+			else
+				STR(r0, r8, op->rd.reg_nofs() + 4);
 		}
 		else
 		{
@@ -1517,8 +1571,16 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 			break;
 
 		case SZ_64F:
-			VLDR(d0, r8, op->rs2.reg_nofs() / 4);
-			VSTR(d0, r0, 0);
+			if (reg.IsAllocf(op->rs2))
+			{
+				VSTR(reg.mapfs(op->rs2, 0), r0, 0);
+				VSTR(reg.mapfs(op->rs2, 1), r0, 1);
+			}
+			else
+			{
+				VLDR(d0, r8, op->rs2.reg_nofs() / 4);
+				VSTR(d0, r0, 0);
+			}
 			break;
 
 		default:
@@ -1575,7 +1637,7 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 
 					case SZ_64F:
 						mmu_slowpath(block, op, raddr, r0, f0, d0, optp, true);
-						VSTR(d0,r8,op->rd.reg_nofs()/4);
+						D0ToPair(op->rd);
 						break;
 					}
 				}
@@ -1605,9 +1667,9 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 
 					case SZ_64F:
 						ADD(r1,r1,r8);	//3 opcodes, there's no [REG+REG] VLDR
-						VLDR(d0,r1,0);	//TODO: use reg alloc
-
-						VSTR(d0,r8,op->rd.reg_nofs()/4);
+						// (into d0, which a rewrite of the load knows)
+						VLDR(d0,r1,0);
+						D0ToPair(op->rd);
 						break;
 					}
 				} else {
@@ -1631,7 +1693,7 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 
 					case SZ_64F:
 						vmem_slowpath(raddr, r0, f0, d0, optp, true);
-						VSTR(d0,r8,op->rd.reg_nofs()/4);
+						D0ToPair(op->rd);
 						break;
 					}
 				}
@@ -1651,9 +1713,8 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 				eReg rs2 = r2;
 				eFSReg rs2f = f2;
 
-				//TODO: use reg alloc
 				if (optp == SZ_64F)
-					VLDR(d0,r8,op->rs2.reg_nofs()/4);
+					PairToD0(op->rs2);
 				else if (op->rs2.is_imm())
 				{
 					MOV32(rs2, op->rs2._imm);
@@ -1704,7 +1765,7 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 
 					case SZ_64F:
 						ADD(r1,r1,r8);	//3 opcodes: there's no [REG+REG] VLDR, also required for SQ
-						VSTR(d0,r1,0);	//TODO: use reg alloc
+						VSTR(d0,r1,0);
 						break;
 					}
 				} else {
@@ -1833,8 +1894,35 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 			//LoadSh4Reg64(r0,op->rs1);
 			//StoreSh4Reg64(r0,op->rd);
 			
-			VLDR(d0,r8,op->rs1.reg_nofs()/4);
-			VSTR(d0,r8,op->rd.reg_nofs()/4);
+			if (reg.IsAllocf(op->rd))
+			{
+				const eFSReg rd0 = reg.mapfs(op->rd, 0);
+				const eFSReg rd1 = reg.mapfs(op->rd, 1);
+				const eFSReg rs0 = reg.mapfs(op->rs1, 0);
+				const eFSReg rs1 = reg.mapfs(op->rs1, 1);
+				/* The allocator can give the first of the destination the
+				 * register the second of the source is in (a source used
+				 * for the last time gives its register up): that one is
+				 * moved out of the way first. */
+				if (rd0 == rs1)
+				{
+					VMOV(f0, rs1);
+					VMOV(rd0, rs0);
+					VMOV(rd1, f0);
+				}
+				else
+				{
+					if (rd0 != rs0)
+						VMOV(rd0, rs0);
+					if (rd1 != rs1)
+						VMOV(rd1, rs1);
+				}
+			}
+			else
+			{
+				VLDR(d0,r8,op->rs1.reg_nofs()/4);
+				VSTR(d0,r8,op->rd.reg_nofs()/4);
+			}
 			break;
 		}
 
@@ -2420,8 +2508,16 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 				//ADD(r0,r1,r0); //EMITTER: Todo, add with shifted !
 				ADD(r0,r1,r0, S_LSL, 3);
 				
-				VLDR(/*reg.mapf(op->rd,0)*/d0,r0,0);
-				VSTR(d0,r8,op->rd.reg_nofs()/4);
+				if (reg.IsAllocf(op->rd))
+				{
+					VLDR(reg.mapfs(op->rd, 0), r0, 0);
+					VLDR(reg.mapfs(op->rd, 1), r0, 1);
+				}
+				else
+				{
+					VLDR(d0,r0,0);
+					VSTR(d0,r8,op->rd.reg_nofs()/4);
+				}
 			}
 			break;
 

@@ -28,7 +28,12 @@
 
 #define ssa_printf(...) DEBUG_LOG(DYNAREC, __VA_ARGS__)
 
-template<typename nreg_t, typename nregf_t, bool explode_spans = true>
+/* AllocVec2: a pair of the SH4's floating-point registers that an
+ * instruction takes as one (DRn and XDn: FMOV with FPSCR.SZ set, FSCA) is
+ * given two host registers like any other, in place of being written back
+ * before the instruction and read from memory by it. Wider vectors (FVn,
+ * XMTRX) are left in memory either way. */
+template<typename nreg_t, typename nregf_t, bool AllocVec2 = false>
 class RegAlloc
 {
 public:
@@ -84,17 +89,17 @@ public:
 			FlushReg(reg_sr_status, true);
 		}
 		// Flush regs used by vector ops
-		if (op->rs1.is_reg() && op->rs1.count() > 1)
+		if (op->rs1.is_reg() && op->rs1.count() > MaxVecSize)
 		{
 			for (int i = 0; i < op->rs1.count(); i++)
 				FlushReg((Sh4RegType)(op->rs1._reg + i), false);
 		}
-		if (op->rs2.is_reg() && op->rs2.count() > 1)
+		if (op->rs2.is_reg() && op->rs2.count() > MaxVecSize)
 		{
 			for (int i = 0; i < op->rs2.count(); i++)
 				FlushReg((Sh4RegType)(op->rs2._reg + i), false);
 		}
-		if (op->rs3.is_reg() && op->rs3.count() > 1)
+		if (op->rs3.is_reg() && op->rs3.count() > MaxVecSize)
 		{
 			for (int i = 0; i < op->rs3.count(); i++)
 				FlushReg((Sh4RegType)(op->rs3._reg + i), false);
@@ -106,7 +111,7 @@ public:
 			AllocSourceReg(op->rs3);
 			// Hard flush vector ops destination regs
 			// Note that this is incorrect if a reg is both src (scalar) and dest (vec). However such an op doesn't exist.
-			if (op->rd.is_reg() && op->rd.count() > 1)
+			if (op->rd.is_reg() && op->rd.count() > MaxVecSize)
 			{
 				for (int i = 0; i < op->rd.count(); i++)
 				{
@@ -114,7 +119,7 @@ public:
 					FlushReg((Sh4RegType)(op->rd._reg + i), true);
 				}
 			}
-			if (op->rd2.is_reg() && op->rd2.count() > 1)
+			if (op->rd2.is_reg() && op->rd2.count() > MaxVecSize)
 			{
 				for (int i = 0; i < op->rd2.count(); i++)
 				{
@@ -196,7 +201,8 @@ public:
 	{
 		if (prm.is_reg())
 		{
-			verify(prm.count() == 1);
+			if (prm.count() > MaxVecSize)
+				return false;
 			return IsAllocg(prm._reg);
 		}
 		else
@@ -209,7 +215,8 @@ public:
 	{
 		if (prm.is_reg())
 		{
-			verify(prm.count() == 1);
+			if (prm.count() > MaxVecSize)
+				return false;
 			return IsAllocf(prm._reg);
 		}
 		else
@@ -225,11 +232,12 @@ public:
 		return mapg(prm._reg);
 	}
 
-	nregf_t mapf(const shil_param& prm)
+	// index: which register of a pair
+	nregf_t mapf(const shil_param& prm, int index = 0)
 	{
 		verify(IsAllocf(prm));
-		verify(prm.count() == 1);
-		return mapf(prm._reg);
+		verify(index >= 0 && (u32)index < prm.count() && prm.count() <= MaxVecSize);
+		return mapf((Sh4RegType)(prm._reg + index));
 	}
 
 	bool reg_used(nreg_t host_reg)
@@ -272,6 +280,7 @@ private:
 		bool write_back;
 		bool dirty;
 	};
+	static constexpr u32 MaxVecSize = AllocVec2 ? 2 : 1;
 
 	bool IsFloat(Sh4RegType reg)
 	{
@@ -360,9 +369,12 @@ private:
 
 	void AllocSourceReg(const shil_param& param)
 	{
-		if (param.is_reg() && param.count() == 1)	// TODO EXPLODE_SPANS?
+		if (!param.is_reg() || param.count() > MaxVecSize)
+			return;
+		for (u32 i = 0; i < param.count(); i++)
 		{
-			auto it = reg_alloced.find(param._reg);
+			const Sh4RegType sh4reg = (Sh4RegType)(param._reg + i);
+			auto it = reg_alloced.find(sh4reg);
 			if (it == reg_alloced.end())
 			{
 				u32 host_reg;
@@ -386,14 +398,14 @@ private:
 					host_reg = host_fregs.back();
 					host_fregs.pop_back();
 				}
-				reg_alloced[param._reg] = { host_reg, param.version[0], false, false };
+				reg_alloced[sh4reg] = { host_reg, param.version[i], false, false };
 				if (!fast_forwarding)
 				{
-					ssa_printf("PL %s.%d -> %cx", name_reg(param._reg).c_str(), param.version[0], 'a' + host_reg);
-					if (IsFloat(param._reg))
-						Preload_FPU(param._reg, (nregf_t)host_reg);
+					ssa_printf("PL %s.%d -> %cx", name_reg(sh4reg).c_str(), param.version[i], 'a' + host_reg);
+					if (IsFloat(sh4reg))
+						Preload_FPU(sh4reg, (nregf_t)host_reg);
 					else
-						Preload(param._reg, (nreg_t)host_reg);
+						Preload(sh4reg, (nreg_t)host_reg);
 				}
 			}
 		}
@@ -430,9 +442,12 @@ private:
 
 	void AllocDestReg(const shil_param& param)
 	{
-		if (param.is_reg() && param.count() == 1)	// TODO EXPLODE_SPANS?
+		if (!param.is_reg() || param.count() > MaxVecSize)
+			return;
+		for (u32 i = 0; i < param.count(); i++)
 		{
-			auto it = reg_alloced.find(param._reg);
+			const Sh4RegType sh4reg = (Sh4RegType)(param._reg + i);
+			auto it = reg_alloced.find(sh4reg);
 			if (it == reg_alloced.end())
 			{
 				u32 host_reg;
@@ -456,18 +471,18 @@ private:
 					host_reg = host_fregs.back();
 					host_fregs.pop_back();
 				}
-				reg_alloced[param._reg] = { host_reg, param.version[0], NeedsWriteBack(param._reg, param.version[0]), true };
-				ssa_printf("   %s.%d -> %cx %s", name_reg(param._reg).c_str(), param.version[0], 'a' + host_reg, reg_alloced[param._reg].write_back ? "(wb)" : "");
+				reg_alloced[sh4reg] = { host_reg, param.version[i], NeedsWriteBack(sh4reg, param.version[i]), true };
+				ssa_printf("   %s.%d -> %cx %s", name_reg(sh4reg).c_str(), param.version[i], 'a' + host_reg, reg_alloced[sh4reg].write_back ? "(wb)" : "");
 			}
 			else
 			{
-				reg_alloc& reg = reg_alloced[param._reg];
+				reg_alloc& reg = it->second;
 				verify(!reg.write_back);
-				reg.write_back = NeedsWriteBack(param._reg, param.version[0]);
+				reg.write_back = NeedsWriteBack(sh4reg, param.version[i]);
 				reg.dirty = true;
-				reg.version = param.version[0];
+				reg.version = param.version[i];
 			}
-			verify(reg_alloced[param._reg].dirty);
+			verify(reg_alloced[sh4reg].dirty);
 		}
 	}
 
@@ -550,22 +565,23 @@ private:
 
 	bool IsVectorOp(shil_opcode* op)
 	{
-		return op->rs1.count() > 1 || op->rs2.count() > 1 || op->rs3.count() > 1 || op->rd.count() > 1 || op->rd2.count() > 1;
+		return op->rs1.count() > MaxVecSize || op->rs2.count() > MaxVecSize || op->rs3.count() > MaxVecSize
+				|| op->rd.count() > MaxVecSize || op->rd2.count() > MaxVecSize;
 	}
 
 	bool UsesReg(shil_opcode* op, Sh4RegType reg, u32 version, bool vector)
 	{
 		if (op->rs1.is_reg() && reg >= op->rs1._reg && reg < (Sh4RegType)(op->rs1._reg + op->rs1.count())
 				&& version == op->rs1.version[reg - op->rs1._reg]
-				&& vector == (op->rs1.count() > 1))
+				&& vector == (op->rs1.count() > MaxVecSize))
 			return true;
 		if (op->rs2.is_reg() && reg >= op->rs2._reg && reg < (Sh4RegType)(op->rs2._reg + op->rs2.count())
 				&& version == op->rs2.version[reg - op->rs2._reg]
-				&& vector == (op->rs2.count() > 1))
+				&& vector == (op->rs2.count() > MaxVecSize))
 			return true;
 		if (op->rs3.is_reg() && reg >= op->rs3._reg && reg < (Sh4RegType)(op->rs3._reg + op->rs3.count())
 				&& version == op->rs3.version[reg - op->rs3._reg]
-				&& vector == (op->rs3.count() > 1))
+				&& vector == (op->rs3.count() > MaxVecSize))
 			return true;
 
 		return false;
@@ -574,10 +590,10 @@ private:
 	bool DefsReg(shil_opcode* op, Sh4RegType reg, bool vector)
 	{
 		if (op->rd.is_reg() && reg >= op->rd._reg && reg < (Sh4RegType)(op->rd._reg + op->rd.count())
-				&& vector == (op->rd.count() > 1))
+				&& vector == (op->rd.count() > MaxVecSize))
 			return true;
 		if (op->rd2.is_reg() && reg >= op->rd2._reg && reg < (Sh4RegType)(op->rd2._reg + op->rd2.count())
-				&& vector == (op->rd2.count() > 1))
+				&& vector == (op->rd2.count() > MaxVecSize))
 			return true;
 		return false;
 	}

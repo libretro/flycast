@@ -43,14 +43,12 @@ enum eFReg {
  * the time slice and x28 the address of the SH4's context. */
 static eReg alloc_regs[] = { W19, W20, W21, W22, W23, W24, W25, (eReg)-1 };
 static eFReg alloc_fregs[] = { S8, S9, S10, S11, S12, S13, S14, S15, (eFReg)-1 };
+// A pair of the SH4's floating-point registers (DRn, XDn) is kept in two of them
+#define ALLOC_F64 true
 
 class Arm64Assembler;
 
-struct Arm64RegAlloc : RegAlloc<eReg, eFReg
-#ifndef EXPLODE_SPANS
-											, false
-#endif
-													>
+struct Arm64RegAlloc : RegAlloc<eReg, eFReg, ALLOC_F64>
 {
 	Arm64RegAlloc(Arm64Assembler *assembler) : assembler(assembler) {}
 
@@ -77,11 +75,7 @@ struct Arm64RegAlloc : RegAlloc<eReg, eFReg
 #ifdef OLD_REGALLOC
 		eFReg ereg = mapfv(param, index);
 #else
-#ifdef EXPLODE_SPANS
-#error EXPLODE_SPANS not supported with ssa regalloc
-#endif
-		verify(index == 0);
-		eFReg ereg = mapf(param);
+		eFReg ereg = mapf(param, index);
 #endif
 		if (ereg == (eFReg)-1)
 			die("VRegister not allocated");

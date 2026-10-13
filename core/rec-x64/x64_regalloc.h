@@ -45,16 +45,15 @@ static Xbyak::Operand::Code alloc_regs[] = { Xbyak::Operand::RBX, Xbyak::Operand
 // ones in use are saved round every call recompiled code makes (GenCall).
 static s8 alloc_fregs[] = { 8, 9, 10, 11, 12, 13, 14, 15, -1 };
 #endif
+/* A pair of the SH4's floating-point registers (DRn, XDn) is kept in two
+ * xmm registers, as single ones are. On hosts where no function keeps an
+ * xmm register, the ones in use are saved round every call (GenCall) and
+ * round a rewritten memory access (ngen_call_keep_xmm), pairs as well. */
+#define ALLOC_F64 true
 
 class BlockCompiler;
 
-struct X64RegAlloc : RegAlloc<Xbyak::Operand::Code, s8,
-#ifdef EXPLODE_SPANS
-														true
-#else
-														false
-#endif
-															 >
+struct X64RegAlloc : RegAlloc<Xbyak::Operand::Code, s8, ALLOC_F64>
 {
 	X64RegAlloc(BlockCompiler *compiler) : compiler(compiler) {}
 
@@ -81,7 +80,7 @@ struct X64RegAlloc : RegAlloc<Xbyak::Operand::Code, s8,
 #ifdef OLD_REGALLOC
 		s8 ereg = mapfv(param, index);
 #else
-		s8 ereg = mapf(param);
+		s8 ereg = mapf(param, index);
 #endif
 		if (ereg == -1)
 			die("VRegister not allocated");
