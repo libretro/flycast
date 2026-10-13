@@ -25,9 +25,10 @@ typedef struct chd_image chd_image_t;
 
 /* One entry of the track metadata: 'CHT2', else 'CHTR' (which leaves the
  * gap fields zero and the gap strings empty), else the GD-ROM 'CHGT' or
- * 'CHGD', which add @pad. */
+ * 'CHGD', which add @pad and set @gdrom. */
 typedef struct chd_image_track
 {
+   int32_t gdrom;
    int32_t track;
    int32_t frames;
    int32_t pad;

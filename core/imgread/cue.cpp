@@ -91,10 +91,21 @@ Disc* cue_parse(const char* file)
 
 	Disc* disc = new Disc();
 	u32 current_fad = 150;
-   std::string track_filename;
 	u32 track_number = -1;
    std::string track_type;
 	u32 session_number = 0;
+	bool high_density = false;
+	/* The FILE being read: where on the disc it starts, the file itself
+	 * until its first track takes it, and the sector size of its tracks
+	 * (0 until its first TRACK). A file can hold several tracks. */
+	bool have_file = false;
+	core_file* file_handle = nullptr;
+	size_t file_size = 0;
+	u32 file_start_fad = 0;
+	u32 sector_size = 0;
+	/* The first track of the second session: the gap that session starts
+	 * after takes in that track's pregap already. */
+	bool first_of_session = false;
 
 	while (!cuesheet.eof())
 	{
@@ -121,8 +132,11 @@ Disc* cue_parse(const char* file)
 				{
 					session_number = cur_session;
 					if (session_number == 2)
+					{
 						// session 1 lead-out: 01:30:00, session 2 lead-in: 01:00:00, pregap: 00:02:00
 						current_fad += 11400;
+						first_of_session = true;
+					}
 
 					Session ses;
 					ses.FirstTrack = disc->tracks.size() + 1;
@@ -135,16 +149,25 @@ Disc* cue_parse(const char* file)
 			{
 				// GD-Rom
 				if (token == "HIGH-DENSITY")
+				{
 					current_fad = 45000 + 150;
+					high_density = true;
+				}
 				else if (token != "SINGLE-DENSITY")
 					WARN_LOG(GDROM, "CUE parse error: unrecognized REM token %s. Expected SINGLE-DENSITY, HIGH-DENSITY or SESSION", token.c_str());
 				cuesheet >> token;
 				if (token != "AREA")
 					WARN_LOG(GDROM, "CUE parse error: unrecognized REM token %s. Expected AREA", token.c_str());
 			}
+			// (a new area or session starts somewhere else on the disc: its tracks are in a FILE of their own)
+			if (file_handle != nullptr)
+				core_fclose(file_handle);
+			file_handle = nullptr;
+			have_file = false;
 		}
 		else if (token == "FILE")
 		{
+			std::string track_filename;
 			char last = 0;
 
 			do {
@@ -170,68 +193,141 @@ Disc* cue_parse(const char* file)
 			cuesheet >> token;	// BINARY
 			if (token != "BINARY")
 				WARN_LOG(GDROM, "CUE parse error: unrecognized FILE token %s. Expected BINARY", token.c_str());
+
+			if (file_handle != nullptr)
+				core_fclose(file_handle);
+			file_handle = nullptr;
+			have_file = false;
+			if (track_filename.size() >= sizeof(path) - dir_end)
+			{
+				WARN_LOG(GDROM, "CUE file: file name too long: %s", track_filename.c_str());
+				delete disc;
+				return nullptr;
+			}
+			strcpy(pathptr, track_filename.c_str());
+			file_handle = core_fopen(path);
+			if (file_handle == nullptr)
+			{
+				WARN_LOG(GDROM, "CUE file: cannot open %s", path);
+				delete disc;
+				return nullptr;
+			}
+			have_file = true;
+			file_size = core_fsize(file_handle);
+			file_start_fad = current_fad;
+			sector_size = 0;
+			track_type.clear();
 		}
 		else if (token == "TRACK")
 		{
 			cuesheet >> track_number;
 			cuesheet >> track_type;
+			if (!have_file)
+			{
+				WARN_LOG(GDROM, "CUE file: track %d is not in a FILE", track_number);
+				if (file_handle != nullptr)
+					core_fclose(file_handle);
+				delete disc;
+				return nullptr;
+			}
+			const bool first_of_file = sector_size == 0;
+			sector_size = getSectorSize(track_type);
+			if (sector_size == 0)
+			{
+				WARN_LOG(GDROM, "CUE file: track %d has unknown sector type: %s", track_number, track_type.c_str());
+				if (file_handle != nullptr)
+					core_fclose(file_handle);
+				delete disc;
+				return nullptr;
+			}
+			if (file_size % sector_size != 0)
+				WARN_LOG(GDROM, "Warning: Size of track %s is not multiple of sector size %d", pathptr, sector_size);
+			/* The file's sectors are on the disc one after the other from
+			 * where it starts. (Tracks of different sizes in one file are
+			 * not laid out right: the first one's size is taken for all.) */
+			if (first_of_file)
+				current_fad = file_start_fad + (u32)(file_size / sector_size);
 		}
 		else if (token == "INDEX")
 		{
 			u32 index_num;
 			cuesheet >> index_num;
-			if (index_num == 1)
+			if (index_num == 1 && sector_size != 0)
 			{
+				/* The track starts at INDEX 01, which is minutes, seconds
+				 * and frames into its FILE: what comes before it in the
+				 * file is the track's pregap (or the end of the track
+				 * before, in the same file). (It was taken as the start
+				 * of the file, and two seconds were added to the start of
+				 * a track of music whatever the sheet said: a track with
+				 * no pregap lost its first two seconds - the Sonic Team
+				 * jingle of ChuChu Rocket - and a data track with one
+				 * started early.) */
+				cuesheet >> token;
+				u32 min = 0, sec = 0, frame = 0;
+				u32 index_fad = 0;
+				if (token.size() == 8 && sscanf(token.c_str(), "%2u:%2u:%2u", &min, &sec, &frame) == 3
+						&& sec < 60 && frame < 75)
+					index_fad = frame + 75 * (sec + 60 * min);
+				else
+					WARN_LOG(GDROM, "CUE file: track %d: INDEX 01 %s is not a time", track_number, token.c_str());
+				// (no further into the file than it goes)
+				if (index_fad > current_fad - file_start_fad)
+				{
+					WARN_LOG(GDROM, "CUE file: track %d: INDEX 01 %s is past the end of its file", track_number, token.c_str());
+					index_fad = current_fad - file_start_fad;
+				}
+				if (first_of_session && index_fad != 0)
+				{
+					/* The pregap of the first track of the second session
+					 * is in the gap counted before it: what of it is in the
+					 * file is not on the disc a second time. */
+					const u32 pregap = std::min(index_fad, (u32)150);
+					file_start_fad -= pregap;
+					current_fad -= pregap;
+				}
+				first_of_session = false;
+
 				Track t;
 				t.ADDR = 0;
-				t.StartFAD = current_fad;
+				t.StartFAD = file_start_fad + index_fad;
+				t.EndFAD = current_fad - 1;
 				t.CTRL = (track_type == "AUDIO" || track_type == "CDG") ? 0 : 4;
 
 				// (a disc has 99 tracks at most, and so has its table of contents)
 				if (disc->tracks.size() >= 99)
 				{
 					WARN_LOG(GDROM, "CUE file: more than 99 tracks");
+					if (file_handle != nullptr)
+						core_fclose(file_handle);
 					delete disc;
 					return nullptr;
 				}
-				if (track_filename.size() >= sizeof(path) - dir_end)
-				{
-					WARN_LOG(GDROM, "CUE file: track %d: file name too long", track_number);
-					delete disc;
-					return nullptr;
-				}
-				strcpy(pathptr, track_filename.c_str());
-
-				core_file* track_file = core_fopen(path);
+				// The file's first track takes it as it was opened; another track in it opens it again.
+				core_file* track_file = file_handle;
+				file_handle = nullptr;
+				if (track_file == nullptr)
+					track_file = core_fopen(path);
 				if (track_file == nullptr)
 				{
 					WARN_LOG(GDROM, "CUE file: cannot open track %d: %s", track_number, path);
 					delete disc;
 					return nullptr;
 				}
-				u32 sector_size = getSectorSize(track_type);
-				if (sector_size == 0)
-				{
-					WARN_LOG(GDROM, "CUE file: track %d has unknown sector type: %s", track_number, track_type.c_str());
-					core_fclose(track_file);
-					delete disc;
-					return nullptr;
-				}
-				if (core_fsize(track_file) % sector_size != 0)
-					WARN_LOG(GDROM, "Warning: Size of track %s is not multiple of sector size %d", track_filename.c_str(), sector_size);
-				current_fad = t.StartFAD + (u32)core_fsize(track_file) / sector_size;
-				t.EndFAD = current_fad - 1;
-				DEBUG_LOG(GDROM, "file[%zd] \"%s\": session %d type %s FAD:%d -> %d", disc->tracks.size() + 1, track_filename.c_str(), session_number, track_type.c_str(), t.StartFAD, t.EndFAD);
-				
-				t.file = new RawTrackFile(track_file, 0, t.StartFAD, sector_size);
+				DEBUG_LOG(GDROM, "file[%zd] \"%s\": session %d type %s FAD:%d -> %d", disc->tracks.size() + 1, pathptr, session_number, track_type.c_str(), t.StartFAD, t.EndFAD);
+
+				t.file = new RawTrackFile(track_file, index_fad * sector_size, t.StartFAD, sector_size);
+				// (the track before ends where this one starts, when they share a file)
+				if (!disc->tracks.empty() && disc->tracks.back().EndFAD >= t.StartFAD)
+					disc->tracks.back().EndFAD = t.StartFAD - 1;
 				disc->tracks.push_back(t);
-				
+
 				track_number = -1;
-				track_type.clear();
-				track_filename.clear();
 			}
 		}
 	}
+	if (file_handle != nullptr)
+		core_fclose(file_handle);
 	if (disc->tracks.empty())
 	{
 		WARN_LOG(GDROM, "CUE parse error: failed to parse or invalid file with 0 tracks");
@@ -239,20 +335,27 @@ Disc* cue_parse(const char* file)
 		return nullptr;
 	}
 
-	if (session_number == 0)
+	if (session_number == 0 && high_density)
 		disc->FillGDSession();
 	else
 	{
-		disc->type = CdRom_XA;
+		if (session_number == 0)
+		{
+			/* No GD-ROM area and no sessions: a CD of one session, an
+			 * audio CD or one with data. (It was made a GD-ROM, of which
+			 * it had nothing where a GD-ROM has it.) */
+			Session ses;
+			ses.FirstTrack = 1;
+			ses.StartFAD = disc->tracks[0].StartFAD;
+			disc->sessions.push_back(ses);
+			disc->type = CdRom;
+		}
+		else
+			disc->type = CdRom_XA;
 		disc->LeadOut.ADDR = 1;	// subcode-q channel
 		disc->LeadOut.CTRL = 4;	// data
 		disc->EndFAD = disc->LeadOut.StartFAD = current_fad;
 	}
-
-	// Get rid of the pregap for audio tracks
-	for (Track& t : disc->tracks)
-		if (t.CTRL == 0)
-			t.StartFAD += 150;
 
 	return disc;
 }

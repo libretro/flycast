@@ -148,11 +148,17 @@ struct CHDTrack : TrackFile
 		else
 			memcpy(dst,hmem+hunk_ofs*(2352+96),fmt);
 
-		*sector_type=fmt==2352?SECFMT_2352:SECFMT_2048_MODE1;
+		*sector_type=Format();
 
 		//While space is reserved for it, the images contain no actual subcodes
 		//memcpy(subcode,disc->hunk_mem+hunk_ofs*(2352+96)+2352,96);
 		*subcode_type=SUBFMT_NONE;
+	}
+
+	// (a CD's mode 2 track can be kept without the sync and header: 2336 bytes)
+	SectorFormat Format() const
+	{
+		return fmt == 2352 ? SECFMT_2352 : fmt == 2336 ? SECFMT_2336_MODE2 : SECFMT_2048_MODE1;
 	}
 
 	/* The compressed bytes of every hunk the sectors span, so neither
@@ -177,7 +183,7 @@ struct CHDTrack : TrackFile
 		if (swap_bytes)
 			return NULL;
 		hmem = disc->hunk_get(fad_offs / disc->sph);
-		*sector_type = fmt==2352?SECFMT_2352:SECFMT_2048_MODE1;
+		*sector_type = Format();
 		return hmem + (fad_offs % disc->sph) * (2352 + 96);
 	}
 };
@@ -212,6 +218,8 @@ bool CHDDisc::TryOpen(const char* file)
 	u32 total_frames = 150;
 
 	u32 Offset = 0;
+	bool gdrom = chd_image_version(chd) < 5;	// a CD's image is only read from version 5 on
+	u32 last_pregap = 0;
 
 	for(;;)
 	{
@@ -222,12 +230,30 @@ bool CHDDisc::TryOpen(const char* file)
 
 		int tkid = meta.track, frames = meta.frames, pregap = meta.pregap, postgap = meta.postgap;
 		const char *type = meta.type, *subtype = meta.subtype;
+		if (meta.gdrom)
+			gdrom = true;
 
-		if (tkid!=(tracks.size()+1) || (strcmp(type,"MODE1_RAW")!=0 && strcmp(type,"AUDIO")!=0 && strcmp(type,"MODE1")!=0) || strcmp(subtype,"NONE")!=0 || pregap!=0 || postgap!=0)
+		/* The sector sizes of the CD and GD-ROM track types. The subcode
+		 * is kept in its 96 bytes after each sector, whatever the subtype,
+		 * and the sectors are where they are with it or without. */
+		u32 sector_size = 0;
+		if (!strcmp(type, "AUDIO") || !strcmp(type, "MODE1_RAW") || !strcmp(type, "MODE2_RAW"))
+			sector_size = 2352;
+		else if (!strcmp(type, "MODE1"))
+			sector_size = 2048;
+		else if (!strcmp(type, "MODE2"))
+			sector_size = 2336;
+		/* A pregap of type "V..." is kept in the image, at the start of
+		 * the track's frames; any other is on the disc and not in the
+		 * image. A postgap is never in the image. */
+		const u32 pregap_kept = pregap > 0 && meta.pgtype[0] == 'V' ? (u32)pregap : 0;
+		if (tkid!=(tracks.size()+1) || sector_size == 0 || frames < 0 || pregap < 0 || postgap < 0 || (int)pregap_kept > frames)
 		{
-			INFO_LOG(GDROM, "chd: track type %s is not supported", type);
+			INFO_LOG(GDROM, "chd: track %d of type %s, %d frames, pregap %d is not supported", tkid, type, frames, pregap);
 			return false;
 		}
+		if (strcmp(subtype, "NONE") != 0)
+			WARN_LOG(GDROM, "chd: track %d has subcode (%s): not used", tkid, subtype);
 		// (a disc has 99 tracks at most, and so has its table of contents)
 		if (tracks.size() >= 99)
 		{
@@ -236,12 +262,16 @@ bool CHDDisc::TryOpen(const char* file)
 		}
 		DEBUG_LOG(GDROM, "chd: track %d %s %d frames", tkid, type, frames);
 		Track t;
-      t.StartFAD = total_frames;
-		total_frames += frames;
+		// (where INDEX 01 is: after the pregap)
+      t.StartFAD = total_frames + pregap;
+		total_frames = t.StartFAD + frames - pregap_kept;
 		t.EndFAD = total_frames - 1;
 		t.ADDR = 0;
 		t.CTRL = strcmp(type,"AUDIO") == 0 ? 0 : 4;
-		t.file = new CHDTrack(this, t.StartFAD, Offset - t.StartFAD, strcmp(type,"MODE1") ? 2352 : 2048, t.CTRL == 0 && chd_image_version(chd) >= 5);
+		last_pregap = pregap;
+		/* Music is kept in the other byte order in a version 5 image (and
+		 * in any of a CD, which is read from version 5 only). */
+		t.file = new CHDTrack(this, t.StartFAD, Offset + pregap_kept - t.StartFAD, sector_size, t.CTRL == 0 && chd_image_version(chd) >= 5);
 
 		int padded = (frames + CD_TRACK_PADDING - 1) / CD_TRACK_PADDING;
 		Offset += padded * CD_TRACK_PADDING;
@@ -256,10 +286,49 @@ bool CHDDisc::TryOpen(const char* file)
 		return false;
 	}
 
-	if (total_frames!=549300 || tracks.size()<3)
-		WARN_LOG(GDROM, "WARNING: chd: Total frames is wrong: %u frames in %zu tracks", total_frames, tracks.size());
+	if (gdrom)
+	{
+		if (total_frames!=549300 || tracks.size()<3)
+			WARN_LOG(GDROM, "WARNING: chd: Total frames is wrong: %u frames in %zu tracks", total_frames, tracks.size());
 
-	FillGDSession();
+		FillGDSession();
+	}
+	else
+	{
+		/* A CD. The image does not say where its sessions are: one that
+		 * ends in a data track after others is taken for a MIL-CD, its
+		 * last track alone in a second session; any other has one. */
+		Session ses;
+		ses.FirstTrack = 1;
+		ses.StartFAD = tracks[0].StartFAD;
+		sessions.push_back(ses);
+		LeadOut.ADDR = 1;	// subcode-q channel
+		LeadOut.CTRL = 4;	// data
+		if (tracks.size() > 1 && tracks.back().CTRL == 4)
+		{
+			/* Between the sessions: the first one's lead-out (01:30:00),
+			 * the second's lead-in (01:00:00) and the pregap of its
+			 * track (00:02:00), which is counted already when the image
+			 * has it. */
+			const u32 gap = 6750 + 4500 + 150 - std::min(last_pregap, (u32)150);
+			type = CdRom_XA;
+			tracks.back().StartFAD += gap;
+			tracks.back().EndFAD += gap;
+			((CHDTrack *)tracks.back().file)->Offset -= gap;
+			ses.FirstTrack = tracks.size();
+			ses.StartFAD = tracks.back().StartFAD;
+			sessions.push_back(ses);
+			EndFAD = LeadOut.StartFAD = total_frames + gap;
+		}
+		else
+		{
+			type = CdRom;
+			for (size_t i = 0; tracks.size() > 1 && i < tracks.size(); i++)
+				if (tracks[i].CTRL == 4)
+					type = CdRom_XA;
+			EndFAD = LeadOut.StartFAD = total_frames;
+		}
+	}
 
 	start_prefetch(file);
 

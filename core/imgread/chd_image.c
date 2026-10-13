@@ -338,10 +338,13 @@ bool chd_image_track(const chd_image_t *img, uint32_t index,
    else if (chd_meta_text(chd, CHD_META_GDROM_OLD, index, meta, sizeof(meta))
          || chd_meta_text(chd, RCHD_META_GDROM_TRACK, index, meta,
             sizeof(meta)))
+   {
       sscanf(meta, "TRACK:%d TYPE:%63s SUBTYPE:%31s FRAMES:%d PAD:%d "
             "PREGAP:%d PGTYPE:%31s PGSUB:%31s POSTGAP:%d",
             &out->track, out->type, out->subtype, &out->frames, &out->pad,
             &out->pregap, out->pgtype, out->pgsub, &out->postgap);
+      out->gdrom = 1;
+   }
    else
       return false;
    return true;
