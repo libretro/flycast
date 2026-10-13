@@ -725,6 +725,9 @@ static bool naomi_cart_LoadZip(const char *filename)
 	    {
 	       GDCartridge *gdcart = new GDCartridge(game->size);
 	       gdcart->SetGDRomName(game->gdrom_name);
+	       // (these have the network DIMM board, not emulated: they see no board)
+	       gdcart->SetDimmBoard(strncmp(game->name, "vf4", 3) != 0
+	             && strcmp(game->name, "mj1") != 0 && strncmp(game->name, "wccf", 4) != 0);
 	       CurrentCartridge = gdcart;
 	    }
 	    break;

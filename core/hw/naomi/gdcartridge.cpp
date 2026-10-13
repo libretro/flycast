@@ -11,6 +11,13 @@
  */
 
 #include "gdcartridge.h"
+#include "naomi.h"
+#include "naomi_periph.h"
+#include "naomi_regs.h"
+#include "hw/holly/sb.h"
+#include "hw/holly/holly_intc.h"
+#include "hw/sh4/sh4_mem.h"
+#include "hw/sh4/sh4_sched.h"
 
 extern char g_base_name[128];
 extern char g_parent_name[128];
@@ -658,4 +665,558 @@ std::string GDCartridge::GetGameId()
 	while (!game_id.empty() && game_id.back() == ' ')
 		game_id.pop_back();
 	return game_id;
+}
+
+/* The DIMM board, as its firmware 1.02 without the network answers the
+ * NAOMI: the BIOS finds a GD-ROM system, and the board puts its memory
+ * size, firmware version and the ROM board's serial number where the
+ * BIOS and the games look for them (a game that finds no serial number
+ * there stops with error 04). The registers are reg_dimm_command,
+ * reg_dimm_offsetl, reg_dimm_parameterl and reg_dimm_parameterh, which
+ * the save state has always held. */
+
+extern std::vector<sched_list> sch_list;
+
+// the cartridge with a DIMM board that answers (at most one at a time)
+static GDCartridge *dimm_cart;
+static int dimm_sched_id = -1;
+// bit 0: no command for the board; bit 4: always set; bit 8, cleared while
+// the board's interrupt to the NAOMI is waiting
+static const u32 DIMM_STATUS = 0x111;
+
+GDCartridge::~GDCartridge()
+{
+	SetDimmBoard(false);
+	free(dimm_data);
+}
+
+void GDCartridge::SetDimmBoard(bool on)
+{
+	static const u8 serial_data[0x84] = {
+		// response to reset
+		0x19, 0x00, 0xaa, 0x55,
+		// write password, read password
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x69, 0x79, 0x68, 0x6b, 0x74, 0x6d, 0x68, 0x6d,
+		// the data: the serial number is its last 16 bytes
+		0xa1, 0x09, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+		' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+	};
+
+	if (on)
+	{
+		dimm_cart = this;
+		dimm_sched_id = sh4_sched_register(0, &GDCartridge::dimm_sched);
+		serial_id.setData(serial_data);
+	}
+	else if (dimm_cart == this)
+	{
+		sh4_sched_request(dimm_sched_id, -1);
+		dimm_cart = NULL;
+	}
+	dimm_board = on;
+	dimm_on = on;
+	serial_id.reset();
+}
+
+void GDCartridge::dimm_reset()
+{
+	dimm_on = dimm_board;
+	serial_id.reset();
+	if (dimm_cart == this)
+		sh4_sched_request(dimm_sched_id, -1);
+}
+
+u32 GDCartridge::ReadMem(u32 address, u32 size)
+{
+	if (!dimm_on)
+		return NaomiCartridge::ReadMem(address, size);
+	switch (address & 255)
+	{
+	case 0x3c:	// 5f703c: DIMM COMMAND
+		return reg_dimm_command & 0xffff;
+	case 0x40:	// 5f7040: DIMM OFFSETL
+		return reg_dimm_offsetl & 0xffff;
+	case 0x44:	// 5f7044: DIMM PARAMETERL
+		return reg_dimm_parameterl & 0xffff;
+	case 0x48:	// 5f7048: DIMM PARAMETERH
+		return reg_dimm_parameterh & 0xffff;
+	case 0x4c:	// 5f704c: DIMM STATUS
+		return DIMM_STATUS & ~(((SB_ISTEXT >> 3) & 1) << 8);
+	case NAOMI_BOARDID_READ_addr & 255:
+		return serial_id.readSDA() ? 0x8000 : 0;
+	default:
+		return NaomiCartridge::ReadMem(address, size);
+	}
+}
+
+void GDCartridge::WriteMem(u32 address, u32 data, u32 size)
+{
+	if (!dimm_on)
+	{
+		NaomiCartridge::WriteMem(address, data, size);
+		return;
+	}
+	switch (address & 255)
+	{
+	case 0x3c:	// 5f703c: DIMM COMMAND
+		reg_dimm_command = data & 0xffff;
+		return;
+	case 0x40:	// 5f7040: DIMM OFFSETL
+		reg_dimm_offsetl = data & 0xffff;
+		return;
+	case 0x44:	// 5f7044: DIMM PARAMETERL
+		reg_dimm_parameterl = data & 0xffff;
+		return;
+	case 0x48:	// 5f7048: DIMM PARAMETERH
+		reg_dimm_parameterh = data & 0xffff;
+		return;
+	case 0x4c:	// 5f704c: DIMM STATUS
+		// bit 8 set: the board's interrupt is taken (a 0 there does nothing);
+		// bit 0 clear: a command for the board
+		if (data & 0x100)
+			asic_CancelInterrupt(holly_EXP_PCI);
+		if ((data & 1) == 0)
+			dimm_process();
+		return;
+	case NAOMI_BOARDID_WRITE_addr & 255:
+		serial_id.writeCS(data & 4);
+		serial_id.writeRST(data & 8);
+		serial_id.writeSCL(data & 2);
+		serial_id.writeSDA(data & 1);
+		return;
+	default:
+		NaomiCartridge::WriteMem(address, data, size);
+		return;
+	}
+}
+
+/* A command from the NAOMI: bits 14-13 its group, 12-9 the command. */
+void GDCartridge::dimm_process()
+{
+	const u32 group = (reg_dimm_command >> 13) & 3;
+	const u32 cmd = (reg_dimm_command >> 9) & 0xf;
+
+	DEBUG_LOG(NAOMI, "DIMM command %04x offset %04x param %04x%04x", reg_dimm_command,
+			reg_dimm_offsetl, reg_dimm_parameterh, reg_dimm_parameterl);
+	if (group == 0)
+		dimm_system_command(cmd);
+	else
+	{
+		// (network commands: this board has none)
+		WARN_LOG(NAOMI, "DIMM command group %d command %x not handled", group, cmd);
+		dimm_return(true, 0, 0xffffffff);
+	}
+}
+
+void GDCartridge::dimm_return(bool failed, u16 offsetl, u32 parameter)
+{
+	reg_dimm_command = ((reg_dimm_command & 0x7e00) + 0x400) | (failed ? 0xff : 0x4);
+	reg_dimm_offsetl = offsetl;
+	reg_dimm_parameterh = parameter >> 16;
+	reg_dimm_parameterl = parameter & 0xffff;
+	asic_RaiseInterrupt(holly_EXP_PCI);
+}
+
+void GDCartridge::dimm_system_command(u32 cmd)
+{
+	switch (cmd)
+	{
+	case 0xf:	// start up
+		{
+			/* At 0c01fc04, the board's configuration: bits 16-17 the size
+			 * of DIMM 0 (128, 256 or 512 MB), bit 29 set, bit 30 a GD-ROM
+			 * drive, the low bits the size in MB of the memory the game
+			 * takes. At 0c01fc0c the firmware version, at 0c01fc40 the
+			 * serial number. */
+			u32 dimm_size = 1 << 16;
+			if (dimm_data_size == 0x20000000)
+				dimm_size = 3 << 16;
+			else if (dimm_data_size == 0x10000000)
+				dimm_size = 2 << 16;
+			WriteMem32_nommu(0x0c01fc04, dimm_size | 0x60000000 | (dimm_data_size >> 20));
+			WriteMem32_nommu(0x0c01fc0c, 0x01020264);
+			const u8 *serial = serial_id.getProtectedData() + 0x20;
+			for (u32 i = 0; i < 16; i += 4)
+			{
+				u32 v;
+				memcpy(&v, serial + i, 4);
+				WriteMem32_nommu(0x0c01fc40 + i, v);
+			}
+			// the board asks the NAOMI to set its base address to 0c000000
+			reg_dimm_command = 0x8600;
+			reg_dimm_offsetl = 0;
+			reg_dimm_parameterl = 0;
+			reg_dimm_parameterh = 0x0c00;
+			asic_RaiseInterrupt(holly_EXP_PCI);
+			if (dimm_cart == this)
+				sh4_sched_request(dimm_sched_id, SH4_MAIN_CLOCK);
+		}
+		break;
+
+	case 0:		// nothing
+	case 1:		// control read
+	case 3:		// set base address
+	case 4:		// peek8
+	case 5:		// peek16
+	case 6:		// peek32
+	case 8:		// poke8
+	case 9:		// poke16
+	case 10:	// poke32
+		// the NAOMI's answer to a command of the board's
+		DEBUG_LOG(NAOMI, "DIMM: answer to command %x", cmd);
+		break;
+
+	default:
+		WARN_LOG(NAOMI, "DIMM: system command %x not handled", cmd);
+		break;
+	}
+}
+
+int GDCartridge::dimm_sched(int tag, int cycles, int jitter)
+{
+	return dimm_cart != NULL ? dimm_cart->dimm_poll() : 0;
+}
+
+/* Once a second the board asks the NAOMI for the word at 0c01fc08, where the
+ * BIOS's test menu leaves its requests, and answers them. */
+int GDCartridge::dimm_poll()
+{
+	if (!dimm_on)
+		return 0;
+	if (SB_ISTEXT & 8)	// the last interrupt is not taken yet
+		return SH4_MAIN_CLOCK;
+
+	// peek32(0c01fc08)
+	reg_dimm_command = 0x8000 | (6 << 9) | ((0x0c01fc08 >> 16) & 0x1ff);
+	reg_dimm_offsetl = 0x0c01fc08 & 0xffff;
+	reg_dimm_parameterl = 0;
+	reg_dimm_parameterh = 0;
+	asic_RaiseInterrupt(holly_EXP_PCI);
+
+	const u32 request = ReadMem32_nommu(0x0c01fc08);
+	if (request & 1)
+	{
+		// the DIMM test of the BIOS
+		static const char lines[] = "CHECKING DIMM BD" "DIMM0 - GOOD    " "DIMM1 - GOOD    " "--- COMPLETED---";
+		WriteMem32_nommu(0x0c01fc08, request & ~1);
+		for (u32 i = 0; i < 64; i++)
+			WriteMem8_nommu(0x0c01fd00 + i, lines[i]);
+		WriteMem32_nommu(0x0c01fc0c, 0x0102a264);
+	}
+	else if (request != 0)
+	{
+		WriteMem32_nommu(0x0c01fc08, 0);
+		WriteMem32_nommu(0x0c01fc0c, 0x03170100);
+		INFO_LOG(NAOMI, "DIMM: test request %x", request);
+	}
+	return SH4_MAIN_CLOCK;
+}
+
+/* In the save state from V25, on a NAOMI with a DIMM board only (151
+ * bytes): whether it answers, when it next polls, and its serial EEPROM. */
+void GDCartridge::SerializeV25(void **data, unsigned int *total_size)
+{
+	u8 on = dimm_on;
+	s32 start = sch_list[dimm_sched_id].start;
+	s32 end = sch_list[dimm_sched_id].end;
+
+	LIBRETRO_S(on);
+	LIBRETRO_S(start);
+	LIBRETRO_S(end);
+	serial_id.serialize(data, total_size);
+}
+
+void GDCartridge::UnserializeV25(void **data, unsigned int *total_size)
+{
+	u8 on = 0;
+	s32 start = -1, end = -1;
+
+	LIBRETRO_US(on);
+	LIBRETRO_US(start);
+	LIBRETRO_US(end);
+	serial_id.unserialize(data, total_size);
+	dimm_on = on != 0;
+	periph_sched_restore(dimm_sched_id, start, end);
+}
+
+/* A state from before: the board did not answer in it, and it goes on not
+ * answering till the machine is reset. */
+void GDCartridge::StateBeforeV25()
+{
+	dimm_on = false;
+	serial_id.reset();
+	sh4_sched_request(dimm_sched_id, -1);
+}
+
+void naomi_gd_serialize_v25(void **data, unsigned int *total_size)
+{
+	if (dimm_cart != NULL && dimm_cart == CurrentCartridge)
+		dimm_cart->SerializeV25(data, total_size);
+}
+
+bool naomi_gd_unserialize_v25(void **data, unsigned int *total_size)
+{
+	if (dimm_cart != NULL && dimm_cart == CurrentCartridge)
+		dimm_cart->UnserializeV25(data, total_size);
+	return true;
+}
+
+void naomi_gd_state_before_v25(void)
+{
+	if (dimm_cart != NULL && dimm_cart == CurrentCartridge)
+		dimm_cart->StateBeforeV25();
+}
+
+/* The X76F100. Each write to 5f7078 sets its four lines at once, chip
+ * select and reset first, then the clock, then the data: a data line that
+ * changes in the same write as the clock is not a start or a stop. */
+
+void GDCartridge::X76F100::setData(const u8 *src)
+{
+	memcpy(responseToReset, src, sizeof(responseToReset));
+	src += sizeof(responseToReset);
+	memcpy(writePassword, src, sizeof(writePassword));
+	src += sizeof(writePassword);
+	memcpy(readPassword, src, sizeof(readPassword));
+	src += sizeof(readPassword);
+	memcpy(data, src, sizeof(data));
+}
+
+void GDCartridge::X76F100::reset()
+{
+	lastSCL = false;
+	SCLChanged = false;
+	lastSDA = false;
+	sda = false;
+	lastRST = false;
+	lastCS = false;
+	state = STOP;
+	bit = 0;
+	byteOffset = 0;
+	command = 0;
+	shift = 0;
+	memset(writeBuffer, 0, sizeof(writeBuffer));
+}
+
+int GDCartridge::X76F100::dataOffset() const
+{
+	// (blocks 14 and 15 are past the 112 bytes)
+	const int offset = ((command >> 1) & 0x0f) * 8 + byteOffset;
+	return offset < (int)sizeof(data) ? offset : -1;
+}
+
+void GDCartridge::X76F100::writeCS(bool v)
+{
+	if (lastCS != v)
+		state = STOP;
+	if (!lastCS && v)
+		sda = false;
+	lastCS = v;
+}
+
+void GDCartridge::X76F100::writeRST(bool v)
+{
+	if (v && !lastRST && !lastCS)
+	{
+		state = RESPONSE_TO_RESET;
+		bit = 0;
+		byteOffset = 0;
+	}
+	lastRST = v;
+}
+
+void GDCartridge::X76F100::writeSCL(bool v)
+{
+	if (!lastCS)
+	{
+		switch (state)
+		{
+		case RESPONSE_TO_RESET:
+			if (lastSCL && !v)
+			{
+				if (bit == 0)
+					shift = responseToReset[byteOffset];
+				sda = shift & 1;
+				shift >>= 1;
+				if (++bit == 8)
+				{
+					bit = 0;
+					if (++byteOffset == sizeof(responseToReset))
+						byteOffset = 0;
+				}
+			}
+			break;
+
+		case LOAD_COMMAND:
+		case LOAD_PASSWORD:
+		case VERIFY_PASSWORD:
+		case WRITE_DATA:
+			if (!lastSCL && v)
+			{
+				if (bit < 8)
+				{
+					shift = (shift << 1) | (lastSDA ? 1 : 0);
+					bit++;
+					break;
+				}
+				// the ninth clock: the byte is in
+				sda = false;
+				switch (state)
+				{
+				case LOAD_COMMAND:
+					command = shift;
+					state = LOAD_PASSWORD;
+					break;
+
+				case LOAD_PASSWORD:
+					writeBuffer[byteOffset++] = shift;
+					if (byteOffset == sizeof(writeBuffer))
+						state = VERIFY_PASSWORD;
+					break;
+
+				case VERIFY_PASSWORD:
+					// the password acknowledge poll: any password is taken
+					if (shift == 0x55)
+					{
+						if ((command & 0x81) == 0x81)
+							state = READ_DATA;
+						else if ((command & 0x81) == 0x80)
+						{
+							state = WRITE_DATA;
+							// (the eight bytes of the password are not data)
+							byteOffset = 0;
+						}
+					}
+					break;
+
+				case WRITE_DATA:
+					writeBuffer[byteOffset++] = shift;
+					if (byteOffset == sizeof(writeBuffer))
+					{
+						if (command == 0xfc)
+							memcpy(writePassword, writeBuffer, sizeof(writePassword));
+						else if (command == 0xfe)
+							memcpy(readPassword, writeBuffer, sizeof(readPassword));
+						else
+						{
+							for (byteOffset = 0; byteOffset < sizeof(writeBuffer); byteOffset++)
+							{
+								const int offset = dataOffset();
+								if (offset == -1)
+									break;
+								data[offset] = writeBuffer[byteOffset];
+							}
+						}
+						byteOffset = 0;
+					}
+					break;
+				}
+				bit = 0;
+				shift = 0;
+			}
+			break;
+
+		case READ_DATA:
+			if (!lastSCL && v)
+			{
+				if (bit < 8)
+				{
+					if (bit == 0)
+					{
+						const int offset = dataOffset();
+						shift = offset != -1 ? data[offset] : 0;
+					}
+					sda = (shift >> 7) & 1;
+					shift <<= 1;
+					bit++;
+				}
+				else
+				{
+					// the ninth clock: the next byte if the NAOMI acknowledges
+					bit = 0;
+					sda = false;
+					if (!lastSDA)
+						byteOffset++;
+				}
+			}
+			break;
+
+		default:
+			break;
+		}
+	}
+	SCLChanged = lastSCL != v;
+	lastSCL = v;
+}
+
+void GDCartridge::X76F100::writeSDA(bool v)
+{
+	if (lastSCL && !SCLChanged && !lastCS)
+	{
+		if (!lastSDA && v)
+		{
+			// stop
+			state = STOP;
+			sda = false;
+		}
+		if (lastSDA && !v)
+		{
+			// start
+			if (state == STOP)
+				state = LOAD_COMMAND;
+			bit = 0;
+			byteOffset = 0;
+			shift = 0;
+			sda = false;
+		}
+	}
+	lastSDA = v;
+}
+
+void GDCartridge::X76F100::serialize(void **data, unsigned int *total_size)
+{
+	u8 regs[6];
+
+	regs[0] = lastSCL | (SCLChanged << 1) | (lastSDA << 2) | (sda << 3) | (lastRST << 4) | (lastCS << 5);
+	regs[1] = state;
+	regs[2] = command;
+	regs[3] = byteOffset;
+	regs[4] = bit;
+	regs[5] = shift;
+	LIBRETRO_SA(regs, 6);
+	LIBRETRO_SA(writeBuffer, 8);
+	LIBRETRO_SA(this->data, 112);
+	LIBRETRO_SA(readPassword, 8);
+	LIBRETRO_SA(writePassword, 8);
+}
+
+void GDCartridge::X76F100::unserialize(void **data, unsigned int *total_size)
+{
+	u8 regs[6] = { 0 };
+
+	LIBRETRO_USA(regs, 6);
+	LIBRETRO_USA(writeBuffer, 8);
+	LIBRETRO_USA(this->data, 112);
+	LIBRETRO_USA(readPassword, 8);
+	LIBRETRO_USA(writePassword, 8);
+	lastSCL = regs[0] & 1;
+	SCLChanged = (regs[0] >> 1) & 1;
+	lastSDA = (regs[0] >> 2) & 1;
+	sda = (regs[0] >> 3) & 1;
+	lastRST = (regs[0] >> 4) & 1;
+	lastCS = (regs[0] >> 5) & 1;
+	state = regs[1] <= WRITE_DATA ? regs[1] : (u8)STOP;
+	command = regs[2];
+	byteOffset = regs[3];
+	bit = std::min<u8>(regs[4], 8);
+	shift = regs[5];
+	// (where a byte goes into a buffer, its place is inside it)
+	if ((state == RESPONSE_TO_RESET && byteOffset >= sizeof(responseToReset))
+			|| ((state == LOAD_COMMAND || state == LOAD_PASSWORD || state == WRITE_DATA)
+				&& byteOffset >= sizeof(writeBuffer)))
+		byteOffset = 0;
+	if (state == RESPONSE_TO_RESET && bit >= 8)
+		bit = 0;
 }
