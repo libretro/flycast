@@ -395,7 +395,13 @@ void rend_vblank()
 	{
 		DEBUG_LOG(PVR, "Direct framebuffer write detected");
 		u32 saved_ctx_addr = PARAM_BASE;
-		bool restore_ctx = ta_ctx != NULL;
+		/* The frame the game is sending lists to, which this borrows the
+		 * place of: it is the one to go back to. (What was gone back to
+		 * was the frame PARAM_BASE names - the one the game last had
+		 * drawn, another one. A game in the middle of sending a frame's
+		 * lists had the rest of them go there, and that frame drawn
+		 * without them.) */
+		const u32 current_ctx = ta_ctx != NULL ? ta_ctx->Address : TACTX_NONE;
 		PARAM_BASE = 0xF00000;
 		SetCurrentTARC(CORE_CURRENT_CTX);
 		ta_ctx->Reset();
@@ -403,8 +409,8 @@ void rend_vblank()
 		ta_ctx->rend.isRTT = false;
 		rend_start_render();
 		PARAM_BASE = saved_ctx_addr;
-		if (restore_ctx)
-			SetCurrentTARC(CORE_CURRENT_CTX);
+		if (current_ctx != TACTX_NONE)
+			SetCurrentTARC(current_ctx);
 		fb_dirty = false;
 		produced = true;
 	}
