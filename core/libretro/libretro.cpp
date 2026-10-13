@@ -186,6 +186,20 @@ retro_environment_t        environ_cb = NULL;
 retro_environment_t        frontend_clear_thread_waits_cb = NULL;
 static retro_rumble_interface rumble;
 
+/* Every motor stopped, and nothing waiting to run it down later: the
+ * devices that ran them are gone, or the machine has been reset. */
+static void rumble_stop(void)
+{
+   if (!rumble.set_rumble_state)
+      return;
+   for (int i = 0; i < MAPLE_PORTS; i++)
+   {
+      vib_stop_time[i] = 0;
+      rumble.set_rumble_state(i, RETRO_RUMBLE_STRONG, 0);
+      rumble.set_rumble_state(i, RETRO_RUMBLE_WEAK,   0);
+   }
+}
+
 void ResetAudioBuffer(void);
 void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
@@ -1468,6 +1482,7 @@ void retro_reset (void)
    update_variables(false);
    dc_reset(true);
    ResetAudioBuffer();
+   rumble_stop();
 
 #if !defined(TARGET_NO_THREADS)
    emu_release();
@@ -2801,7 +2816,13 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 
 unsigned retro_get_region (void)
 {
-   return RETRO_REGION_NTSC; //TODO
+   /* A Dreamcast set (or made by its game) to broadcast PAL or PAL-N, the
+    * 50 Hz standards. PAL-M is 60 Hz; "Default" is what the console's flash
+    * has, and the arcade machines are 60 Hz. */
+   if (settings.System == DC_PLATFORM_DREAMCAST
+         && (settings.dreamcast.broadcast == 1 || settings.dreamcast.broadcast == 3))
+      return RETRO_REGION_PAL;
+   return RETRO_REGION_NTSC;
 }
 
 // Controller
@@ -2850,14 +2871,7 @@ static void refresh_devices(bool first_startup)
       if (settings.System == DC_PLATFORM_DREAMCAST)
          maple_ReconnectDevices();
 
-      if (rumble.set_rumble_state)
-      {
-         for(int i = 0; i < MAPLE_PORTS; i++)
-         {
-            rumble.set_rumble_state(i, RETRO_RUMBLE_STRONG, 0);
-            rumble.set_rumble_state(i, RETRO_RUMBLE_WEAK,   0);
-         }
-      }
+      rumble_stop();
    }
    else
    {
