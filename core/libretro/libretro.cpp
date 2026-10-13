@@ -57,6 +57,9 @@ char* strdup(const char *str)
 #include "hw/maple/maple_cfg.h"
 #include "../hw/pvr/spg.h"
 #include "../hw/naomi/naomi_cart.h"
+#include "../hw/naomi/naomi_periph.h"
+// whether L is the "Insert Card" button (naomi.cpp)
+extern bool naomi_card_button;
 #include "../savewriter.h"
 #include "../archive/archive.h"
 #include "../imgread/common.h"
@@ -499,6 +502,8 @@ static void set_variable_visibility(void)
    option_display.key = CORE_OPTION_NAME "_allow_service_buttons";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = CORE_OPTION_NAME "_enable_naomi_15khz_dipswitch";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+   option_display.key = CORE_OPTION_NAME "_naomi_card_readers";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
    /* The Atomiswave's BIOS is its own, and there is nothing in place of it */
@@ -1157,6 +1162,15 @@ static void update_variables(bool first_startup)
    else
       enable_naomi_15khz_dipswitch = false;
 
+   var.key = CORE_OPTION_NAME "_naomi_card_readers";
+
+   /* (the readers are plugged in when the game starts: a change is for the
+    * next one, or the next hard reset) */
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      naomi_card_readers_enabled = !strcmp("enabled", var.value);
+   else
+      naomi_card_readers_enabled = false;
+
    var.key = CORE_OPTION_NAME "_custom_textures";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1708,6 +1722,9 @@ static uint32_t map_gamepad_button(unsigned device, unsigned id)
    if (id >= joymap_size)
 	  return 0;
    uint32_t mapped = joymap[id];
+   // L puts a card in, in a game with a card reader
+   if (id == RETRO_DEVICE_ID_JOYPAD_L && device == RETRO_DEVICE_JOYPAD && SYSTEM_IS_NAOMI() && naomi_card_button)
+	  mapped = NAOMI_INSERT_CARD_KEY;
    // Hack to bind Button 9 instead of Service when not used
    if (id == RETRO_DEVICE_ID_JOYPAD_R3 && device == RETRO_DEVICE_JOYPAD && SYSTEM_IS_NAOMI() && !allow_service_buttons)
 	  mapped = NAOMI_BTN8_KEY;
@@ -1811,7 +1828,7 @@ static void set_input_descriptors()
     		name = get_button_name(RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_R, "Button 5");
     		if (name != NULL)
     		   desc[descriptor_index++] = { i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R, name };
-    		name = get_button_name(RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_L, "Button 6");
+		name = naomi_card_button ? "Insert Card" : get_button_name(RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_L, "Button 6");
     		if (name != NULL)
     		   desc[descriptor_index++] = { i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L, name };
     		name = get_button_name(RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_R2, "Button 7");

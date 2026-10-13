@@ -325,6 +325,10 @@ SOURCES_CXX += $(CORE_DIR)/core/hw/naomi/naomi.cpp \
 					$(CORE_DIR)/core/hw/naomi/awcartridge.cpp \
 					$(CORE_DIR)/core/hw/naomi/gdcartridge.cpp \
 					$(CORE_DIR)/core/hw/naomi/naomi_m3comm.cpp \
+					$(CORE_DIR)/core/hw/naomi/card_reader.cpp \
+					$(CORE_DIR)/core/hw/naomi/touchscreen.cpp \
+					$(CORE_DIR)/core/hw/naomi/hopper.cpp \
+					$(CORE_DIR)/core/hw/naomi/printer.cpp \
 					$(CORE_DIR)/core/network/naomi_network.cpp
 
 ifeq ($(HAVE_GENERIC_JIT), 1)

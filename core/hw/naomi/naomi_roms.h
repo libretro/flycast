@@ -8004,6 +8004,126 @@ Games[] =
 		"gds-0039a",
 		&initd_inputs,
     },
+    // Sets that need a card reader (naomi_periph_init())
+    // Mushiking The King Of Beetle (2K3 2ND Ver. 1.000-, Korea)
+    {
+        "mushikk",
+        "mushike",
+        "Mushiking The King Of Beetle (2K3 2ND Ver. 1.000-, Korea)",
+        0x04000000,
+        0x3892fb3a,
+        "naomi",
+        M1,
+        REGION_AUSTRALIA,
+        ROT0,
+        {
+            { "epr-24265.ic11",      0x0000000, 0x0400000,  0xdccb210b },
+            { "opr-24266.ic17s",     0x1000000, 0x0800000,  0x293e5350, InterleavedWord },
+            { "opr-24267.ic18",      0x1000002, 0x0800000,  0x80798f9a, InterleavedWord },
+            { "opr-24268.ic19s",     0x2000000, 0x0800000,  0xb512c772, InterleavedWord },
+            { "opr-24269.ic20",      0x2000002, 0x0800000,  0x25d4a162, InterleavedWord },
+            { "opr-24270.ic21s",     0x3000000, 0x0800000,  0x02a513ad, InterleavedWord },
+            { "opr-24271.ic22",      0x3000002, 0x0800000,  0x7e5c745c, InterleavedWord },
+            { "copy",                0x0400000, 0x0c00000,  0x0000000, Copy, 0x1000000 },
+            { NULL, 0, 0 },
+        }
+    },
+    // Mushiking The King Of Beetle (2K3 2ND, Japan)
+    {
+        "mushi2k3",
+        NULL,
+        "Mushiking The King Of Beetle (2K3 2ND, Japan)",
+        0x5800000,
+        0,
+        "naomi",
+        M2,
+        REGION_JAPAN,
+        ROT0,
+        {
+            { "epr-24135.ic22", 0x00000000, 0x00400000, 0x4e5d7b69 },
+            { "mpr-24136.ic1",  0x00800000, 0x01000000, 0x4b020825 },
+            { "mpr-24137.ic2",  0x01800000, 0x01000000, 0x0f6e79de },
+            { "mpr-24138.ic3",  0x02800000, 0x01000000, 0x45379a9f },
+            { NULL, 0, 0 },
+        }
+    },
+    // Mushiking The King Of Beetles - Mushiking IV / V / VI (Taiwan), about the Japanese 2K6 versions
+    {
+        "mushik4t",
+        "mushik4e",
+        "Mushiking The King Of Beetles - Mushiking IV / V / VI (Taiwan)",
+        0x8000000,
+        0x5502,
+        "naomi",
+        M4,
+        REGION_EXPORT,
+        ROT0,
+        {
+            { "fpr-24420.ic8", 0x0000000, 0x4000000, 0x4a44a604 },
+            { "fpr-24421.ic9", 0x4000000, 0x4000000, 0xaf137021 },	// BAD DUMP
+            { "317-0437-com.ic3", 0, 0x800,  0x3b6fcee8, Key },
+            { NULL, 0, 0 },
+        }
+    },
+    // Mushiking The King Of Beetles 2006 First (Japan)
+    {
+        "mushi2k61",
+        NULL,
+        "Mushiking The King Of Beetles 2006 First (Japan)",
+        0x8000000,
+        0x5502,
+        "naomi",
+        M4,
+        REGION_JAPAN,
+        ROT0,
+        {
+            { "fpr-24340.ic8", 0x0000000, 0x4000000, 0xd348a3a7 },
+            { "fpr-24341.ic9", 0x4000000, 0x4000000, 0xbde9547c },
+            { "317-0444-jpn.ic3", 0, 0x800,  0x6ded35a2, Key },
+            { NULL, 0, 0 },
+        }
+    },
+    // Mushiking The King Of Beetles 2006 Second (Japan)
+    {
+        "mushi2k62",
+        NULL,
+        "Mushiking The King Of Beetles 2006 Second (Japan)",
+        0x8000000,
+        0x5502,
+        "naomi",
+        M4,
+        REGION_JAPAN,
+        ROT0,
+        {
+            { "fpr-24360.ic8", 0x0000000, 0x4000000, 0x6e6c6633 },
+            { "fpr-24361.ic9", 0x4000000, 0x4000000, 0xce2a9720 },
+            { "317-0444-jpn.ic3", 0, 0x800,  0x6ded35a2, Key },
+            { NULL, 0, 0 },
+        }
+    },
+    // Derby Owners Club World Edition (Rev T)
+    {
+        "drbyocwt",
+        "derbyocw",
+        "Derby Owners Club World Edition (Rev T)",
+        0x7800000,
+        0xffffffff, // not populated
+        NULL,
+        M2,
+        REGION_AUSTRALIA,
+        ROT0,
+        {
+            { "epr-22336t.ic22", 0x0000000, 0x0400000, 0x18dc46b7 },
+            { "mpr-22328.ic1",   0x0800000, 0x1000000, 0x179cec02 },
+            { "mpr-22329.ic2",   0x1800000, 0x1000000, 0xe0d5b98c },
+            { "mpr-22330.ic3",   0x2800000, 0x1000000, 0x6737cd62 },
+            { "mpr-22331.ic4",   0x3800000, 0x1000000, 0x8fb5cbcf },
+            { "mpr-22332.ic5",   0x4800000, 0x1000000, 0xc5e365a8 },
+            { "mpr-22333.ic6",   0x5800000, 0x1000000, 0x96f324aa },
+            { "mpr-22334.ic7",   0x6800000, 0x1000000, 0x5389b05a },
+            { NULL, 0, 0 },
+        }
+    },
     {
         NULL
     }

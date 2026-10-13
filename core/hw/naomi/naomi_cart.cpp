@@ -23,6 +23,7 @@
 #include <string>
 #include <streams/file_stream.h>
 #include "naomi_cart.h"
+#include "naomi_periph.h"
 #include "naomi_regs.h"
 #include "naomi.h"
 #include "decrypt.h"
@@ -859,6 +860,8 @@ static bool naomi_cart_LoadZip(const char *filename)
 	if (naomi_game_id[0] == '\0')
 		strcpy(naomi_game_id, game->name);
 	NOTICE_LOG(NAOMI, "NAOMI GAME ID [%s]", naomi_game_id);
+	// (some of a game's devices go by its set: naomi_periph_init())
+	snprintf(naomi_set_name, 32, "%s", game->name);
 
 	return true;
 
@@ -1032,6 +1035,7 @@ int naomi_cart_GetRotation()
 void naomi_cart_Close()
 {
 	found_path.clear();		// the set there may be another by the next time
+	naomi_set_name[0] = '\0';
 	if (CurrentCartridge != NULL)
 	{
 		delete CurrentCartridge;

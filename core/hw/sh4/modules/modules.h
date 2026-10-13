@@ -26,6 +26,27 @@ void serial_init();
 void serial_reset();
 void serial_term();
 
+#include "hw/serial_port.h"
+/* The device plugged into the SCIF, if any (serial.cpp): NULL unplugs it.
+ * scif_update_status() is for a device that has something new to send. */
+void scif_set_pipe(SerialPort::Pipe *pipe);
+SerialPort::Pipe *scif_get_pipe();
+void scif_update_status();
+// what a device's port has in a state since V24: see serial.cpp
+void scif_serialize_v24(void **data, unsigned int *total_size);
+bool scif_unserialize_v24(void **data, unsigned int *total_size);
+void scif_state_before_v24(void);
+
+// The same, the way the peripherals' code has it
+class SCIFSerialPort : public SerialPort
+{
+public:
+	void setPipe(Pipe *pipe) override;
+	Pipe *getPipe() const { return scif_get_pipe(); }
+	void updateStatus() override;
+	static SCIFSerialPort& Instance();
+};
+
 void ubc_init();
 void ubc_reset();
 void ubc_term();

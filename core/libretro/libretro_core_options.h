@@ -601,6 +601,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "disabled",
    },
+   {
+      CORE_OPTION_NAME "_naomi_card_readers",
+      "NAOMI Card Readers",
+      NULL,
+      "Plug in the card reader of a game that has one: Initial D, Club Kart, Derby Owners Club, Mushiking, Virtua Fighter 4. L inserts a card. Cards are kept in the save directory. Takes effect when the game is next started or hard reset.",
+      NULL,
+      NULL,
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
    {/* TODO: needs explanation */
       CORE_OPTION_NAME "_custom_textures",
       "Load Custom Textures",

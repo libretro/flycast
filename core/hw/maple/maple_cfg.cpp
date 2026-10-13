@@ -4,6 +4,7 @@
 #include "maple_devs.h"
 #include "maple_cfg.h"
 #include "libretro/input_latch.h"
+#include "hw/naomi/naomi_periph.h"
 
 #include "lockfree.h"
 
@@ -284,6 +285,24 @@ struct MapleConfigMap : IMapleConfigMap
 	}
 };
 
+/* An arcade game's player's buttons (active low), read as the I/O board
+ * reads them, for the devices that are not on the maple bus: a card
+ * reader's button, a hopper's coin switch, a touch panel. */
+u32 mcfg_ArcadeKcode(int port)
+{
+	if (settings.rend.ThreadedRendering)
+		return input_latch.Read(port).kcode;
+	UpdateInputStateArcade();
+	return kcode[port];
+}
+
+// Where a player points, on the 640x480 screen
+void mcfg_ArcadeAbsPos(int port, f32 *x, f32 *y)
+{
+	*x = mo_x_abs[port];
+	*y = mo_y_abs[port];
+}
+
 void mcfg_Create(MapleDeviceType type,u32 bus,u32 port, int player_num /* = -1 */)
 {
 	maple_device* dev=maple_Create(type);
@@ -366,6 +385,13 @@ void mcfg_CreateDevices()
    {
       bus = 0;
       mcfg_Create(MDT_NaomiJamma, bus++, 5);
+      if (naomi_periph_rfid_game())
+      {
+         // an IC card reader for each player, and nothing else
+         mcfg_Create(MDT_RFIDReaderWriter, 1, 5, 0);
+         mcfg_Create(MDT_RFIDReaderWriter, 2, 5, 1);
+         return;
+      }
       for (int i = 0; i < MAPLE_PORTS; i++)
       {
       	switch (maple_devices[i])
@@ -569,7 +595,7 @@ void mcfg_UnserializeDevices(void **data, unsigned int *total_size)
 			u8 type = MDT_None;
 			if (!LIBRETRO_US(type))
 				type = MDT_None;
-			if (type > MDT_None)
+			if (type >= MDT_Count)
 			{
 				WARN_LOG(MAPLE, "Invalid device type %d at %d.%d in the state", type, i, j);
 				type = MDT_None;

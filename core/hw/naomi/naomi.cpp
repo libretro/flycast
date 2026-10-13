@@ -13,6 +13,16 @@
 #include "naomi_regs.h"
 #include "naomi_m3comm.h"
 #include "decrypt.h"
+#include "naomi_periph.h"
+#include "card_reader.h"
+#include "touchscreen.h"
+#include "hopper.h"
+#include "printer.h"
+#include "hw/sh4/modules/modules.h"
+#include "savewriter.h"
+#include <streams/file_stream.h>
+#include <algorithm>
+#include <vector>
 
 //#define NAOMI_COMM
 
@@ -616,6 +626,7 @@ void naomi_reg_Term()
 	// (the machine set up next may be a Dreamcast, which does not register this again)
 	naomi_dma_cancel();
 	m3comm.closeNetwork();
+	naomi_periph_term();
 }
 
 void naomi_reg_Reset(bool hard)
@@ -662,6 +673,9 @@ void naomi_reg_Reset(bool hard)
 	m3comm.reset();
 	if (hard && CurrentCartridge != NULL)
 		CurrentCartridge->Reset();
+	// (a hard reset is a power cycle: the devices start again, from their files)
+	if (hard)
+		naomi_periph_init();
 }
 
 /* The cartridge transfer's event as a save state has it. With no transfer
@@ -857,4 +871,327 @@ void libExtDevice_WriteMem_A0_006(u32 addr,u32 data,u32 size) {
 		break;
 	}
 	INFO_LOG(NAOMI, "Unhandled write @ %x (%d): %x", addr, size, data);
+}
+
+/*
+	The game's devices besides its I/O board (naomi_periph.h)
+*/
+char naomi_set_name[32];
+bool naomi_card_readers_enabled;
+// L is the "Insert Card" button (libretro.cpp)
+bool naomi_card_button;
+
+static bool periph_rfid;
+// what is read once each time the I/O board bridge is asked
+static bool periph_polled;
+// the "Insert Card" button of each player, as it was the last time
+static u8 periph_card_button[2];
+
+extern char eeprom_file[PATH_MAX];
+extern std::vector<sched_list> sch_list;
+
+static void periph_path(char *path, size_t size, const char *suffix)
+{
+	// the EEPROM's name, without its extension
+	size_t len = strlen(eeprom_file);
+	static const char ext[] = ".eeprom";
+	if (len >= sizeof(ext) - 1 && !strcmp(eeprom_file + len - (sizeof(ext) - 1), ext))
+		len -= sizeof(ext) - 1;
+	snprintf(path, size, "%.*s%s", (int)len, eeprom_file, suffix);
+}
+
+size_t periph_load_file(const char *suffix, void *buf, size_t size)
+{
+	char path[PATH_MAX + 16];
+	memset(buf, 0, size);
+	if (eeprom_file[0] == '\0')
+		return 0;
+	periph_path(path, sizeof(path), suffix);
+	RFILE *f = filestream_open(path, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	if (f == NULL)
+		return 0;
+	const int64_t n = filestream_read(f, buf, size);
+	filestream_close(f);
+	INFO_LOG(NAOMI, "Loaded %s", path);
+	return n > 0 ? (size_t)n : 0;
+}
+
+void periph_save_file(const char *suffix, const void *buf, size_t size, retro_atomic_int_t *failed)
+{
+	char path[PATH_MAX + 16];
+	if (eeprom_file[0] == '\0')
+		return;
+	if (retro_atomic_load_acquire_int(failed) && retro_atomic_exchange_int(failed, 0))
+		WARN_LOG(NAOMI, "A file of the game's devices could not be saved");
+	periph_path(path, sizeof(path), suffix);
+	if (!save_writer_put_file(path, buf, size, failed))
+		WARN_LOG(NAOMI, "Cannot save %s", path);
+}
+
+void periph_sched_restore(int id, s32 start, s32 end)
+{
+	if (id < 0)
+		return;
+	if (end != -1)
+	{
+		const u32 now = sh4_sched_now();
+		const u32 asked = (u32)end - (u32)start;
+		const u32 gone = now - (u32)start;
+		if (asked > SH4_MAIN_CLOCK || gone > asked)
+		{
+			start = (s32)now;
+			end = start == -1 ? 0 : start;
+		}
+	}
+	sch_list[id].start = start;
+	sch_list[id].end = end;
+	sh4_sched_ffts();
+}
+
+static bool id_starts(const char *prefix)
+{
+	return !strncmp(naomi_game_id, prefix, strlen(prefix));
+}
+
+static bool set_starts(const char *prefix)
+{
+	return !strncmp(naomi_set_name, prefix, strlen(prefix));
+}
+
+void naomi_periph_term(void)
+{
+	card_reader::term();
+	card_reader::barcodeTerm();
+	touchscreen::term();
+	hopper::term();
+	printer::term();
+	rfid_init(false, false);
+	periph_rfid = false;
+	periph_polled = false;
+	naomi_card_button = false;
+	memset(periph_card_button, 0, sizeof(periph_card_button));
+}
+
+/* The devices are the game's, by the name it gives itself (and, for two
+ * whose versions differ, the set's). The card readers only with the core
+ * option: a game that has none of its own plays without. */
+void naomi_periph_init(void)
+{
+	naomi_periph_term();
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	// (what was saved last is in the files first)
+	save_writer_drain();
+
+	if (naomi_card_readers_enabled)
+	{
+		if (!strcmp(naomi_game_id, "INITIAL D")
+				|| !strcmp(naomi_game_id, "INITIAL D Ver.2")
+				|| !strcmp(naomi_game_id, "INITIAL D Ver.3")
+				|| !strcmp(naomi_game_id, "INITIAL D CYCRAFT"))
+			card_reader::initdInit();
+		else if (!strcmp(naomi_game_id, "CLUB KART IN JAPAN")
+				&& (!strcmp(naomi_set_name, "clubkrt") || !strcmp(naomi_set_name, "clubkrto")
+					|| !strcmp(naomi_set_name, "clubkrta") || !strcmp(naomi_set_name, "clubkrtc")))
+			card_reader::clubkInit();
+		else if (!strcmp(naomi_game_id, " DERBY OWNERS CLUB WE ---------")
+				|| !strcmp(naomi_game_id, " DERBY OWNERS CLUB ------------")
+				|| !strcmp(naomi_game_id, " DERBY OWNERS CLUB II-----------"))
+			card_reader::derbyInit();
+		else if (id_starts("MKG TKOB")
+				|| id_starts("MUSHIKING")
+				|| !strcmp(naomi_game_id, "MUSHIUSA '04 1ST VER0.900-")
+				|| id_starts("DINOSAUR KING")
+				|| !strcmp(naomi_game_id, "INW PUPPY 2008 VER1.001")
+				|| id_starts("LOVE AND BERRY")
+				|| !strcmp(naomi_game_id, "BTR 2K9 VER 1.004"))
+			card_reader::barcodeInit();
+
+		if (id_starts("MKG TKOB")
+				|| !strcmp(naomi_game_id, "VIRTUA FIGHTER 4 JAPAN")
+				|| !strcmp(naomi_game_id, "VF4 EVOLUTION JAPAN")
+				|| !strcmp(naomi_game_id, "VF4 FINAL TUNED JAPAN"))
+		{
+			periph_rfid = true;
+			// Mushiking's cards are in from the start
+			rfid_init(true, id_starts("MKG TKOB"));
+		}
+	}
+	if (!strcmp(naomi_game_id, "POKASUKA GHOST (JAPANESE)")	// Manic Panic Ghosts
+			|| !strcmp(naomi_game_id, "TOUCH DE ZUNO (JAPAN)"))
+		touchscreen::init();
+	if (!strcmp(naomi_game_id, " TOUCH DE UNOH -------------")
+			|| !strcmp(naomi_game_id, " TOUCH DE UNOH 2 -----------")
+			|| !strcmp(naomi_game_id, "MIRAI YOSOU STUDIO"))
+		printer::init();
+	if (!strcmp(naomi_set_name, "clubkprz") || set_starts("clubkpz")
+			|| set_starts("shootpl")
+			|| !strcmp(naomi_game_id, "KICK '4' CASH"))
+		hopper::init();
+
+	naomi_card_button = card_reader::readerAvailable();
+	periph_polled = naomi_card_button || hopper::active();
+}
+
+bool naomi_periph_has_card_reader(void)
+{
+	return naomi_card_button;
+}
+
+bool naomi_periph_rfid_game(void)
+{
+	return periph_rfid;
+}
+
+void naomi_periph_poll(void)
+{
+	if (!periph_polled)
+		return;
+	if (naomi_card_button)
+	{
+		for (int i = 0; i < 2; i++)
+		{
+			const u8 down = (mcfg_ArcadeKcode(i) & NAOMI_INSERT_CARD_KEY) == 0;
+			if (down && !periph_card_button[i])
+				card_reader::insertCard(i);
+			periph_card_button[i] = down;
+		}
+	}
+	hopper::poll();
+}
+
+/* What the game's devices have, in a save state since V24, on a NAOMI: a
+ * byte that says which there are (0 for most games, and then nothing
+ * more), the players' "Insert Card" buttons, and then each one's:
+ *   - the SCIF's FIFOs, for a device on it (scif_serialize_v24(), 45 bytes);
+ *   - the card readers' (card_reader::serialize_v24(), 2 bytes and up);
+ *   - the touch panel's (touchscreen::serialize_v24(), 60 bytes);
+ *   - the hopper board's (hopper::serialize_v24(), 2404 bytes);
+ *   - the IC cards' (rfid_serialize_v24(), 262 bytes).
+ * One that the state has and the game has not is read past, and one the
+ * game has and the state has not is as an older state has it. */
+enum
+{
+	PERIPH_SCIF = 1,
+	PERIPH_CARD = 2,
+	PERIPH_TOUCH = 4,
+	PERIPH_HOPPER = 8,
+	PERIPH_RFID = 16,
+};
+static const u32 PERIPH_SCIF_SIZE = 45;
+static const u32 PERIPH_TOUCH_SIZE = 60;
+static const u32 PERIPH_HOPPER_SIZE = 2404;
+static const u32 PERIPH_RFID_SIZE = 262;
+
+static u8 periph_present(void)
+{
+	u8 mask = 0;
+	if (scif_get_pipe() != NULL)
+		mask |= PERIPH_SCIF;
+	if (card_reader::readerAvailable() && !periph_rfid)
+		mask |= PERIPH_CARD;
+	if (card_reader::barcodeAvailable())
+		mask |= PERIPH_CARD;
+	if (touchscreen::active())
+		mask |= PERIPH_TOUCH;
+	if (hopper::active())
+		mask |= PERIPH_HOPPER;
+	if (periph_rfid)
+		mask |= PERIPH_RFID;
+	return mask;
+}
+
+static bool periph_skip(void **data, unsigned int *total_size, u32 size)
+{
+	u8 scratch[256];
+	while (size > 0)
+	{
+		const u32 n = std::min<u32>(size, sizeof(scratch));
+		if (!ra_unserialize(scratch, n, data, total_size))
+			return false;
+		size -= n;
+	}
+	return true;
+}
+
+void naomi_periph_serialize_v24(void **data, unsigned int *total_size)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	const u8 mask = periph_present();
+	LIBRETRO_S(mask);
+	if (mask == 0)
+		return;
+	LIBRETRO_SA(periph_card_button, 2);
+	if (mask & PERIPH_SCIF)
+		scif_serialize_v24(data, total_size);
+	if (mask & PERIPH_CARD)
+		card_reader::serialize_v24(data, total_size);
+	if (mask & PERIPH_TOUCH)
+		touchscreen::serialize_v24(data, total_size);
+	if (mask & PERIPH_HOPPER)
+		hopper::serialize_v24(data, total_size);
+	if (mask & PERIPH_RFID)
+		rfid_serialize_v24(data, total_size);
+}
+
+bool naomi_periph_unserialize_v24(void **data, unsigned int *total_size)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return true;
+	const u8 have = periph_present();
+	u8 mask = 0;
+	if (!LIBRETRO_US(mask))
+		return false;
+	if (mask & ~(PERIPH_SCIF | PERIPH_CARD | PERIPH_TOUCH | PERIPH_HOPPER | PERIPH_RFID))
+		return false;
+	if (mask == 0)
+	{
+		naomi_periph_state_before_v24();
+		return true;
+	}
+	LIBRETRO_USA(periph_card_button, 2);
+	periph_card_button[0] = periph_card_button[0] != 0;
+	periph_card_button[1] = periph_card_button[1] != 0;
+
+	bool ok = true;
+	if (mask & PERIPH_SCIF)
+		ok = (have & PERIPH_SCIF) ? scif_unserialize_v24(data, total_size) : periph_skip(data, total_size, PERIPH_SCIF_SIZE);
+	else if (have & PERIPH_SCIF)
+		scif_state_before_v24();
+	// (the readers' part says which it is, and reads past a reader the game has not got)
+	if (ok && (mask & PERIPH_CARD))
+		ok = card_reader::unserialize_v24(data, total_size);
+	else if (have & PERIPH_CARD)
+		card_reader::state_before_v24();
+	if (ok && (mask & PERIPH_TOUCH))
+		ok = (have & PERIPH_TOUCH) ? touchscreen::unserialize_v24(data, total_size) : periph_skip(data, total_size, PERIPH_TOUCH_SIZE);
+	else if (have & PERIPH_TOUCH)
+		touchscreen::state_before_v24();
+	if (ok && (mask & PERIPH_HOPPER))
+		ok = (have & PERIPH_HOPPER) ? hopper::unserialize_v24(data, total_size) : periph_skip(data, total_size, PERIPH_HOPPER_SIZE);
+	else if (have & PERIPH_HOPPER)
+		hopper::state_before_v24();
+	if (ok && (mask & PERIPH_RFID))
+		ok = (have & PERIPH_RFID) ? rfid_unserialize_v24(data, total_size) : periph_skip(data, total_size, PERIPH_RFID_SIZE);
+	else if (have & PERIPH_RFID)
+		rfid_state_before_v24();
+	return ok;
+}
+
+/* An older state: none of the devices had anything on its way or a card
+ * in it, and no button was held, which is what the game saw when it had
+ * none of them. */
+void naomi_periph_state_before_v24(void)
+{
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	memset(periph_card_button, 0, sizeof(periph_card_button));
+	if (scif_get_pipe() != NULL)
+		scif_state_before_v24();
+	card_reader::state_before_v24();
+	touchscreen::state_before_v24();
+	hopper::state_before_v24();
+	if (periph_rfid)
+		rfid_state_before_v24();
 }

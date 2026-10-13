@@ -6,6 +6,8 @@
 #include "maple_cfg.h"
 #include "hw/pvr/spg.h"
 #include "hw/naomi/naomi_cart.h"
+#include "hw/naomi/naomi_periph.h"
+#include "hw/naomi/printer.h"
 #include "savewriter.h"
 #include "vmu_beep.h"
 #include <math.h>
@@ -2223,6 +2225,16 @@ private:
  * had been sent by then. */
 static u8 jvs_firmware[0x10000];
 
+/* What is on the I/O board bridge's RS-422 port: Derby Owners Club's card
+ * reader, through a converter board. Not the bridge's own: the bridge is
+ * made anew by a state load. */
+static SerialPort::Pipe *mie_pipe;
+
+void naomi_mie_set_pipe(SerialPort::Pipe *pipe)
+{
+	mie_pipe = pipe;
+}
+
 struct maple_naomi_jamma : maple_sega_controller
 {
 	const u8 ALL_NODES = 0xff;
@@ -2752,7 +2764,54 @@ struct maple_naomi_jamma : maple_sega_controller
 				w8(0x0);
 				break;
 
+			/* The RS-422 port, with a device on it (it is not answered
+			 * at all then). Without one the bridge says it knows none of
+			 * these, as it always has here. */
+			case 0x41: // reset?
+				if (mie_pipe == NULL)
+					goto unknown;
+				DEBUG_LOG(MAPLE, "JVS: RS422 reset");
+				while (mie_pipe->available() > 0)
+					mie_pipe->read();
+				break;
+
+			case 0x47: // send data
+				if (mie_pipe == NULL)
+					goto unknown;
+				DEBUG_LOG(MAPLE, "JVS: RS422 send %02x", dma_buffer_in[4]);
+				if (dma_count_in >= 5)
+					mie_pipe->write(dma_buffer_in[4]);
+				break;
+
+			case 0x4d: // receive data
+				{
+					if (mie_pipe == NULL)
+						goto unknown;
+					const int avail = std::min(mie_pipe->available(), 0xfe);
+					DEBUG_LOG(MAPLE, "JVS: RS422 receive %d bytes", avail);
+					w8(MDRS_JVSReply);
+					w8(0x00);
+					w8(0x20);
+					w8(1 + (avail + 3) / 4);
+					w8(0);
+					w8(0);
+					w8(0);
+					w8(avail == 0 ? 0xff : avail); // 0xff => no data, else byte count
+
+					for (int i = 0; i < ((avail + 3) / 4) * 4; i++)
+						w8(i >= avail ? 0 : mie_pipe->read());
+					break;
+				}
+
+			case 0x49: // I?
+			case 0x4b: // K?
+			case 0x4f: // O?
+				if (mie_pipe == NULL)
+					goto unknown;
+				break;
+
 			default:
+			unknown:
 				INFO_LOG(MAPLE, "JVS: Unknown 0x86 sub-command %x", subcode);
 				w8(MDRE_UnknownCmd);
 				w8(0x00);
@@ -2771,6 +2830,8 @@ struct maple_naomi_jamma : maple_sega_controller
 	   printf("\n");
 #endif
 	   create_io_boards();
+	   // the card reader and hopper buttons, read as the board's inputs are
+	   naomi_periph_poll();
 
 		u32 out_len = 0;
 		dma_buffer_out = (u8 *)buffer_out;
@@ -3210,7 +3271,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 		break;
 
 	default:
-		if (jvs_cmd >= 0x20 && jvs_cmd <= 0x38) // Read inputs and more
+		if ((jvs_cmd >= 0x20 && jvs_cmd <= 0x38) || (jvs_cmd == 0x74 && printer::present())) // Read inputs and more
 		{
 			LOGJVS("JVS Node %d: ", node_id);
 			PlainJoystickState pjs;
@@ -3480,7 +3541,24 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					cmdi += 4;
 					break;
 
+				case 0x74:	// the board's serial port, which a printer is on (Touch de Uno)
+					if (!printer::present())
+						goto unknown_input;
+					{
+						// (no more than the request has)
+						const u32 len = std::min<u32>(buffer_in[cmdi + 1], length_in - cmdi - 1);
+						for (u32 i = 0; i < len; i++)
+							printer::print(buffer_in[cmdi + 2 + i]);
+						cmdi += len + 2;
+					}
+					JVS_STATUS1();	// report
+					// 00 hardware error, 01 head up error, 02 Vp Volt error, 03 auto cutter error,
+					// 04 head temp error, 3* paper end error
+					JVS_OUT(0xf);	// printer ok
+					break;
+
 				default:
+				unknown_input:
 					DEBUG_LOG(MAPLE, "JVS: Unknown input type %x", buffer_in[cmdi]);
 					JVS_OUT(2);			// report byte: command error
 					cmdi = length_in;	// Ignore subsequent commands
@@ -3641,6 +3719,409 @@ void maple_jvs_state_before_v21(void)
 	  jamma->io_boards[i]->maple_state_v21(coins, flags);
 }
 
+/*
+	The IC card reader/writers of Virtua Fighter 4 and Mushiking: a
+	838-14245-92 maple to RS232 converter wired to a 838-14243 RFID
+	reader/writer (apparently a Saxa HW210), one on the second and one on
+	the third bus, for the first and second player.
+
+	The cards are the players': what is on them, whether one is in and
+	whether the game has locked it in are kept here and not in the
+	devices, which a state load makes anew. Each player's card is in a
+	file in the save directory, read when the game is started.
+*/
+struct RfidCard
+{
+	u8 data[128];
+	u8 d4Seen;
+	u8 inserted;
+	u8 locked;
+};
+static RfidCard rfid_card[2];
+static u8 rfid_file[2][128];
+static bool rfid_game;
+static retro_atomic_int_t rfid_save_failed;
+
+static const char *rfid_file_suffix(int player)
+{
+	return player == 0 ? "-p1.card" : "-p2.card";
+}
+
+/* A player's card from its file, or a new one: a Mushiking card with its
+ * serial number and the key made from it, or a blank Virtua Fighter 4
+ * card with the random bytes the game makes its card number of. */
+static void rfid_load_card(int player)
+{
+	u8 *card = rfid_file[player];
+	if (periph_load_file(rfid_file_suffix(player), card, sizeof(rfid_file[0])) != 0)
+		return;
+	if (!strncmp(naomi_game_id, "MKG TKOB", 8))
+	{
+		static const u8 MUSHIKING_CHIP_DATA[128] = {
+			0x12, 0x34, 0x56, 0x78, // Serial No.0
+			0x31, 0x00, 0x86, 0x07, // Serial No.1
+			0x00, 0x00, 0x00, 0x00, // Key
+			0x04, 0xf6, 0x00, 0xAA, // Extend  Extend  Access  Mode
+			0x23, 0xFF, 0xFF, 0xFF, // Counter4  Counter3  Counter2  Counter1
+			0x00, 0x00, 0x00, 0x00, // User Data (first set date: day bits 0-4, month bits 5-8, year bits 9-... + 2000)
+			0x00, 0x00, 0x00, 0x00, // User Data
+			0x00, 0x00, 0x00, 0x00, // User Data
+			0x00, 0x00, 0x00, 0x00, // User Data
+			0x00, 0x00, 0x00, 0x00, // User Data
+			0x00, 0x00, 0x00, 0x00, // User Data
+			0x23, 0xFF, 0xFF, 0xFF, // User Data (max counters)
+		};
+		memcpy(card, MUSHIKING_CHIP_DATA, sizeof(MUSHIKING_CHIP_DATA));
+		for (int i = 0; i < 8; i++)
+			card[i] = rand() & 0xff;
+		u32 mask = 0;
+		if (!strcmp(naomi_game_id, "MKG TKOB 2 JPN VER2.001-")		// mushik2e
+				|| !strcmp(naomi_game_id, "MKG TKOB 4 JPN VER2.000-"))	// mushik4e
+			mask = 0x40;
+		card[4] &= ~0xc0;
+		card[4] |= mask;
+
+		u32 serial1 = (card[4] << 24) | (card[5] << 16) | (card[6] << 8) | card[7];
+		u32 key = ~serial1;
+		key = ((key >> 4) & 0x0f0f0f0f)
+			  | ((key << 4) & 0xf0f0f0f0);
+		card[8] = key >> 24;
+		card[9] = key >> 16;
+		card[10] = key >> 8;
+		card[11] = key;
+	}
+	else
+	{
+		memset(card, 0, sizeof(rfid_file[0]));
+		card[0] = 0x10;
+		card[12] = 4;
+		card[13] = 0x6c;
+		card[127] = 0xff;
+		card[2] = rand() & 0xff;
+		card[4] = rand() & 0xff;
+		card[5] = rand() & 0xff;
+		card[6] = rand() & 0xff;
+		card[7] = rand() & 0xff;
+	}
+	INFO_LOG(NAOMI, "Card P%d initialized", player + 1);
+}
+
+static void rfid_save_card(int player)
+{
+	memcpy(rfid_file[player], rfid_card[player].data, sizeof(rfid_file[0]));
+	periph_save_file(rfid_file_suffix(player), rfid_file[player], sizeof(rfid_file[0]), &rfid_save_failed);
+}
+
+/* The game is one with the readers (or is not, with @game false): the
+ * cards read from their files, and put in at once with @insert. */
+void rfid_init(bool game, bool insert)
+{
+	rfid_game = game;
+	memset(rfid_card, 0, sizeof(rfid_card));
+	if (!game)
+		return;
+	srand(time(0));
+	for (int i = 0; i < 2; i++)
+	{
+		rfid_load_card(i);
+		if (insert)
+			insertRfidCard(i);
+	}
+}
+
+// The card is put in, or taken out if it is in and not locked in
+void insertRfidCard(int playerNum)
+{
+	if (!rfid_game || playerNum < 0 || playerNum > 1)
+		return;
+	RfidCard& card = rfid_card[playerNum];
+	if (!card.inserted)
+	{
+		card.inserted = 1;
+		memcpy(card.data, rfid_file[playerNum], sizeof(card.data));
+	}
+	else if (!card.locked)
+	{
+		card.inserted = 0;
+		memset(card.data, 0, sizeof(card.data));
+	}
+}
+
+const u8 *getRfidCardData(int playerNum)
+{
+	if (!rfid_game || playerNum < 0 || playerNum > 1)
+		return NULL;
+	return rfid_card[playerNum].data;
+}
+
+/* The cards in a save state (V24): what is on each, whether it is in and
+ * locked, and whether the game asked for its data. 262 bytes. */
+void rfid_serialize_v24(void **data, unsigned int *total_size)
+{
+	if (!rfid_game)
+		return;
+	for (int i = 0; i < 2; i++)
+	{
+		u8 flags[3] = { rfid_card[i].d4Seen, rfid_card[i].inserted, rfid_card[i].locked };
+		LIBRETRO_SA(rfid_card[i].data, sizeof(rfid_card[i].data));
+		LIBRETRO_SA(flags, 3);
+	}
+}
+
+bool rfid_unserialize_v24(void **data, unsigned int *total_size)
+{
+	if (!rfid_game)
+		return true;
+	for (int i = 0; i < 2; i++)
+	{
+		u8 flags[3] = { 0, 0, 0 };
+		LIBRETRO_USA(rfid_card[i].data, sizeof(rfid_card[i].data));
+		if (!LIBRETRO_USA(flags, 3))
+			return false;
+		rfid_card[i].d4Seen = flags[0] != 0;
+		rfid_card[i].inserted = flags[1] != 0;
+		rfid_card[i].locked = flags[2] != 0;
+	}
+	return true;
+}
+
+// An older state: no card was in, and no reader was there for one
+void rfid_state_before_v24(void)
+{
+	memset(rfid_card, 0, sizeof(rfid_card));
+}
+
+struct maple_rfid_reader : maple_base
+{
+	virtual MapleDeviceType get_device_type()
+	{
+		return MDT_RFIDReaderWriter;
+	}
+
+	RfidCard& card()
+	{
+		return rfid_card[bus_id == 2 ? 1 : 0];
+	}
+
+	u32 status()
+	{
+		// b0: !card switch
+		// b1: state=4	errors?
+		// b2: state=5
+		// b3: state=6
+		// b4: state=7
+		// b5: state=8
+		// b6: card lock
+		// when 0x40 trying to read the card
+		u32 status = 1;
+		if (card().inserted)
+			status &= ~1;
+		if (card().locked)
+			status |= 0x40;
+		return status;
+	}
+
+	virtual u32 dma(u32 cmd)
+	{
+		RfidCard& c = card();
+		switch (cmd)
+		{
+		case MDC_DeviceRequest:
+		case MDC_AllStatusReq:
+			// custom function
+			w32(0x00100000);
+			// function flags
+			w32(0);
+			w32(0);
+			w32(0);
+			//1	area code
+			w8(0xff);				// FF: Worldwide, 01: North America
+			//1	direction
+			w8(0);
+			// Product name (totally made up)
+			wstr("MAPLE/232C CONVERT BD", 30);
+			// License (60)
+			wstr(maple_sega_brand, 60);
+			// Low-consumption standby current (2)
+			w16(0x0069);	// 10.5 mA
+			// Maximum current consumption (2)
+			w16(0x0120);	// 28.8 mA
+			return cmd == MDC_DeviceRequest ? MDRS_DeviceStatus : MDRS_DeviceStatusAll;
+
+		case MDCF_GetCondition:
+			w32(0x00100000); // custom function
+			return MDRS_DataTransfer;
+
+		case MDC_JVSSelfTest:
+			w32(0);
+			return MDRS_JVSSelfTestReply;
+
+		case MDC_DeviceReset:
+		case MDC_DeviceKill:
+			return MDRS_DeviceReply;
+
+		// 90	get status
+		// d0, 91, a0, 91, a1 (read md5 in data, or the data itself after d4), d4, 91: read test
+		// d9	lock
+		// da	unlock
+		// d0, 91, then b1 (offset, length in words, two bytes, data) and 91 for each part, c1, 91: write test
+		case 0xD0:
+			c.d4Seen = 0;
+			// FALLTHROUGH
+		case 0x90:
+		case 0x91:
+		case 0xA0:
+		case 0xD4:
+		case 0xC1:
+			w32(status());
+			if (cmd == 0xd4)
+				c.d4Seen = 1;
+			return 0xfe;
+
+		case 0xA1:	// read card data
+			DEBUG_LOG(MAPLE, "RFID card read (data? %d)", c.d4Seen);
+			w32(status());
+			// serial0 and serial1 only, unless after D4
+			wptr(c.data, c.d4Seen ? sizeof(c.data) : 8);
+			return 0xfe;
+
+		case 0xD9:	// lock card
+			c.locked = 1;
+			w32(status());
+			INFO_LOG(MAPLE, "RFID card %d locked", bus_id);
+			return 0xfe;
+
+		case 0xDA:	// unlock card
+			c.locked = 0;
+			c.inserted = 0;
+			w32(status());
+			NOTICE_LOG(MAPLE, "RFID card %d unlocked", bus_id);
+			return 0xfe;
+
+		case 0xB1:	// write to card
+			w32(status());
+			if (r_count() >= 4)
+			{
+				const u32 offset = r8() * 4;
+				u32 size = r8() * 4;
+				r8();
+				r8();
+				// (where and how much are the game's: no more than the card has, nor the frame)
+				size = std::min(size, r_count());
+				if (offset < sizeof(c.data))
+				{
+					size = std::min<u32>(size, sizeof(c.data) - offset);
+					DEBUG_LOG(MAPLE, "RFID card write: offset 0x%x len %d", offset, size);
+					rptr(c.data + offset, size);
+					rfid_save_card(bus_id == 2 ? 1 : 0);
+				}
+			}
+			return 0xfe;
+
+		case 0xD1:	// decrement counter
+			{
+				int counter = r_count() >= 1 ? r8() : 0x03;
+				switch (counter) {
+				case 0x03:
+					counter = 0;
+					break;
+				case 0x0c:
+					counter = 1;
+					break;
+				case 0x30:
+					counter = 2;
+					break;
+				case 0xc0:
+					counter = 3;
+					break;
+				default:
+					WARN_LOG(MAPLE, "Unknown counter selector %x", counter);
+					counter = 0;
+					break;
+				}
+				DEBUG_LOG(MAPLE, "RFID decrement %d", counter);
+				c.data[19 - counter]--;
+				rfid_save_card(bus_id == 2 ? 1 : 0);
+				w32(status());
+				return 0xfe;
+			}
+
+		default:
+			INFO_LOG(MAPLE, "RFID: Unknown Maple command %x", cmd);
+			return MDRE_UnknownCmd;
+		}
+	}
+
+	virtual u32 RawDma(u32* buffer_in, u32 buffer_in_len, u32* buffer_out)
+	{
+		const u32 cmd = buffer_in[0] & 0xff;
+		if (cmd == MDC_JVSGetId || cmd == MDC_JVSUploadFirmware || cmd == MDC_JVSCommand)
+		{
+			// what the bridge answers with frames of its own
+			u32 out_len = 0;
+			dma_buffer_out = (u8 *)buffer_out;
+			dma_count_out = &out_len;
+			dma_buffer_in = (u8 *)buffer_in + 4;
+			dma_count_in = buffer_in_len - 4;
+			if (cmd == MDC_JVSGetId)
+			{
+				w8(0x83);
+				w8(0x00);
+				w8(0x20);
+				w8(0x07);
+				wstr("315-6149    COPYRIGHT SEGA E", 28);
+				w8(0x83);
+				w8(0x00);
+				w8(0x20);
+				w8(0x05);
+				wstr("NTERPRISES CO,LTD.  1998    ", 28);
+			}
+			else if (cmd == MDC_JVSUploadFirmware && dma_count_in >= 4 && dma_buffer_in[1] != 0xff)
+			{
+				// (the program is for the I/O board's processor, which this has not got)
+				u8 sum = 0;
+				for (u32 i = 0; i < 0x1C && i < dma_count_in; i++)
+					sum += dma_buffer_in[i];
+				w8(0x80);
+				w8(0);
+				w8(0x20);
+				w8(0x01);
+				w8(sum);
+				w8(0);
+				w8(0);
+				w8(0);
+				w8(MDRS_DeviceReply);
+				w8(0x00);
+				w8(0x20);
+				w8(0x00);
+			}
+			else if (cmd == MDC_JVSUploadFirmware)
+			{
+				w8(MDRS_DeviceReply);
+				w8(0x00);
+				w8(0x20);
+				w8(0x00);
+			}
+			else
+			{
+				w8(MDRE_UnknownCmd);
+				w8(0x00);
+				w8(0x20);
+				w8(0x00);
+			}
+			return out_len;
+		}
+		const u32 len = maple_base::RawDma(buffer_in, buffer_in_len, buffer_out);
+		// The recipient and the sender are not swapped in these replies (VF4 Final Tuned and Mushiking look)
+		if ((buffer_out[0] & 0xff) == 0xfe)
+		{
+			u8 *p = (u8 *)buffer_out;
+			std::swap(p[1], p[2]);
+		}
+		return len;
+	}
+};
+
 maple_device* maple_Create(MapleDeviceType type)
 {
 	maple_device* rv=0;
@@ -3690,6 +4171,10 @@ maple_device* maple_Create(MapleDeviceType type)
 
 	case MDT_NaomiJamma:
 		rv = new maple_naomi_jamma();
+		break;
+
+	case MDT_RFIDReaderWriter:
+		rv = new maple_rfid_reader();
 		break;
 
 	default:

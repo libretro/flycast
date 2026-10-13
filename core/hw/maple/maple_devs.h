@@ -20,6 +20,9 @@ enum MapleDeviceType
 
    MDT_None,
 
+   // IC card reader/writer of VF4 and Mushiking (after MDT_None: it came later)
+   MDT_RFIDReaderWriter,
+
    //
    // Add new device types before this comment
    //
@@ -50,6 +53,8 @@ enum NAOMI_KEYS
 
 	// Not an actual button
 	NAOMI_COIN_KEY = 1 << 0,
+	// Nor this: a card put in the game's card reader
+	NAOMI_INSERT_CARD_KEY = 1 << 17,
 };
 
 enum AWAVE_KEYS
