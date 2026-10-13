@@ -882,16 +882,18 @@ struct ChannelEx
 	{
 		VolMix.DSPOut = &dsp.MIXS[ccd->ISEL];
 	}
-	//TL,DISDL,DIPAN,IMXL
+	//TL,DISDL,DIPAN,IMXL, and Mono
 	//(in the envelope's units, a quarter of TL's: see Step())
 	void UpdateAtts()
 	{
 		u32 total_level = ccd->VOFF ? 0 : (ccd->TL << 2);
 		u32 attFull = total_level + (SendLevel[ccd->DISDL] << 2);
-		u32 attPan=attFull+(SendLevel[(~ccd->DIPAN)&0xF] << 2);
+		// (in mono the pan is not used: the channel is as loud on both sides)
+		const u32 pan = CommonData->Mono ? 0 : ccd->DIPAN;
+		u32 attPan=attFull+(SendLevel[(~pan)&0xF] << 2);
 
 		//0x1* -> R decreases
-		if (ccd->DIPAN&0x10)
+		if (pan&0x10)
 		{
 			VolMix.DLAtt=attFull;
 			VolMix.DRAtt=attPan;
@@ -1073,7 +1075,11 @@ __forceinline void StepDecodeSample(ChannelEx* ch,u32 CA)
 		return ;
 
 	u32 next_addr = CA + 1;
-	if (next_addr >= ch->loop.LEA)
+	/* (A long stream goes back to the loop start at the multiple of four
+	 * at or after the loop end, see StreamStepAny(): the sample after the
+	 * ones before that is the next one, not the loop start's.) */
+	const u32 lea = PCMS == 3 ? (ch->loop.LEA + 3) & ~3u : ch->loop.LEA;
+	if (next_addr >= lea)
 		next_addr = ch->loop.LSA;
 
 	SampleType s0,s1;
@@ -1112,7 +1118,11 @@ s1 = *(s16*)SampleData<wrap>(ch, (size_t)next_addr * 2);
 			ad2&=0xF;
 
 			s32 q=ch->adpcm.last_quant;
-			if (PCMS == 2 && CA == ch->loop.LSA)
+			/* The decoder's state at the loop start is kept the first time
+			 * there in a long stream too, which does not go back to it: a
+			 * game may change the channel to plain ADPCM as it plays, and the
+			 * loop then goes back to what was kept (NBA 2K). */
+			if (CA == ch->loop.LSA)
 			{
 				if (!ch->adpcm.in_loop)
 				{
@@ -1120,7 +1130,7 @@ s1 = *(s16*)SampleData<wrap>(ch, (size_t)next_addr * 2);
 					ch->adpcm.loopstart_quant = q;
 					ch->adpcm.loopstart_prev_sample = ch->s0;
 				}
-				else
+				else if (PCMS == 2)
 				{
 					q = ch->adpcm.loopstart_quant;
 					ch->s0 = ch->adpcm.loopstart_prev_sample;
@@ -1581,12 +1591,19 @@ void ReadCommonReg(u32 reg,bool byte)
 
 void WriteCommonReg8(u32 reg,u32 data)
 {
+	const u32 mono = CommonData->Mono;
 	WriteMemArr<1>(aica_reg, reg, data);
 	if (reg==0x2804 || reg==0x2805)
 	{
 		dsp.RBL=(8192<<CommonData->RBL)-1;
 		dsp.RBP = (CommonData->RBP * 2048) & ARAM_MASK;
 		dsp.dyndirty=true;
+	}
+	else if (reg == 0x2801 && CommonData->Mono != mono)
+	{
+		// every channel's levels have its pan in them
+		for (int i = 0; i < 64; i++)
+			Chans[i].UpdateAtts();
 	}
 }
 
@@ -1631,9 +1648,15 @@ void AICA_Sample()
 	//Final MIX ..
 	//Add CDDA / DSP effect(s)
 
+	/* In mono the pans are not used, the channels' (UpdateAtts()) and
+	 * these: everything is as loud on both sides as a sound in the middle.
+	 * (The two sides used to be added, which made a sound in the middle
+	 * twice as loud, and one panned to a side half as loud as that.) */
+	const u32 panmask = CommonData->Mono ? 0 : 0x1F;
+
 	//CDDA
-	VOLPAN(EXTS0L,dsp_out_vol[16].EFSDL,dsp_out_vol[16].EFPAN,mixl,mixr);
-	VOLPAN(EXTS0R,dsp_out_vol[17].EFSDL,dsp_out_vol[17].EFPAN,mixl,mixr);
+	VOLPAN(EXTS0L,dsp_out_vol[16].EFSDL,dsp_out_vol[16].EFPAN & panmask,mixl,mixr);
+	VOLPAN(EXTS0R,dsp_out_vol[17].EFSDL,dsp_out_vol[17].EFPAN & panmask,mixl,mixr);
 
 	DSPData->EXTS[0] = EXTS0L;
 	DSPData->EXTS[1] = EXTS0R;
@@ -1642,16 +1665,8 @@ void AICA_Sample()
 	/* A DSP output sent at level 0 is multiplied by 0: left out */
 	for (int i=0;i<16;i++)
 		if (dsp_out_vol[i].EFSDL)
-			VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
+			VOLPAN(*(s16*)&DSPData->EFREG[i], dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN & panmask, mixl, mixr);
 
-	//Mono !
-	if (CommonData->Mono)
-	{
-		//Yay for mono =P
-		mixl+=mixr;
-		mixr=mixl;
-	}
-	
 	//MVOL !
 	//we want to make sure mix* is *At least* 23 bits wide here, so 64 bit mul !
 	//(the sum is of 20-bit samples, and comes down to the 16 of the output
@@ -1869,6 +1884,11 @@ bool channel_unserialize(void **data, unsigned int *total_size, serialize_versio
 			LIBRETRO_US(dumu8); // Chans[i].lfo.plfo_calc_lut
 		}
 		Chans[i].UpdateLFO(true);
+		/* Between two samples the count is from 1 to where it starts: at 0
+		 * the first step took it round to 4 billion, and the wave stood still
+		 * for more than a day. */
+		if (Chans[i].lfo.counter == 0 || Chans[i].lfo.counter > Chans[i].lfo.start_value)
+			Chans[i].lfo.counter = Chans[i].lfo.start_value;
 		LIBRETRO_US(Chans[i].enabled) ;
 		if (ver < V8)
 			LIBRETRO_US(dum); // Chans[i].ChannelNumber

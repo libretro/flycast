@@ -449,6 +449,12 @@ private:
  * nothing is made. */
 static u32 compiled_mpro[128 * 4];
 static bool compiled;
+/* What else the code has in it as constants: the ring buffer's length and
+ * place, which a game sets with the program left as it is, and where sound
+ * memory is and its size, which another game may have otherwise. The same
+ * program with any of them changed is made again. */
+static u32 compiled_rbl, compiled_rbp, compiled_mask;
+static u8 *compiled_ram;
 
 void dsp_recompile()
 {
@@ -463,9 +469,15 @@ void dsp_recompile()
 			break;
 		}
 	}
-	if (compiled && memcmp(compiled_mpro, DSPData->MPRO, sizeof(compiled_mpro)) == 0)
+	if (compiled && memcmp(compiled_mpro, DSPData->MPRO, sizeof(compiled_mpro)) == 0
+			&& compiled_rbl == dsp.RBL && compiled_rbp == dsp.RBP
+			&& compiled_mask == ARAM_MASK && compiled_ram == &aica_ram[0])
 		return;
 	memcpy(compiled_mpro, DSPData->MPRO, sizeof(compiled_mpro));
+	compiled_rbl = dsp.RBL;
+	compiled_rbp = dsp.RBP;
+	compiled_mask = ARAM_MASK;
+	compiled_ram = &aica_ram[0];
 	compiled = true;
 	DSPAssembler assembler(pCodeBuffer, sizeof(CodeBuffer));
 	assembler.Compile(&dsp);
