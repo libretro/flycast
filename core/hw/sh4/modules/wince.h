@@ -37,6 +37,11 @@ static bool wince_resolve_address(u32 va, TLB_Entry &entry)
 				if (ptel != 0)
 				{
 					entry.Data.reg_data = ptel - 1;
+					/* (All of it: the caller's entry is whatever was on
+					 * the stack, and this goes into PTEH and the TLB.
+					 * The two bits between the ASID and the page number
+					 * were never set.) */
+					entry.Address.reg_data = 0;
 					entry.Address.ASID = CCN_PTEH.ASID;
 					entry.Assistance.reg_data = 0;
 					u32 sz = entry.Data.SZ1 * 2 + entry.Data.SZ0;
@@ -61,6 +66,7 @@ static bool wince_resolve_address(u32 va, TLB_Entry &entry)
 			r0 += r1;
 			entry.Data.reg_data = r0 - 1;
 			entry.Assistance.reg_data = r0 >> 29;
+			entry.Address.reg_data = 0;
 			entry.Address.ASID = CCN_PTEH.ASID;
 			u32 sz = entry.Data.SZ1 * 2 + entry.Data.SZ0;
 			entry.Address.VPN = (va & mmu_mask[sz]) >> 10;
