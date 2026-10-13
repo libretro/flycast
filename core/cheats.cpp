@@ -24,9 +24,15 @@
 #include "hw/sh4/sh4_mem.h"
 #include "hw/naomi/naomi_cart.h"
 #include "reios/reios.h"
+#include <file/file_path.h>
+#include <string>
+
+extern char *game_data;
 
 const Cheat CheatManager::_widescreen_cheats[] =
 {
+		{ "T36803N   ", nullptr,    { 0xBC2CC, 0 }, { 0xC00 } },			// 102 Dalmatians (USA)
+		{ "T36813D 50", nullptr,    { 0xBDE8C, 0 }, { 0xC00 } },			// 102 Dalmatians (PAL)
 		{ "MK-51064  ", nullptr,    { 0x39EFF4, 0 }, { 0x43700000 } },		// 18 wheeler (USA)
 		{ "MK-5106450", nullptr,    { 0x39EFF4, 0 }, { 0x43700000 } },		// 18 wheeler (PAL)
 		{ "HDR-0080  ", nullptr,    { 0x6625C0, 0 }, { 0x43700000 } },		// 18 wheeler (JP)
@@ -46,6 +52,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T6801M    ", nullptr,    { 0x042F3C, 0 }, { 0x4384BC09 } },		// Buggy Heat (JP)
 		{ "T46601D 05", nullptr,    { 0xBB3D14, 0 }, { 0x440A7C9A } },		// Cannon Spike (PAL)
 		{ "T1215N    ", nullptr,    { 0xBB3C74, 0 }, { 0x440A7C9A } },		// Cannon Spike (USA)
+		{ "HDR-0115  ", nullptr,    { 0x10ACFC, 0 }, { 0x3F400000 } },		// Cardcaptor Sakura: Tomoyo no Video Daisakusen (JP)
 		{ "T44901D 50", nullptr,    { 0xB0109C, 0xB010CC, 0 }, { 0x43F00000, 0x3F400000 } },	// Carrier (PAL)
 		{ "T5701N    ", nullptr,    { 0xAFD93C, 0xAFD96C, 0 }, { 0x43F00000, 0x3F400000 } },	// Carrier (USA)
 		// Capcom vs. SNK Pro (JP)
@@ -69,19 +76,20 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "MK-51136  ", nullptr,    { 0x2BDDD0, 0 }, { 0x43700000 } },		// Crazy Taxi 2 (USA)
 //		{ "HDR-0159  ", nullptr,    { 0x2FBBD0, 0 }, { 0x43700000 } },		// Crazy Taxi 2 (JP) not working
 		{ "T13004N   ", nullptr,    { 0x016D94, 0 }, { 0x44234E73 } },		// Cyber Troopers - Virtual On - Oratorio Tangram (USA)
+		{ "HDR-0040  ", nullptr,    { 0x016D94, 0 }, { 0x44234E73 } },		// Cyber Troopers - Virtual On - Oratorio Tangram (JP)
 		// D2 (USA)
 		{ "MK-51036  ", nullptr,    { 0x4B5CF4, 0x4B5CC4, 0x3E92A0, 0x3E92A8, 0x3E92C0, 0x3E92C8 },
 				{ 0x3F400000, 0x43F00000, 0, 0, 0, 0 } },
 		// D2 (JP)
 		{ "T30006M   ", nullptr,    { 0x4CF42C, 0x4CF45C, 0x3E1A36, 0x3E1A34, 0x3E1A3C, 0x3E1A54, 0x3E1A5C, 0 },
 				{ 0x43F00000, 0x3F400000, 0x08010000, 0, 0, 0, 0 } },
-		{ "MK-5103750", nullptr,    { 0x1FE270, 0 }, { 0x43700000 } },		// Daytona USA (PAL)
-		{ "MK-51037  ", nullptr,    { 0x1FC6D0, 0 }, { 0x43700000 } },		// Daytona USA (USA)
+		{ "MK-5103750", nullptr,    { 0x1FE270, 0 }, { 0x43700000 }, { 0x43A00000 } },	// Daytona USA (PAL)
+		{ "MK-51037  ", nullptr,    { 0x1FC6D0, 0 }, { 0x43700000 }, { 0x43A00000 } },	// Daytona USA (USA)
 		{ "T9501N-50 ", nullptr,    { 0x9821D4, 0 }, { 0x3F400000 } },		// Deadly Skies (PAL)
 		{ "T8116D  50", nullptr,    { 0x2E5530, 0 }, { 0x43700000 } },		// Dead or Alive 2 (PAL)
 		{ "T3601N    ", nullptr,    { 0x2F0670, 0 }, { 0x43700000 } },		// Dead or Alive 2 (USA)
 		{ "T3602M    ", nullptr,    { 0x2FF798, 0 }, { 0x43700000 } },		// Dead or Alive 2 (JP)
-		{ "T3601M    ", nullptr,    { 0x2FBBD0, 0x1E6658, 0 }, { 0x43700000, 0x4414C000 } },	// Dead or Alive 2: Limited Edition (JP) (code 1 fixes HUD)
+		{ "T3601M    ", nullptr,    { 0x2FBBD0, 0 }, { 0x43700000 } },		// Dead or Alive 2: Limited Edition (JP)
 		{ "T2401N    ", nullptr,    { 0x8BD5B4, 0x8BD5E4, 0 }, { 0x43F00000, 0x3F400000 } },	// Death Crimson OX (USA)
 		{ "T23201M   ", nullptr,    { 0x819F44, 0x819F74, 0 }, { 0x43F00000, 0x3F400000 } },	// Death Crimson 2 (JP)
 		{ "T17714D50 ", nullptr,    { 0x0D2ED0, 0x0D2ED4, 0 }, { 0x3FAAAAAB, 0x3F400000 } },	// Donald Duck: Quack Attack (PAL) (Code 1 corrects the HUD)
@@ -90,6 +98,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T17720N   ", nullptr,    { 0xF97F40, 0x08DCF4, 0 }, { 0x00000168, 0 } },		// Dragonriders: Chronicles of Pern (USA) (Code 1 removes black bars)
 		{ "MK-5101350", nullptr,    { 0x4FCBC0, 0 }, { 0x43700000 } },		// Dynamite Cop  (PAL)
 		{ "MK-51013  ", nullptr,    { 0x4FCBC0, 0 }, { 0x43700000 } },		// Dynamite Cop  (USA)
+		{ "HDR-0020  ", nullptr,    { 0x4FA848, 0 }, { 0x43700000 } },		// Dynamite Deka 2 (JP)
 		// Draconus: Cult of the Wyrm (USA)
 		// Code 1-2 increases drawing distance
 		{ "T40203N   ", nullptr,    { 0x49D7F4, 0x49D8CC, 0x49D6F8, 0 }, { 0x3F07C3BB, 0x447A0000, 0x3FAAAAAB } },
@@ -102,6 +111,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "HDR-0100  ", nullptr,    { 0x3235D4, 0 }, { 0x00004000 } },		// Ferrari F355 Challenge (JP) vga mode only
 		{ "MK-5115450", nullptr,    { 0x3D3B10, 0 }, { 0x43700000 } },		// Fighting Vipers 2 (PAL)
 		{ "HDR-0133  ", nullptr,    { 0x3D3AF0, 0 }, { 0x43700000 } },		// Fighting Vipers 2 (JP)
+		{ "T18805M   ", nullptr,    { 0x1A39C0, 0 }, { 0x3F400000 } },		// Fire Pro Wrestling D (JP)
 		{ "MK-51114  ", "  E     ", { 0x132DD8, 0xA26CA8, 0xA26738, 0xA275B8, 0xA26AD8, 0xA26908, 0 },
 				{ 0x3F400000, 0x3F400000, 0x3F400000, 0x3F400000, 0x3F400000, 0x3F400000 } },	// Floigan Bros. Ep. 1 (PAL)
 		{ "T34201M   ", nullptr,    { 0x586290, 0x586260, 0 }, { 0x3F400000, 0x43F00000 } },	// Frame Gride (JP)
@@ -117,8 +127,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 //		{ "T11001N   ", nullptr,    { 0xC3D6BC, 0xD204A8, 0xD32FC8, 0xC7CF84, 0xD20548, 0 },
 //				{ 0x00363031, 0x00000356, 0x00000280, 0x00000280, 0x00000280 } },		// Half-Life. Not working
 		{ "MK-5104150", nullptr,    { 0x23FCC4, 0 }, { 0x44558000 } },		// Headhunter (PAL)
-		{ "MK-5100250", nullptr,    { 0x4C6708, 0 }, { 0x43700000 } },		// House of the Dead 2, The (PAL)
-		{ "MK-51002  ", nullptr,    { 0x4C6088, 0 }, { 0x43700000 } },		// House of the Dead 2, The (USA)
+		// (not House of the Dead 2: the gun's coordinates come out wrong)
 //		{ "T38706M   ", nullptr,    { 0xC0CFA0, 0 }, { 0x3F400000 } },		// Ikaruga (JP) not working
 		{ "T46001N   ", nullptr,    { 0x1C8A98, 0 }, { 0x3F400000 } },		// Illbleed (USA)
 		{ "T44904D 50", nullptr,    { 0x18C15C, 0x18C18C, 0 }, { 0x43F00000, 0x3F400000 } },	// Iron Aces (PAL)
@@ -142,7 +151,8 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "MK-5102250", "V1.001",   { 0x107FDC, 0x11253C, 0 }, { 0x3F99999A, 0x3F900000 } },	// Metropolis Street Racer (v1.001) (PAL)
 		{ "MK-5102250", "V1.009",   { 0x106B5C, 0x1111F4, 0 }, { 0x3F99999A, 0x3F900000 } },	// Metropolis Street Racer (v1.009) (PAL)
 		{ "MK-51012  ", nullptr,    { 0x10A01C, 0x1146FC, 0 }, { 0x3F99999A, 0x3F900000 } },	// Metropolis Street Racer (USA)
-		{ "T0000M    ", nullptr,    { 0x1CAEAC, 0x1CAEDC, 0 }, { 0x43F00000, 0x3F400000 } },	// Millenium Racer Y2K Fighters
+		{ "T0000M    ", "MILLENNIUM RACER - Y2K FIGHTERS                                                                                                 ",
+									{ 0x1CAEAC, 0x1CAEDC, 0 }, { 0x43F00000, 0x3F400000 } },	// Millenium Racer Y2K Fighters
 		{ "T1221M    ", nullptr,    { 0x426B74, 0 }, { 0x43F00000 } },		// Moero! Justice Gauken (JP)
 		{ "T9701D    ", nullptr,    { 0x31290C, 0 }, { 0x3F400000 } },		// Mortal Kombat Gold (PAL)
 		{ "T-9701N   ", nullptr,    { 0x337B8C, 0 }, { 0x3FA66666 } },		// Mortal Kombat Gold (USA)
@@ -154,10 +164,10 @@ const Cheat CheatManager::_widescreen_cheats[] =
 				{ 0x43F00000, 0x3F400000, 0x3F800000 } },					// Napple Tale: Arsia in Daydream (JP)
 //crash		{ "MK-51178  ", nullptr,    { 0x23AF00, 0x23B160, 0x144D40, 0x2105B4, 0x705B40, 0 },
 //				{ 0xBFAAAAAB, 0xBFAAAAAB, 0xBFAAAAAB, 0xBFAAAAAB, 0x44558000 } },	// NBA 2K2
-		{ "T9504M    ", nullptr,    { 0xCDE848, 0xCDE844, 0 }, { 0x3F400000, 0x3FA00000 } },	// Nightmare Creatures II (USA)
-		{ "T-9502D-50", nullptr,    { 0xBDE9B0, 0xBDE9C4, 0 }, { 0x3F400000, 0x3FA00000 } },	// Nightmare Creatures II (PAL)
+		// (not Nightmare Creatures II: it does not work)
 		{ "MK-5110250", nullptr,    { 0x87B5A4, 0 }, { 0x43700000 } },		// Outtrigger (PAL)
 		{ "HDR-0118  ", nullptr,    { 0x83E284, 0 }, { 0x43700000 } },		// Outtrigger (JP)
+		{ "MK-51102  ", nullptr,    { 0x83E284, 0 }, { 0x43700000 } },		// Outtrigger (US)
 		{ "T15103D 50", nullptr,    { 0x1EEE78, 0 }, { 0x3F400000 } },		// PenPen (PAL)
 		{ "T17001M   ", nullptr,    { 0x1C3828, 0 }, { 0x3F400000 } },		// PenPen TriIcelon (JP)
 		{ "MK-5110050", nullptr,    { 0x548E04, 0x0923C0, 0 }, { 0x43E80000, 0x3F966666 } },	// Phantasy Star Online (PAL) TODO
@@ -195,8 +205,15 @@ const Cheat CheatManager::_widescreen_cheats[] =
 				{ 0x3F400000, 0x43F00000, 0, 0x43F00000, 0 } },
 		// Resident Evil: Code Veronica (USA)
 		// Code 1-4 removes the black bars on top and bottom in FMV
-		{ "T1204N    ", nullptr,    { 0x329E40, 0x3838D8, 0x3838F8, 0x383918, 0x383938, 0 },
+		{ "T1204N    ", "RESIDENT EVIL CODE VERONICA                                                                                                     ",
+				{ 0x329E40, 0x3838D8, 0x3838F8, 0x383918, 0x383938, 0 },
 				{ 0x3F400000, 0x43F00000, 0, 0x43F00000, 0 } },
+		// Biohazard: Code Veronica: Kanzenban (JP)
+		{ "T1240M    ", "BIOHAZARD CODE VERONICA PLUS                                                                                                    ",
+				{ 0x344AE1, 0 }, { 0x003F6000 } },
+		// Resident Evil: Code Veronica X Kanzenban (English translation)
+		{ "T1204N    ", "RESIDENT EVIL CODE VERONICA X                                                                                                   ",
+				{ 0x344AE1, 0 }, { 0x003F6000 } },
 		{ "T8107D  50", nullptr,    { 0x0464FC, 0x046210, 0 }, { 0x3A888889, 0x44200000 } },	// Re-Volt (PAL) Code 1 is a render fix
 		{ "MK-5119250", nullptr,    { 0x0C5EB4, 0 }, { 0x3A888889 } },		// Rez (PAL)
 		{ "T15122N   ", nullptr,    { 0x8E7A80, 0x8E7AB4, 0 }, { 0x43E10000, 0x3FAAAAAB } },	// Ring, The - Terror's Realm (USA)
@@ -207,6 +224,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T8104D  58", nullptr,    { 0x2C03F8, 0 }, { 0x44558000 } },		// Shadow Man (PAL)
 		{ "T-8106N   ", nullptr,    { 0x2C03F4, 0 }, { 0x3F400000 } },		// Shadow Man (USA)
 		{ "MK-51048  ", nullptr,    { 0x4AA4DC, 0x2B4E30, 0 }, { 0x3F400000, 0x3F400000 } },	// Seaman (USA)
+		{ "MK-51053  ", nullptr,    { 0x5630CC, 0 }, { 0x3F400000 } },		// Sega GT (USA)
 		{ "MK-5105350", nullptr,    { 0x5D613C, 0 }, { 0x3F400000 } },		// Sega GT (PAL)
 		{ "MK-51096  ", nullptr,    { 0x495050, 0 }, { 0x43700000 } },		// Sega Marine Fishing (USA)
 //		{ "MK-51019  ", nullptr,    { 0xB83A48, 0 }, { 0x3F400000 } },		// Sega Rally 2 (USA) not working?
@@ -214,12 +232,12 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "HDR-0151  ", nullptr,    { 0xAF57DC, 0xAF580C, 0x2122A0, 0 },
 				{ 0x43F00000, 0x3F400000, 0x3F400000 } },					// SGGG – Segagaga (JP)
 		{ "MK-5105950", nullptr,    { 0x231EF8, 0x1EF370, 0 }, { 0x43800000, 0x7C1EF400 } },	// Shenmue (PAL) code 1 reduces clipping
-		{ "MK-51059  ", nullptr,    { 0x230250, 0 }, { 0x43800000 } },		// Shenmue (USA) Clipping
+		{ "MK-51059  ", nullptr,    { 0x230250, 0 }, { 0x43800000 }, { 0x43A00000 } },	// Shenmue (USA) Clipping
 		{ "HDR-0016  ", nullptr,    { 0x22E8A0, 0x1EBE70, 0 }, { 0x43800000, 0x7C1EBF00 } },	// Shenmue (JP) code 1 reduces clipping
-		{ "MK-5118450", nullptr,    { 0x31186C, 0 }, { 0x43800000 } },		// Shenmue II (PAL) 01160FF4 0000E100 for black bars in cutscenes
+		{ "MK-5118450", nullptr,    { 0x31186C, 0 }, { 0x43800000 }, { 0x43A00000 } },	// Shenmue II (PAL) 01160FF4 0000E100 for black bars in cutscenes
 		// Shenmue II (PAL) Alternative code without clipping or black bars. Might be demanding on real hardware.
 		// 02311880 C3A00000, 0227E198 35AA359E, 01160FF4 0000E100
-		{ "HDR-0164  ", nullptr,    { 0x30D67C, 0 }, { 0x43700000 } },		// Shenmue II (JP) Clipping
+		{ "HDR-0164  ", nullptr,    { 0x30D67C, 0 }, { 0x43700000 }, { 0x43A00000 } },	// Shenmue II (JP) Clipping
 		{ "T9505D    ", nullptr,    { 0xD1FB14, 0x096A4C, 0 }, { 0x3F400000, 0x3FAAAAAB } },	// Silent Scope (PAL) Choose 60Hz in game options
 		{ "MK-51052  ", "  E     ",    { 0x502A84, 0 }, { 0x3F400000 } },	// Skies of Arcadia (PAL)
 		{ "MK-51052  ", " U      ",    { 0x599158, 0 }, { 0x3F400000 } },	// Skies of Arcadia (USA)
@@ -247,6 +265,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T40206N   ", nullptr,    { 0x43296C, 0 }, { 0x3F400000, 0 } },	// Super Magnetic Neo (US)
 		{ "T40206D 50", nullptr,    { 0x43E34C, 0 }, { 0x3F400000, 0 } },	// Super Magnetic Neo (EU)
 //		{ "T7014D  50", nullptr,    { 0xE2B234, 0 }, { 0x3F800000 } },		// Super Runabout (PAL) doesn't work?
+		{ "T40216N   ", nullptr,    { 0x45CE54, 0 }, { 0x3F400000 } },		// Surf Rocket Racers (US)
 		{ "T17721D 50", nullptr,    { 0x45CED4, 0 }, { 0x3F400000 } },		// Surf Rocket Racers (PAL) alt: 021EBF40 3F400000
 		{ "T17703D 50", nullptr,    { 0xCD8950, 0 }, { 0x3F111111 } },		// Suzuki Alstare Extreme Racing
 		{ "T36807D 05", nullptr,    { 0x140F74, 0x140FA4, 0 }, { 0x43FA0000, 0x3F400000 } },	// Sword of Bersek (PAL)
@@ -259,6 +278,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T35402M   ", nullptr,    { 0x315370, 0x3153A0, 0 }, { 0x43F00000, 0x3F400000 } },	// Tokyo Bus Guide (JP) doesn't work?
 		{ "T40201D 50", nullptr,    { 0x1D9F10, 0 }, { 0x3F400000 } },		// Tokyo Highway Challenge (PAL)
 		{ "T40210D 50", nullptr,    { 0x21E4F8, 0 }, { 0x43700000 } },		// Tokyo Highway Challenge 2 (PAL)
+		{ "T40202N   ", nullptr,    { 0x1D9EB0, 0 }, { 0x3F400000 } },		// Tokyo Xtreme Racer (USA)
 		{ "T40211N   ", nullptr,    { 0x21DEF8, 0 }, { 0x43700000 } },		// Tokyo Xtreme Racer 2 (USA)
 //		{ "T36804D05 ", nullptr,    { 0xB75E28, 0 }, { 0x3EC00000 } },		// Tomb Raider: The Last Revelation (UK) (PAL) clipping, use hex patch instead
 		{ "T13008D 05", nullptr,    { 0x1D7C20, 0 }, { 0x3FA66666 } },		// Tony Hawk's Pro Skater 2 (PAL)
@@ -271,6 +291,7 @@ const Cheat CheatManager::_widescreen_cheats[] =
 		{ "T-8110D-50", nullptr,    { 0x0C6B90, 0x0C6B94, 0 }, { 0x43F00000, 0x43870000 } },	// Vanishing Point (PAL)
 //		{ "MK-5109450", nullptr,    { 0x244134, 0x7A73B8, 0x7830D8, 0x7A74B8, 0x783138, 0x7A85A0, 0x6C7928, 0x6C7930, 0x6C7948, 0x6C7950, 0 },
 //crash				{ 0x43F00000, 0x3F9C932E, 0x3F9C932E, 0x3F9C932E, 0x3F9C932E, 0x3F400000, 0, 0, 0, 0 } },	// Virtua Athlete 2K (PAL)
+		{ "MK-51001  ", nullptr,    { 0x19D518, 0 }, { 0x43700000 } },		// Virtua Fighter 3 TB (USA)
 		{ "MK-5100150", nullptr,    { 0x19D718, 0 }, { 0x43700000 } },		// Virtua Fighter 3 TB (PAL)
 		{ "HDR-0002  ", nullptr,    { 0x199FB0, 0 }, { 0x43700000 } },		// Virtua Fighter 3 TB (JP)
 		{ "MK-5105450", nullptr,    { 0x456378, 0 }, { 0x43700000 } },		// Virtua Tennis (v1.001) (PAL)
@@ -295,12 +316,86 @@ const Cheat CheatManager::_naomi_widescreen_cheats[] =
 		{ "KNIGHTS OF VALOUR  THE 7 SPIRITS", nullptr, { 0x475B70, 0x475B40, 0 }, { 0x3F400000, 0x43F00000 } },
 		{ "Dolphin Blue", nullptr, { 0x3F2E2C, 0x3F2190, 0x3F2E6C, 0x3F215C, 0 },
 				{ 0x43B90000, 0x3FAA9FBE, 0x43B90000, 0x43F00000 } },
+		{ "FASTER THAN SPEED", nullptr, { 0x3488E0, 0 }, { 0x3F400000 } }, // ftspeed
 		{ "METAL SLUG 6", nullptr, { 0xE93478, 0xE9347C, 0 }, { 0x3F400000, 0x3F8872B0 } },
 		{ "TOY FIGHTER", nullptr, { 0x133E58, 0 }, { 0x43700000 } },
-      { "LUPIN THE THIRD -THE SHOOTING-", nullptr, { 0x045490 }, { 0x3F400000 } },
+		{ "LUPIN THE THIRD  -THE SHOOTING-", nullptr, { 0x045490, 0 }, { 0x3F400000 } },
+		{ "VF4 FINAL TUNED JAPAN", nullptr, { 0x02B834, 0x0AFB90, 0 }, { 0x3FE38E39, 0x3FE38E39 } },
+		{ "DYNAMITE DEKA EX", nullptr, { 0x0E3598, 0x0C8E84, 0 }, { 0x3FE38E38, 0x3FE38E38 } },
+		{ "DEAD OR ALIVE 2", "doa2m", { 0x085B5C, 0x086AE8, 0 }, { 0x3FE38E39, 0x3FE38E39 } },
+		{ "SLASHOUT JAPAN VERSION", nullptr, { 0x3DDBE4, 0 }, { 0x43CFDC86 } },
+		{ "SPIKERS BATTLE JAPAN VERSION", nullptr, { 0x3626C4, 0 }, { 0x43A551B0 } },
+		{ "  18WHEELER", "18wheelr", { 0x5C64A8, 0 }, { 0x43700000 } },
+		{ "BEACH SPIKERS JAPAN", nullptr, { 0x065A7C, 0 }, { 0x44558000 } },
+		{ "GUN SPIKE", nullptr, { 0x21A94, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D", "initd", { 0x155434, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D", "initdexp", { 0x159674, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D", "initdexpo", { 0x159634, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D", "initdo", { 0x14F5F4, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D Ver.2", "initdv2e", { 0x1B4F74, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D Ver.2", "initdv2j", { 0x1B4F34, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D Ver.2", "initdv2jo", { 0x1AD1F4, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D Ver.3", "initdv3e", { 0x1D0B34, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D Ver.3", "initdv3j", { 0x1D7C74, 0 }, { 0x3FE38E39 } },
+		{ "INITIAL D Ver.3", "initdv3jb", { 0x1D7774, 0 }, { 0x3FE38E39 } },
+		{ "AIRLINE PILOTS IN JAPAN", "alpilotj", { 0x1D62550, 0 }, { 0x43700000 } },
+		{ "MONKEY BALL JAPAN VERSION", nullptr, { 0x345B4, 0x45244, 0x454CC, 0 }, { 0x3FE38E39, 0x3FE38E39, 0x3FE38E39 } },
+		{ "ZOMBIE REVENGE IN JAPAN", "zombrvn", { 0x7A4808, 0 }, { 0x43700000 } },
+		{ "ZOMBIE REVENGE IN JAPAN", "zombrvno", { 0x7A2E50, 0 }, { 0x43700000 } },
+		{ " BIOHAZARD  GUN SURVIVOR2", "gunsur2", { 0x42EE80, 0 }, { 0x3F400000 } },
+		{ " BIOHAZARD  GUN SURVIVOR2", "gunsur2j", { 0x42EBE0, 0 }, { 0x3F400000 } },
+		{ "SPAWN JAPAN", nullptr, { 0x02DEF8, 0x02E1C0, 0 }, { 0x3A99999A, 0x3A99999A } },
+		// gun coords problem with these 2 cheats
+		// { " CONFIDENTIAL MISSION ---------", nullptr, { 0x24F798 }, { 0x43700000 } },
+		// { "hotd2", nullptr, { 0x9C2AD8 }, { 0x43700000 } },
+		{ " JAMBO SAFARI ------------", nullptr, { 0x2B1DE0, 0 }, { 0x3FE38E39 } },
+		{ "SOUL SURFER IN JAPAN", nullptr, { 0x8962C8, 0 }, { 0x3FE38E39 } },
+		{ "LOVE AND BERRY 3 EXP VER1.002", nullptr, { 0x3C16E4, 0 }, { 0x3F400000 } },	// loveber3
+		{ "LOVE AND BERRY USA VER2.000", nullptr, { 0x4E92D0, 0 }, { 0x3F400000 } },	// lovebery
 
 		{ nullptr },
 };
+/* Each game's entries one after the other. */
+const GameFix CheatManager::_game_fixes[] =
+{
+		// Extreme Hunting 2: no network board check, and the boot code put back as it should be
+		{ "Fixed BOOT strapper", 32, 0x067B04, 1, true, 0 },
+		{ "Fixed BOOT strapper", 16, 0x09ACC8, 0x0009, false, 0 },
+		{ "Fixed BOOT strapper", 32, 0x010000, 0x9302D202, true, 0x8C9378C0 },
+		// The King of Route 66: a drive board error is not stopped at (rts, nop)
+		{ "THE KING OF ROUTE66", 32, 0x023EE0, 0x0009000B, false, 0 },
+		// Dave Mirra Freestyle BMX: the main loop's time (33 ms in the US, 40 ms in Europe)
+		{ "T-8120N", 32, 0x30B8CC, 0x42040000, false, 0 },
+		{ "T8120D  50", 32, 0x3011CC, 0x42200000, false, 0 },
+		// Samurai Shodown VI: depth shifted by 8 bits instead of 10 (nop)
+		{ "SAMURAI SPIRITS 6", 16, 0x03E602, 0x0009, false, 0 },
+		{ "T0002M", 16, 0x03E602, 0x0009, false, 0 },
+		// Fur Fighters: logging on, for the time it takes, without which the game hangs
+		{ "T-8107N", 32, 0x314248, 1, false, 0 },
+		{ "T-8113D-50", 32, 0x314228, 1, false, 0 },
+		/* Dricas authentication, which the servers that are left do not do,
+		 * answered with success (rts, mov #0,r0) */
+		{ "T6807M", 32, 0x04B7A0, 0xE000000B, true, 0x2FD62FE6 },	// Aero Dancing i: modem
+		{ "T6807M", 32, 0x04AF5C, 0xE000000B, true, 0x2FD62FE6 },	// broadband adapter
+		{ "T6807M", 32, 0x020860, 0xE000000B, true, 0x4F222FE6 },	// IP check
+		{ "T6809M", 32, 0x04B940, 0xE000000B, true, 0x2FD62FE6 },	// Aero Dancing i - Jikai Saku Made Matemasen: modem
+		{ "T6809M", 32, 0x04F848, 0xE000000B, true, 0x2FD62FE6 },	// broadband adapter
+		{ "T6809M", 32, 0x020980, 0xE000000B, true, 0x4F222FE6 },	// IP check
+		{ "T6805M", 32, 0x03ED10, 0xE000000B, true, 0x2FD62FE6 },	// Aero Dancing F
+		{ "HDR-0106", 32, 0x03AD30, 0xE000000B, true, 0x2FD62FE6 },	// Daytona USA (JP)
+		{ "HDR-0073", 32, 0x0A56F8, 0xE000000B, true, 0x2FD62FE6 },	// Sega Tetris
+		{ "T44501M", 32, 0x13F150, 0xE000000B, true, 0x2FD62FE6 },	// Golf Shiyou Yo 2
+		{ "T43903M", 32, 0x800524, 0xE000000B, true, 0x2FD62FE6 },	// Culdcept II
+		{ "HDR-0118", 32, 0x139F54, 0xE000000B, true, 0x2FD62FE6 },	// Outtrigger (JP)
+		{ "HDR-0100", 32, 0x0BA980, 0xE000000B, true, 0x2FD62FE6 },	// F355 Challenge (JP)
+		{ "HDR-0100", 32, 0x0A2D3C, 0xED048B00, true, 0xED048900 },	// and its check of it (bt -> bf)
+		{ "HDR-0006", 32, 0x0D5FBC, 0xE000000B, true, 0x2FD62FE6 },	// Nettou Golf
+		// Ooga Booga: no check of the network's state
+		{ "MK-51140", 16, 0x085D2C, 0x3330, true, 0x3630 },
+
+		{ nullptr },
+};
+
 CheatManager cheatManager;
 
 /* Turned off: what the cheat wrote is taken out again. The cheat writes
@@ -330,17 +425,41 @@ bool CheatManager::Reset()
 {
 	_widescreen_cheat = nullptr;
 	_have_original = 0;
+
+	std::string game_id(ip_meta.product_number, sizeof(ip_meta.product_number));
+	/* The fixes go by the product number without the spaces after it, or
+	 * an arcade game's name. */
+	std::string fix_id(settings.System == DC_PLATFORM_DREAMCAST ? game_id : std::string(naomi_game_id));
+	fix_id.erase(fix_id.find_last_not_of(' ') + 1);
+	_fixes = nullptr;
+	_fix_count = 0;
+	for (int i = 0; _game_fixes[i].game_id != nullptr; i++)
+	{
+		if (fix_id != _game_fixes[i].game_id)
+			continue;
+		if (_fixes == nullptr)
+			_fixes = &_game_fixes[i];
+		_fix_count++;
+	}
+	if (_fixes != nullptr)
+		NOTICE_LOG(COMMON, "Applying %u fixes to game %s", _fix_count, fix_id.c_str());
+
 	if (!settings.rend.WidescreenGameHacks)
 		return false;
 	if (settings.System == DC_PLATFORM_DREAMCAST)
 	{
-		std::string game_id(ip_meta.product_number, sizeof(ip_meta.product_number));
+		/* (not on the fourth disc of Shenmue II, whose cheat does not fit
+		 * it) */
+		if ((fix_id == "HDR-0164" || fix_id == "MK-5118450")
+				&& !memcmp(ip_meta.disk_num, "4/4  ", 5))
+			return false;
 		for (int i = 0; _widescreen_cheats[i].game_id != nullptr; i++)
 		{
 			if (!strncmp(game_id.c_str(), _widescreen_cheats[i].game_id, game_id.length())
 					&& (_widescreen_cheats[i].area_or_version == nullptr
 							|| !strncmp(ip_meta.area_symbols, _widescreen_cheats[i].area_or_version, sizeof(ip_meta.area_symbols))
-							|| !strncmp(ip_meta.product_version, _widescreen_cheats[i].area_or_version, sizeof(ip_meta.product_version))))
+							|| !strncmp(ip_meta.product_version, _widescreen_cheats[i].area_or_version, sizeof(ip_meta.product_version))
+							|| !strncmp(ip_meta.software_name, _widescreen_cheats[i].area_or_version, sizeof(ip_meta.software_name))))
 			{
 				_widescreen_cheat = &_widescreen_cheats[i];
 				NOTICE_LOG(COMMON, "Applying widescreen hack to game %s", game_id.c_str());
@@ -350,9 +469,19 @@ bool CheatManager::Reset()
 	}
 	else
 	{
+		/* The set's name, which tells apart versions with the same name
+		 * inside: the file's, as the set is asked for by it. */
+		char set_name[128] = { 0 };
+		if (game_data != nullptr)
+		{
+			strncpy(set_name, path_basename(game_data), sizeof(set_name) - 1);
+			path_remove_extension(set_name);
+		}
 		for (int i = 0; _naomi_widescreen_cheats[i].game_id != nullptr; i++)
 		{
-			if (!strcmp(naomi_game_id, _naomi_widescreen_cheats[i].game_id))
+			if (!strcmp(naomi_game_id, _naomi_widescreen_cheats[i].game_id)
+					&& (_naomi_widescreen_cheats[i].area_or_version == nullptr
+							|| !strcmp(set_name, _naomi_widescreen_cheats[i].area_or_version)))
 			{
 				_widescreen_cheat = &_naomi_widescreen_cheats[i];
 				NOTICE_LOG(COMMON, "Applying widescreen hack to game %s", naomi_game_id);
@@ -362,20 +491,46 @@ bool CheatManager::Reset()
 	}
 	if (_widescreen_cheat == nullptr)
 		return false;
+	// (a word that is not in this machine's memory: no cheat)
 	for (size_t i = 0; i < ARRAY_SIZE(_widescreen_cheat->addresses) && _widescreen_cheat->addresses[i] != 0; i++)
-		verify(_widescreen_cheat->addresses[i] < RAM_SIZE);
+		if (_widescreen_cheat->addresses[i] > RAM_SIZE - 4)
+		{
+			WARN_LOG(COMMON, "Widescreen hack of game %s is outside memory", game_id.c_str());
+			_widescreen_cheat = nullptr;
+			return false;
+		}
 
 	return true;
 }
 
 void CheatManager::Apply()
 {
+	for (u32 f = 0; f < _fix_count; f++)
+	{
+		const GameFix& fix = _fixes[f];
+		// (the table's addresses are all well inside the smallest memory)
+		const u32 addr = 0x8C000000 + fix.address;
+		const u32 now = fix.bits == 32 ? ReadMem32_nommu(addr)
+				: fix.bits == 16 ? ReadMem16_nommu(addr) : ReadMem8_nommu(addr);
+		if (now == fix.value || (fix.only_if && now != fix.if_value))
+			continue;
+		if (fix.bits == 32)
+			WriteMem32_nommu(addr, fix.value);
+		else if (fix.bits == 16)
+			WriteMem16_nommu(addr, (u16)fix.value);
+		else
+			WriteMem8_nommu(addr, (u8)fix.value);
+	}
 	if (_widescreen_cheat != nullptr)
 	{
 		for (size_t i = 0; i < ARRAY_SIZE(_widescreen_cheat->addresses) && _widescreen_cheat->addresses[i] != 0; i++)
 		{
 			const u32 addr = 0x8C000000 + _widescreen_cheat->addresses[i];
 			const u32 now  = ReadMem32_nommu(addr);
+			// (only over the value it is meant for, where the cheat says which)
+			if (_widescreen_cheat->orig_values[i] != 0 && now != _widescreen_cheat->orig_values[i]
+					&& now != _widescreen_cheat->values[i])
+				continue;
 
 			/* Whatever is there that is not the cheat's is the game's: the
 			 * program as it was loaded, or a value the game has just set.

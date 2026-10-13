@@ -329,8 +329,11 @@ void GetDriveToc(u32* to,DiskArea area)
 	to[100] = CreateTrackInfo_se(disc->tracks[last_track-1].CTRL, adr, last_track);
 	
 	if (disc->type==GdRom && area==SingleDensity)
-		//use smaller LEADOUT
-		to[101] = CreateTrackInfo(disc->LeadOut.CTRL, adr, 13085);
+		/* The single-density area's lead-out starts right after its
+		 * second track; 13085 when the image does not say where that
+		 * track ends. */
+		to[101] = CreateTrackInfo(disc->LeadOut.CTRL, adr,
+				disc->tracks[1].EndFAD != 0 ? disc->tracks[1].EndFAD + 1 : 13085);
 	else
 		/* (a GD-ROM's second area had none at all: the entry was left as
 		 * the 0xFFFFFFFF the table is filled with) */

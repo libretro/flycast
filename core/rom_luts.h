@@ -42,10 +42,16 @@ static struct game_type lut_games[] =
    { "HDR-0176  ", -1, -1,  1,  -1, 1, 0 },           /* Cosmic Smash */
 
    /* Extra depth scaling */
-   { "T0002M    ", -1, -1, -1, -1, 1e26, 0 },        /* Samurai Shodown 6 (Dreamcast port) */
-   { "MK-51182  ", -1, -1, -1, -1, 10000.f, 0 },     /* NHL 2K2 */
+   { "MK-51182  ", -1, -1, -1, -1, 1e8f, 0 },        /* NHL 2K2 */
    { "T-8109N   ", -1, -1, -1, -1, 100.f, 0 },       /* Re-Volt (US) */
    { "T8107D  50", -1, -1, -1, -1, 100.f, 0 },       /* Re-Volt (EU) */
+   { "T-8101M   ", -1, -1, -1, -1, 100.f, 0 },       /* Re-Volt (JP) */
+   { "DR001     ", -1, -1, -1, -1, 100.f, 0 },       /* Sturmwind */
+   { "T15110N   ", -1, -1, -1, -1, 0.1f, 0 },        /* Test Drive V-Rally (US) */
+   { "T15105D 50", -1, -1, -1, -1, 0.1f, 0 },        /* V-Rally (EU) */
+   { "T-8116N   ", -1, -1, -1, -1, 1000.f, 0 },      /* South Park Rally (US) */
+   { "T-8112D-50", -1, -1, -1, -1, 1000.f, 0 },      /* South Park Rally (EU) */
+   { "T1247M    ", -1, -1, -1, -1, 10000.f, 0 },     /* Capcom vs. SNK: Millennium Fight 2000 Pro */
 
 	// Disable RGB Component
 	{ "T40602N   ", -1, -1, -1, -1, 1, 1 },           /* Centipede */
@@ -72,7 +78,7 @@ extern InputDescriptors deathcox_inputs;
 static struct game_type_naomi lut_games_naomi[] = 
 {
    /* Extra Depth Scaling */
-   { "SAMURAI SPIRITS 6"                 , -1, -1, -1,  -1, JVS::Default, 1e26 },             /* Samurai Shodown VI */
+   { "CAPCOM VS SNK PRO  JAPAN"          , -1, -1, -1,  -1, JVS::Default, 10000.f },          /* Capcom vs. SNK Pro */
 
    /* Translucent Polygon Depth Mask */
    { "COSMIC SMASH IN JAPAN"             , -1, -1,  1,  -1, JVS::Default, 1 },                /* Cosmic Smash */

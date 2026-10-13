@@ -27,12 +27,29 @@ struct Cheat
 	const char *area_or_version;
 	u32 addresses[16];
 	u32 values[16];
+	/* Where not 0: the value is only written over this one. (The game puts
+	 * the same word there for other uses, which must not be changed.) */
+	u32 orig_values[16];
+};
+
+/* A change a game needs to work, made whatever the options say: @value is
+ * written at @address in main memory whenever something else is there -
+ * or, with @only_if set, only when @if_value is there (code that is
+ * patched once it is loaded, and left alone if it is not the code). */
+struct GameFix
+{
+	const char *game_id;
+	u32 bits;		// 8, 16 or 32
+	u32 address;
+	u32 value;
+	bool only_if;
+	u32 if_value;
 };
 
 class CheatManager
 {
 public:
-	CheatManager() : _widescreen_cheat(nullptr), _have_original(0) {}
+	CheatManager() : _widescreen_cheat(nullptr), _have_original(0), _fixes(nullptr), _fix_count(0) {}
 	bool Reset();	// Returns true if using 16:9 anamorphic screen ratio
 	void Apply();
 	/* The option changed while the game runs (the machine standing still).
@@ -46,6 +63,9 @@ private:
 	static const Cheat _widescreen_cheats[];
 	static const Cheat _naomi_widescreen_cheats[];
 	const Cheat *_widescreen_cheat;
+	static const GameFix _game_fixes[];
+	const GameFix *_fixes;
+	u32 _fix_count;
 };
 
 extern CheatManager cheatManager;

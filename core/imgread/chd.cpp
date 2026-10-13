@@ -266,6 +266,10 @@ bool CHDDisc::TryOpen(const char* file)
       t.StartFAD = total_frames + pregap;
 		total_frames = t.StartFAD + frames - pregap_kept;
 		t.EndFAD = total_frames - 1;
+		/* The pad frames of a GD-ROM track fill it up to a whole number
+		 * of frames in the image: they are not on the disc. */
+		if (meta.pad > 0 && meta.pad < frames - (int)pregap_kept)
+			t.EndFAD -= (u32)meta.pad;
 		t.ADDR = 0;
 		t.CTRL = strcmp(type,"AUDIO") == 0 ? 0 : 4;
 		last_pregap = pregap;

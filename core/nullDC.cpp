@@ -148,12 +148,19 @@ static int game_alpha_sort_mode = -1;
  * before the flash is saved, for the games that come after. */
 static int game_broadcast = -1;
 static u8 flash_broadcast[2];
+/* The same for a language, which is also in the user's settings in the
+ * flash: -1 there when the flash had none to put back. */
+static int game_language = -1;
+static u8 flash_language[2];
+static int flash_user_language = -1;
 
 static void forget_game_settings(void)
 {
    game_cable           = -1;
    game_alpha_sort_mode = -1;
    game_broadcast       = -1;
+   game_language        = -1;
+   flash_user_language  = -1;
 }
 
 void dc_apply_game_settings(void)
@@ -231,7 +238,8 @@ static void LoadSpecialSettings(void)
          	NOTICE_LOG(BOOT, "[Hack]: Applying auto extra depth scale.");
          	settings.rend.ExtraDepthScale = lut_games[i].extra_depth_scale;
          }
-         if (lut_games[i].no_rgb_component == 1)
+         // (with the RGB cable only: what VGA or TV gives such a game is its own)
+         if (lut_games[i].no_rgb_component == 1 && settings.dreamcast.cable == 2)
          {
          	NOTICE_LOG(BOOT, "Disabling RGB component output");
             settings.dreamcast.cable = 3;		// TV composite
@@ -318,10 +326,67 @@ static void LoadSpecialSettings(void)
 		flash_broadcast[0] = sys_nvmem_flash.data[0x1a004];
 		flash_broadcast[1] = sys_nvmem_flash.data[0x1a0a4];
 	}
+	if (id == "T-8102N")			// TrickStyle (US)
+	{
+		NOTICE_LOG(BOOT, "Forcing English language");
+		game_language = 1;
+		settings.dreamcast.language = game_language;
+		flash_language[0] = sys_nvmem_flash.data[0x1a003];
+		flash_language[1] = sys_nvmem_flash.data[0x1a0a3];
+		flash_syscfg_block syscfg;
+		if (sys_nvmem_flash.ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg))
+			flash_user_language = syscfg.lang;
+	}
 	if (settings.dreamcast.cable != cable_option)
 		game_cable = settings.dreamcast.cable;
 	if (settings.pvr.Emulation.AlphaSortMode != alpha_sort_option)
 		game_alpha_sort_mode = settings.pvr.Emulation.AlphaSortMode;
+}
+
+/* The games that do not start, or do not work, with one of the two BIOSes:
+ * the real one when its file is there, the HLE one. The ROM is put in place
+ * of the other after the reset, before anything has run. */
+static void ChooseGameBios(const char *system_dir, bool hle_bios)
+{
+   char prod_id[sizeof(ip_meta.product_number) + 1] = {0};
+   memcpy(prod_id, ip_meta.product_number, sizeof(ip_meta.product_number));
+   std::string id(prod_id);
+   id.erase(id.find_last_not_of(' ') + 1);
+
+   if (hle_bios
+         && (id == "T7001D  50"     // Jimmy White's 2: Cueball
+         || id == "T40505D 50"      // Railroad Tycoon II (EU)
+         || id == "T18702M"         // Miss Moonlight
+         || id == "T0019M"          // KenJu (Atomiswave conversion)
+         || id == "T0020M"          // Force Five (Atomiswave conversion)
+         || id == "HDR-0187"        // Fushigi no Dungeon: Fuurai no Shiren Gaiden
+         || id == "T15104D 50"      // Slave Zero (PAL)
+         || id == "MK-51152"        // World Series Baseball 2K2
+         || ip_meta.isMILCD()))     // a MIL-CD: the HLE BIOS cannot start one
+   {
+      if (LoadRomFiles(system_dir))
+      {
+         NOTICE_LOG(BOOT, "Forcing real BIOS");
+         settings.bios.UseReios = false;
+      }
+      else
+      {
+         /* (a file that was there and could not be read whole may have
+          * been read in part over the HLE BIOS) */
+         WARN_LOG(BOOT, "This game needs the real BIOS, which was not found: using reios");
+         LoadHle(system_dir);
+      }
+   }
+   else if (!hle_bios
+         && (id == "T17708N"        // Stupid Invaders (US)
+         || id == "T17711D"         // Stupid Invaders (EU)
+         || id == "T46509M"         // Suika (JP)
+         || id == "T36901M"))       // Cool Boarders Burrrn (JP)
+   {
+      NOTICE_LOG(BOOT, "Forcing HLE BIOS");
+      LoadHle(system_dir);
+      settings.bios.UseReios = true;
+   }
 }
 
 static void LoadSpecialSettingsNaomi(const char *name)
@@ -515,6 +580,8 @@ int dc_init()
    sprintf(new_system_dir, "%s/", game_dir_no_slash);
 #endif
 
+   // the HLE BIOS is the one in the ROM
+   bool hle_bios = false;
    if (settings.System == DC_PLATFORM_DREAMCAST)
    {
       if (settings.bios.UseReios || !LoadRomFiles(new_system_dir))
@@ -526,6 +593,7 @@ int dc_init()
             return -3;
          }
          WARN_LOG(COMMON, "Did not load bios, using reios");
+         hle_bios = true;
       }
    }
    else
@@ -578,6 +646,8 @@ int dc_init()
             settings.imgread.DefaultImage[0] = '\0';
          }
          reios_disk_id();
+         if (libGDR_GetDiscType() != NoDisk && settings.reios.ElfFile.empty())
+            ChooseGameBios(new_system_dir, hle_bios);
          LoadSpecialSettings();
          break;
       case DC_PLATFORM_ATOMISWAVE:
@@ -639,6 +709,18 @@ void dc_term()
 	{
 		sys_nvmem_flash.data[0x1a004] = flash_broadcast[0];
 		sys_nvmem_flash.data[0x1a0a4] = flash_broadcast[1];
+	}
+	if (game_language >= 0 && settings.System == DC_PLATFORM_DREAMCAST)
+	{
+		sys_nvmem_flash.data[0x1a003] = flash_language[0];
+		sys_nvmem_flash.data[0x1a0a3] = flash_language[1];
+		flash_syscfg_block syscfg;
+		if (flash_user_language >= 0
+				&& sys_nvmem_flash.ReadBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg))
+		{
+			syscfg.lang = (u8)flash_user_language;
+			sys_nvmem_flash.WriteBlock(FLASH_PT_USER, FLASH_USER_SYSCFG, &syscfg);
+		}
 	}
 	forget_game_settings();
 	SaveRomFiles(get_writable_data_path(""));

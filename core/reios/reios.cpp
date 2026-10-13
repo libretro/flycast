@@ -190,15 +190,17 @@ static bool reios_locate_bootfile(const char* bootfile)
 			 * first byte to its last, whatever it is called, and the BIOS
 			 * unscrambles all of it to 8c010000: with a sector left out,
 			 * what came of the rest was not the program.) */
-			if (!descrambl && !memcmp(bootfile, "0WINCEOS.BIN", 12))
+			if (!descrambl && ip_meta.isWindowsCE())
 			{
-				/* (its first sector is not part of the program) */
+				/* (its first sector is not part of the program: the BIOS
+				 * puts it at 8ce01000, where Windows CE looks for it) */
 				if (len < 2048)
 				{
 					ERROR_LOG(REIOS, "Boot file too small: %u", len);
 					delete[] temp;
 					return false;
 				}
+				libGDR_ReadSector(GetMemPtr(0x8ce01000, 0), lba + 150, 1, 2048);
 				lba++;
 				len -= 2048;
 			}

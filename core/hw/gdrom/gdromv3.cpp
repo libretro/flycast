@@ -1667,6 +1667,17 @@ void gdrom_reg_Reset(bool hard)
 	// and looks at what disc is in it
 	gd_swap_cancel();
 	gd_setdisc();
+	/* With no disc at power-on the drive spends a second finding that out,
+	 * busy, and then says once that there is nothing to read; the BIOS
+	 * plays its boot animation in that time. */
+	if (hard && gd_swap_schid >= 0 && libGDR_GetDiscType() == NoDisk)
+	{
+		sns_asc = 4;			// in the process of becoming ready
+		sns_ascq = 1;
+		sns_key = 2;			// not ready
+		SecNumber.Status = GD_BUSY;
+		sh4_sched_request(gd_swap_schid, SH4_MAIN_CLOCK);	// 1 s
+	}
 
 	// set default hardware information
 	memset(&GD_HardwareInfo, 0, sizeof(GD_HardwareInfo));

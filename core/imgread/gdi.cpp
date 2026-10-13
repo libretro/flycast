@@ -148,9 +148,18 @@ Disc* load_gdi(const char* file)
 				delete disc;
 				return nullptr;
 			}
+			/* The track ends where its file does: the sectors between it
+			 * and the next track are not on the disc. (It was made to run
+			 * up to the next track.) */
+			const s64 track_bytes = (s64)core_fsize(track_file) - OFFSET;
+			if (track_bytes % SSIZE != 0)
+				WARN_LOG(GDROM, "GDI: size of track %d is not a multiple of its sector size %u", TRACK, SSIZE);
+			if (track_bytes >= (s64)SSIZE)
+				t.EndFAD = t.StartFAD + (u32)(track_bytes / SSIZE) - 1;
 			t.file = new RawTrackFile(track_file,OFFSET,t.StartFAD,SSIZE);
 		}
-		if (!disc->tracks.empty())
+		// (a track with no file, or an empty one, still ends where the next starts)
+		if (!disc->tracks.empty() && disc->tracks.back().EndFAD == 0)
 			disc->tracks.back().EndFAD = t.StartFAD - 1;
 		disc->tracks.push_back(t);
 	}
