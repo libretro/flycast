@@ -29,8 +29,10 @@ VulkanOSD::~VulkanOSD()
 const std::vector<vk::CommandBuffer>* VulkanOSD::PrepareOSD(CommandPool *commandPool)
 {
 	VulkanContext *context = VulkanContext::Instance();
-	commandBuffers.resize(context->GetSwapChainSize());
-	commandBuffers[context->GetCurrentImageIndex()].clear();
+	const size_t imageIndex = context->GetCurrentImageIndex();
+	if (commandBuffers.size() <= imageIndex)
+		commandBuffers.resize(std::max((size_t)context->GetSwapChainSize(), imageIndex + 1));
+	commandBuffers[imageIndex].clear();
 	for (int i = 0; i < VMU_COUNT; i++)
 	{
 		std::unique_ptr<Texture>& texture = vmuTextures[i];

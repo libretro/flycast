@@ -51,7 +51,13 @@ public:
 	vk::PipelineCache GetPipelineCache() const { return *pipelineCache; }
 	vk::DescriptorPool GetDescriptorPool() const { return *descriptorPool; }
 	vk::Extent2D GetViewPort() const { return { width, height }; }
-	int GetSwapChainSize() const { u32 m = retro_render_if->get_sync_index_mask(retro_render_if->handle); u32 n = 1; while (m >>= 1) n++; return n; }
+	/* How many frames the renderer keeps in its rings (command pools,
+	 * buffers, attachments), as the frontend's swap chain was when the
+	 * context was made. The frontend can make its chain longer later (when
+	 * fast-forward changes how it presents): the rings were made at this
+	 * size and stay at it. What is kept per frontend frame index
+	 * (GetCurrentImageIndex) grows with the index instead. */
+	int GetSwapChainSize() const { return swapChainSize; }
 	int GetCurrentImageIndex() const { return retro_render_if->get_sync_index(retro_render_if->handle); }
 	// FIXME that's not quite correct
 	void WaitIdle() const { retro_render_if->wait_sync_index(retro_render_if->handle); }
@@ -100,6 +106,7 @@ private:
 	vk::Format FindDepthFormat();
 
 	VulkanHeap heap;
+	int swapChainSize = 1;
 	u32 width = 0;
 	u32 height = 0;
 

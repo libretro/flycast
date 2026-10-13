@@ -153,6 +153,9 @@ __forceinline
 		glUniform4f(CurrentShader->pp_ClipTest, clip_rect[0], clip_rect[1], clip_rect[0] + clip_rect[2], clip_rect[1] + clip_rect[3]);
 	if (clipmode == TileClipping::Outside)
 	{
+		if (ShaderUniforms.base_clipping.enabled)
+			IntersectClipRect(clip_rect, ShaderUniforms.base_clipping.x, ShaderUniforms.base_clipping.y,
+					ShaderUniforms.base_clipping.width, ShaderUniforms.base_clipping.height);
 		glcache.Enable(GL_SCISSOR_TEST);
 		glcache.Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
 	}
@@ -534,6 +537,9 @@ static bool SetShadowScissor(const PolyParam *gp, const int *volumes)
 		clip[2] = ShaderUniforms.base_clipping.width;
 		clip[3] = ShaderUniforms.base_clipping.height;
 	}
+	else if (ShaderUniforms.base_clipping.enabled)
+		IntersectClipRect(clip, ShaderUniforms.base_clipping.x, ShaderUniforms.base_clipping.y,
+				ShaderUniforms.base_clipping.width, ShaderUniforms.base_clipping.height);
 	if (clipped)
 	{
 		x0 = std::max(x0, clip[0]);

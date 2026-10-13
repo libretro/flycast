@@ -176,6 +176,9 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 			|| retro_render_if->interface_version != RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION)
 		return false;
 	this->retro_render_if = retro_render_if;
+	swapChainSize = 1;
+	for (u32 m = retro_render_if->get_sync_index_mask(retro_render_if->handle); m >>= 1; )
+		swapChainSize++;
 
 	instance = vk::Instance(retro_render_if->instance);
 	physicalDevice = vk::PhysicalDevice(retro_render_if->gpu);

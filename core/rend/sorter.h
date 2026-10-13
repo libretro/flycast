@@ -28,5 +28,9 @@ struct SortTrigDrawParam
 	u32 count;
 };
 
-// Sort based on min-z of each triangle
-void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, std::vector<u32>& vidx_sort);
+// Sort based on min-z of each triangle.
+// firstProvoking: the renderer takes a flat triangle's colour from its first
+// vertex (Vulkan), where the strip's colours have been moved one triangle
+// back; otherwise from its last (OpenGL).
+void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, std::vector<u32>& vidx_sort,
+		bool firstProvoking = false);

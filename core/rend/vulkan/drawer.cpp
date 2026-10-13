@@ -38,7 +38,7 @@ void Drawer::SortTriangles()
 		sortedIndexes[render_pass].clear();
 		if (current_pass.autosort)
 		{
-			GenSorted(previousPass.tr_count, current_pass.tr_count - previousPass.tr_count, sortedPolys[render_pass], sortedIndexes[render_pass]);
+			GenSorted(previousPass.tr_count, current_pass.tr_count - previousPass.tr_count, sortedPolys[render_pass], sortedIndexes[render_pass], true);
 			for (auto& poly : sortedPolys[render_pass])
 				poly.first += sortedIndexCount;
 			sortedIndexCount += sortedIndexes[render_pass].size();
@@ -53,6 +53,9 @@ TileClipping BaseDrawer::SetTileClip(u32 val, vk::Rect2D& clipRect)
 {
 	int rect[4] = {};
 	TileClipping clipmode = ::GetTileClip(val, matrices.GetViewportMatrix(), rect);
+	if (clipmode == TileClipping::Outside)
+		IntersectClipRect(rect, baseScissor.offset.x, baseScissor.offset.y,
+				(int)baseScissor.extent.width, (int)baseScissor.extent.height);
 	clipRect.offset.x = rect[0];
 	clipRect.offset.y = rect[1];
 	clipRect.extent.width = rect[2];
@@ -212,10 +215,27 @@ void Drawer::DrawShadowed(const vk::CommandBuffer& cmdBuffer, u32 listType, cons
 					&scissor);
 }
 
-void Drawer::DrawSorted(const vk::CommandBuffer& cmdBuffer, const std::vector<SortTrigDrawParam>& polys)
+void Drawer::DrawSorted(const vk::CommandBuffer& cmdBuffer, const std::vector<SortTrigDrawParam>& polys, bool multipass)
 {
 	for (const SortTrigDrawParam& param : polys)
 		DrawPoly(cmdBuffer, ListType_Translucent, true, *param.ppid, pvrrc.idx.used() + param.first, param.count);
+
+	if (multipass && settings.rend.TranslucentPolygonDepthMask)
+	{
+		// Sorted translucent polygons are drawn without writing depth. Where
+		// a later render pass needs their depth (Cosmic Smash), it is written
+		// now, for those that do not have Z write disabled.
+		for (const SortTrigDrawParam& param : polys)
+		{
+			if (param.count <= 2 || param.ppid->isp.ZWriteDis)
+				continue;
+			vk::Rect2D scissorRect;
+			SetScissor(cmdBuffer, SetTileClip(param.ppid->tileclip, scissorRect) == TileClipping::Outside ? scissorRect : baseScissor);
+			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
+					pipelineManager->GetModifierVolumePipeline(ModVolMode::Depth, param.ppid->isp.CullMode));
+			cmdBuffer.drawIndexed(param.count, 1, pvrrc.idx.used() + param.first, 0, 0);
+		}
+	}
 }
 
 void Drawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last)
@@ -416,7 +436,7 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		{
 			if (!settings.pvr.Emulation.AlphaSortMode)
 			{
-				DrawSorted(cmdBuffer, sortedPolys[render_pass]);
+				DrawSorted(cmdBuffer, sortedPolys[render_pass], render_pass < pvrrc.render_passes.used() - 1);
 			}
 			else
 			{

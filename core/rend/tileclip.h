@@ -75,3 +75,18 @@ static inline TileClipping GetTileClip(u32 val, const xform& viewport, int *clip
 
 	return tileClippingMode;
 }
+
+// A polygon kept inside its tile clip rectangle is still kept inside the
+// pixel clip (FB_X_CLIP / FB_Y_CLIP) as well: the chip writes nothing outside
+// that. Both rectangles are in the render target's pixels.
+static inline void IntersectClipRect(int *clip_rect, int x, int y, int width, int height)
+{
+	const int x0 = std::max(clip_rect[0], x);
+	const int y0 = std::max(clip_rect[1], y);
+	const int x1 = std::min(clip_rect[0] + clip_rect[2], x + width);
+	const int y1 = std::min(clip_rect[1] + clip_rect[3], y + height);
+	clip_rect[0] = x0;
+	clip_rect[1] = y0;
+	clip_rect[2] = std::max(0, x1 - x0);
+	clip_rect[3] = std::max(0, y1 - y0);
+}

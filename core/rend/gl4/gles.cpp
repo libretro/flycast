@@ -367,10 +367,8 @@ void main()
 					break;
 			}
 			break;
-		case OTHER_COLOR:
-         if (cur_blend_mode.x == ZERO && color == vec4(1.0))
-            discard;
-			break;
+		// Destination times a white source is not left alone when the
+		// fragment turns out to be in a shadow: its colour is scaled then.
 		case INVERSE_OTHER_COLOR:
          if (cur_blend_mode.x <= SRC_ALPHA && color == vec4(0.0))
             discard;
@@ -615,6 +613,15 @@ static bool RenderFrame()
 	DoCleanup();
 
 	const bool is_rtt = pvrrc.isRTT;
+	/* A pixel clip that ends before it starts holds no pixel: the chip
+	 * writes nothing. (Its size would be negative here, and a texture or
+	 * buffer that size is none at all.) */
+	if (is_rtt && (pvrrc.fb_X_CLIP.max < pvrrc.fb_X_CLIP.min || pvrrc.fb_Y_CLIP.max < pvrrc.fb_Y_CLIP.min))
+	{
+		WARN_LOG(RENDERER, "Render to texture with an empty pixel clip: %d-%d, %d-%d",
+				pvrrc.fb_X_CLIP.min, pvrrc.fb_X_CLIP.max, pvrrc.fb_Y_CLIP.min, pvrrc.fb_Y_CLIP.max);
+		return false;
+	}
 
 	TransformMatrix<true> matrices(pvrrc);
 	xform_to_mat4(&matrices.GetNormalMatrix(), gl4ShaderUniforms.normal_mat);

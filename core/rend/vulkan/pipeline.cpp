@@ -30,11 +30,11 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 	// Input assembly state
 	vk::PipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateCreateInfo;
 
-	if (mode == ModVolMode::Final)
+	if (mode == ModVolMode::Final || mode == ModVolMode::Depth)
 	{
 		pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo(false);
 		pipelineInputAssemblyStateCreateInfo = vk::PipelineInputAssemblyStateCreateInfo(vk::PipelineInputAssemblyStateCreateFlags(),
-				vk::PrimitiveTopology::eTriangleStrip);
+				mode == ModVolMode::Final ? vk::PrimitiveTopology::eTriangleStrip : vk::PrimitiveTopology::eTriangleList);
 	}
 	else
 	{
@@ -99,15 +99,17 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 		// clears the volume bits and that mark
 		stencilOpState = vk::StencilOpState(vk::StencilOp::eZero, vk::StencilOp::eZero, vk::StencilOp::eZero, vk::CompareOp::eEqual, 0xC1, 0x43, 0x81);
 		break;
+	case ModVolMode::Depth:
+		break;
 	}
 	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo
 	(
 	  vk::PipelineDepthStencilStateCreateFlags(), // flags
-	  mode == ModVolMode::Xor || mode == ModVolMode::Or, // depthTestEnable
-	  false,                                      // depthWriteEnable
-	  vk::CompareOp::eGreater,                    // depthCompareOp
+	  mode == ModVolMode::Xor || mode == ModVolMode::Or || mode == ModVolMode::Depth, // depthTestEnable
+	  mode == ModVolMode::Depth,                  // depthWriteEnable
+	  mode == ModVolMode::Depth ? vk::CompareOp::eGreaterOrEqual : vk::CompareOp::eGreater, // depthCompareOp
 	  false,                                      // depthBoundTestEnable
-	  true,                                       // stencilTestEnable
+	  mode != ModVolMode::Depth,                  // stencilTestEnable
 	  stencilOpState,                             // front
 	  stencilOpState                              // back
 	);

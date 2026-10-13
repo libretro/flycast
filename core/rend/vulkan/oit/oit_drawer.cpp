@@ -47,6 +47,8 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 
 	bool twoVolumes = poly.tsp1.full != (u32)-1 || poly.tcw1.full != (u32)-1;
 
+	const bool keepAll = twoVolumes || poly.tsp.SrcSelect;
+
 	bool palette = BaseTextureCacheData::IsGpuHandledPaletted(poly.tsp, poly.tcw);
 	float palette_index = 0.f;
 	if (palette)
@@ -64,7 +66,12 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 				(float)scissorRect.offset.x + (float)scissorRect.extent.width,
 				(float)scissorRect.offset.y + (float)scissorRect.extent.height
 			},
-			{ (int)poly.tsp.SrcInstr, (int)poly.tsp.DstInstr, 0, 0 },
+			// The per-pixel pass drops a fragment whose blend would leave the
+			// pixel as it is. It cannot tell that when the source is the second
+			// accumulation buffer, or when the polygon has a second volume and
+			// which blend applies is known only when the lists are put
+			// together: those get a blend (8) that none of its cases take.
+			{ keepAll ? 8 : (int)poly.tsp.SrcInstr, keepAll ? 8 : (int)poly.tsp.DstInstr, 0, 0 },
 			trilinearAlpha,
 			listType == ListType_Translucent ? (int)(&poly - pvrrc.global_param_tr.head()) : 0,
 			palette_index,

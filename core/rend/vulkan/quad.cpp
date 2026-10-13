@@ -182,7 +182,13 @@ void QuadDrawer::Init(QuadPipeline *pipeline)
 void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, QuadVertex vertices[], bool nearestFilter, CommandPool *commandPool)
 {
 	VulkanContext *context = GetContext();
-	Slot& slot = slots[context->GetCurrentImageIndex()];
+	/* The frontend can make its swap chain longer while the game runs (when
+	 * fast-forward changes how it presents): its frame index then goes past
+	 * the slots made at the start. */
+	const size_t imageIndex = context->GetCurrentImageIndex();
+	if (imageIndex >= slots.size())
+		slots.resize(imageIndex + 1);
+	Slot& slot = slots[imageIndex];
 	const vk::Sampler sampler = nearestFilter ? pipeline->GetNearestSampler() : pipeline->GetLinearSampler();
 
 	/* The set says which image to draw and how to sample it, and that is the

@@ -202,7 +202,8 @@ static void fill_id(u32 *d, const Vertex *v0, const Vertex *v1, const Vertex *v2
 	d[2] = (u32)(v2 - vb);
 }
 
-void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, std::vector<u32>& vidx_sort)
+void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, std::vector<u32>& vidx_sort,
+		bool firstProvoking)
 {
 	u32 tess_gen=0;
 
@@ -256,18 +257,27 @@ void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, 
 
 			for (u32 i = 0; i < pp->count - 2; i++)
 			{
-				const Vertex *v0, *v1;
-				if (flip)
+				const Vertex *v0, *v1, *v2;
+				if (flip && firstProvoking)
+				{
+					// The same winding, starting with the vertex that holds
+					// this triangle's colour (strip vertex i, not i + 1).
+					v0 = vtx_base + idx[i];
+					v1 = vtx_base + idx[i + 2];
+					v2 = vtx_base + idx[i + 1];
+				}
+				else if (flip)
 				{
 					v0 = vtx_base + idx[i + 1];
 					v1 = vtx_base + idx[i];
+					v2 = vtx_base + idx[i + 2];
 				}
 				else
 				{
 					v0 = vtx_base + idx[i];
 					v1 = vtx_base + idx[i + 1];
+					v2 = vtx_base + idx[i + 2];
 				}
-				const Vertex *v2 = vtx_base + idx[i + 2];
 				{
 					fill_id(lst[pfsti].id,v0,v1,v2,vtx_base);
 					lst[pfsti].pid= ppid ;

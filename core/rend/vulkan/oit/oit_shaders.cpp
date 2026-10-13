@@ -549,10 +549,8 @@ void main()
 					break;
 			}
 			break;
-		case OTHER_COLOR:
-			if (cur_blend_mode.x == ZERO && color == vec4(1.0))
-				discard;
-			break;
+		// Destination times a white source is not left alone when the
+		// fragment turns out to be in a shadow: its colour is scaled then.
 		case INVERSE_OTHER_COLOR:
 			if (cur_blend_mode.x <= SRC_ALPHA && color == vec4(0.0))
 				discard;

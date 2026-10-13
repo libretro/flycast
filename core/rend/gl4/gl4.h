@@ -285,7 +285,13 @@ extern struct gl4ShaderUniforms_t
 			glUniform1f(s->shade_scale_factor, FPU_SHAD_SCALE.scale_factor / 256.f);
 
 		if (s->blend_mode != -1) {
-			u32 blend_mode[] = { tsp0.SrcInstr, tsp0.DstInstr, tsp1.SrcInstr, tsp1.DstInstr };
+			// The per-pixel pass drops a fragment whose blend would leave the
+			// pixel as it is. It cannot tell that when the source is the second
+			// accumulation buffer, or when the polygon has a second volume and
+			// which blend applies is known only when the lists are put
+			// together: those get a blend (8) that none of its cases take.
+			bool keep = tsp0.SrcSelect || tsp1.full != (u32)-1 || tcw1.full != (u32)-1;
+			u32 blend_mode[] = { keep ? 8u : (u32)tsp0.SrcInstr, keep ? 8u : (u32)tsp0.DstInstr, tsp1.SrcInstr, tsp1.DstInstr };
 			glUniform2iv(s->blend_mode, 2, (GLint *)blend_mode);
 		}
 

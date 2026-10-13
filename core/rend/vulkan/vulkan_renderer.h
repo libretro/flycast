@@ -165,9 +165,10 @@ protected:
 		int height;
 		ReadFramebuffer(pb, width, height);
 
-		if (framebufferTextures.size() != GetContext()->GetSwapChainSize())
-			framebufferTextures.resize(GetContext()->GetSwapChainSize());
-		std::unique_ptr<Texture>& curTexture = framebufferTextures[GetContext()->GetCurrentImageIndex()];
+		const size_t imageIndex = GetContext()->GetCurrentImageIndex();
+		if (framebufferTextures.size() <= imageIndex)
+			framebufferTextures.resize(std::max((size_t)GetContext()->GetSwapChainSize(), imageIndex + 1));
+		std::unique_ptr<Texture>& curTexture = framebufferTextures[imageIndex];
 		if (!curTexture)
 		{
 			curTexture = std::unique_ptr<Texture>(new Texture());

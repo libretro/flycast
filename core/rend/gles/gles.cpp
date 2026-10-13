@@ -975,6 +975,16 @@ static bool RenderFrame(void)
 	//setup render target first
 	if (is_rtt)
 	{
+		/* A pixel clip that ends before it starts holds no pixel: the chip
+		 * writes nothing. (Its size would be negative here, and a texture
+		 * that size is no texture at all.) */
+		if (pvrrc.fb_X_CLIP.max < pvrrc.fb_X_CLIP.min || pvrrc.fb_Y_CLIP.max < pvrrc.fb_Y_CLIP.min
+				|| FB_X_CLIP.max < FB_X_CLIP.min || FB_Y_CLIP.max < FB_Y_CLIP.min)
+		{
+			WARN_LOG(RENDERER, "Render to texture with an empty pixel clip: %d-%d, %d-%d",
+					pvrrc.fb_X_CLIP.min, pvrrc.fb_X_CLIP.max, pvrrc.fb_Y_CLIP.min, pvrrc.fb_Y_CLIP.max);
+			return false;
+		}
 		GLuint channels,format;
 		switch(FB_W_CTRL.fb_packmode)
 		{

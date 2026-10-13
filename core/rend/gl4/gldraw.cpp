@@ -182,6 +182,9 @@ static void SetGPState(const PolyParam* gp)
 		glUniform4f(CurrentShader->pp_ClipTest, clip_rect[0], clip_rect[1], clip_rect[0] + clip_rect[2], clip_rect[1] + clip_rect[3]);
 	if (clipmode == TileClipping::Outside)
 	{
+		if (gl4ShaderUniforms.base_clipping.enabled)
+			IntersectClipRect(clip_rect, gl4ShaderUniforms.base_clipping.x, gl4ShaderUniforms.base_clipping.y,
+					gl4ShaderUniforms.base_clipping.width, gl4ShaderUniforms.base_clipping.height);
 		glcache.Enable(GL_SCISSOR_TEST);
 		glcache.Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
 	}

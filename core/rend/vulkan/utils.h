@@ -21,7 +21,9 @@
 #pragma once
 #include "vulkan.h"
 
-enum class ModVolMode { Xor, Or, Inclusion, Exclusion, Final };
+// Depth: not a volume. The depth of sorted translucent polygons, written
+// after they are drawn, with no colour (main vertices, triangle list).
+enum class ModVolMode { Xor, Or, Inclusion, Exclusion, Final, Depth };
 
 static const vk::CompareOp depthOps[] =
 {

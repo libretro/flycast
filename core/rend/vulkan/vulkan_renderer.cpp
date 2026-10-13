@@ -71,6 +71,14 @@ public:
 	{
 		if (pvrrc.isRenderFramebuffer)
 			return true;
+		if (pvrrc.isRTT && (pvrrc.fb_X_CLIP.max < pvrrc.fb_X_CLIP.min || pvrrc.fb_Y_CLIP.max < pvrrc.fb_Y_CLIP.min))
+		{
+			/* A pixel clip that ends before it starts holds no pixel: the
+			 * chip writes nothing. (Its size would be negative here.) */
+			WARN_LOG(RENDERER, "Render to texture with an empty pixel clip: %d-%d, %d-%d",
+					pvrrc.fb_X_CLIP.min, pvrrc.fb_X_CLIP.max, pvrrc.fb_Y_CLIP.min, pvrrc.fb_Y_CLIP.max);
+			return false;
+		}
 
 		Drawer *drawer;
 		if (pvrrc.isRTT)
