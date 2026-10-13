@@ -224,6 +224,34 @@ static u32 maple_test(void)
    return 0;
 }
 
+/* A second write to the memory card, from the frame loop and well into the
+ * run: a quarter of block 101. By then a frontend that is running frames
+ * ahead has been loading a state every frame for a while, and one that
+ * loads a state from another run has done so: what the card's file has to
+ * have afterwards is for whoever runs this to look at (headless.sh). In
+ * place of that frame's question to the controller. */
+static void card_write_again(void)
+{
+   volatile u32 *reply = (volatile u32 *)0xAC00E100;
+   volatile u32 *frame = (volatile u32 *)0xAC00E000;
+   u32 guard, i;
+
+   for (guard = 0; guard < 2000000 && (SB(0xC18) & 1); guard++)
+      ;
+   reply[0] = 0x12345678;
+   frame[0] = 0x80000000 | 34;                         /* last frame, port A, 35 words */
+   frame[1] = 0x0C00E100;
+   frame[2] = 0x0C | (0x01 << 8) | (34 << 24);         /* block write, to A1 */
+   frame[3] = 0x02000000;                              /* function: storage */
+   frame[4] = 101u << 24;                              /* partition 0, part 0, block 101 */
+   for (i = 0; i < 32; i++)
+      frame[5 + i] = 0xC0DE0100 + i;
+   SB(0xC04) = 0x0C00E000;
+   SB(0xC18) = 1;
+   for (guard = 0; guard < 2000000 && (SB(0xC18) & 1); guard++)
+      ;
+}
+
 /* The SH4's own DMA controller, asked by the program for a transfer from
  * memory to memory (channel 1, which nothing on a Dreamcast uses). Sixteen
  * single bytes with both addresses going up; then four longwords from an
@@ -1720,7 +1748,10 @@ void cmain(void)
          }
          PVR(0x14) = 0xFFFFFFFF;                       /* STARTRENDER */
       }
-      poll_controller();
+      if (frame == 150)
+         card_write_again();
+      else
+         poll_controller();
       drive_watch();
       if (frame == 60)
          gdq_bad = gdq_test(0);

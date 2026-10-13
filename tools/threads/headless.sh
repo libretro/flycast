@@ -269,8 +269,10 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       echo "FAIL: the disc's program found something wrong: $(cat "$WORK/$NAME.out")" >&2
       exit 1
    }
-   # The program wrote to the memory card in the controller, and the card
-   # said it had it. The core writes that to the card's file from a thread
+   # The program wrote to the memory card in the controller, twice - at the
+   # start and 150 frames in, which with frames run ahead is a write made
+   # in a frame, taken back by the state loaded after it, and made again -
+   # and the card said it had it. The core writes that to the card's file from a thread
    # of its own (core/savewriter.c), not while the machine waits: it has to
    # be in the file all the same.
    python3 "$T/live_disc.py" --card "$WORK/dir/dc/vmu_save_A1.bin" || {
@@ -295,6 +297,53 @@ for RUN_AS in legacy accurate "legacy wince" "legacy reset" "legacy swap" "legac
       }
    fi
 done
+
+# And the memory card, with a state that has another card in it than the
+# one in the slot. The card's file is not written when a state is loaded:
+# where the card then differs from its file is kept in mind, and goes to
+# the file with the next thing the game writes to the card. So: the card of
+# the run above is given something of its own in block 50, which the
+# program never writes, and a state is saved 120 frames into a run with
+# that card. Then a new card, and that state loaded 20 frames in: the
+# program is at its 120th frame again, writes block 101 in its 150th, and
+# the card's file has to have block 50 as the state had it along with what
+# the program wrote - the card that is in the machine, and not the new
+# card with one block of the other in it.
+echo "== headless: a state with another memory card in it"
+unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP HEADLESS_AHEAD
+if [ -n "$WINDOWS" ]; then
+   :
+elif [ -z "$GLES" ]; then
+   LD_PRELOAD=$WORK/libGLESv2.so.2
+   export LD_PRELOAD
+fi
+python3 "$T/live_disc.py" --card-mark "$WORK/dir/dc/vmu_save_A1.bin"
+rm -f "$WORK/card.state"
+HEADLESS_DIR=$WORK/dir HEADLESS_DUMP=120:$WORK/card.state \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" 130 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/card.out" 2> "$WORK/card.log" && [ -s "$WORK/card.state" ] || {
+   echo "FAIL: the state was not saved" >&2
+   exit 1
+}
+rm -f "$WORK/dir/dc/vmu_save_A1.bin"
+HEADLESS_DIR=$WORK/dir HEADLESS_UNDUMP=20:$WORK/card.state \
+   $RUN "$WORK/$FRONTEND" "$CORE" "$WORK/test.gdi" 100 \
+   reicast_use_real_bios=disabled reicast_threaded_rendering=disabled $EXTRA \
+   > "$WORK/card.out" 2> "$WORK/card.log" || {
+   echo "FAIL: the run ended badly" >&2
+   tail -n 20 "$WORK/card.log" >&2
+   exit 1
+}
+unset LD_PRELOAD
+tr -d '\r' < "$WORK/card.out" | grep -q "^state loaded\$" || {
+   echo "FAIL: the state was not loaded: $(cat "$WORK/card.out")" >&2
+   exit 1
+}
+python3 "$T/live_disc.py" --card-marked "$WORK/dir/dc/vmu_save_A1.bin" || {
+   echo "FAIL: the card's file is not the card that was in the machine" >&2
+   exit 1
+}
 
 # And a program that keeps rewriting its own code (smc_elf.py, smc_prog.c),
 # run as content: a recompiler that jumps from one block of compiled code
@@ -333,6 +382,7 @@ python3 "$T/smc_elf.py" --late-tlb "$WORK/smc-late.elf"
 for SMC in "as it is" "with a state loaded" "with every frame run ahead" \
    "with the MMU" "with the MMU and a state loaded" "with the MMU and every frame run ahead" \
    "with a TLB of its own" "with a TLB of its own and a state loaded" \
+   "with a TLB of its own and every frame run ahead" \
    "with a TLB of its own loaded late"; do
    echo "== headless: code that is rewritten while it is in use, $SMC"
    unset HEADLESS_RESET HEADLESS_SWAP HEADLESS_SAVE HEADLESS_LOAD HEADLESS_OPTION HEADLESS_OPTION2 HEADLESS_SKIP HEADLESS_AHEAD
