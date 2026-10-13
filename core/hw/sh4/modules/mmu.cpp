@@ -170,6 +170,30 @@ void RaiseException(u32 expEvnt, u32 callVect) {
 #endif
 }
 
+/* A page that the TLB does not have, for a program with a TLB of its own:
+ * the counter that says which entry LDTLB writes moves on, and starts
+ * again at the limit the program gave it, if it gave one. On the machine
+ * it moves at every look in the TLB, so a program cannot count on what it
+ * is; one that leaves the choice of entry to it (KallistiOS does) must not
+ * have every page it asks for put in the same entry, each taking the place
+ * of the last, or an instruction in one page that reads another never has
+ * both.
+ *
+ * It used to move at every search the emulator made, and how many it
+ * makes is the emulator's business: fewer while it remembers the last
+ * answers, more after a state has been loaded. A game loaded from a state
+ * was then on another path from the same game left alone. A page not
+ * being there is the program's own doing, the same in both. */
+static void mmu_tlb_missed()
+{
+	if (!mmu_strict)
+		return;
+
+	const u32 urc = (CCN_MMUCR.URC + 1) & 63;
+
+	CCN_MMUCR.URC = urc == CCN_MMUCR.URB ? 0 : urc;
+}
+
 void mmu_raise_exception(u32 mmu_error, u32 address, u32 am)
 {
 	printf_mmu("mmu_raise_exception -> pc = 0x%X : ", next_pc);
@@ -186,6 +210,7 @@ void mmu_raise_exception(u32 mmu_error, u32 address, u32 am)
 		//TLB miss
 	case MMU_ERROR_TLB_MISS:
 		printf_mmu("MMU_ERROR_UTLB_MISS 0x%X, handled", address);
+		mmu_tlb_missed();
 		if (am == MMU_TT_DWRITE)			//WTLBMISS - Write Data TLB Miss Exception
 			RaiseException(0x60, 0x400);
 		else if (am == MMU_TT_DREAD)		//RTLBMISS - Read Data TLB Miss Exception
@@ -272,6 +297,7 @@ void DoMMUException(u32 address, u32 mmu_error, u32 access_type)
 		//TLB miss
 	case MMU_ERROR_TLB_MISS:
 		printf_mmu("MMU_ERROR_UTLB_MISS 0x%X, handled", address);
+		mmu_tlb_missed();
 		if (access_type == MMU_TT_DWRITE)			//WTLBMISS - Write Data TLB Miss Exception
 			Do_Exception(next_pc, 0x60, 0x400);
 		else if (access_type == MMU_TT_DREAD)		//RTLBMISS - Read Data TLB Miss Exception
