@@ -968,16 +968,25 @@ struct ChannelEx
 			UpdateAEG();
 			break;
 
+		/* The rates of both envelopes go by the key scaling, the octave
+		 * and FNS (EG_BaseRate()). The filter's were worked out again
+		 * only when one of its own registers was written: a note bent or
+		 * transposed went on with its filter stepping at the rate of the
+		 * note before. (And a state loaded had them worked out from the
+		 * registers as they are, so the game left alone and the game
+		 * loaded from a state went on with another filter.) */
 		case 0x14://RR,DL
 		case 0x15://DL,KRS,LPSLINK
 			UpdateStreamStep();
 			UpdateAEG();
+			UpdateFEG();
 			break;
 
 		case 0x18://FNS
 		case 0x19://FNS,OCT
 			UpdatePitch();
 			UpdateAEG();
+			UpdateFEG();
 			break;
 
 		case 0x1C://ALFOS,ALFOWS,PLFOS
