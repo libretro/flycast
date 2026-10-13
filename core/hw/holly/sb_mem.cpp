@@ -9,6 +9,7 @@
 #include "hw/gdrom/gdrom_if.h"
 #include "hw/aica/aica_if.h"
 #include "hw/naomi/naomi.h"
+#include "hw/naomi/systemsp.h"
 #include "hw/holly/holly_intc.h"
 #include "hw/modem/modem.h"
 
@@ -377,7 +378,8 @@ T DYNACALL ReadMem_area0(u32 addr)
 	//map 0x0020 to 0x0021
 	else if ((base>= 0x0020) && (base<= 0x0021)) // :Flash Memory
 	{
-		if (mirror)
+		// (a System SP has no SRAM here: its ROM board's is in the G2 area)
+		if (mirror || (naomi_cart_systemsp && SYSTEM_IS_NAOMI()))
 			return 0;
 		return ReadFlash(addr&0x1FFFF,sz);
 	}
@@ -447,7 +449,12 @@ T DYNACALL ReadMem_area0(u32 addr)
 	else if (base >= 0x0100 && base <= 0x01FF) // G2 Ext. Device #1
 	{
 		if (SYSTEM_IS_NAOMI())
+		{
+			// a System SP's ROM board
+			if (naomi_cart_systemsp)
+				return systemsp::readMemArea0<T>(addr);
 			return (T)libExtDevice_ReadMem_A0_010(addr, sz);
+		}
 		else
 #if defined(ENABLE_MODEM)
          if (settings.network.EmulateBBA)
@@ -485,7 +492,7 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 	//map 0x0020 to 0x0021
 	else if ((base >=0x0020) && (base <=0x0021) /*&& (addr>= 0x00200000) && (addr<= 0x0021FFFF)*/) // Flash Memory
 	{
-		if (!mirror)
+		if (!mirror && !(naomi_cart_systemsp && SYSTEM_IS_NAOMI()))
 			WriteFlash(addr,data,sz);
 	}
 	//map 0x0040 to 0x005F -> actually, I'll only map 0x005F to 0x005F, b/c the rest of it is unspammed (left to default handler)
@@ -551,7 +558,12 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 	else if (base >= 0x0100 && base <= 0x01FF) // G2 Ext. Device #1
 	{
 		if (SYSTEM_IS_NAOMI())
-			libExtDevice_WriteMem_A0_010(addr, data, sz);
+		{
+			if (naomi_cart_systemsp)
+				systemsp::writeMemArea0<T>(addr, data);
+			else
+				libExtDevice_WriteMem_A0_010(addr, data, sz);
+		}
 #if defined(ENABLE_MODEM)
       else if (settings.network.EmulateBBA)
          bba_WriteMem(addr, data, sz);

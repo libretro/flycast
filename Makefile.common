@@ -329,6 +329,7 @@ SOURCES_CXX += $(CORE_DIR)/core/hw/naomi/naomi.cpp \
 					$(CORE_DIR)/core/hw/naomi/touchscreen.cpp \
 					$(CORE_DIR)/core/hw/naomi/hopper.cpp \
 					$(CORE_DIR)/core/hw/naomi/printer.cpp \
+					$(CORE_DIR)/core/hw/naomi/systemsp.cpp \
 					$(CORE_DIR)/core/network/naomi_network.cpp
 
 ifeq ($(HAVE_GENERIC_JIT), 1)

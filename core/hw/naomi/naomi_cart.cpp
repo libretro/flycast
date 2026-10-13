@@ -34,6 +34,7 @@
 #include "m4cartridge.h"
 #include "awcartridge.h"
 #include "gdcartridge.h"
+#include "systemsp.h"
 #include "archive/archive.h"
 #include "file/file_path.h"
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -536,6 +537,24 @@ static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archi
 				memcpy(rom_chip->data + bios->blobs[romid].offset, blob, read);
 			else if (bios->blobs[romid].blob_type == InterleavedWord)
 				naomi_copy_interleaved((u16 *)(rom_chip->data + bios->blobs[romid].offset), blob, read);
+			else if (bios->blobs[romid].blob_type == EepromBE16)
+			{
+				/* The default EEPROM of a board that has one in its BIOS
+				 * (System SP), its 16-bit words big-endian */
+				u8 *eeprom = (u8 *)calloc(1, bios->blobs[romid].length);
+				if (eeprom != NULL)
+				{
+					for (u32 i = 0; i + 1 < read; i += 2)
+					{
+						eeprom[i] = blob[i + 1];
+						eeprom[i + 1] = blob[i];
+					}
+					if (naomi_default_eeprom_owned)
+						free(naomi_default_eeprom);
+					naomi_default_eeprom = eeprom;
+					naomi_default_eeprom_owned = true;
+				}
+			}
 			else
 				die("Unknown blob type");
 		}
@@ -636,11 +655,18 @@ static bool naomi_cart_LoadZip(const char *filename)
 	   region_flag = game->region_flag;
 	if (game->region_flag == REGION_EXPORT_ONLY)
 	   region_flag = REGION_EXPORT;
+	/* A System SP: its BIOS has a Japanese, an American and an export
+	 * EEPROM, and nothing else differs. It is required, as an Atomiswave's
+	 * is: a game in flash or on a CompactFlash card is not started without
+	 * it. */
+	const bool systemsp = game->bios != NULL && !strcmp(game->bios, "segasp");
+	if (systemsp && region_flag > REGION_EXPORT)
+	   region_flag = REGION_EXPORT;
 	/* A NAOMI or NAOMI 2 game can be started without its BIOS (reios_boot()
 	 * does what the BIOS does to hand over to it), so the BIOS is used if it
 	 * is there and "Use Real BIOS (If Available)" is on, and is not required.
 	 * An Atomiswave game cannot: that BIOS has to be found. */
-	if (game->cart_type != AW && !settings.bios.UseRealBios)
+	if (game->cart_type != AW && !systemsp && !settings.bios.UseRealBios)
 	{
 	   bios_loaded = false;
 	   NOTICE_LOG(NAOMI, "The BIOS is not to be used: the game is started without one");
@@ -660,6 +686,11 @@ static bool naomi_cart_LoadZip(const char *filename)
 			 && (naomi_LoadBios(other, archive, parent_archive, region_flag)
 				|| naomi_LoadBios(other, archive, parent_archive, -1)))
 		  bios_loaded = true;
+	   else if (systemsp)
+	   {
+		  ERROR_LOG(NAOMI, "Error: cannot load the System SP BIOS (%s.zip). Exiting", bios);
+		  goto error;
+	   }
 	   else if (game->cart_type == AW)
 	   {
 		  if (!bios_loaded)
@@ -682,7 +713,10 @@ static bool naomi_cart_LoadZip(const char *filename)
 		CurrentCartridge = new M2Cartridge(game->size);
 		break;
 	case M4:
-		CurrentCartridge = new M4Cartridge(game->size);
+		if (systemsp)
+			CurrentCartridge = new systemsp::SystemSpCart(game->size, game->name, game->gdrom_name, game->parent_name);
+		else
+			CurrentCartridge = new M4Cartridge(game->size);
 		break;
 	case AW:
 		CurrentCartridge = new AWCartridge(game->size);
@@ -855,6 +889,22 @@ static bool naomi_cart_LoadZip(const char *filename)
 		CurrentCartridge = NULL;
 		return false;
 	}
+	if (systemsp)
+	{
+		/* The game's header says which regions it runs in, and the BIOS's
+		 * EEPROM for the one it is started in is the one to start with. */
+		systemsp::SystemSpCart *spcart = (systemsp::SystemSpCart *)CurrentCartridge;
+		if (spcart->GetRegion() != (int)region_flag)
+		{
+			if (naomi_default_eeprom_owned)
+				free(naomi_default_eeprom);
+			naomi_default_eeprom = NULL;
+			naomi_default_eeprom_owned = false;
+			if (!naomi_LoadBios(bios, NULL, NULL, spcart->GetRegion()))
+				WARN_LOG(NAOMI, "The System SP BIOS for region %d is not in %s.zip", spcart->GetRegion(), bios);
+		}
+		spcart->LoadEeprom();
+	}
 
 	strcpy(naomi_game_id, CurrentCartridge->GetGameId().c_str());
 	if (naomi_game_id[0] == '\0')
@@ -988,6 +1038,8 @@ int naomi_cart_GetSystemType(const char* file)
 {
 	const char *ext = path_get_extension(file);
 
+   naomi_cart_systemsp = false;
+
    if (!naomi_IsArchive(ext))
    {
 	  // Not a ZIP or 7z file so it has to be a Naomi game: the board it
@@ -1015,6 +1067,9 @@ int naomi_cart_GetSystemType(const char* file)
 
    if (Games[gameid].cart_type == AW)
 	  return DC_PLATFORM_ATOMISWAVE;
+   // a System SP runs as a NAOMI, with its own ROM board (systemsp.h)
+   if (Games[gameid].bios != NULL && !strcmp(Games[gameid].bios, "segasp"))
+	  naomi_cart_systemsp = true;
    // a NAOMI 2 game is one whose BIOS is the NAOMI 2's
    if (Games[gameid].bios != NULL && !strcmp(Games[gameid].bios, "naomi2"))
 	  return DC_PLATFORM_NAOMI2;

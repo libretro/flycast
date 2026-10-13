@@ -138,6 +138,8 @@ extern char naomi_game_id[];
 extern u8 *naomi_default_eeprom;
 
 extern Cartridge *CurrentCartridge;
+// The romset is a Sega System SP's (from naomi_cart_GetSystemType())
+extern bool naomi_cart_systemsp;
 
 struct ButtonDescriptor
 {
