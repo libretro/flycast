@@ -42,6 +42,18 @@ u8* icPtr;
 u8* ICache;
 void (*EntryPoints[ARAM_SIZE_MAX / 4])();
 
+/* Every block there is: where it starts and how many words of the program
+ * it was made from. For flush(), which puts back only the entry points that
+ * were given out, and for sameCode(). */
+struct CompiledBlock
+{
+	u32 pc;
+	u32 words;
+};
+static std::vector<CompiledBlock> compiled_blocks;
+// what the entry points that are not a block's are set to, NULL before they have been set at all
+static void (*entry_points_filled)();
+
 /* The code this makes: in with the program's own, so that it can reach the
  * emulator's data and functions with 32-bit offsets. */
 #if defined(_WIN32)
@@ -711,6 +723,12 @@ void compile()
 		}
 	}
 
+	{
+		const u32 start = arm_Reg[R15_ARM_NEXT].I & ~3;
+		const CompiledBlock block = { start, (pc - start) / 4 };
+		compiled_blocks.push_back(block);
+	}
+
 	block_ssa_pass();
 
 	arm7backend_compile(block_ops, cycles);
@@ -723,8 +741,37 @@ void flush()
 	icPtr = ICache;
 	arm7backend_flush();
 	verify(arm_compilecode != nullptr);
-	for (u32 i = 0; i < (sizeof(EntryPoints) / sizeof(EntryPoints[0])); i++)
-		EntryPoints[i] = arm_compilecode;
+	/* There are two million entry points, 16 megabytes of them, and a few
+	 * hundred blocks: only the ones that were given out are put back. All
+	 * of them the first time, and if "compile this" has moved. */
+	if (entry_points_filled != arm_compilecode)
+	{
+		for (u32 i = 0; i < (sizeof(EntryPoints) / sizeof(EntryPoints[0])); i++)
+			EntryPoints[i] = arm_compilecode;
+		entry_points_filled = arm_compilecode;
+	}
+	else
+	{
+		for (const CompiledBlock& block : compiled_blocks)
+			EntryPoints[(block.pc & (ARAM_SIZE_MAX - 1)) / 4] = arm_compilecode;
+	}
+	compiled_blocks.clear();
+}
+
+/* Whether everything that has been compiled was compiled from what @aram -
+ * the sound memory of a save state about to be loaded - has in the same
+ * places: then it is all still good after the load. */
+bool sameCode(const u8 *aram)
+{
+	for (const CompiledBlock& block : compiled_blocks)
+		for (u32 i = 0; i < block.words; i++)
+		{
+			const u32 at = (block.pc + i * 4) & ARAM_MASK & ~3;
+
+			if (memcmp(&aica_ram[at], aram + at, 4) != 0)
+				return false;
+		}
+	return true;
 }
 
 void init()

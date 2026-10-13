@@ -435,6 +435,13 @@ void FlushCache()
 	aicaarm::recompiler::flush();
 }
 
+namespace aicaarm { namespace recompiler { bool sameCode(const u8 *aram); } }
+
+bool arm7_rec_same_code(const u8 *aram)
+{
+	return aicaarm::recompiler::sameCode(aram);
+}
+
 void armt_init()
 {
 	aicaarm::recompiler::init();
@@ -697,6 +704,18 @@ using namespace ARM;
 
 
 void* EntryPoints[ARAM_SIZE_MAX / 4];
+
+/* Every block there is: where it starts and how many words of the program
+ * it was made from. For FlushCache(), which puts back only the entry points
+ * that were given out, and for arm7_rec_same_code(). */
+struct CompiledBlock
+{
+	u32 pc;
+	u32 words;
+};
+static std::vector<CompiledBlock> compiled_blocks;
+// whether the entry points have all been set once
+static bool entry_points_filled;
 
 enum OpType
 {
@@ -2102,6 +2121,13 @@ extern "C" void CompileCode()
 		pc+=4;
 	}
 
+	{
+		// (the loop is left at the last word it read)
+		const u32 start = armNextPC & ~3;
+		const CompiledBlock block = { start, (pc - start) / 4 + 1 };
+		compiled_blocks.push_back(block);
+	}
+
 	armv_end((void*)rv,Cycles);
 }
 
@@ -2110,8 +2136,37 @@ extern "C" void CompileCode()
 void FlushCache()
 {
 	icPtr=ICache;
-	for (u32 i = 0; i < ARRAY_SIZE(EntryPoints); i++)
-		EntryPoints[i]=(void*)&arm_compilecode;
+	/* There are two million entry points, 8 or 16 megabytes of them, and a
+	 * few hundred blocks: only the ones that were given out are put back.
+	 * All of them the first time. */
+	if (!entry_points_filled)
+	{
+		for (u32 i = 0; i < ARRAY_SIZE(EntryPoints); i++)
+			EntryPoints[i]=(void*)&arm_compilecode;
+		entry_points_filled = true;
+	}
+	else
+	{
+		for (const CompiledBlock& block : compiled_blocks)
+			EntryPoints[(block.pc & (ARAM_SIZE_MAX - 1)) / 4]=(void*)&arm_compilecode;
+	}
+	compiled_blocks.clear();
+}
+
+/* Whether everything that has been compiled was compiled from what @aram -
+ * the sound memory of a save state about to be loaded - has in the same
+ * places: then it is all still good after the load. */
+bool arm7_rec_same_code(const u8 *aram)
+{
+	for (const CompiledBlock& block : compiled_blocks)
+		for (u32 i = 0; i < block.words; i++)
+		{
+			const u32 at = (block.pc + i * 4) & ARAM_MASK & ~3;
+
+			if (memcmp(&aica_ram[at], aram + at, 4) != 0)
+				return false;
+		}
+	return true;
 }
 
 

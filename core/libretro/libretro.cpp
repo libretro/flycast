@@ -186,7 +186,6 @@ retro_environment_t        environ_cb = NULL;
 retro_environment_t        frontend_clear_thread_waits_cb = NULL;
 static retro_rumble_interface rumble;
 
-void FlushCache();	// Arm dynarec (arm and x86 only)
 void ResetAudioBuffer(void);
 void FlushAudioFrame(void);	// emit one frame's accumulated audio (non-threaded)
 void CaptureInput(void);	// sample input on the main thread, once per frame
@@ -2559,9 +2558,6 @@ bool retro_unserialize(const void * data, size_t size)
    /* video memory is replaced whole: nothing still on its way to it is wanted */
    rtt_watch_forget();
 
-#if FEAT_AREC == DYNAREC_JIT
-    FlushCache();
-#endif
     /* What the SH4 recompiler has compiled is kept through a load, where
      * the code it came from is the same in the state (bm_LoadRam(), from
      * dc_unserialize()). All of it goes when the load fails, since memory

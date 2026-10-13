@@ -412,6 +412,23 @@ static void unserialize_ram(void **data, unsigned int *total_size)
 	LIBRETRO_USA(mem_b.data, mem_b.size);
 }
 
+#if FEAT_AREC == DYNAREC_JIT
+void FlushCache();
+bool arm7_rec_same_code(const u8 *aram);
+#endif
+
+/* Sound memory from a state. What the sound processor's recompiler has made
+ * is kept when the state has the same program wherever something was
+ * compiled from it: with run-ahead, every time. */
+static void unserialize_aram(void **data, unsigned int *total_size)
+{
+#if FEAT_AREC == DYNAREC_JIT
+	if (!ra_unserialize_has(*data, aica_ram.size) || !arm7_rec_same_code((const u8 *)*data))
+		FlushCache();
+#endif
+	LIBRETRO_USA(aica_ram.data, aica_ram.size);
+}
+
 bool register_serialize(Array<RegisterStruct>& regs,void **data, unsigned int *total_size )
 {
 	int i = 0 ;
@@ -875,7 +892,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 
 
-	LIBRETRO_USA(aica_ram.data,aica_ram.size) ;
+	unserialize_aram(data, total_size);
 	LIBRETRO_US(VREG);
 	LIBRETRO_US(ARMRST);
 	LIBRETRO_US(rtc_EN);
