@@ -25,7 +25,9 @@ struct MemChip
 
 	virtual void Allocate(u32 size)
 	{
-		this->data=new u8[size];
+		// Zeroed: a chip with no file to load (a NAOMI's SRAM on the first
+		// boot) would otherwise start with whatever the heap held.
+		this->data=new u8[size]();
 		this->size=size;
 		this->mask=size-1;//must be power of 2
 	}

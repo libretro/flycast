@@ -2325,6 +2325,11 @@ struct maple_naomi_jamma : maple_sega_controller
 
 	maple_naomi_jamma()
 	{
+		/* The boards are there from the start, as they are on a cabinet:
+		 * made only when the game first spoke to them, a state saved
+		 * before that was smaller than one saved after, and a frontend
+		 * asks the size once. */
+		create_io_boards();
 	}
 	virtual ~maple_naomi_jamma()
 	{
