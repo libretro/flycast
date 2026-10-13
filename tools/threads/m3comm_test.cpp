@@ -41,6 +41,14 @@ void DYNACALL _vmem_WriteMem8(u32 address, u8 data) { guest_ram[address & 0xFFFF
 
 void GenericLog(LogTypes::LOG_LEVELS, LogTypes::LOG_TYPE, const char *, int, const char *, ...) {}
 
+/* The board starts its network thread only for a link that has a server:
+ * this one is its own. */
+settings_t settings;
+
+/* (the board's part of a save state is not what this tests) */
+bool ra_serialize(const void *, unsigned int, void **, unsigned int *) { return true; }
+bool ra_unserialize(void *, unsigned int, void **, unsigned int *) { return true; }
+
 /* ---- the network: a ring that hands back packets of one value --------- */
 
 static retro_atomic_int_t net_sent, net_received, net_torn;
@@ -119,6 +127,8 @@ int main(void)
 {
 	int waited = 0;
 	long whole = 0;
+
+	settings.network.ActAsServer = true;
 
 	/* The slot size goes into the M68K's RAM, then the M68K is reset,
 	 * which starts the network. */
