@@ -22,6 +22,7 @@
 #include "dsp.h"
 #include "aica_mem.h"
 #include "aica_if.h"
+#include "hw/naomi/midiffb.h"
 #include <compat/intrinsics.h>
 #include <math.h>
 #include <algorithm>
@@ -1490,6 +1491,8 @@ static u32 CalcAttackEgSteps(float t)
 void sgc_Init()
 {
 	staticinitialise();
+	// (what is waiting in the MIDI input goes with the chip's reset)
+	midiffb_reset();
 
 	for (int i=0;i<16;i++)
 	{
@@ -1553,10 +1556,26 @@ void ReadCommonReg(u32 reg,bool byte)
 	{
 	case 0x2808:
 	case 0x2809:
-		CommonData->MIEMP = 1;
+		{
+			/* The MIDI input has what a driving game's force feedback board
+			 * sends (midiffb.cpp). Reading the low byte takes one out. */
+			const bool pop = !byte || reg == 0x2808;
+			const int midi_in = midiffb_enabled ? midiffb_in_byte(pop) : -1;
+			if (midi_in >= 0)
+			{
+				if (pop)
+					CommonData->MIBUF = midi_in;
+				CommonData->MIEMP = 0;
+				CommonData->MIFUL = 1;
+			}
+			else
+			{
+				CommonData->MIEMP = 1;
+				CommonData->MIFUL = 0;
+			}
+		}
 		CommonData->MOEMP = 1;
       CommonData->MIOVF = 0;
-		CommonData->MIFUL = 0;
 		CommonData->MOFUL = 0;
 		break;
 	case 0x2810: // EG, SGC, LP
@@ -1605,6 +1624,8 @@ void WriteCommonReg8(u32 reg,u32 data)
 		for (int i = 0; i < 64; i++)
 			Chans[i].UpdateAtts();
 	}
+	else if (reg == 0x280c && midiffb_enabled)	// MOBUF: the MIDI output
+		midiffb_receive(data);
 }
 
 #define CDDA_SIZE  (2352/2)

@@ -646,6 +646,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "disabled",
    },
+   {
+      CORE_OPTION_NAME "_naomi_wheel_ffb",
+      "NAOMI Wheel Force Feedback",
+      NULL,
+      "Rumble the first controller with the steering wheel's force feedback: Initial D, Club Kart, The King of Route 66, F355 Challenge, Tokyo Bus Guide, 18 Wheeler.",
+      NULL,
+      NULL,
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
    {/* TODO: needs explanation */
       CORE_OPTION_NAME "_custom_textures",
       "Load Custom Textures",

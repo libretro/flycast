@@ -8,6 +8,7 @@
 #include "hw/naomi/naomi_cart.h"
 #include "hw/naomi/naomi_periph.h"
 #include "hw/naomi/printer.h"
+#include "hw/naomi/midiffb.h"
 #include "savewriter.h"
 #include "vmu_beep.h"
 #include <math.h>
@@ -34,6 +35,7 @@ const char* maple_sega_lightgun_name = "Dreamcast Gun";
 const char* maple_sega_brand = "Produced By or Under License From SEGA ENTERPRISES,LTD.";
 
 bool enable_naomi_15khz_dipswitch = false;
+bool naomi_bios_multiregion = false;
 
 enum MapleFunctionID
 {
@@ -1756,6 +1758,9 @@ public:
 	// What a board has had in a save state since V25: see maple_jvs_serialize_v25()
 	virtual u8 get_state_v25() { return 0; }
 	virtual void set_state_v25(u8 v) { }
+	// and since V27: see maple_jvs_serialize_v27()
+	virtual void get_state_v27(u8 *v) { v[0] = output0; }
+	virtual void set_state_v27(const u8 *v) { output0 = v[0]; }
 
 	bool lightgun_as_analog = false;
 
@@ -1782,6 +1787,15 @@ protected:
 	// What a drive board last answered, on a board that is wired to one
 	virtual u8 get_drive_board() { return 0; }
 	virtual void set_drive_board(u8 value) { }
+	/* A player's switches as the game sees them, after the game's own
+	 * buttons have been put where it has them: some are wired to a drive
+	 * board, a shifter. */
+	virtual u32 wired_inputs(int player_num, u32 keycode) { return keycode; }
+	/* Before the rotary encoders are read, @chans of them: the mice's motion
+	 * (mo_x_delta, mo_y_delta) where the board's encoders take it. */
+	virtual void turn_encoders(int chans) { }
+	// The first byte of the outputs the game last set on board @node (1 or 2)
+	u8 board_output0(u32 node);
 
 	u32 player_count = 0;
 	u32 digital_in_count = 0;
@@ -1791,6 +1805,8 @@ protected:
 	u32 light_gun_count = 0;
 	u32 output_count = 0;
 	bool init_in_progress = false;
+	// The first byte of the outputs the game last set (lamps, motors)
+	u8 output0 = 0;
 
 private:
 	u16 read_rotary_encoder(f32 &encoder_value, f32 delta_value);
@@ -1903,6 +1919,67 @@ public:
 	}
 protected:
 	virtual const char *get_id() override { return "SEGA ENTERPRISES,LTD.;837-13938 ENCORDER BD  ;Ver0.01;99/08"; }
+};
+
+/* Shootout Pool: the cue's tip is aimed with the trackball (the first two
+ * encoders) and the cue pushed with a roller, the third. The trackball is
+ * the roller while BUTTON 4 is held: its motion up and down turns the third
+ * encoder then, and the aim stays where it is. */
+class jvs_837_13938_shootout : public jvs_837_13938
+{
+public:
+	jvs_837_13938_shootout(u8 node_id, maple_naomi_jamma *parent, int first_player = 0)
+		: jvs_837_13938(node_id, parent, first_player) { }
+protected:
+	virtual void turn_encoders(int chans) override
+	{
+		if (chans >= 3 && (~kcode[0] & NAOMI_BTN3_KEY))
+		{
+			mo_x_delta[1] -= mo_y_delta[0];
+			mo_x_delta[0] = 0;
+			mo_y_delta[0] = 0;
+		}
+	}
+};
+
+// Kick '4' Cash: the encoders are at 45 degrees to the trackball's axes
+class jvs_837_13938_kick4cash : public jvs_837_13938
+{
+public:
+	jvs_837_13938_kick4cash(u8 node_id, maple_naomi_jamma *parent, int first_player = 0)
+		: jvs_837_13938(node_id, parent, first_player) { }
+protected:
+	virtual void turn_encoders(int chans) override
+	{
+		// (both are read, or the motion left for the other is turned again)
+		if (chans < 2)
+			return;
+		const f32 x = mo_x_delta[0];
+		const f32 y = -mo_y_delta[0];
+		mo_x_delta[0] = (x - y) * 0.7071f;
+		mo_y_delta[0] = -(x + y) * 0.7071f;
+	}
+};
+
+/* Crackin'DJ: the turntables are the first and third encoders. A motor
+ * turns them, 10 a read, while the game has the second board's output 5 on
+ * (the records spinning) and the player is not turning them. */
+class jvs_837_13938_crackindj : public jvs_837_13938
+{
+public:
+	jvs_837_13938_crackindj(u8 node_id, maple_naomi_jamma *parent, int first_player = 0)
+		: jvs_837_13938(node_id, parent, first_player) { }
+protected:
+	virtual void turn_encoders(int chans) override
+	{
+		if (!(board_output0(2) & 0x10))
+			return;
+		// (an encoder is a third of the mouse's motion)
+		if (chans >= 1 && mo_x_delta[0] == 0)
+			mo_x_delta[0] = -30.f;
+		if (chans >= 3 && mo_x_delta[1] == 0)
+			mo_x_delta[1] = -30.f;
+	}
 };
 
 // Sega Marine Fishing
@@ -2035,6 +2112,277 @@ protected:
 
 private:
 	u8 drive_board = 0;
+};
+
+/* The 837-13844 wired to a drive board with force feedback: 838-13843 of
+ * F355 Challenge (ROM EPR-21867), 838-13992 of 18 Wheeler (EPR-23000),
+ * with the 838-12912-01 servo board of the Model 3. The game sends the
+ * drive board a byte on outputs 15 to 22, and reads its answer on the
+ * players' BUTTON 3 to 6. What the motor does is given to the frontend as
+ * rumble, where a rumble motor can show it.
+ * https://github.com/njz3/vJoyIOFeederWithFFB/blob/master/DRIVEBOARD.md */
+class jvs_837_13844_racing : public jvs_837_13844
+{
+public:
+	jvs_837_13844_racing(u8 node_id, maple_naomi_jamma *parent, int first_player = 0, bool tokyo_bus = false)
+		: jvs_837_13844(node_id, parent, first_player), tokyo_bus(tokyo_bus) { }
+
+	/* In a save state from V27 (after the output byte):
+	 *   [1] bit 0 test mode, bit 1 active
+	 *   [2] the damper's high bits
+	 *   [3] the motor's power, in percent
+	 *   [4] the force of the test menu's roll, -7 to 7 */
+	virtual void get_state_v27(u8 *v) override
+	{
+		jvs_837_13844::get_state_v27(v);
+		v[1] = (test_mode ? 1 : 0) | (active ? 2 : 0);
+		v[2] = damper_high;
+		v[3] = power;
+		v[4] = (u8)torque;
+	}
+	virtual void set_state_v27(const u8 *v) override
+	{
+		jvs_837_13844::set_state_v27(v);
+		test_mode = (v[1] & 1) != 0;
+		active = (v[1] & 2) != 0;
+		damper_high = v[2] & 0xf;
+		power = v[3] <= 100 ? v[3] : 100;
+		torque = (s8)v[4] >= -7 && (s8)v[4] <= 7 ? (s8)v[4] : 0;
+		if (active && torque != 0)
+			naomi_ffb_rumble(NAOMI_FFB_FORCE, abs(torque) / 7.f, 0);
+		else
+			naomi_ffb_rumble(NAOMI_FFB_STOP, 0.f, 0);
+	}
+
+protected:
+	virtual u32 wired_inputs(int player_num, u32 keycode) override
+	{
+		// The drive board's answer: bits 4-7 on the first player's switches, 0-3 on the second's
+		u32 bits;
+		if (player_num == 0)
+			bits = drive_board >> 4;
+		else if (player_num == 1)
+			bits = drive_board & 0xf;
+		else
+			return keycode;
+		keycode |= NAOMI_BTN2_KEY | NAOMI_BTN3_KEY | NAOMI_BTN4_KEY | NAOMI_BTN5_KEY;
+		if (bits & 1)
+			keycode &= ~NAOMI_BTN5_KEY;
+		if (bits & 2)
+			keycode &= ~NAOMI_BTN4_KEY;
+		if (bits & 4)
+			keycode &= ~NAOMI_BTN3_KEY;
+		if (bits & 8)
+			keycode &= ~NAOMI_BTN2_KEY;
+		return keycode;
+	}
+
+	virtual void write_digital_out(int count, u8 *data) override
+	{
+		if (count != 3)
+			return;
+		// Outputs 15 to 22, the last 8 bits, the other way round
+		u8 in = (u8)((data[1] << 6) | (data[2] >> 2));
+		in = (in & 0xF0) >> 4 | (in & 0x0F) << 4;
+		in = (in & 0xCC) >> 2 | (in & 0x33) << 2;
+		in = (in & 0xAA) >> 1 | (in & 0x55) << 1;
+		drive_board = command(in);
+	}
+
+	virtual u8 get_drive_board() override { return drive_board; }
+	virtual void set_drive_board(u8 value) override { drive_board = value; }
+
+private:
+	u8 command(u8 in)
+	{
+		in = ~in;
+		u8 out = 0;
+		switch (in)
+		{
+		case 0:
+		case 1:
+		case 2:
+			// 18 Wheeler: light (60%), normal (80%), heavy (100%)
+			if (!active)
+				power = 60 + in * 20;
+			break;
+
+		case 0xf0:
+			active = false;
+			test_mode = true;
+			break;
+
+		case 0xfe:
+			active = true;
+			break;
+
+		case 0xff:
+			test_mode = false;
+			active = false;
+			naomi_ffb_rumble(NAOMI_FFB_STOP, 0.f, 0);
+			break;
+
+		case 0xf1:
+			out = 0x10;	// F355 and Tokyo Bus Guide wait for it
+			break;
+
+		// F355: 100%, 90%, 80%, 60%
+		case 0xfa:
+			power = 100;
+			break;
+		case 0xfb:
+			power = 90;
+			break;
+		case 0xfc:
+			power = 80;
+			break;
+		case 0xfd:
+			power = 60;
+			break;
+
+		default:
+			if (!active)
+				break;
+			if (in >= 0x40 && in <= 0x7f)
+			{
+				/* The spring that brings the wheel back to the centre (bits
+				 * 0-3 its strength). Tokyo Bus Guide sets the power with
+				 * it: 0x44 light, 0x47 normal, 0x4a heavy. */
+				if (tokyo_bus && in <= 0x4a)
+					power = (in & 0xf) * 10;
+			}
+			else if (in >= 0x80 && in <= 0xbf)
+			{
+				// Shaking, at 25 Hz (softened by half)
+				naomi_ffb_rumble(NAOMI_FFB_SHAKE, (in & 0x3f) / 63.f * power / 100.f / 2.f, 650);
+			}
+			else if (in >= 0xe0 && in <= 0xef)
+			{
+				// The test menu's roll to the left and right
+				torque = in < 0xe8 ? 0xe0 - in : in - 0xe8;
+				naomi_ffb_rumble(NAOMI_FFB_FORCE, abs(torque) / 7.f, 0);
+			}
+			else if ((in & 0xf0) == 0xd0)
+			{
+				// The high bits of the damper (friction), which the next 0xcN sets
+				damper_high = in & 0xf;
+			}
+			break;
+		}
+		if (test_mode)
+			out = in;
+
+		out = (out & 0xF0) >> 4 | (out & 0x0F) << 4;
+		out = (out & 0xCC) >> 2 | (out & 0x33) << 2;
+		out = (out & 0xAA) >> 1 | (out & 0x55) << 1;
+		return out;
+	}
+
+	const bool tokyo_bus;
+	u8 drive_board = 0;	// what the drive board answers
+	bool test_mode = false;
+	bool active = false;
+	u8 damper_high = 8;
+	u8 power = 100;
+	s8 torque = 0;
+};
+
+/* 18 Wheeler: the shifter, the wheel's travel. SHIFT L/H changes from low
+ * to high gear and back, SHIFT R is reverse; the gear is on the second
+ * player's UP, DOWN and LEFT. */
+class jvs_837_13844_18wheeler : public jvs_837_13844_racing
+{
+public:
+	jvs_837_13844_18wheeler(u8 node_id, maple_naomi_jamma *parent, int first_player = 0)
+		: jvs_837_13844_racing(node_id, parent, first_player) { }
+
+	// In a save state from V27: [1] bit 2 SHIFT L/H held, [5] the gear (0 low, 1 high, 0xff reverse)
+	virtual void get_state_v27(u8 *v) override
+	{
+		jvs_837_13844_racing::get_state_v27(v);
+		v[1] |= shift_held ? 4 : 0;
+		v[5] = gear;
+	}
+	virtual void set_state_v27(const u8 *v) override
+	{
+		jvs_837_13844_racing::set_state_v27(v);
+		shift_held = (v[1] & 4) != 0;
+		gear = v[5] == 1 || v[5] == 0xff ? v[5] : 0;
+	}
+
+protected:
+	virtual u32 wired_inputs(int player_num, u32 keycode) override
+	{
+		keycode = jvs_837_13844_racing::wired_inputs(player_num, keycode);
+		if (player_num == 0)
+		{
+			const u32 buttons = ~kcode[0];
+			if (buttons & NAOMI_BTN2_KEY)
+				gear = 0xff;
+			else if (buttons & NAOMI_BTN1_KEY)
+			{
+				if (!shift_held)
+				{
+					gear = gear == 0 ? 1 : 0;
+					shift_held = true;
+				}
+			}
+			else
+				shift_held = false;
+		}
+		else if (player_num == 1)
+		{
+			switch (gear)
+			{
+			case 0xff:
+				keycode |= NAOMI_LEFT_KEY | NAOMI_DOWN_KEY;
+				keycode &= ~NAOMI_UP_KEY;
+				break;
+			case 1:
+				keycode &= ~(NAOMI_LEFT_KEY | NAOMI_DOWN_KEY);
+				keycode |= NAOMI_UP_KEY;
+				break;
+			default:
+				keycode |= NAOMI_DOWN_KEY;
+				keycode &= ~(NAOMI_UP_KEY | NAOMI_LEFT_KEY);
+				break;
+			}
+		}
+		return keycode;
+	}
+
+	// The wheel does not turn all the way
+	virtual u16 read_analog_axis(int player_num, int player_axis, bool inverted) override
+	{
+		u16 v = jvs_837_13844_racing::read_analog_axis(player_num, player_axis, inverted);
+		if (player_axis == 0)
+			v = std::min<u16>(0xefff, std::max<u16>(0x1000, v));
+		return v;
+	}
+
+private:
+	u8 gear = 0;
+	bool shift_held = false;
+};
+
+/* Samba de Amigo: the maracas' sensors, as the game takes them: rounded,
+ * no more than 0xf000, the first X lower and the second higher. */
+class jvs_837_13844_samba : public jvs_837_13844
+{
+public:
+	jvs_837_13844_samba(u8 node_id, maple_naomi_jamma *parent, int first_player = 0)
+		: jvs_837_13844(node_id, parent, first_player) { }
+protected:
+	virtual u16 read_analog_axis(int player_num, int player_axis, bool inverted) override
+	{
+		int v = jvs_837_13844::read_analog_axis(player_num, player_axis, inverted);
+		v = std::min(v & ~0xff, 0xf000);
+		if (player_axis == 0)
+			v = std::max(v - 0x2000, 0);
+		else if (player_axis == 2)
+			v = std::min(v + 0x2000, 0xf000);
+		return (u16)v;
+	}
 };
 
 // Ninja assault
@@ -2406,7 +2754,14 @@ struct maple_naomi_jamma : maple_sega_controller
 		  io_boards.emplace_back(new jvs_837_13551_4P(1, this));
 		  break;
 	   case JVS::RotaryEncoders:
-		  io_boards.emplace_back(new jvs_837_13938(1, this));
+		  if (!strncmp(naomi_game_id, "SHOOTOUT POOL", 13))
+			 io_boards.emplace_back(new jvs_837_13938_shootout(1, this));
+		  else if (!strcmp(naomi_game_id, "KICK '4' CASH"))
+			 io_boards.emplace_back(new jvs_837_13938_kick4cash(1, this));
+		  else if (!strncmp(naomi_game_id, "CRACKIN'DJ", 10))
+			 io_boards.emplace_back(new jvs_837_13938_crackindj(1, this));
+		  else
+			 io_boards.emplace_back(new jvs_837_13938(1, this));
 		  io_boards.emplace_back(new jvs_837_13551(2, this));
 		  break;
 	   case JVS::OutTrigger:
@@ -2449,6 +2804,18 @@ struct maple_naomi_jamma : maple_sega_controller
 		  break;
 	   case JVS::WaveRunnerGP:
 		  io_boards.emplace_back(new jvs_837_13844_wrungp(1, this));
+		  break;
+	   case JVS::F355:
+		  io_boards.emplace_back(new jvs_837_13844_racing(1, this));
+		  break;
+	   case JVS::TokyoBus:
+		  io_boards.emplace_back(new jvs_837_13844_racing(1, this, 0, true));
+		  break;
+	   case JVS::EighteenWheeler:
+		  io_boards.emplace_back(new jvs_837_13844_18wheeler(1, this));
+		  break;
+	   case JVS::SambaDeAmigo:
+		  io_boards.emplace_back(new jvs_837_13844_samba(1, this));
 		  break;
 	   }
 	}
@@ -2823,7 +3190,15 @@ struct maple_naomi_jamma : maple_sega_controller
 
 				w8(0x00);
 				w8(0xff);		// in(4)
-				w8(enable_naomi_15khz_dipswitch ? 0x00 : 0xff);		// in(5) bit0: 1=VGA, 0=NTSCi
+				{
+					// in(5) bit0: 1=VGA, 0=NTSCi
+					u8 dip = enable_naomi_15khz_dipswitch ? 0x00 : 0xff;
+					/* Switches 2 to 4 say the region to the multi-region
+					 * BIOS: Korea is 2 and 3 on, 4 off (other BIOSes have their own). */
+					if (naomi_bios_multiregion)
+						dip = (dip & ~0x0e) | 0x08;
+					w8(dip);
+				}
 				w8(0xff);		// in(6)
 
 				w32(0x00);
@@ -3176,6 +3551,11 @@ void maple_jvs_firmware_reset(void)
 	memset(jvs_firmware, 0, sizeof(jvs_firmware));
 }
 
+u8 jvs_io_board::board_output0(u32 node)
+{
+	return node >= 1 && node <= parent->io_boards.size() ? parent->io_boards[node - 1]->output0 : 0;
+}
+
 u16 jvs_io_board::read_analog_axis(int player_num, int player_axis, bool inverted)
 {
 	u16 v;
@@ -3417,6 +3797,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 							  keycode |= next_keycode;
 							  next_keycode = new_keycode;
 						   }
+						   keycode = wired_inputs(first_player + player, keycode);
 						   LOGJVS("P%d %02x ", first_player + player + 1, (keycode >> 8) & 0xFF);
 						   JVS_OUT(keycode >> 8);
 						   if (buffer_in[cmdi + 2] > 1)
@@ -3554,6 +3935,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					   int chans = JVS_FIT(buffer_in[cmdi + 1]);
 					   if (chans > 8)
 						  chans = 8;
+					   turn_encoders(chans);
 					   for (int chan = 0; chan < chans; chan++)
 					   {
 						  u16 v;
@@ -3606,9 +3988,16 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 					break;
 
 				case 0x32:	// switched outputs
-				case 0x33:
 					LOGJVS("output(%d) %x", buffer_in[cmdi + 1], buffer_in[cmdi + 2]);
+					if (buffer_in[cmdi + 1] > 0)
+						output0 = buffer_in[cmdi + 2];
 					write_digital_out(buffer_in[cmdi + 1], &buffer_in[cmdi + 2]);
+					JVS_STATUS1();	// report byte
+					cmdi += buffer_in[cmdi + 1] + 2;
+					break;
+
+				case 0x33:	// analog outputs: not switches, and nothing here has any
+					LOGJVS("analog output(%d) %x", buffer_in[cmdi + 1], buffer_in[cmdi + 2]);
 					JVS_STATUS1();	// report byte
 					cmdi += buffer_in[cmdi + 1] + 2;
 					break;
@@ -3849,6 +4238,53 @@ void maple_jvs_state_before_v25(void)
 	  return;
    for (u32 i = 0; i < jamma->io_boards.size(); i++)
 	  jamma->io_boards[i]->set_state_v25(0);
+}
+
+/* What the I/O boards have had in a save state since V27, after everything
+ * older: 6 bytes for each of the two boards a cabinet can have (zeros for
+ * none), 12 bytes. Every board has the first byte of its outputs, which
+ * Crackin'DJ's turntables go by; the boards wired to a drive board (F355
+ * Challenge, Tokyo Bus Guide, 18 Wheeler) what the drive board is doing,
+ * and 18 Wheeler its shifter. */
+#define JVS_STATE_V27_SIZE 6
+
+void maple_jvs_serialize_v27(void **data, unsigned int *total_size)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+   u8 boards[JVS_STATE_BOARDS][JVS_STATE_V27_SIZE];
+
+   memset(boards, 0, sizeof(boards));
+   for (u32 i = 0; i < JVS_STATE_BOARDS; i++)
+	  if (jamma != NULL && i < jamma->io_boards.size())
+		 jamma->io_boards[i]->get_state_v27(boards[i]);
+   LIBRETRO_SA(&boards[0][0], JVS_STATE_BOARDS * JVS_STATE_V27_SIZE);
+}
+
+bool maple_jvs_unserialize_v27(void **data, unsigned int *total_size)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+   u8 boards[JVS_STATE_BOARDS][JVS_STATE_V27_SIZE];
+
+   memset(boards, 0, sizeof(boards));
+   LIBRETRO_USA(&boards[0][0], JVS_STATE_BOARDS * JVS_STATE_V27_SIZE);
+   // (each board checks its own)
+   for (u32 i = 0; i < JVS_STATE_BOARDS; i++)
+	  if (jamma != NULL && i < jamma->io_boards.size())
+		 jamma->io_boards[i]->set_state_v27(boards[i]);
+   return true;
+}
+
+/* A state from before V27: no outputs set, a drive board not yet told to
+ * work, at full power, damper at its middle, in low gear. */
+void maple_jvs_state_before_v27(void)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+   const u8 board[JVS_STATE_V27_SIZE] = { 0, 0, 8, 100, 0, 0 };
+
+   if (jamma == NULL)
+	  return;
+   for (u32 i = 0; i < jamma->io_boards.size(); i++)
+	  jamma->io_boards[i]->set_state_v27(board);
 }
 
 /*

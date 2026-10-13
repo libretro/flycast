@@ -115,6 +115,10 @@ static struct game_type_naomi lut_games_naomi[] =
    { " TOUCH DE UNOH 2 -----------"      , -1, -1, -1,  -1, JVS::TouchDeUno, 1 },				  /* Touch de Uno! 2 */
    { "MIRAI YOSOU STUDIO"                , -1, -1, -1,  -1, JVS::TouchDeUno, 1 },				  /* Nittere Shiki! Mirai Yosou Studio */
    { "ANPANMAN POPCORN KOUJOU 2"         , -1, -1, -1,  -1, JVS::SegaMarineFishing, 1 },      /* Soreike! Anpanman Popcorn Koujou 2: I/O board 837-13844 */
+   { "F355 CHALLENGE JAPAN"              , -1, -1, -1,  -1, JVS::F355, 1 },                   /* F355 Challenge: 837-13844 with its drive board */
+   { "TOKYO BUS GUIDE"                   , -1, -1, -1,  -1, JVS::TokyoBus, 1 },               /* Tokyo Bus Guide: 837-13844 with its drive board */
+   { "  18WHEELER"                       , -1, -1, -1,  -1, JVS::EighteenWheeler, 1 },        /* 18 Wheeler: 837-13844 with its drive board and shifter */
+   { "SAMBA DE AMIGO"                    , -1, -1, -1,  -1, JVS::SambaDeAmigo, 1 },           /* Samba de Amigo: 837-13844, the maracas' sensors */
 
    /* Input descriptors */
    { " BIOHAZARD  GUN SURVIVOR2"         , -1, -1, -1,  -1, JVS::GunSurvivor, 1, &gunsur2_inputs }, /* Gun Survivor 2 Biohazard Code: Veronica */

@@ -45,9 +45,9 @@ InputDescriptors _18wheelr_inputs = {
 	  {
 			{ NAOMI_BTN0_KEY, "HORN" },
 			{ NAOMI_DOWN_KEY, "VIEW" },
-			{ NAOMI_BTN1_KEY, "SHIFT L", NAOMI_DOWN_KEY },		// This button uses P2 inputs for P1
-			{ NAOMI_BTN2_KEY, "SHIFT H", NAOMI_UP_KEY },		// This button uses P2 inputs for P1
-			{ NAOMI_BTN3_KEY, "SHIFT R", NAOMI_LEFT_KEY },		// This button uses P2 inputs for P1
+			// the shifter: the I/O board turns these into the gear it reports
+			{ NAOMI_BTN1_KEY, "SHIFT L/H" },
+			{ NAOMI_BTN2_KEY, "SHIFT R" },
 			NAO_START_DESC
 			NAO_BASE_BTN_DESC
 			{ 0 },
@@ -408,33 +408,35 @@ InputDescriptors marine_fishing_inputs = {
 
 InputDescriptors f355_inputs = {
 	  {
-			{ NAOMI_BTN0_KEY, "ASSIST SC" },
-			{ NAOMI_BTN1_KEY, "ASSIST TC" },
-			{ NAOMI_BTN2_KEY, "ASSIST ABS" },
-			{ NAOMI_BTN3_KEY, "ASSIST IBS", NAOMI_BTN1_KEY },
-			{ NAOMI_BTN4_KEY, "WING SHIFT L", NAOMI_DOWN_KEY },
-			{ NAOMI_BTN5_KEY, "WING SHIFT R", NAOMI_UP_KEY },
+			// P1 BTN2-5 are the drive board's answers (the I/O board's)
+			{ NAOMI_UP_KEY, "ASSIST SC" },
+			{ NAOMI_DOWN_KEY, "ASSIST TC" },
+			{ NAOMI_LEFT_KEY, "ASSIST ABS" },
+			{ NAOMI_RIGHT_KEY, "ASSIST IBS" },
 
-			// Manual gearshift (Deluxe only)
+			{ NAOMI_BTN0_KEY, "WING SHIFT L", NAOMI_BTN1_KEY },
+			{ NAOMI_BTN1_KEY, "WING SHIFT R", NAOMI_BTN0_KEY },
+
+			// Manual gearshift (Deluxe only), on P2's directions
 			//    L   R
 			//  U 1 3 5
-			//
 			//  D 2 4 6
-			{ NAOMI_UP_KEY, "SPEED SHIFT UP" },
-			{ NAOMI_DOWN_KEY, "SPEED SHIFT DOWN" },
-			{ NAOMI_LEFT_KEY, "SPEED SHIFT LEFT" },
-			{ NAOMI_RIGHT_KEY, "SPEED SHIFT RIGHT" },
+			{ NAOMI_BTN2_KEY, "GEAR 1", NAOMI_UP_KEY | NAOMI_LEFT_KEY },
+			{ NAOMI_BTN3_KEY, "GEAR 2", NAOMI_DOWN_KEY | NAOMI_LEFT_KEY },
+			{ NAOMI_BTN4_KEY, "GEAR 3", NAOMI_UP_KEY },
+			{ NAOMI_BTN5_KEY, "GEAR 4", NAOMI_DOWN_KEY },
+			{ NAOMI_BTN6_KEY, "GEAR 5", NAOMI_UP_KEY | NAOMI_RIGHT_KEY },
+			{ NAOMI_BTN7_KEY, "GEAR 6", NAOMI_DOWN_KEY | NAOMI_RIGHT_KEY },
 
 			NAO_START_DESC
 			NAO_BASE_BTN_DESC
 			{ 0 },
 	  },
 	  {
-			{ "ACCEL", Half, 0 },
-			{ "BRAKE", Half, 1 },
-			{ "CLUTCH", Full, 2 },	// Deluxe only
-			{ "unused", Full, 4 },
+			// (the Deluxe's clutch, on a second pair of triggers, has nowhere to go)
 			{ "HANDLE", Full, 0 },
+			{ "ACCEL", Half, 4 },
+			{ "BRAKE", Half, 5 },
 			{ NULL },
 	  },
 };

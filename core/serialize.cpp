@@ -338,6 +338,18 @@ void naomi_gd_state_before_v25(void);
 void naomi_serial_serialize_v26(void **data, unsigned int *total_size);
 bool naomi_serial_unserialize_v26(void **data, unsigned int *total_size);
 void naomi_serial_state_before_v26(void);
+/* and since V27: what the racing and other I/O boards keep (maple_devs.cpp),
+ * the MIDI force feedback board of the driving games (midiffb.cpp), and
+ * F355's printer status (sb_mem.cpp) */
+void maple_jvs_serialize_v27(void **data, unsigned int *total_size);
+bool maple_jvs_unserialize_v27(void **data, unsigned int *total_size);
+void maple_jvs_state_before_v27(void);
+void midiffb_serialize_v27(void **data, unsigned int *total_size);
+bool midiffb_unserialize_v27(void **data, unsigned int *total_size);
+void midiffb_state_before_v27(void);
+void naomi_printer_serialize_v27(void **data, unsigned int *total_size);
+bool naomi_printer_unserialize_v27(void **data, unsigned int *total_size);
+void naomi_printer_state_before_v27(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -897,6 +909,10 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	naomi_gd_serialize_v25(data, total_size);
 	// V26
 	naomi_serial_serialize_v26(data, total_size);
+	// V27
+	maple_jvs_serialize_v27(data, total_size);
+	midiffb_serialize_v27(data, total_size);
+	naomi_printer_serialize_v27(data, total_size);
 
 	return true ;
 }
@@ -1708,6 +1724,19 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	else
 		naomi_serial_state_before_v26();
+	if (version >= V27)
+	{
+		if (!maple_jvs_unserialize_v27(data, total_size)
+				|| !midiffb_unserialize_v27(data, total_size)
+				|| !naomi_printer_unserialize_v27(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+	{
+		maple_jvs_state_before_v27();
+		midiffb_state_before_v27();
+		naomi_printer_state_before_v27();
+	}
 	sched_events_loaded();
 	/* A sound DMA is under way only while its end is to come: a start is
 	 * not taken while one is, and SB_ADST set with no end on its way would

@@ -58,6 +58,9 @@ char* strdup(const char *str)
 #include "../hw/pvr/spg.h"
 #include "../hw/naomi/naomi_cart.h"
 #include "../hw/naomi/naomi_periph.h"
+#include "../hw/naomi/midiffb.h"
+#include "../hw/flashrom/flashrom.h"
+#include <encodings/crc32.h>
 // whether L is the "Insert Card" button (naomi.cpp)
 extern bool naomi_card_button;
 #include "../savewriter.h"
@@ -191,10 +194,78 @@ retro_environment_t        environ_cb = NULL;
 retro_environment_t        frontend_clear_thread_waits_cb = NULL;
 static retro_rumble_interface rumble;
 
+/* A NAOMI wheel's force feedback (midiffb.cpp, and the drive boards of
+ * maple_devs.cpp), as rumble on the first port when "NAOMI Wheel Force
+ * Feedback" is on: the force on the strong motor, a shake on the weak one
+ * for as long as it lasts. The emulator says what it wants in one word,
+ * which the frontend's side passes on when it changes:
+ *   bits 0-7 the force, 8-15 the shake, 16-23 how long the shake lasts in
+ *   10 ms, 24-30 counted up by each shake (one like the last one too) */
+static bool naomi_ffb_enabled = false;
+static int naomi_ffb_word;			// the emulator's side
+static retro_atomic_int_t naomi_ffb_request;
+static int naomi_ffb_applied;		// the frontend's side
+static uint32_t naomi_ffb_shake_stop;
+static uint32_t get_time_ms();
+
+void naomi_ffb_rumble(int kind, float level, u32 duration_ms)
+{
+   const int v = level <= 0.f ? 0 : level >= 1.f ? 255 : (int)(level * 255.f + 0.5f);
+   int word = naomi_ffb_word;
+
+   switch (kind)
+   {
+   case NAOMI_FFB_FORCE:
+      word = (word & ~0xff) | v;
+      break;
+   case NAOMI_FFB_SHAKE:
+      {
+         const int ticks = duration_ms / 10 < 255 ? duration_ms / 10 : 255;
+         word = (word & 0xff) | (v << 8) | (ticks << 16) | ((((word >> 24) + 1) & 0x7f) << 24);
+      }
+      break;
+   default:
+      word = 0;
+      break;
+   }
+   if (word != naomi_ffb_word)
+   {
+      naomi_ffb_word = word;
+      retro_atomic_store_release_int(&naomi_ffb_request, word);
+   }
+}
+
+// From the first port's input update: a load and a test a frame
+static void naomi_ffb_update(void)
+{
+   if (!rumble.set_rumble_state)
+      return;
+   const int word = naomi_ffb_enabled ? retro_atomic_load_acquire_int(&naomi_ffb_request) : 0;
+   if (word != naomi_ffb_applied)
+   {
+      if ((word ^ naomi_ffb_applied) & 0xff)
+         rumble.set_rumble_state(0, RETRO_RUMBLE_STRONG, (word & 0xff) * 257);
+      if ((word ^ naomi_ffb_applied) & ~0xff)
+      {
+         const int weak = (word >> 8) & 0xff;
+         rumble.set_rumble_state(0, RETRO_RUMBLE_WEAK, weak * 257);
+         naomi_ffb_shake_stop = weak != 0 ? (get_time_ms() + ((word >> 16) & 0xff) * 10) | 1 : 0;
+      }
+      naomi_ffb_applied = word;
+   }
+   if (naomi_ffb_shake_stop != 0 && (int32_t)(get_time_ms() - naomi_ffb_shake_stop) >= 0)
+   {
+      naomi_ffb_shake_stop = 0;
+      rumble.set_rumble_state(0, RETRO_RUMBLE_WEAK, 0);
+   }
+}
+
 /* Every motor stopped, and nothing waiting to run it down later: the
  * devices that ran them are gone, or the machine has been reset. */
 static void rumble_stop(void)
 {
+   naomi_ffb_applied = 0;
+   naomi_ffb_shake_stop = 0;
    if (!rumble.set_rumble_state)
       return;
    for (int i = 0; i < MAPLE_PORTS; i++)
@@ -505,6 +576,8 @@ static void set_variable_visibility(void)
    option_display.key = CORE_OPTION_NAME "_enable_naomi_15khz_dipswitch";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = CORE_OPTION_NAME "_naomi_card_readers";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+   option_display.key = CORE_OPTION_NAME "_naomi_wheel_ffb";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
    /* The Atomiswave's BIOS is its own, and there is nothing in place of it */
@@ -1184,6 +1257,13 @@ static void update_variables(bool first_startup)
    }
    else
       enable_naomi_15khz_dipswitch = false;
+
+   var.key = CORE_OPTION_NAME "_naomi_wheel_ffb";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      naomi_ffb_enabled = !strcmp("enabled", var.value);
+   else
+      naomi_ffb_enabled = false;
 
    var.key = CORE_OPTION_NAME "_naomi_card_readers";
 
@@ -2235,6 +2315,24 @@ static void merged_set_option(const char *content_path)
       naomi_cart_WantSet(var.value);
 }
 
+/* The multi-region BIOS (a hack of epr-21576h or epr-23605c) reads the
+ * region from the DIP switches, which the I/O board reports: whether it is
+ * the one loaded is in its contents, read once as the game is loaded. */
+static void naomi_bios_detect_multiregion(void)
+{
+   extern bool bios_loaded;
+   extern RomChip sys_rom;
+
+   naomi_bios_multiregion = false;
+   if (!SYSTEM_IS_NAOMI() || !bios_loaded || sys_rom.data == NULL || sys_rom.size < 0x200000)
+      return;
+   const uint32_t crc = encoding_crc32(0, sys_rom.data, 0x200000);
+   naomi_bios_multiregion = crc == 0xcce01f1f		// epr-21576h_multi.ic27
+         || crc == 0x353fdbcd;						// epr-23605c_multi.ic27
+   if (naomi_bios_multiregion)
+      NOTICE_LOG(NAOMI, "Multi-region BIOS: Korea set on the DIP switches");
+}
+
 bool retro_load_game(const struct retro_game_info *game)
 {
    const char *dir = NULL;
@@ -2497,11 +2595,15 @@ bool retro_load_game(const struct retro_game_info *game)
 
    dc_prepare_system();
 
+   naomi_ffb_word = 0;
+   retro_atomic_store_release_int(&naomi_ffb_request, 0);
    if (dc_init())
    {
    	ERROR_LOG(BOOT, "Flycast emulator initialization failed");
    	return false;
    }
+   naomi_bios_detect_multiregion();
+   midiffb_init();
    int rotation = rotate_screen ? 3 : 0;
    if (naomi_cart_GetRotation() == 3)
       rotation = rotate_screen ? 0 : 1;
@@ -2561,6 +2663,13 @@ void retro_unload_game(void)
    first_run = true;
    /* (the machine has stopped: the next game starts with the VMUs silent) */
    vmu_beep_reset();
+   /* (and with no force feedback board, a BIOS that is not the multi-region
+    * one until it says so, and the wheel's rumble stopped) */
+   midiffb_term();
+   naomi_bios_multiregion = false;
+   naomi_ffb_word = 0;
+   retro_atomic_store_release_int(&naomi_ffb_request, 0);
+   rumble_stop();
    /* The devices have handed over the last of what they had to save and
     * waited for it to be written: the writer's thread goes too. */
    save_writer_stop();
@@ -3558,6 +3667,8 @@ void UpdateInputState(u32 port)
        * each NAOMI/Atomiswave port -- and hit the frontend's input_cb for every
        * lightgun/analog axis -- 4 times per frame. */
       UpdateInputStateNaomi(port);
+      if (port == 0)
+         naomi_ffb_update();
       return;
    }
    if (rumble.set_rumble_state != NULL && vib_stop_time[port] > 0)

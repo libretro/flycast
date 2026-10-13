@@ -333,6 +333,7 @@ SOURCES_CXX += $(CORE_DIR)/core/hw/naomi/naomi.cpp \
 					$(CORE_DIR)/core/hw/naomi/touchscreen.cpp \
 					$(CORE_DIR)/core/hw/naomi/hopper.cpp \
 					$(CORE_DIR)/core/hw/naomi/printer.cpp \
+					$(CORE_DIR)/core/hw/naomi/midiffb.cpp \
 					$(CORE_DIR)/core/hw/naomi/systemsp.cpp \
 					$(CORE_DIR)/core/hw/naomi/dinokich.cpp \
 					$(CORE_DIR)/core/hw/naomi/dinokich_card.cpp \

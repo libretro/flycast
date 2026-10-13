@@ -150,6 +150,8 @@ BIOS[] =
 			{ 2, "epr-23608b.ic27", 0x000000, 0x200000, 0xa554b1e3 },
 			// epr-23609b (Korea)
 			{ 3, "epr-23609b.ic27", 0x000000, 0x200000, 0x99e3751f },
+			// epr-23605c (multi-region hack): Korea, from the DIP switches
+			{ 3, "epr-23605c_multi.ic27", 0x000000, 0x200000, 0x353fdbcd },
 			{ 0, NULL, 0, 0 },
 		}
 	},
@@ -208,7 +210,8 @@ BIOS[] =
 			//ROM_SYSTEM_BIOS( 24, "bios24", "Development ROM Board" )
 			//{ 3, "zukinver0930.ic25", 0x000000, 0x200000 },
 			//ROM_SYSTEM_BIOS( 25, "bios25", "epr-21576h (multi-region hack)" )
-			//{ 3, "epr-21576h_multi.ic27", 0x000000, 0x200000 },
+			// The region is read from the DIP switches, which say Korea (maple_devs.cpp)
+			{ 3, "epr-21576h_multi.ic27", 0x000000, 0x200000, 0xcce01f1f },
 			{ 0, NULL, 0, 0 },
 		}
 	},
@@ -275,6 +278,20 @@ BIOS[] =
 			{ 1, "epr-21576d.ic27", 0x000000, 0x200000, 0x3b2afa7b },
 			{ 2, "epr-21576d.ic27", 0x000000, 0x200000, 0x3b2afa7b },
 			{ 3, "epr-21576d.ic27", 0x000000, 0x200000, 0x3b2afa7b },
+			{ 0, NULL, 0, 0 },
+		},
+		"naomi",
+	},
+	{
+		// Mushiking's Korean sets: the multi-region BIOS, from naomi.zip,
+		// whatever the region. The DIP switches say Korea (maple_devs.cpp).
+		"naomi-ko-h",
+		{
+			//ROM_SYSTEM_BIOS( 25, "bios25", "epr-21576h (multi-region hack)" )
+			{ 3, "epr-21576h_multi.ic27", 0x000000, 0x200000, 0xcce01f1f },
+			{ 0, "epr-21576h_multi.ic27", 0x000000, 0x200000, 0xcce01f1f },
+			{ 1, "epr-21576h_multi.ic27", 0x000000, 0x200000, 0xcce01f1f },
+			{ 2, "epr-21576h_multi.ic27", 0x000000, 0x200000, 0xcce01f1f },
 			{ 0, NULL, 0, 0 },
 		},
 		"naomi",

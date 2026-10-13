@@ -547,6 +547,11 @@ enum class JVS {
 	OutTrigger,
 	LightGunAsAnalog,
 	WaveRunnerGP,
+	// The 837-13844 board wired to a drive board with force feedback
+	F355,
+	TokyoBus,
+	EighteenWheeler,
+	SambaDeAmigo,
 };
 
 struct settings_t
@@ -923,5 +928,6 @@ enum serialize_version_enum {
    V24,
    V25,
    V26,
-   VCUR_LIBRETRO = V26,
+   V27,
+   VCUR_LIBRETRO = V27,
 };

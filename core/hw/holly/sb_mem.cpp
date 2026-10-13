@@ -33,6 +33,39 @@ extern bool bios_loaded;
 extern char nvmem_file[PATH_MAX];
 extern char nvmem_file2[PATH_MAX];	// AtomisWave
 
+/* The thermal printer of F355 Challenge, on the G2 extension bus: what is
+ * written to its data register is printed (dropped here), and its status
+ * register reads 0x0f, all well, with bit 0 set from the first read on
+ * until the game writes the status register. In a save state from V27. */
+#define NAOMI_PRINTER_DATA   0x01010000
+#define NAOMI_PRINTER_STATUS 0x01018000
+static u8 naomi_printer_status = 0x0f;
+
+void naomi_printer_serialize_v27(void **data, unsigned int *total_size)
+{
+	if (SYSTEM_IS_NAOMI())
+		LIBRETRO_S(naomi_printer_status);
+}
+
+bool naomi_printer_unserialize_v27(void **data, unsigned int *total_size)
+{
+	if (SYSTEM_IS_NAOMI())
+	{
+		u8 status = 0x0f;
+		LIBRETRO_US(status);
+		// (only bit 0 ever changes)
+		naomi_printer_status = 0x0e | (status & 1);
+	}
+	return true;
+}
+
+/* An older state: the status the printer has before it is first read,
+ * which is what the game saw from the G2 bus before (it read 0 there). */
+void naomi_printer_state_before_v27(void)
+{
+	naomi_printer_status = 0x0f;
+}
+
 static const char *get_rom_prefix(void)
 {
    switch (settings.System)
@@ -454,6 +487,14 @@ T DYNACALL ReadMem_area0(u32 addr)
 			// a System SP's ROM board
 			if (naomi_cart_systemsp)
 				return systemsp::readMemArea0<T>(addr);
+			if (addr == NAOMI_PRINTER_STATUS)
+			{
+				const u8 status = naomi_printer_status;
+				naomi_printer_status |= 1;
+				return (T)status;
+			}
+			if (addr == NAOMI_PRINTER_DATA)
+				return 0;
 			return (T)libExtDevice_ReadMem_A0_010(addr, sz);
 		}
 		else
@@ -562,7 +603,9 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 		{
 			if (naomi_cart_systemsp)
 				systemsp::writeMemArea0<T>(addr, data);
-			else
+			else if (addr == NAOMI_PRINTER_STATUS)
+				naomi_printer_status &= ~1;
+			else if (addr != NAOMI_PRINTER_DATA)
 				libExtDevice_WriteMem_A0_010(addr, data, sz);
 		}
 #if defined(ENABLE_MODEM)
@@ -583,6 +626,8 @@ void sh4_area0_Init(void)
 void sh4_area0_Reset(bool hard)
 {
 	sb_Reset(hard);
+	if (hard)
+		naomi_printer_status = 0x0f;
 	sys_rom.Reset();
 	sys_nvmem_sram.Reset();
 	sys_nvmem_flash.Reset();

@@ -114,6 +114,10 @@ void maple_jvs_state_before_v21(void);
 void maple_jvs_serialize_v25(void **data, unsigned int *total_size);
 bool maple_jvs_unserialize_v25(void **data, unsigned int *total_size);
 void maple_jvs_state_before_v25(void);
+// and since V27
+void maple_jvs_serialize_v27(void **data, unsigned int *total_size);
+bool maple_jvs_unserialize_v27(void **data, unsigned int *total_size);
+void maple_jvs_state_before_v27(void);
 void maple_jvs_firmware_reset(void);
 void maple_naomi_eeprom_load(void);
 #define SIZE_OF_MIC_DATA	480 //ALSO DEFINED IN SipEmulator.java
@@ -124,6 +128,8 @@ int push_vmu_screen(u8* buffer); //implemented in Android.cpp
 extern MapleDeviceType maple_devices[MAPLE_PORTS];	// Maple device configuration for mcfg_CreateDevices()
 
 extern bool enable_naomi_15khz_dipswitch;
+// The BIOS is the multi-region one, which takes the region from the DIP switches (libretro.cpp)
+extern bool naomi_bios_multiregion;
 
 template<int Magnitude>
 void limit_joystick_magnitude(s8& joyx, s8& joyy)
