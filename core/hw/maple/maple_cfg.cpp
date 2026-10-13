@@ -477,6 +477,23 @@ void mcfg_ReconcileDevices(bool plug_in)
 	}
 }
 
+/* Whether a Dreamcast has the devices the settings say. (Not whether a card
+ * would be read from another file: a card no longer the settings' is
+ * unplugged at once when they change, and one a state puts back is made
+ * from them.) */
+bool mcfg_DevicesAsSettingsSay(void)
+{
+	for (int bus = 0; bus < MAPLE_PORTS; bus++)
+		for (int port = 0; port <= 5; port++)
+		{
+			maple_device *dev = MapleDevices[bus][port];
+			const MapleDeviceType type = dev == NULL ? MDT_None : dev->get_device_type();
+			if (type != mcfg_DreamcastDevice(bus, port))
+				return false;
+		}
+	return true;
+}
+
 void mcfg_SerializeDevices(void **data, unsigned int *total_size)
 {
 	for (int i = 0; i < MAPLE_PORTS; i++)

@@ -240,6 +240,8 @@ static void maple_DoDma(void)
 		last = (header_1 >> 31) == 1;//is last transfer ?
 		u32 plen = (header_1 & 0xFF )+1;//transfer length (32-bit unit)
 		u32 maple_op=(header_1>>8)&7;	// Pattern selection: 0 - START, 2 - SDCKB occupy permission, 3 - RESET, 4 - SDCKB occupy cancel, 7 - NOP
+		// The port the frame goes out on is the transfer's to say, not the frame's
+		const u32 bus = (header_1 >> 16) & 3;
 		//this is kinda wrong .. but meh
 		//really need to properly process the commands at some point
 		switch (maple_op)
@@ -288,7 +290,13 @@ static void maple_DoDma(void)
 				inlen = plen - 1;
 
 			u32 port=maple_GetPort(reci);
-			u32 bus=maple_GetBusId(reci);
+			/* A device with no slots for others hears every frame sent down
+			 * its bus, whatever the frame is addressed to. (Asked only when
+			 * nothing is in the slot addressed, which a device with slots
+			 * may have empty too.) */
+			if (port != 5 && MapleDevices[bus][port] == NULL && MapleDevices[bus][5] != NULL
+					&& !maple_HasSlots(MapleDevices[bus][5]->get_device_type()))
+				port = 5;
 
 			if (MapleDevices[bus][5] && MapleDevices[bus][port])
 			{
@@ -337,7 +345,6 @@ static void maple_DoDma(void)
 
 		case MP_SDCKBOccupy:
 		{
-			u32 bus = (header_1 >> 16) & 3;
 			if (MapleDevices[bus][5])
 			{
 				// (a later request, for a bus with no gun, does not undo one that has)
@@ -481,6 +488,21 @@ static void maple_handle_reconnect()
 	}
 }
 
+/* After a load. A state saved before the settings changed a Dreamcast's
+ * devices and loaded after - run-ahead does just that, every frame - puts
+ * back the devices of before, with nothing waiting to bring the new ones:
+ * the change was lost. What is not as the settings say is unplugged then,
+ * and what they say is plugged in a tenth of a second later, as when they
+ * changed. It is the same for the same state and settings, every time. */
+static void maple_devices_after_load(void)
+{
+	if (settings.System != DC_PLATFORM_DREAMCAST || reconnect_time != 0
+			|| mcfg_DevicesAsSettingsSay())
+		return;
+	mcfg_ReconcileDevices(false);
+	reconnect_time = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
+}
+
 /* What Maple has had in a save state since V21, after everything older:
  * the I/O boards' part (maple_devs.cpp), and when the devices that have
  * been unplugged are to be plugged in again, 0 if they are not waiting to
@@ -506,6 +528,7 @@ bool maple_unserialize_v21(void **data, unsigned int *total_size)
 	const u64 latest = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
 	if (reconnect_time > latest)
 		reconnect_time = latest;
+	maple_devices_after_load();
 	return true;
 }
 
@@ -514,4 +537,5 @@ bool maple_unserialize_v21(void **data, unsigned int *total_size)
 void maple_state_before_v21(void)
 {
 	maple_jvs_state_before_v21();
+	maple_devices_after_load();
 }

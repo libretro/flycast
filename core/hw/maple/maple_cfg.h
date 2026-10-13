@@ -60,10 +60,27 @@ struct IMapleConfigMap
 	virtual ~IMapleConfigMap() {}
 };
 
+/* Whether a device has expansion slots for others (a memory card, a
+ * vibration pack). */
+static inline bool maple_HasSlots(MapleDeviceType type)
+{
+	switch (type)
+	{
+	case MDT_SegaController:
+	case MDT_LightGun:
+	case MDT_TwinStick:
+	case MDT_AsciiStick:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void mcfg_CreateDevices();
 void mcfg_Create(MapleDeviceType type,u32 bus,u32 port, int player_num = -1);
 void mcfg_DestroyDevices();
 void mcfg_DestroyDevice(int i, int j);
 void mcfg_ReconcileDevices(bool plug_in);
+bool mcfg_DevicesAsSettingsSay(void);
 void mcfg_SerializeDevices(void **data, unsigned int *total_size);
 void mcfg_UnserializeDevices(void **data, unsigned int *total_size);

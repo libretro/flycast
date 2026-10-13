@@ -179,7 +179,7 @@ struct maple_base: maple_device
 		u32 resp = Dma(command, &buffer_in[1], buffer_in_len - 4, &buffer_out[1], outlen);
 
 		if (reci & 0x20)
-			reci |= maple_GetAttachedDevices(maple_GetBusId(reci));
+			reci |= maple_GetAttachedDevices(bus_id);
 
 		verify(u8(outlen/4)*4==outlen);
 		buffer_out[0] = (resp <<0 ) | (send << 8) | (reci << 16) | ((outlen / 4) << 24);
@@ -710,7 +710,16 @@ struct maple_sega_vmu: maple_base
 		LIBRETRO_USA(flash_data,128*1024);
 		LIBRETRO_USA(lcd_data,192);
 		LIBRETRO_USA(lcd_data_decoded,48*32);
-		vmu_lcd_publish(bus_id, lcd_data_decoded);
+		/* The two cards of a controller show on one screen, which has the
+		 * picture the game last drew on either. The second card's, after
+		 * the first's, only if it has ever been drawn on: or a card the
+		 * game does not draw on puts its blank screen in place of the
+		 * other's picture at every load. */
+		bool drawn = bus_port == 0;
+		for (u32 i = 0; !drawn && i < sizeof(lcd_data); i++)
+			drawn = lcd_data[i] != 0;
+		if (drawn)
+			vmu_lcd_publish(bus_id, lcd_data_decoded);
 		return true ;
 	}
 	virtual void OnSetup()
