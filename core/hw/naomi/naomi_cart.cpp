@@ -185,8 +185,10 @@ static int naomi_count_roms(const archive_t *archive, int g, int *files, bool *f
 		if (Games[g].blobs[romid].blob_type == Copy)
 			continue;
 		(*files)++;
-		if (crc != 0 ? archive_find_crc(archive, crc) >= 0
-				: naomi_find_named(archive, Games[g].name, Games[g].blobs[romid].filename) >= 0)
+		/* (by its checksum, else by its name: a ROM changed by a patch
+		 * or dumped another way is still the set's) */
+		if ((crc != 0 && archive_find_crc(archive, crc) >= 0)
+				|| naomi_find_named(archive, Games[g].name, Games[g].blobs[romid].filename) >= 0)
 		{
 			found++;
 			if (romid == 0)
@@ -312,10 +314,10 @@ static int naomi_find_game(const char *path)
 /* Whether @archive is a merged set with the clone @clone of the game
  * @parent in it: every ROM of the clone's is there, and one of them at
  * least is the clone's own - in the clone's folder, or under a name (a
- * checksum, where the table has one) that no ROM of the parent's has. A
- * clone with no ROM of its own to show - one that differs from its parent
- * in its disc alone - is in every set of the parent's by that count, and
- * is not taken to be. */
+ * checksum, where the table has one and the archive has it) that no ROM
+ * of the parent's has. A clone with no ROM of its own to show - one that
+ * differs from its parent in its disc alone - is in every set of the
+ * parent's by that count, and is not taken to be. */
 static bool naomi_clone_in(const archive_t *archive, int clone, int parent)
 {
 	bool own = false;
@@ -328,10 +330,8 @@ static bool naomi_clone_in(const archive_t *archive, int clone, int parent)
 
 		if (Games[clone].blobs[romid].blob_type == Copy)
 			continue;
-		if (crc != 0)
+		if (crc != 0 && archive_find_crc(archive, crc) >= 0)
 		{
-			if (archive_find_crc(archive, crc) < 0)
-				return false;
 			for (int i = 0; Games[parent].blobs[i].filename != NULL && !parents; i++)
 				parents = Games[parent].blobs[i].crc == crc;
 		}
@@ -464,11 +464,12 @@ static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archi
 	   rom_chip = &sys_nvmem_flash;
 
 	struct BIOS_t *bios = &BIOS[biosid];
+	const char *arch_name = bios->filename != NULL ? bios->filename : bios->name;
 
 	std::string basepath(game_dir_no_slash);
 	basepath += PATH_DEFAULT_SLASH();
 
-	archive_t *bios_archive = archive_open((basepath + filename).c_str());
+	archive_t *bios_archive = archive_open((basepath + arch_name).c_str());
 	archive_t *archives[3];
 
 	archives[0] = child_archive;
@@ -479,12 +480,35 @@ static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archi
 
 	for (int romid = 0; bios->blobs[romid].filename != NULL; romid++)
 	{
-	   if (region == -1)
-		  region = bios->blobs[romid].region;
-	   else
+	   if (region != -1 && bios->blobs[romid].region != (u32)region)
+		  continue;
+	   if (bios->blobs[romid].blob_type == Normal)
 	   {
-		  if (bios->blobs[romid].region != region)
+		  /* The table has a region's BIOS revisions newest first: the
+		   * first of them that is there, the next if it is not. (With
+		   * no region asked for, the first of any region's.) */
+		  size_t blob_len = 0;
+		  const u8 *blob;
+		  u32 read;
+
+		  if (found_region)
 			 continue;
+		  blob = naomi_find_blob(archives, 3, bios->blobs[romid].crc,
+				arch_name, bios->blobs[romid].filename, &blob_len);
+		  if (!blob)
+		  {
+			 WARN_LOG(NAOMI, "%s: Cannot open %s", filename, bios->blobs[romid].filename);
+			 continue;
+		  }
+		  read = bios->blobs[romid].length;
+		  if (read > blob_len)
+			 read = (u32)blob_len;
+		  if (bios->blobs[romid].offset + read > rom_chip->size)
+			 goto error;
+		  memcpy(rom_chip->data + bios->blobs[romid].offset, blob, read);
+		  region = bios->blobs[romid].region;
+		  found_region = true;
+		  continue;
 	   }
 	   found_region = true;
 
@@ -527,6 +551,16 @@ static bool naomi_LoadBios(const char *filename, archive_t *child_archive, archi
 error:
 	archive_close(bios_archive);
 	return false;
+}
+
+/* The BIOS whose archive the BIOS @name is kept in, when that is another
+ * one's: NULL if none. */
+static const char *naomi_BiosArchive(const char *name)
+{
+	for (int biosid = 0; BIOS[biosid].name != NULL; biosid++)
+		if (!stricmp(BIOS[biosid].name, name))
+			return BIOS[biosid].filename;
+	return NULL;
 }
 
 static bool naomi_cart_LoadZip(const char *filename)
@@ -614,8 +648,16 @@ static bool naomi_cart_LoadZip(const char *filename)
 	   bios_loaded = true;
 	else
 	{
+	   const char *other;
+
 	   WARN_LOG(NAOMI, "Warning: Region %d bios not found in %s", settings.dreamcast.region, bios);
 	   if (naomi_LoadBios(bios, archive, parent_archive, -1))
+		  bios_loaded = true;
+	   /* The revision of a BIOS that the game asks for is not there:
+	    * the BIOS of the archive it is kept in, as the game had before. */
+	   else if ((other = naomi_BiosArchive(bios)) != NULL
+			 && (naomi_LoadBios(other, archive, parent_archive, region_flag)
+				|| naomi_LoadBios(other, archive, parent_archive, -1)))
 		  bios_loaded = true;
 	   else if (game->cart_type == AW)
 	   {
