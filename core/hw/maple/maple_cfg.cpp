@@ -293,6 +293,48 @@ void mcfg_Create(MapleDeviceType type,u32 bus,u32 port, int player_num /* = -1 *
 	MapleDevices[bus][port]=dev;
 }
 
+/* What a Dreamcast is to have on a bus, as the settings say: at port 5 the
+ * device plugged in, at 0 and 1 what is in its slots. */
+static MapleDeviceType mcfg_DreamcastDevice(int bus, int port)
+{
+	switch (maple_devices[bus])
+	{
+	case MDT_SegaController:
+		if (port == 5)
+			return MDT_SegaController;
+		if (port == 0)
+			return MDT_SegaVMU;
+		if (port == 1)
+			return enable_purupuru ? MDT_PurupuruPack : MDT_SegaVMU;
+		break;
+
+	case MDT_Keyboard:
+	case MDT_Mouse:
+		if (port == 5)
+			return maple_devices[bus];
+		break;
+
+	case MDT_LightGun:
+		if (port == 5)
+			return MDT_LightGun;
+		if (port == 0)
+			return enable_purupuru ? MDT_PurupuruPack : MDT_SegaVMU;
+		break;
+
+	case MDT_TwinStick:
+	case MDT_AsciiStick:
+		if (port == 5)
+			return maple_devices[bus];
+		if (port == 0)
+			return MDT_SegaVMU;
+		break;
+
+	default:
+		break;
+	}
+	return MDT_None;
+}
+
 void mcfg_CreateDevices()
 {
    int bus ;
@@ -306,50 +348,17 @@ void mcfg_CreateDevices()
    {
 	  for (bus = 0; bus < MAPLE_PORTS; ++bus)
 	  {
-		 switch (maple_devices[bus])
-		 {
-		 case MDT_SegaController:
-			mcfg_Create(MDT_SegaController, bus, 5);
-			mcfg_Create(MDT_SegaVMU, bus, 0);
-
-			if (enable_purupuru)
-			   mcfg_Create(MDT_PurupuruPack, bus, 1);
-			else
-			   mcfg_Create(MDT_SegaVMU, bus, 1);
-			break;
-
-		 case MDT_Keyboard:
-			 mcfg_Create(MDT_Keyboard, bus, 5);
-			 break;
-
-		 case MDT_Mouse:
-			 mcfg_Create(MDT_Mouse, bus, 5);
-			 break;
-
-		 case MDT_LightGun:
-			 mcfg_Create(MDT_LightGun, bus, 5);
-			 if (enable_purupuru)
-				mcfg_Create(MDT_PurupuruPack, bus, 0);
-			 else
-				mcfg_Create(MDT_SegaVMU, bus, 0);
-			 break;
-			 
-		case MDT_TwinStick:
-			mcfg_Create(MDT_TwinStick, bus, 5);
-			mcfg_Create(MDT_SegaVMU, bus, 0);
-			break;
-			 
-		case MDT_AsciiStick:
-			mcfg_Create(MDT_AsciiStick, bus, 5);
-			mcfg_Create(MDT_SegaVMU, bus, 0);
-			break;
-
-		case MDT_None:
-			break;
-
-		default:
+		 if (maple_devices[bus] != MDT_None && mcfg_DreamcastDevice(bus, 5) == MDT_None)
 			WARN_LOG(MAPLE, "Invalid device type %d for port %d", maple_devices[bus], bus);
-			break;
+		 if (mcfg_DreamcastDevice(bus, 5) == MDT_None)
+			continue;
+		 // the device, then what is in its slots
+		 mcfg_Create(mcfg_DreamcastDevice(bus, 5), bus, 5);
+		 for (int port = 0; port < 5; port++)
+		 {
+			const MapleDeviceType type = mcfg_DreamcastDevice(bus, port);
+			if (type != MDT_None)
+			   mcfg_Create(type, bus, port);
 		 }
 	  }
    }
@@ -420,6 +429,52 @@ void mcfg_DestroyDevice(int i, int j)
 {
 	delete MapleDevices[i][j];
 	MapleDevices[i][j] = NULL;
+}
+
+bool maple_vmu_file_changed(maple_device *dev);
+
+/* A Dreamcast's devices made to be what the settings say, touching nothing
+ * that already is: on a bus whose device is not the one wanted, the device
+ * and all in its slots are unplugged; otherwise each slot whose device is
+ * not the one wanted is, or whose card would now be read from another file.
+ * With @plug_in, what is missing then is plugged in.
+ *
+ * Unplugging is what a person changing a controller does, and the game sees
+ * the port empty and then the new device. The other ports go on as they
+ * were: a game writing to a card in one of them while another port's device
+ * is changed is not cut off half way through a save. */
+void mcfg_ReconcileDevices(bool plug_in)
+{
+	for (int bus = 0; bus < MAPLE_PORTS; bus++)
+	{
+		maple_device *device = MapleDevices[bus][5];
+		if (device == NULL || device->get_device_type() != mcfg_DreamcastDevice(bus, 5))
+		{
+			for (int port = 0; port <= 5; port++)
+				if (MapleDevices[bus][port] != NULL)
+					mcfg_DestroyDevice(bus, port);
+		}
+		else
+		{
+			for (int port = 0; port < 5; port++)
+			{
+				maple_device *dev = MapleDevices[bus][port];
+				if (dev != NULL && (dev->get_device_type() != mcfg_DreamcastDevice(bus, port)
+						|| maple_vmu_file_changed(dev)))
+					mcfg_DestroyDevice(bus, port);
+			}
+		}
+		if (!plug_in || mcfg_DreamcastDevice(bus, 5) == MDT_None)
+			continue;
+		if (MapleDevices[bus][5] == NULL)
+			mcfg_Create(mcfg_DreamcastDevice(bus, 5), bus, 5);
+		for (int port = 0; port < 5; port++)
+		{
+			const MapleDeviceType type = mcfg_DreamcastDevice(bus, port);
+			if (type != MDT_None && MapleDevices[bus][port] == NULL)
+				mcfg_Create(type, bus, port);
+		}
+	}
 }
 
 void mcfg_SerializeDevices(void **data, unsigned int *total_size)

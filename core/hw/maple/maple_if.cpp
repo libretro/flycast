@@ -340,7 +340,9 @@ static void maple_DoDma(void)
 			u32 bus = (header_1 >> 16) & 3;
 			if (MapleDevices[bus][5])
 			{
-				occupy = MapleDevices[bus][5]->get_lightgun_pos();
+				// (a later request, for a bus with no gun, does not undo one that has)
+				if (MapleDevices[bus][5]->get_lightgun_pos())
+					occupy = true;
 				xfer_in++;
 			}
 
@@ -448,9 +450,18 @@ void maple_FlushSaves()
 
 static u64 reconnect_time;
 
+/* The settings have changed what is plugged in. What they no longer have is
+ * unplugged, and a tenth of a second later what they have is plugged in, so
+ * that the game sees the port empty in between. On a Dreamcast that is only
+ * the devices that change: a game saving to a card on another port went on
+ * writing to nothing for that tenth of a second, and a save cut off there
+ * left the card's file system half written. */
 void maple_ReconnectDevices()
 {
-	mcfg_DestroyDevices();
+	if (settings.System == DC_PLATFORM_DREAMCAST)
+		mcfg_ReconcileDevices(false);
+	else
+		mcfg_DestroyDevices();
 	reconnect_time = sh4_sched_now64() + SH4_MAIN_CLOCK / 10;
 }
 
@@ -459,9 +470,14 @@ static void maple_handle_reconnect()
 	if (reconnect_time != 0 && reconnect_time <= sh4_sched_now64())
 	{
 		reconnect_time = 0;
-		// (a state loaded in the meantime has put its own devices there: they go first)
-		mcfg_DestroyDevices();
-		mcfg_CreateDevices();
+		// (a state loaded in the meantime has put its own devices there: what is not as the settings say goes first)
+		if (settings.System == DC_PLATFORM_DREAMCAST)
+			mcfg_ReconcileDevices(true);
+		else
+		{
+			mcfg_DestroyDevices();
+			mcfg_CreateDevices();
+		}
 	}
 }
 

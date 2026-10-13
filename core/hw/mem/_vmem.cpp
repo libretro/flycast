@@ -478,14 +478,26 @@ bool _vmem_reserve(void)
 		bm_vmem_pagefill((void**)p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
 #endif
 
+		/* Each with a page more than it holds. An access is not checked for
+		 * alignment, and a game can read or write 4 bytes from the last 2
+		 * of a memory, or 8 from its last 4 (a double-precision move): past
+		 * its end, which on the host was the heap. (In the memory mapped
+		 * layouts what follows main RAM is its next mirror.) */
 		mem_b.size = RAM_SIZE;
-		mem_b.data = (u8*)malloc_pages(RAM_SIZE);
+		mem_b.data = (u8*)malloc_pages(RAM_SIZE + PAGE_SIZE);
 
 		vram.size = VRAM_SIZE;
-		vram.data = (u8*)malloc_pages(VRAM_SIZE);
+		vram.data = (u8*)malloc_pages(VRAM_SIZE + PAGE_SIZE);
 
 		aica_ram.size = ARAM_SIZE;
-		aica_ram.data = (u8*)malloc_pages(ARAM_SIZE);
+		aica_ram.data = (u8*)malloc_pages(ARAM_SIZE + PAGE_SIZE);
+
+		if (mem_b.data)
+			memset(mem_b.data + RAM_SIZE, 0, PAGE_SIZE);
+		if (vram.data)
+			memset(vram.data + VRAM_SIZE, 0, PAGE_SIZE);
+		if (aica_ram.data)
+			memset(aica_ram.data + ARAM_SIZE, 0, PAGE_SIZE);
 	}
 	else {
 		NOTICE_LOG(VMEM, "Info: nvmem is enabled, with addr space of size %s", vmemstatus == MemType4GB ? "4GB" : "512MB");
@@ -601,8 +613,18 @@ bool _vmem_reserve(void)
 	return true;
 }
 
+// (what _aligned_malloc() gave has to go back to _aligned_free(): free() corrupts the heap)
+static void free_pages(void *p)
+{
+#ifdef _WIN32
+	_aligned_free(p);
+#else
+	free(p);
+#endif
+}
+
 #define freedefptr(x) \
-	if (x) { free(x); x = NULL; }
+	if (x) { free_pages(x); x = NULL; }
 
 void _vmem_release() {
 	_vmem_elan_ram = NULL;
@@ -800,8 +822,17 @@ u32 _vmem_get_vram_offset(void *addr)
 	}
 	else
 	{
-		ptrdiff_t offset = (u8*)addr - &vram[0];
-		if (offset < 0 || offset >= VRAM_SIZE)
+		/* On 64-bit ARM Android a heap pointer has a tag in its top byte,
+		 * and the address of a fault, which this is given, has not: the
+		 * two did not match, and a write to a protected page of video
+		 * memory was not taken for one and stopped the emulator. */
+#if defined(__aarch64__) && defined(__ANDROID__)
+		const uintptr_t untag = 0x00ffffffffffffffull;
+#else
+		const uintptr_t untag = ~(uintptr_t)0;
+#endif
+		const uintptr_t offset = ((uintptr_t)addr & untag) - ((uintptr_t)&vram[0] & untag);
+		if (offset >= VRAM_SIZE)
 			return -1;
 
 		return (u32)offset;

@@ -602,6 +602,35 @@ struct MapleSaveState
 	}
 };
 
+extern u32 RealTimeClock;
+
+/* A date as a memory card gives it, from the console's clock (seconds since
+ * 1950-01-01, local time): year (two bytes, low first), month, day, hour,
+ * minute, second, and a byte that is 0. */
+static void vmu_clock_date(u32 rtc, u8 *buf)
+{
+	const u32 secs = rtc % 86400;
+	// days since 0000-03-01 of the Gregorian calendar, in 400-year cycles
+	const u32 days = rtc / 86400 + 712163;
+	const u32 era = days / 146097;
+	const u32 doe = days - era * 146097;
+	const u32 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	const u32 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	const u32 mp = (5 * doy + 2) / 153;
+	const u32 day = doy - (153 * mp + 2) / 5 + 1;
+	const u32 month = mp < 10 ? mp + 3 : mp - 9;
+	const u32 year = yoe + era * 400 + (month <= 2);
+
+	buf[0] = year % 256;
+	buf[1] = year / 256;
+	buf[2] = month;
+	buf[3] = day;
+	buf[4] = secs / 3600;
+	buf[5] = secs / 60 % 60;
+	buf[6] = secs % 60;
+	buf[7] = 0;
+}
+
 struct maple_sega_vmu: maple_base
 {
 	RFILE* file;
@@ -616,6 +645,7 @@ struct maple_sega_vmu: maple_base
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[VMU_SCREEN_WIDTH*VMU_SCREEN_HEIGHT];
+	std::string path;	// the card's file
 	
 	virtual MapleDeviceType get_device_type()
 	{
@@ -690,6 +720,7 @@ struct maple_sega_vmu: maple_base
 		dirty_lo = 0;
 		dirty_hi = 0;
       std::string apath = get_writable_vmu_path(logical_port);
+      path = apath;
 
 		vmu_screen_params[bus_id].vmu_lcd_screen = lcd_data_decoded ;
 		// What the renderer shows until the game draws: the screen as it is now
@@ -927,22 +958,14 @@ struct maple_sega_vmu: maple_base
 					{
 						w32(MFID_3_Clock);
 
-						time_t now;
-						time(&now);
-						tm* timenow=localtime(&now);
-
+						/* The date and time the console's clock says. (It
+						 * was the host's: a game reading it got another
+						 * answer when a frame was run again from a save
+						 * state, which run-ahead and netplay do.) */
 						u8* timebuf=dma_buffer_out;
-
-						w8((timenow->tm_year+1900)%256);
-						w8((timenow->tm_year+1900)/256);
-
-						w8(timenow->tm_mon+1);
-						w8(timenow->tm_mday);
-
-						w8(timenow->tm_hour);
-						w8(timenow->tm_min);
-						w8(timenow->tm_sec);
-						w8(0);
+						u8 date[8];
+						vmu_clock_date(RealTimeClock, date);
+						wptr(date, sizeof(date));
 
 						DEBUG_LOG(MAPLE, "VMU: CLOCK Read-> datetime is %04d/%02d/%02d ~ %02d:%02d:%02d!",
 								timebuf[0] + timebuf[1] * 256,
@@ -1099,6 +1122,16 @@ struct maple_sega_vmu: maple_base
 	}	
 };
 
+
+/* Whether a memory card would now be read from another file than the one it
+ * was read from: the settings say which, and they may have changed. */
+bool maple_vmu_file_changed(maple_device *dev)
+{
+	if (dev->get_device_type() != MDT_SegaVMU)
+		return false;
+	maple_sega_vmu *vmu = (maple_sega_vmu *)dev;
+	return vmu->path != get_writable_vmu_path(vmu->logical_port);
+}
 
 struct maple_microphone: maple_base
 {
