@@ -90,7 +90,9 @@ private:
 class M2Cartridge : public NaomiCartridge
 {
 public:
-	M2Cartridge(u32 size) : NaomiCartridge(size) {}
+	// (its RAM starts as zeroes: it was whatever the host's memory had, and
+	// two machines that should be the same, in netplay, were not)
+	M2Cartridge(u32 size) : NaomiCartridge(size) { memset(naomi_cart_ram, 0, sizeof(naomi_cart_ram)); }
 
 	virtual bool Read(u32 offset, u32 size, void* dst) override;
 	virtual bool Write(u32 offset, u32 size, u32 data) override;

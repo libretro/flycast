@@ -228,6 +228,37 @@ static int naomi_find_game(const char *path)
 	for (gameid = 0; Games[gameid].name != NULL; gameid++)
 		if (!stricmp(Games[gameid].name, game_name))
 			break;
+	if (Games[gameid].name != NULL && Games[gameid].parent_name == NULL)
+	{
+		/* A set's name has been given to another version of the game more
+		 * than once (Death Crimson OX, Project Justice), and the version
+		 * that had it is now a clone of that name. A set made before that
+		 * is the clone's: it has not got the game's program ROM, and has
+		 * all of the clone's. */
+		archive_t *archive = archive_open(path);
+
+		if (archive != NULL)
+		{
+			int files;
+			bool first;
+
+			naomi_count_roms(archive, gameid, &files, &first);
+			for (int g = 0; !first && Games[g].name != NULL; g++)
+			{
+				int clone_files;
+				bool clone_first;
+
+				if (Games[g].parent_name == NULL || stricmp(Games[g].parent_name, Games[gameid].name)
+						|| naomi_count_roms(archive, g, &clone_files, &clone_first) != clone_files || !clone_first)
+					continue;
+				NOTICE_LOG(NAOMI, "%s has the ROMs of %s (%s), not of the game of that name", game_name,
+						Games[g].name, Games[g].description);
+				gameid = g;
+				break;
+			}
+			archive_close(archive);
+		}
+	}
 	if (Games[gameid].name == NULL)
 	{
 		archive_t *archive = archive_open(path);
@@ -1142,7 +1173,13 @@ static bool naomi_cart_LoadRom(const char* file)
 
 	//Allocate space for the ram, so we are sure we have a segment of continuous ram
 	RomPtr = (u8*)mem_region_reserve(NULL, RomSize);
-	verify(RomPtr != NULL);
+	if (RomPtr == NULL)
+	{
+		// The pieces would be mapped where their addresses in the
+		// cartridge are taken as the host's: over whatever is there.
+		ERROR_LOG(NAOMI, "-Cannot reserve %x bytes for the cartridge", RomSize);
+		return false;
+	}
 
 	bool load_error = false;
 
