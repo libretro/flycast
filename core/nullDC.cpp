@@ -136,6 +136,34 @@ void plugins_Reset(bool hard)
 
 #include "rom_luts.h"
 
+/* What a game's own settings put in place of the options': the options
+ * are read again on a reset and whenever one of them is changed, and these
+ * are put back after them (dc_apply_game_settings()) for as long as the
+ * game is loaded. -1: the option's. */
+static int game_cable = -1;
+static int game_alpha_sort_mode = -1;
+
+/* A broadcast standard a game is started in is written to the flash's
+ * factory settings for as long as it runs; what was there is put back
+ * before the flash is saved, for the games that come after. */
+static int game_broadcast = -1;
+static u8 flash_broadcast[2];
+
+static void forget_game_settings(void)
+{
+   game_cable           = -1;
+   game_alpha_sort_mode = -1;
+   game_broadcast       = -1;
+}
+
+void dc_apply_game_settings(void)
+{
+   if (game_cable >= 0)
+      settings.dreamcast.cable = game_cable;
+   if (game_alpha_sort_mode >= 0)
+      settings.pvr.Emulation.AlphaSortMode = game_alpha_sort_mode;
+}
+
 static void LoadSpecialSettingsCPU(void)
 {
 #if FEAT_SHREC != DYNAREC_NONE
@@ -159,6 +187,11 @@ static void LoadSpecialSettings(void)
 
    char prod_id[sizeof(ip_meta.product_number) + 1] = {0};
    memcpy(prod_id, ip_meta.product_number, sizeof(ip_meta.product_number));
+   /* the product number without the spaces it is padded with */
+   std::string id(prod_id);
+   id.erase(id.find_last_not_of(' ') + 1);
+   const u32 cable_option      = settings.dreamcast.cable;
+   const u32 alpha_sort_option = settings.pvr.Emulation.AlphaSortMode;
 
    NOTICE_LOG(BOOT, "[LUT]: Product number: %s.", prod_id);
 	if (ip_meta.isWindowsCE() || settings.dreamcast.ForceWinCE
@@ -248,11 +281,47 @@ static void LoadSpecialSettings(void)
 	}
 	else
 		WARN_LOG(BOOT, "No region specified in IP.BIN");
-	if (settings.dreamcast.cable <= 1 && !ip_meta.supportsVGA())
+	if (settings.dreamcast.cable <= 1 && (!ip_meta.supportsVGA()
+			|| id == "T-12504N"		// Caesar's Palace 2000 (US)
+			|| id == "12502D-50"))		// Caesar's Palace 2000 (EU)
 	{
 		NOTICE_LOG(BOOT, "Game doesn't support VGA. Using TV Composite instead");
 		settings.dreamcast.cable = 3;
 	}
+	if (settings.dreamcast.cable == 2
+			&& (id == "T22901N"		// Roadsters (US)
+			|| id == "T28202M"		// Shin Nihon Pro Wrestling 4: stops with RGB
+			|| id == "T9512N"))		// The Grinch (US)
+	{
+		NOTICE_LOG(BOOT, "Game doesn't support RGB. Using TV Composite instead");
+		settings.dreamcast.cable = 3;
+	}
+	if (id == "T-9707N"			// San Francisco Rush 2049 (US)
+			|| id == "MK-51146"		// Sega Smash Pack - Volume 1
+			|| id == "T-9702D-50"		// Hydro Thunder (PAL)
+			|| id == "T41601N"		// Elemental Gimmick Gear (US)
+			|| id == "T-8116N"		// South Park Rally (US)
+			|| id == "T1206N")		// JoJo's Bizarre Adventure (US)
+		game_broadcast = 0;
+	else if (id == "T-9709D-50"		// San Francisco Rush 2049 (EU)
+			|| id == "T-8112D-50"		// South Park Rally (EU)
+			|| id == "T7014D  50"		// Super Runabout (EU)
+			|| id == "T10001D 50"		// MTV Sports - Skateboarding (PAL)
+			|| id == "MK-5101050"		// Snow Surfers
+			|| id == "12502D-50"		// Caesar's Palace 2000 (EU)
+			|| id == "T46605D 80")		// Evil Twin - Cyprien's Chronicles
+		game_broadcast = 1;
+	if (game_broadcast >= 0)
+	{
+		NOTICE_LOG(BOOT, "Forcing %s broadcasting", game_broadcast == 0 ? "NTSC" : "PAL");
+		settings.dreamcast.broadcast = game_broadcast;
+		flash_broadcast[0] = sys_nvmem_flash.data[0x1a004];
+		flash_broadcast[1] = sys_nvmem_flash.data[0x1a0a4];
+	}
+	if (settings.dreamcast.cable != cable_option)
+		game_cable = settings.dreamcast.cable;
+	if (settings.pvr.Emulation.AlphaSortMode != alpha_sort_option)
+		game_alpha_sort_mode = settings.pvr.Emulation.AlphaSortMode;
 }
 
 static void LoadSpecialSettingsNaomi(const char *name)
@@ -306,6 +375,11 @@ static void LoadSpecialSettingsNaomi(const char *name)
 
          break;
       }
+   }
+   if (!strcmp(name, "MONKEY BALL JAPAN VERSION"))	// the map's depth
+   {
+      NOTICE_LOG(BOOT, "[Hack]: Applying translucent polygon depth mask hack.");
+      settings.rend.TranslucentPolygonDepthMask = true;
    }
 }
 
@@ -560,6 +634,12 @@ void dc_term()
 	extern void common_libretro_cleanup(void);
 	common_libretro_cleanup();
 
+	if (game_broadcast >= 0 && settings.System == DC_PLATFORM_DREAMCAST)
+	{
+		sys_nvmem_flash.data[0x1a004] = flash_broadcast[0];
+		sys_nvmem_flash.data[0x1a0a4] = flash_broadcast[1];
+	}
+	forget_game_settings();
 	SaveRomFiles(get_writable_data_path(""));
 	sh4_cpu.Term();
 	naomi_cart_Close();
@@ -589,6 +669,10 @@ void dc_request_reset()
 void LoadSettings(void)
 {
 	settings.dynarec.Enable			= 1;
+	/* what the game loaded before this one had of its own */
+	forget_game_settings();
+	settings.mapping.JammaSetup = JVS::Default;
+	naomi_game_inputs = NULL;
 	//settings.dynarec.DisableDivMatching       = 0;
 	//disable_nvmem can't be loaded, because nvmem init is before cfg load
 	settings.dreamcast.FullMMU		= false;

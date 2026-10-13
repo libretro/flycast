@@ -450,6 +450,8 @@ void retro_deinit(void)
    LogManager::Shutdown();
 }
 
+void dc_apply_game_settings(void);
+
 static bool is_dupe = false;
 /* The Internal Resolution option: how many times 640x480. */
 static unsigned internal_scale = 1;
@@ -659,12 +661,17 @@ static void update_variables(bool first_startup)
       }
    }
 
-   var.key = CORE_OPTION_NAME "_screen_rotation";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !strcmp("vertical", var.value))
+   /* The frontend is told the rotation when the content starts, and the
+    * option is read then. (It was only ever set: turned back off, the next
+    * game was still turned on its side.) */
+   if (first_startup)
    {
-	  rotate_screen = true;
-	  settings.rend.WideScreen = 0;
+      var.key = CORE_OPTION_NAME "_screen_rotation";
+      rotate_screen = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("vertical", var.value);
    }
+   if (rotate_screen)
+	  settings.rend.WideScreen = 0;
 
    if (!first_startup && (settings.rend.WideScreen != 0) != was_wide)
       resize_pending = true;
@@ -996,13 +1003,11 @@ static void update_variables(bool first_startup)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      char *pch;
-      char str[100];
-      sprintf(str, "%s", var.value);
+      /* "1x" to "8x": what the option offers, and no more is taken from
+       * elsewhere (a render to a texture is that many times larger) */
+      unsigned long by = strtoul(var.value, NULL, 10);
 
-      pch = strtok(str, "x");
-      if (pch)
-         settings.rend.RenderToTextureUpscale = strtoul(pch, NULL, 0);
+      settings.rend.RenderToTextureUpscale = by < 1 ? 1 : by > 8 ? 8 : (int)by;
    }
    else if (first_startup)
       settings.rend.RenderToTextureUpscale = 1;
@@ -1260,6 +1265,9 @@ static void update_variables(bool first_startup)
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && strlen(var.value)>1 )
       {
     	  int color_idx = atoi(var.value+(strlen(var.value)-2)) ;
+	  /* (a value from elsewhere than the list may name no colour) */
+	  if (color_idx < 0 || color_idx >= VMU_NUM_COLORS)
+	     color_idx = VMU_DEFAULT_ON;
     	  vmu_screen_params[i].vmu_pixel_on_R = VMU_SCREEN_COLOR_MAP[color_idx].r ;
     	  vmu_screen_params[i].vmu_pixel_on_G = VMU_SCREEN_COLOR_MAP[color_idx].g ;
     	  vmu_screen_params[i].vmu_pixel_on_B = VMU_SCREEN_COLOR_MAP[color_idx].b ;
@@ -1270,11 +1278,19 @@ static void update_variables(bool first_startup)
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && strlen(var.value)>1 )
       {
     	  int color_idx = atoi(var.value+(strlen(var.value)-2)) ;
+	  if (color_idx < 0 || color_idx >= VMU_NUM_COLORS)
+	     color_idx = VMU_DEFAULT_OFF;
     	  vmu_screen_params[i].vmu_pixel_off_R = VMU_SCREEN_COLOR_MAP[color_idx].r ;
     	  vmu_screen_params[i].vmu_pixel_off_G = VMU_SCREEN_COLOR_MAP[color_idx].g ;
     	  vmu_screen_params[i].vmu_pixel_off_B = VMU_SCREEN_COLOR_MAP[color_idx].b ;
       }
    }
+
+   /* The game's own cable and sorting stay what they were made for it when
+    * it was loaded: a reset reads the options again, and so does a change
+    * of any one of them. */
+   if (!first_startup)
+      dc_apply_game_settings();
 
    set_variable_visibility();
 }
@@ -2165,6 +2181,17 @@ bool retro_load_game(const struct retro_game_info *game)
    char slash = '/';
 #endif
 
+   /* The disc list is this content's. A load that failed is not followed
+    * by retro_unload_game(), so what it read of a playlist is still here:
+    * the next content would start from that playlist's first disc. */
+   disk_paths.clear();
+   disk_labels.clear();
+   disk_index     = 0;
+   disc_tray_open = false;
+   if (game_data)
+      free(game_data);
+   game_data = NULL;
+
    /* The frontend may name a member inside an archive. The archive is
     * the content: a romset when its name is a known one, else the disc
     * image inside it, which the named member stands in for unless it is
@@ -2441,6 +2468,8 @@ void retro_unload_game(void)
    disk_paths.clear();
    disk_labels.clear();
    disk_index = 0;
+   /* (an open tray is this machine's: the next game starts with it shut) */
+   disc_tray_open = false;
 
 #if !defined(TARGET_NO_THREADS)
    if (emu_thread_started)
@@ -2462,6 +2491,10 @@ void retro_unload_game(void)
 	   dc_stop();
 	   dc_term();
    }
+   /* The next game's first frame starts its own emulation thread: a
+    * frontend that loads it without retro_deinit() in between waited for
+    * ever on a thread that was never started. */
+   first_run = true;
    /* The devices have handed over the last of what they had to save and
     * waited for it to be written: the writer's thread goes too. */
    save_writer_stop();
@@ -2758,6 +2791,9 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
     * a 50Hz PAL title, which accumulates as frame-time drift. */
    g_av_info    = *info;
    last_av_fps  = info->timing.fps;
+   /* (a rate the last content was changing to is nothing to this one) */
+   pending_av_fps       = 0.0;
+   pending_av_fps_count = 0;
 }
 
 unsigned retro_get_region (void)
@@ -2768,7 +2804,8 @@ unsigned retro_get_region (void)
 // Controller
 void retro_set_controller_port_device(unsigned in_port, unsigned device)
 {
-	if (device_type[in_port] != device && in_port < MAPLE_PORTS)
+	/* (the port is checked first: a frontend may ask for more ports than there are) */
+	if (in_port < MAPLE_PORTS && device_type[in_port] != (int)device)
 	{
 		devices_need_refresh = true;
 		device_type[in_port] = device;
@@ -2936,7 +2973,9 @@ static void get_analog_stick( retro_input_state_t input_state_cb,
       static const int ASTICK_MAX = 0x8000;
 
       // Convert cartesian coordinate analog stick to polar coordinates
-      double radius = sqrt(analog_x * analog_x + analog_y * analog_y);
+      /* (in double: two axes at -32768 overflow an int, and the stick
+       * pushed fully into that corner read as centred) */
+      double radius = sqrt((double)analog_x * analog_x + (double)analog_y * analog_y);
       double angle = atan2(analog_y, analog_x);
 
       if (radius > astick_deadzone)
@@ -3768,7 +3807,8 @@ void retro_keyboard_event(bool down, unsigned keycode, uint32_t character, uint1
 	  release_key(kb_map[RETROK_RCTRL]);
    }
 
-   u8 dc_keycode = kb_map[keycode];
+   /* (a key the table does not have is no key of the Dreamcast's) */
+   u8 dc_keycode = keycode < RETROK_LAST ? kb_map[keycode] : 0;
    if (dc_keycode != 0)
    {
 	  if (down)
@@ -4005,7 +4045,11 @@ static bool read_m3u(const char *file)
       return false;
    }
 
-   while (filestream_gets(f, line, sizeof(line)) && disk_index <= disk_paths.size())
+   /* The discs read from this file: the disc in the drive (disk_index) is
+    * chosen once they are all read. */
+   unsigned count = 0;
+
+   while (filestream_gets(f, line, sizeof(line)))
    {
       if (line[0] == '#')
          continue;
@@ -4022,8 +4066,10 @@ static bool read_m3u(const char *file)
       if (line[0] == '"')
          memmove(line, line + 1, strlen(line));
 
-      if (line[strlen(line) - 1] == '"')
-         line[strlen(line) - 1]  = '\0';
+      /* (an empty line has no last character) */
+      size_t len = strlen(line);
+      if (len > 0 && line[len - 1] == '"')
+         line[len - 1]  = '\0';
 
       if (line[0] != '\0')
       {
@@ -4039,10 +4085,10 @@ static bool read_m3u(const char *file)
          short_pathname_representation(disk_label, name, sizeof(disk_label));
          disk_labels.push_back(disk_label);
 
-         disk_index++;
+         count++;
       }
    }
 
    filestream_close(f);
-   return (disk_index != 0);
+   return (count != 0);
 }
