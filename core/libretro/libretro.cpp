@@ -53,6 +53,7 @@ char* strdup(const char *str)
 #include "keyboard_map.h"
 #include "hw/maple/maple_cfg.h"
 #include "hw/maple/maple_if.h"
+#include "hw/maple/vmu_beep.h"
 #include "hw/maple/maple_cfg.h"
 #include "../hw/pvr/spg.h"
 #include "../hw/naomi/naomi_cart.h"
@@ -525,6 +526,8 @@ static void set_variable_visibility(void)
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = CORE_OPTION_NAME "_per_content_vmus";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+   option_display.key = CORE_OPTION_NAME "_vmu_sound";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
    /* only show, if categories not supported */
    option_display.visible = ((settings.System == DC_PLATFORM_DREAMCAST) &&
@@ -637,6 +640,11 @@ static void update_variables(bool first_startup)
    	// and the VMUs haven't been created anyway
    	maple_ReconnectDevices();
    }
+
+   var.key = CORE_OPTION_NAME "_vmu_sound";
+   var.value = NULL;
+   vmu_beep_enabled = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("enabled", var.value);
 
    const bool was_wide = settings.rend.WideScreen != 0;
 
@@ -1482,6 +1490,7 @@ void retro_reset (void)
    update_variables(false);
    dc_reset(true);
    ResetAudioBuffer();
+   vmu_beep_reset();
    rumble_stop();
 
 #if !defined(TARGET_NO_THREADS)
@@ -2510,6 +2519,8 @@ void retro_unload_game(void)
     * frontend that loads it without retro_deinit() in between waited for
     * ever on a thread that was never started. */
    first_run = true;
+   /* (the machine has stopped: the next game starts with the VMUs silent) */
+   vmu_beep_reset();
    /* The devices have handed over the last of what they had to save and
     * waited for it to be written: the writer's thread goes too. */
    save_writer_stop();

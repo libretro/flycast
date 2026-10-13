@@ -7,6 +7,7 @@
 #include "hw/pvr/spg.h"
 #include "hw/naomi/naomi_cart.h"
 #include "savewriter.h"
+#include "vmu_beep.h"
 #include <math.h>
 #include <time.h>
 #include <algorithm>
@@ -1100,11 +1101,15 @@ struct maple_sega_vmu: maple_base
 				{
 				case MFID_3_Clock:
 					{
+						/* The alarm: its period, then its on time, in
+						 * the first two bytes (the other two are a
+						 * second alarm, not emulated). */
 						u32 bp=r32();
 						if (bp)
 						{
 							INFO_LOG(MAPLE, "BEEP : %08X", bp);
 						}
+						vmu_beep_set(bp & 0xFF, (bp >> 8) & 0xFF);
 						return  MDRS_DeviceReply;//just ko
 					}
 					break;
@@ -1119,9 +1124,11 @@ struct maple_sega_vmu: maple_base
 			}
 
 		case MDC_DeviceReset:
+			vmu_beep_set(0, 0);
 			return MDRS_DeviceReply;
 
 		case MDC_DeviceKill:
+			vmu_beep_set(0, 0);
 			return MDRS_DeviceReply;
 
 		default:

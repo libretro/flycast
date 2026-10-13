@@ -1,5 +1,6 @@
 #include "types.h"
 #include "emulator.h"
+#include "hw/maple/vmu_beep.h"
 
 #include <string.h>
 #include <libretro.h>
@@ -49,7 +50,10 @@ void WriteSample(s16 r, s16 l)
    if (writePtr == AUDIO_BUFFER_SIZE)
    {
       if (dc_is_running())
+      {
+         vmu_beep_mix(Buffer, writePtr);
          audio_batch_cb((const int16_t*)Buffer, writePtr);
+      }
       writePtr = 0;
    }
 }
@@ -67,6 +71,9 @@ void FlushAudioFrame(void)
    {
       const u32 count = writePtr - keep;
 
+      /* (a VMU's beep goes on top, only on what is sent: the samples held
+       * back, which a state carries, are the console's alone) */
+      vmu_beep_mix(Buffer, count);
       audio_batch_cb((const int16_t*)Buffer, count);
       memmove(Buffer, Buffer + count, keep * sizeof(Buffer[0]));
       writePtr = keep;

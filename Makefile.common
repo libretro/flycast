@@ -38,6 +38,7 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/hw/maple/maple_devs.cpp \
 					$(CORE_DIR)/core/hw/maple/maple_if.cpp \
 					$(CORE_DIR)/core/hw/maple/maple_cfg.cpp \
+					$(CORE_DIR)/core/hw/maple/vmu_beep.cpp \
 					\
 					$(CORE_DIR)/core/hw/mem/_vmem.cpp \
 					\
