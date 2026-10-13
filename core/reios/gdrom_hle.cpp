@@ -518,7 +518,8 @@ static void GD_HLE_Command(u32 cc)
 			cdda.status = cdda_t::Playing;
 			cdda.StartAddr.FAD = start_fad;
 			cdda.EndAddr.FAD = end_fad;
-			cdda.repeats = gd_hle_state.params[2];
+			// the drive keeps four bits of repeat count (15: for ever)
+			cdda.repeats = gd_hle_state.params[2] & 0xF;
 			cdda.CurrAddr.FAD = start_fad;
 			SecNumber.Status = GD_PLAY;
 		}
@@ -549,7 +550,8 @@ static void GD_HLE_Command(u32 cc)
 		{
 			u32 first_track = gd_hle_state.params[0];
 			u32 last_track = gd_hle_state.params[1];
-			u32 repeats = gd_hle_state.params[2];
+			// the drive keeps four bits of repeat count (15: for ever)
+			u32 repeats = gd_hle_state.params[2] & 0xF;
 			u32 start_fad, end_fad, dummy;
 			if (libGDR_GetDiscType() == Open || libGDR_GetDiscType() == NoDisk)
 			{

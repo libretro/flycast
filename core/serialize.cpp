@@ -6,6 +6,7 @@
 #include "hw/aica/sgc_if.h"
 #include "hw/arm7/arm7.h"
 #include "hw/holly/sb_mem.h"
+#include "hw/holly/sb.h"
 #include "hw/flashrom/flashrom.h"
 #include "hw/mem/_vmem.h"
 #include "hw/gdrom/gdromv3.h"
@@ -856,6 +857,33 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	return true ;
 }
 
+/* The scheduler's events from a state. One that is waiting was asked for
+ * at most a second ahead (sh4_sched_request()), and is called once its time
+ * has come. An event from a bad state that would come later than that, or
+ * whose time has gone by, is not called until the clock comes round to it -
+ * some 21 seconds - and nothing it drives (a frame, sound) happens till
+ * then: it is made due now. A state as this build saves it has none such. */
+static void sched_events_loaded(void)
+{
+	const u32 now = sh4_sched_now();
+
+	for (size_t i = 0; i < sch_list.size(); i++)
+	{
+		sched_list &ev = sch_list[i];
+
+		if (ev.end == -1)
+			continue;
+		const u32 asked = (u32)ev.end - (u32)ev.start;
+		const u32 gone = now - (u32)ev.start;
+		if (asked <= SH4_MAIN_CLOCK && gone <= asked)
+			continue;
+		ev.start = (int)now;
+		ev.end = (int)now;
+		if (ev.end == -1)
+			ev.end++;
+	}
+}
+
 bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_size)
 {
 	int i = 0;
@@ -939,6 +967,14 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	   LIBRETRO_US(dummy_int);	//dma_sched_id
 
 	LIBRETRO_USA(aica_reg,0x8000);
+	/* A timer counts down from its prescaler's step, 1 << md, to 1: none
+	 * other is ever in it, and 0 had it count for 2^32 samples. */
+	for ( i = 0 ; i < 3 ; i++)
+	{
+		timers[i].m_step = 1 << timers[i].data->md;
+		if (timers[i].c_step < 1 || (u32)timers[i].c_step > timers[i].m_step)
+			timers[i].c_step = timers[i].m_step;
+	}
 
 
 	if (version < V7)
@@ -1020,6 +1056,8 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	 * play. */
 	if ((u32)cdda.status > (u32)cdda_t::Terminated)
 		cdda.status = ((u32)cdda.status & 0xFF) ? cdda_t::Playing : cdda_t::NoInfo;
+	// the drive keeps four bits of repeat count (15: for ever)
+	cdda.repeats &= 0xF;
 	LIBRETRO_US(gd_state);
 	LIBRETRO_US(gd_disk_type);
 	LIBRETRO_US(data_write_mode);
@@ -1229,40 +1267,40 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		   LIBRETRO_US(dummy_int);	// sh4_sched_next_id
 	}
 
-	LIBRETRO_US(sch_list[aica_schid].tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(sch_list[aica_schid].start) ;
 	LIBRETRO_US(sch_list[aica_schid].end) ;
 
-	LIBRETRO_US(sch_list[rtc_schid].tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(sch_list[rtc_schid].start) ;
 	LIBRETRO_US(sch_list[rtc_schid].end) ;
 
-	LIBRETRO_US(GDROM_EVENT.tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(GDROM_EVENT.start) ;
 	LIBRETRO_US(GDROM_EVENT.end) ;
 	no_event.tag = 0;
 	no_event.start = no_event.end = -1;
 
-	LIBRETRO_US(sch_list[maple_sched].tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(sch_list[maple_sched].start) ;
 	LIBRETRO_US(sch_list[maple_sched].end) ;
 
-	LIBRETRO_US(sch_list[dma_sched_id].tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(sch_list[dma_sched_id].start) ;
 	LIBRETRO_US(sch_list[dma_sched_id].end) ;
 
 	for (int i = 0; i < 3; i++)
 	{
-	   LIBRETRO_US(sch_list[tmu_sched[i]].tag) ;
+	   LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	   LIBRETRO_US(sch_list[tmu_sched[i]].start) ;
 	   LIBRETRO_US(sch_list[tmu_sched[i]].end) ;
 	}
 
-	LIBRETRO_US(sch_list[render_end_schid].tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(sch_list[render_end_schid].start) ;
 	LIBRETRO_US(sch_list[render_end_schid].end) ;
 
-	LIBRETRO_US(sch_list[vblank_schid].tag) ;
+	LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
 	LIBRETRO_US(sch_list[vblank_schid].start) ;
 	LIBRETRO_US(sch_list[vblank_schid].end) ;
 
@@ -1293,7 +1331,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	if ( version >= V2 )
 	{
 #ifdef ENABLE_MODEM
-      LIBRETRO_US(MODEM_EVENT.tag) ;
+      LIBRETRO_US(dummy_int) ;	// the tag: what the device registered with, not state
       LIBRETRO_US(MODEM_EVENT.start) ;
       LIBRETRO_US(MODEM_EVENT.end) ;
       no_event.tag = 0;
@@ -1359,7 +1397,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	if (version >= V11)
 		LIBRETRO_US(sq_remap);
-	LIBRETRO_US(ITLB_LRU_USE);
+	{
+		/* Which ITLB entry each LRU value replaces: a table this build
+		 * works out once (MMU_init), not state. One from the state could
+		 * point past the four entries. */
+		u32 lru_use[64];
+		LIBRETRO_USA(lru_use, 64);
+	}
 
 	LIBRETRO_US(NullDriveDiscType);
 	LIBRETRO_USA(q_subchannel,96);
@@ -1585,6 +1629,12 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		naomi_state_before_v23();
 		lr_state_before_v23();
 	}
+	sched_events_loaded();
+	/* A sound DMA is under way only while its end is to come: a start is
+	 * not taken while one is, and SB_ADST set with no end on its way would
+	 * have none taken again. */
+	if ((SB_ADST & 1) && !sh4_sched_is_scheduled(dma_sched_id))
+		SB_ADST = 0;
 	/* The timers: what follows from their registers is worked out again,
 	 * for a state of any version, and their events are asked for anew. */
 	tmu_state_loaded();

@@ -320,7 +320,8 @@ static void Write_SB_ADST(u32 addr, u32 data)
 	//0x005F7818	SB_ADST		RW	AICA:G2-DMA start
 	//0x005F781C	SB_ADSUSP	RW	AICA:G2-DMA suspend 
 	
-	if (data&1)
+	// a start while a transfer is under way is not taken: the one under way goes on to its end
+	if ((data&1) && !(SB_ADST&1))
 	{
 		if (SB_ADEN&1)
 		{

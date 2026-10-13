@@ -360,6 +360,7 @@ T DYNACALL ReadMem_area0(u32 addr)
 	// NAOMI 2: the second PowerVR's interrupts are in the upper half
 	if (unlikely(addr & 0x02000000) && settings.System == DC_PLATFORM_NAOMI2 && asic_IsCLXB(addr))
 		return (T)asic_ReadCLXB(addr);
+	const u32 mirror = addr & 0x02000000;
 	addr &= 0x01FFFFFF;//to get rid of non needed bits
 	const u32 base=(addr>>16);
 	//map 0x0000 to 0x01FF to Default handler
@@ -368,11 +369,16 @@ T DYNACALL ReadMem_area0(u32 addr)
 	if ((settings.System != DC_PLATFORM_ATOMISWAVE && base<=0x001F)
 		  || (settings.System == DC_PLATFORM_ATOMISWAVE && base <= 0x0001))//	:MPX	System/Boot ROM
 	{
+		// the boot ROM and the flash are not in the mirror at 0x02000000: nothing answers there
+		if (mirror)
+			return 0;
 		return ReadBios(addr,sz);
 	}
 	//map 0x0020 to 0x0021
 	else if ((base>= 0x0020) && (base<= 0x0021)) // :Flash Memory
 	{
+		if (mirror)
+			return 0;
 		return ReadFlash(addr&0x1FFFF,sz);
 	}
 	//map 0x005F to 0x005F
@@ -464,6 +470,7 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 		asic_WriteCLXB(addr, data);
 		return;
 	}
+	const u32 mirror = addr & 0x02000000;
 	addr &= 0x01FFFFFF;//to get rid of non needed bits
 
 	const u32 base=(addr>>16);
@@ -471,12 +478,15 @@ void  DYNACALL WriteMem_area0(u32 addr,T data)
 	//map 0x0000 to 0x001F
 	if ((settings.System != DC_PLATFORM_ATOMISWAVE && base<=0x001F) || (settings.System == DC_PLATFORM_ATOMISWAVE && base<=0x0001))// :MPX System/Boot ROM
 	{
-		WriteBios(addr,data,sz);
+		// not in the mirror at 0x02000000
+		if (!mirror)
+			WriteBios(addr,data,sz);
 	}
 	//map 0x0020 to 0x0021
 	else if ((base >=0x0020) && (base <=0x0021) /*&& (addr>= 0x00200000) && (addr<= 0x0021FFFF)*/) // Flash Memory
 	{
-		WriteFlash(addr,data,sz);
+		if (!mirror)
+			WriteFlash(addr,data,sz);
 	}
 	//map 0x0040 to 0x005F -> actually, I'll only map 0x005F to 0x005F, b/c the rest of it is unspammed (left to default handler)
 	//map 0x005F to 0x005F
