@@ -100,6 +100,7 @@ struct  tad_context
 struct RenderPass {
    bool autosort;
 	bool z_clear;
+	bool mv_op_tr_shared;	// the translucent modifier volumes are the opaque ones
 	u32 op_count;
 	u32 mvo_count;
 	u32 pt_count;

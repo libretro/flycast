@@ -977,6 +977,11 @@ public:
 	u32 sa_tex;		//texture data start address in vram
 	u32 w,h;        //width & height of the texture
 	u32 size;       //size, in bytes, in vram
+	/* The row length a planar texture was last read from video memory
+	 * with; 0 if it is not planar or was not read (one rendered to). The
+	 * stride register is not part of the texture's key: a change to it
+	 * alone has the texture read again. */
+	u32 stride_read;
 
 	const PvrTexInfo* tex;
 	TexConvFP*  texconv;

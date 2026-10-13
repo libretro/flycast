@@ -1692,7 +1692,7 @@ TaTypeLut::TaTypeLut()
 	}
 }
 
-static bool ClearZBeforePass(int pass_number);
+static void getRegionSettings(int pass_number, RenderPass *pass);
 static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax);
 
 FifoSplitter TAFifo0;
@@ -1900,8 +1900,6 @@ static void fix_texture_bleeding(const List<PolyParam> *list)
 	}
 }
 
-static bool UsingAutoSort(int pass_number);
-
 bool ta_parse_vdrc(TA_context* ctx)
 {
 	bool rv=false;
@@ -1979,8 +1977,7 @@ bool ta_parse_vdrc(TA_context* ctx)
 						render_pass->tr_count, false, &vd_rc);
 				tr_poly_count = render_pass->tr_count;
 				render_pass->mvo_tr_count = vd_rc.global_param_mvo_tr.used();
-				render_pass->autosort = UsingAutoSort(pass);
-				render_pass->z_clear = ClearZBeforePass(pass);
+				getRegionSettings(pass, render_pass);
 			}
 		}
 		rv = !empty_context;
@@ -2272,7 +2269,8 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
    ymax *= 32;
 }
 
-static RegionArrayTile getRegionTile(int pass_number)
+// Where the region array entry of a render pass is
+static u32 getRegionTileAddr(int pass_number)
 {
 	u32 addr = REGION_BASE;
    const bool type1_tile   = ((FPU_PARAM_CFG >> 21) & 1) == 0;
@@ -2292,29 +2290,26 @@ static RegionArrayTile getRegionTile(int pass_number)
 	if (type1_tile && tile.PreSort)
 		// Windows CE weirdness
 		tile_size = 6 * 4;
-	tile.full = vri(addr + pass_number * tile_size);
 
-
-	return tile;
+	return addr + pass_number * tile_size;
 }
 
-static bool UsingAutoSort(int pass_number)
+static void getRegionSettings(int pass_number, RenderPass *pass)
 {
-   if (((FPU_PARAM_CFG >> 21) & 1) == 0)
+	const u32 addr = getRegionTileAddr(pass_number);
+	RegionArrayTile tile;
+	tile.full = vri(addr);
+
+	if (((FPU_PARAM_CFG >> 21) & 1) == 0)
 		// Type 1 region header type
-		return ((ISP_FEED_CFG & 1) == 0);
+		pass->autosort = (ISP_FEED_CFG & 1) == 0;
 	else
-	{
 		// Type 2
-		RegionArrayTile tile = getRegionTile(pass_number);
-
-		return !tile.PreSort;
-	}
-}
-
-static bool ClearZBeforePass(int pass_number)
-{
-	RegionArrayTile tile = getRegionTile(pass_number);
-
-	return !tile.NoZClear;
+		pass->autosort = !tile.PreSort;
+	pass->z_clear = !tile.NoZClear;
+	/* The region's opaque and translucent modifier volume lists can be the
+	 * same list: the translucent volumes are then the opaque ones (Crazy
+	 * Taxi, Daytona USA). Two empty ones are not that. */
+	const u32 op_mv = vri(addr + 8);
+	pass->mv_op_tr_shared = op_mv == vri(addr + 16) && (op_mv & 0x80000000) == 0;
 }

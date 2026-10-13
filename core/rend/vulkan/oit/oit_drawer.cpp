@@ -115,7 +115,7 @@ void OITDrawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 }
 
 template<bool Translucent>
-void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int first, int count)
+void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int first, int count, const ModifierVolumeParam *modVolParams)
 {
 	if (count == 0 || pvrrc.modtrig.used() == 0)
 		return;
@@ -124,14 +124,14 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offsets.modVolOffset);
 	SetScissor(cmdBuffer, baseScissor);
 
-	ModifierVolumeParam* params = Translucent ? &pvrrc.global_param_mvo_tr.head()[first] : &pvrrc.global_param_mvo.head()[first];
+	const ModifierVolumeParam* params = &modVolParams[first];
 
 	int mod_base = -1;
 	vk::Pipeline pipeline;
 
 	for (int cmv = 0; cmv < count; cmv++)
 	{
-		ModifierVolumeParam& param = params[cmv];
+		const ModifierVolumeParam& param = params[cmv];
 
 		if (param.count == 0)
 			continue;
@@ -382,7 +382,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		DrawList(cmdBuffer, ListType_Opaque, false, Pass::Depth, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count);
 		DrawList(cmdBuffer, ListType_Punch_Through, false, Pass::Depth, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count);
 
-		DrawModifierVolumes<false>(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count);
+		DrawModifierVolumes<false>(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, pvrrc.global_param_mvo.head());
 
 		// Color subpass
 		cmdBuffer.nextSubpass(vk::SubpassContents::eInline);
@@ -424,7 +424,12 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		{
 			// Tr modifier volumes
 			if (GetContext()->GetVendorID() != VENDOR_QUALCOMM)	// Adreno bug
-				DrawModifierVolumes<true>(cmdBuffer, previous_pass.mvo_tr_count, current_pass.mvo_tr_count - previous_pass.mvo_tr_count);
+			{
+				if (current_pass.mv_op_tr_shared)
+					DrawModifierVolumes<true>(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, pvrrc.global_param_mvo.head());
+				else
+					DrawModifierVolumes<true>(cmdBuffer, previous_pass.mvo_tr_count, current_pass.mvo_tr_count - previous_pass.mvo_tr_count, pvrrc.global_param_mvo_tr.head());
+			}
 
 			/* The whole picture is put together here, not the part the game
 			 * clips its drawing to: what is outside that has to be written
@@ -691,6 +696,7 @@ void OITTextureDrawer::EndFrame()
 	commandPool->EndFrame();
 
 	texture->dirty = 0;
+	texture->stride_read = 0;	// (rendered, not read)
    libCore_vramlock_Lock(texture->sa_tex, texture->sa + texture->size - 1, texture);
 	/* video memory gets it when something first touches it there */
 	vk_rtt_watch(texture, textureAddr, pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);

@@ -493,6 +493,18 @@ bool BaseTextureCacheData::NeedsUpdate() {
 		vramlock_collect();
 
 	bool rc = dirty != 0;
+	if (stride_read != 0)
+	{
+		u32 stride = w;
+		if (tcw.StrideSel)
+		{
+			stride = (TEXT_CONTROL & 31) * 32;
+			if (stride == 0)
+				stride = w;
+		}
+		if (stride != stride_read)
+			rc = true;
+	}
 	if (tex_type != TextureType::_8)
 	{
 		if (tcw.PixelFmt == PixelPal4 && palette_hash != pal_hash_16[tcw.PalSelect])
@@ -533,6 +545,7 @@ void BaseTextureCacheData::Create()
 	//Reset state info ..
 	Updates = 0;
 	dirty = FrameCount;
+	stride_read = 0;
 	lock_block = nullptr;
 	custom_image_data = nullptr;
 	retro_atomic_store_release_int(&custom_load_in_progress, 0);
@@ -755,11 +768,26 @@ void BaseTextureCacheData::Update()
 	//texture conversion work
 	u32 stride = w;
 
-	if (tcw.StrideSel && tcw.ScanOrder && (tex->PL || tex->PL32))
+	if (tcw.ScanOrder && (tex->PL || tex->PL32))
 	{
-		stride = (TEXT_CONTROL & 31) * 32;
-		if (stride == 0)
-			stride = w;
+		u32 bytes;
+
+		if (tcw.StrideSel)
+		{
+			stride = (TEXT_CONTROL & 31) * 32;
+			if (stride == 0)
+				stride = w;
+		}
+		/* What is watched and hashed is what this stride reads, which the
+		 * stride the texture was made or last read with need not be. */
+		bytes = tcw.VQ_Comp ? 256 * 4 * 2 + stride * h / 4 : stride * h * tex->bpp / 8;
+		if (bytes != size && lock_block != nullptr)
+		{
+			libCore_vramlock_Unlock_block_wb(lock_block);
+			lock_block = nullptr;
+		}
+		size = bytes;
+		stride_read = stride;
 	}
 
 	/* How many of the texture's lines there are to read. All of them, but

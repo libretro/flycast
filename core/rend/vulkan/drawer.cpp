@@ -596,6 +596,7 @@ void TextureDrawer::EndRenderPass()
 	commandPool->EndFrame();
 
 	texture->dirty = 0;
+	texture->stride_read = 0;	// (rendered, not read)
    libCore_vramlock_Lock(texture->sa_tex, texture->sa + texture->size - 1, texture);
 	/* video memory gets it when something first touches it there */
 	vk_rtt_watch(texture, textureAddr, pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
