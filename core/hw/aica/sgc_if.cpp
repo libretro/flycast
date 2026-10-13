@@ -466,6 +466,10 @@ struct ChannelEx
 		active &= ~((u64)1 << ChannelNumber);
 		SetAegState(EG_Release);
 		AEG.SetValue(0x3FF);
+		/* The position reads 0 once a channel has stopped, whether it
+		 * came to its end or its envelope ran out: some games wait for
+		 * that. */
+		CA = 0;
 	}
 	void enable()
 	{
@@ -620,9 +624,13 @@ struct ChannelEx
 			clip_verify((s64)sample*oDsp>=0);
 
 			StepAEG(this);
-			StepFEG(this);
-			StepStream(this);
-			lfo.Step(this);
+			// (a channel its envelope has just stopped stays at position 0)
+			if (enabled)
+			{
+				StepFEG(this);
+				StepStream(this);
+				lfo.Step(this);
+			}
 			return true;
 		}
 	}
@@ -784,12 +792,15 @@ struct ChannelEx
 
 	s32 EG_BaseRate()
 	{
+		/* The key scaling adds twice KRS plus the octave, which is
+		 * signed, as the chip's manual says; when that sum is below zero
+		 * the chip adds nothing for it (tested on hardware), it does not
+		 * slow the envelope down. */
 		s32 effrate = 0;
 		if (ccd->KRS < 0xF)
 	{
 		    effrate += (ccd->FNS >> 9) & 1;
-		    effrate += ccd->KRS * 2;
-		    effrate += (ccd->OCT ^ 8) - 8;
+		    effrate += std::max(0, ((s32)ccd->KRS + (s32)(ccd->OCT ^ 8) - 8) * 2);
 		}
 
 		return effrate;
@@ -848,6 +859,9 @@ struct ChannelEx
 			int G = 128>>S;
 			int L = (G-1)<<2;
 			int O = L + G * (M+1);
+			// (with both waves random the frequency does not count)
+			if (ccd->ALFOWS == 3 && ccd->PLFOWS == 3)
+				O = 1;
 			if (from_state)
 				lfo.start_value = O;
 			else
@@ -1080,7 +1094,9 @@ __forceinline void StepDecodeSample(ChannelEx* ch,u32 CA)
 	 * at or after the loop end, see StreamStepAny(): the sample after the
 	 * ones before that is the next one, not the loop start's.) */
 	const u32 lea = PCMS == 3 ? (ch->loop.LEA + 3) & ~3u : ch->loop.LEA;
-	if (next_addr >= lea)
+	/* (With the loop start after the loop end the channel plays on past
+	 * the end, to the loop start, and stops there: see StreamStepAny().) */
+	if (next_addr >= lea && lea > ch->loop.LSA)
 		next_addr = ch->loop.LSA;
 
 	SampleType s0,s1;
@@ -1197,7 +1213,22 @@ static __forceinline void StreamStepAny(ChannelEx* ch, const u32 LPCTL, const u3
 			}
 		}
 
-		if (ca_t>=ch->loop.LEA)
+		/* (the loop end as ca_t is held against it) */
+		const u32 lea = PCMS == 3 ? (ch->loop.LEA + 3) & ~3u : ch->loop.LEA;
+		if (ca_t >= ch->loop.LEA && ch->loop.LSA > lea)
+		{
+			/* With the loop start after the loop end the chip does not
+			 * stop at the loop end but plays on to the loop start; there
+			 * the position goes back to 0 and the channel stops, looping
+			 * or not (tested on hardware). */
+			if (CA >= ch->loop.LSA)
+			{
+				ch->loop.looped=1;
+				CA = 0;
+				ch->disable();
+			}
+		}
+		else if (ca_t>=ch->loop.LEA)
 		{
 			ch->loop.looped=1;
 			if (LPCTL == 0)
@@ -1239,6 +1270,16 @@ void StreamStepWrap(ChannelEx* ch)
 	StreamStepAny<PCMS,true>(ch, ch->ccd->LPCTL, ch->ccd->LPSLNK);
 }
 
+/* The random wave of the LFOs: a value that looks like noise for each step
+ * of the LFO, the same for the same step. With both LFOs on it, the LFO
+ * steps every sample, whatever its frequency: see UpdateLFO(). (The old
+ * mix of shifts of the step was far from noise; Jet Set Radio's skating
+ * sound is made with this wave.) */
+static __forceinline u32 LfoRandom(u8 state)
+{
+	return (state * 0x41c64e6du + 0x3039u) & 0xFF;
+}
+
 template<s32 ALFOWS>
 void CalcAlfo(ChannelEx* ch)
 {
@@ -1258,10 +1299,8 @@ void CalcAlfo(ChannelEx* ch)
 		rv<<=1;
 		break;
 
-	case 3:// Random ! .. not :p
-		// (8 bits, as the other waves are: the shift up made 11 of it, and
-		// the top three came through at every depth but the deepest)
-		rv=((ch->lfo.state>>3)^(ch->lfo.state<<3)^(ch->lfo.state&0xE3))&0xFF;
+	case 3: // Random: 8 bits, see LfoRandom()
+		rv=LfoRandom(ch->lfo.state);
 		break;
 	}
 	ch->lfo.alfo=rv>>ch->lfo.alfo_shft;
@@ -1286,8 +1325,8 @@ void CalcPlfo(ChannelEx* ch)
 		rv <<= 1;
 		break;
 
-	case 3:// random ! .. not :p
-		rv = (ch->lfo.state >> 3) ^ (ch->lfo.state << 3) ^ (ch->lfo.state & 0xE3);
+	case 3: // random
+		rv = LfoRandom(ch->lfo.state);
 		break;
 	}
 	ch->lfo.plfo_step = ch->lfo.plfo_scale[(u8)rv];
@@ -1602,7 +1641,14 @@ void ReadCommonReg(u32 reg,bool byte)
 		{
 			u32 chan=CommonData->MSLC;
          CommonData->CA = Chans[chan].CA;
-			//printf("[%d] CA read %d\n",chan,Chans[chan].CA);
+			/* The chip is not seen to report a position within a few
+			 * samples of the loop end (on hardware it is hard to read
+			 * one past LEA - 60), and the NBA and NFL 2K games miss the
+			 * end of a sound when they read LEA - 2 or more: the channel
+			 * is then never let go of, and the game freezes later. */
+			const auto& loop = Chans[chan].loop;
+			if (loop.LEA > loop.LSA && loop.LEA > 3)
+				CommonData->CA = std::min((u32)CommonData->CA, loop.LEA - 3);
 		}
 		break;
 	}

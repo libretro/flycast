@@ -52,8 +52,9 @@ enum Arm7Reg
 	RN_ARM_REG_SLOTS,
 };
 
-// What the ARM7 gets to run for each sample the sound chip makes
-#define ARM_CYCLES_PER_SAMPLE 256
+// What the ARM7 gets to run for each sample the sound chip makes: it is
+// clocked at 22.5792 MHz (AICA_ARM_CLOCK), 512 cycles a sample at 44.1 kHz
+#define ARM_CYCLES_PER_SAMPLE 512
 
 typedef union
 {

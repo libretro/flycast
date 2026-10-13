@@ -90,15 +90,22 @@ static void UpdateSh4Ints()
 
 AicaTimer timers[3];
 int aica_schid = -1;
-/* 32 samples at 44100 Hz take 200,000,000 * 32 / 44100 SH4 cycles, which is
- * 145124 and 31600/44100. A tick is the whole cycles of that, and the
- * 44100ths left over are counted up in aica_tick_frac: every time they come
- * to a whole cycle the next tick is one cycle longer, and in the long run
- * the rate is 44100 Hz exactly. (Every tick used to be 145125 cycles, which
- * is 44099.91 Hz.) */
+/* The sound chip, and its ARM7 with it, is run AICA_TICK_SAMPLES samples
+ * at a time. Upstream runs it one sample at a time (in batches of 32 the
+ * ARM7 and the SH4 do not see each other for 0.7 ms at a time, and the
+ * sound of some Windows CE games broke up there); 1 works here, but the
+ * scheduler's work for a tick every sample costs 11-18% of the emulation,
+ * so it stays at 32.
+ *
+ * A tick of 32 samples at 44100 Hz takes 200,000,000 * 32 / 44100 SH4
+ * cycles, which is 145124 and 31600/44100. A tick is the whole cycles of
+ * that, and the 44100ths left over are counted up in aica_tick_frac: every
+ * time they come to a whole cycle the next tick is one cycle longer, and in
+ * the long run the rate is 44100 Hz exactly. */
+#define AICA_TICK_SAMPLES 32
 #define AICA_TICK_DEN 44100
-const int AICA_TICK = (int)((u64)SH4_MAIN_CLOCK * 32 / AICA_TICK_DEN);
-static const u32 AICA_TICK_REM = (u32)((u64)SH4_MAIN_CLOCK * 32 % AICA_TICK_DEN);
+const int AICA_TICK = (int)((u64)SH4_MAIN_CLOCK * AICA_TICK_SAMPLES / AICA_TICK_DEN);
+static const u32 AICA_TICK_REM = (u32)((u64)SH4_MAIN_CLOCK * AICA_TICK_SAMPLES % AICA_TICK_DEN);
 /* What is left over after the tick that is on its way, 0 to 44099. */
 static u32 aica_tick_frac;
 
@@ -112,27 +119,31 @@ static inline int aica_tick_cycles()
 
 u32 sh4_sched_remaining(int id);
 
-/* How many of the 32 samples of the tick in progress the hardware has put
- * out by now: the tick is emulated in one go when it ends, but the AICA
- * makes a sample every 1/44100 s. */
+/* The sound output holds back 32 samples less this, 0 to 31: those of the
+ * tick in progress the hardware has not put out by now. The tick is
+ * emulated in one go when it ends, but the AICA makes a sample every
+ * 1/44100 s. (With ticks of fewer than 32 samples, the ones a tick does
+ * not have count as out.) */
 u32 libAICA_SamplesIntoTick()
 {
+	const u32 others = 32 - AICA_TICK_SAMPLES;
+
 	if (aica_schid == -1)
-		return 0;
+		return others;
 
 	const u32 tick = (u32)aica_tick_cycles();
 	u32 remaining = sh4_sched_remaining(aica_schid);
 	if (remaining >= tick)
 		// not scheduled, or due this instant
-		return 0;
+		return others;
 
-	u32 samples = (u32)(((u64)(tick - remaining) * 32) / tick);
-	return samples > 31 ? 31 : samples;
+	u32 samples = (u32)(((u64)(tick - remaining) * AICA_TICK_SAMPLES) / tick);
+	return others + (samples > AICA_TICK_SAMPLES - 1 ? AICA_TICK_SAMPLES - 1 : samples);
 }
 
 static int AicaUpdate(int tag, int c, int j)
 {
-   aicaarm::run(32);
+   aicaarm::run(AICA_TICK_SAMPLES);
 
 	aica_tick_frac += AICA_TICK_REM;
 	if (aica_tick_frac >= AICA_TICK_DEN)

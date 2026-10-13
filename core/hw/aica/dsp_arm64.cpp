@@ -507,16 +507,7 @@ void dsp_writenmem(u32 addr)
 	{
 		dsp.dyndirty = true;
 	}
-	else if (addr >= 0x4000 && addr < 0x4400)
-	{
-		// TODO proper sharing of memory with sh4 through DSPData
-		memset(dsp.TEMP, 0, sizeof(dsp.TEMP));
-	}
-	else if (addr >= 0x4400 && addr < 0x4500)
-	{
-		// TODO proper sharing of memory with sh4 through DSPData
-		memset(dsp.MEMS, 0, sizeof(dsp.MEMS));
-	}
+	// (TEMP and MEMS are written in aica_mem.cpp: they are the DSP's own)
 }
 
 void dsp_term()

@@ -374,12 +374,32 @@ static void Write_SB_ADST(u32 addr, u32 data)
 
 			// Schedule the end of DMA transfer interrupt
 			int cycles = len * (SH4_MAIN_CLOCK / 2 / 25000000);       // 16 bits @ 25 MHz
-			if (cycles < 4096)
+			/* Only a very short transfer ends at once: Sports Jam's
+			 * announcer and The Nomad Soul need longer ones to take the
+			 * time they take. */
+			if (cycles <= 512)
 				dma_end_sched(0, 0, 0);
 			else
 				sh4_sched_request(dma_sched_id, cycles);
 		}
 	}
+}
+
+/* Test Drive Le Mans and Looney Tunes Space Race sometimes send the same
+ * transfer twice: they read SB_ADST as 0 and start it again before they
+ * have taken the end-of-transfer interrupt. The first read with that
+ * interrupt pending says the transfer is still under way; bit 1, which the
+ * register does not show, marks that this was said, so that the next read
+ * tells the truth. (The register is in the state with its bit 1.) */
+static u32 Read_SB_ADST(u32 addr)
+{
+	if ((SB_ISTNRM & (1 << (u8)holly_SPU_DMA)) && !(SB_ADST & 2))
+	{
+		SB_ADST |= 2;
+		return 1;
+	}
+	SB_ADST &= ~2;
+	return SB_ADST;
 }
 
 template<u32 STAG, HollyInterruptID iainterrupt, const char *LogTag>
@@ -424,7 +444,7 @@ void aica_sb_Init()
 	// G2-DMA registers
 
 	// AICA
-	sb_rio_register(SB_ADST_addr, RIO_WF, nullptr, &Write_SB_ADST);
+	sb_rio_register(SB_ADST_addr, RIO_FUNC, &Read_SB_ADST, &Write_SB_ADST);
 #ifdef STRICT_MODE
 	sb_rio_register(SB_ADSTAR_addr, RIO_WF, nullptr, &Write_SB_STAR<SB_ADSTAR_addr, holly_AICA_ILLADDR, AICA_TAG>);
 	sb_rio_register(SB_ADSTAG_addr, RIO_WF, nullptr, &Write_SB_STAG<SB_ADSTAG_addr, holly_AICA_ILLADDR, AICA_TAG>);
