@@ -33,6 +33,14 @@
 						 { NAOMI_SERVICE_KEY, "SERVICE" },
 #define NAO_START_DESC { NAOMI_START_KEY, "START" },
 
+// The analog inputs of a game whose controls have none: read as with no
+// descriptor (the sticks, centred), and not shown to the frontend. With no
+// axes at all they would read uncentred.
+#define NO_ANALOG_AXES { "", Full, 0 }, \
+						{ "", Full, 1 }, \
+						{ "", Full, 2 }, \
+						{ "", Full, 3 },
+
 InputDescriptors _18wheelr_inputs = {
 	  {
 			{ NAOMI_BTN0_KEY, "HORN" },
@@ -80,12 +88,13 @@ InputDescriptors alpilot_inputs = {
 			{ 0 },
 	  },
 	  {
-			{ "ELEVATOR", Full, 0 },
-			{ "AILERON", Full, 1 },
-			{ "", Full, 2 },
-			{ "RUDDER PEDAL", Full, 3 },
-			{ "THRUST LEVER L", Half, 4 },
-			{ "THRUST LEVER R", Half, 5 },
+			// the control wheel pitches the plane on the stick's vertical axis
+			{ "ELEVATOR", Full, 1 },
+			{ "AILERON", Full, 0 },
+			{ "", Full, 3 },
+			{ "RUDDER PEDAL", Full, 2 },
+			{ "THRUST LEVER L", Half, 5 },
+			{ "THRUST LEVER R", Half, 4 },
 			{ NULL },
 	  },
 };
@@ -500,6 +509,954 @@ static InputDescriptors sstrkfgt_inputs = {
 		{ NULL },
 	},
 };
+InputDescriptors asndynmt_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "PUNCH" },
+			{ NAOMI_BTN1_KEY, "KICK" },
+			{ NAOMI_BTN2_KEY, "JUMP" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors ausfache_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Weak Attack" },
+			{ NAOMI_BTN1_KEY, "Medium Attack" },
+			{ NAOMI_BTN2_KEY, "Strong Attack" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors azumanga_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "BUTTON A" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors bdrdown_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT" },
+			{ NAOMI_BTN1_KEY, "LASER" },
+			{ NAOMI_BTN2_KEY, "SPEED" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors button12_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "BUTTON 1" },
+			{ NAOMI_BTN1_KEY, "BUTTON 2" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors capcom_4btn_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "LIGHT PUNCH" },
+			{ NAOMI_BTN1_KEY, "HEAVY PUNCH" },
+			{ NAOMI_BTN3_KEY, "LIGHT KICK" },
+			{ NAOMI_BTN4_KEY, "HEAVY KICK" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors cfield_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "TRG1" },
+			{ NAOMI_BTN1_KEY, "TRG2" },
+			{ NAOMI_BTN2_KEY, "TRG3" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors crackindj_inputs = {
+	  {
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "FADER", Full, 0, true },
+			{ NULL },
+	  },
+};
+
+InputDescriptors csmash_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SMASH" },
+			{ NAOMI_BTN1_KEY, "JUMP" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors doa2_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Free" },
+			{ NAOMI_BTN1_KEY, "Punch" },
+			{ NAOMI_BTN2_KEY, "Kick" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors dygolf_inputs = {
+	  {
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors ggx_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "PUNCH" },
+			{ NAOMI_BTN1_KEY, "KICK" },
+			{ NAOMI_BTN2_KEY, "SLASH" },
+			{ NAOMI_BTN3_KEY, "HSLASH" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors giant_gram_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Attack" },
+			{ NAOMI_BTN1_KEY, "Hold" },
+			{ NAOMI_BTN2_KEY, "Throw" },
+			{ NAOMI_BTN3_KEY, "Move" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors guilty_gear_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "KICK" },
+			{ NAOMI_BTN1_KEY, "SLASH" },
+			{ NAOMI_BTN2_KEY, "HSLASH" },
+			{ NAOMI_BTN3_KEY, "PUNCH" },
+			{ NAOMI_BTN5_KEY, "DUST ATTACK", 0, NAOMI_BTN4_KEY },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors hmgeo_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Fire" },
+			{ NAOMI_BTN1_KEY, "Attack" },
+			{ NAOMI_BTN2_KEY, "Jump" },
+			{ NAOMI_BTN3_KEY, "Target" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors ikaruga_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT" },
+			{ NAOMI_BTN1_KEY, "CHANGE" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors illvelo_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT" },
+			{ NAOMI_BTN1_KEY, "DOLL" },
+			{ NAOMI_BTN2_KEY, "SPECIAL" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors jingystm_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "GUARD" },
+			{ NAOMI_BTN1_KEY, "PUNCH" },
+			{ NAOMI_BTN2_KEY, "KICK" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors kick4csh_inputs = {
+	  {
+			{ NAOMI_BTN1_KEY, "VIEW" },
+			{ NAOMI_BTN2_KEY, "CHANCE" },
+			{ NAOMI_START_KEY, "START/DECIDE" },
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors lightgun_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "TRIGGER" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors mamonoro_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOOT" },
+			{ NAOMI_BTN1_KEY, "SPECIAL" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors mazan_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "TRIGGER" },
+			{ NAOMI_UP_KEY, "SELECT UP" },
+			{ NAOMI_DOWN_KEY, "SELECT DOWN" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors meltyb_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "LAttack" },
+			{ NAOMI_BTN1_KEY, "MAttack" },
+			{ NAOMI_BTN2_KEY, "HAttack" },
+			{ NAOMI_BTN3_KEY, "Guard" },
+			{ NAOMI_BTN5_KEY, "Quick Action", 0, NAOMI_BTN4_KEY },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors mushik_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "HIT" },
+			{ NAOMI_BTN1_KEY, "PINCH" },
+			{ NAOMI_BTN2_KEY, "THROW" },
+			{ NAOMI_BTN3_KEY, "HIT P2", NAOMI_BTN0_KEY },
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors otrigger_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "TRIGGER" },
+			{ NAOMI_BTN1_KEY, "CHANGE" },
+			{ NAOMI_BTN2_KEY, "JUMP" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors pstone2_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Punch" },
+			{ NAOMI_BTN1_KEY, "Jump" },
+			{ NAOMI_BTN2_KEY, "Attack" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors pstone_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Punch" },
+			{ NAOMI_BTN1_KEY, "Kick" },
+			{ NAOMI_BTN2_KEY, "Jump" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors psyvariar_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT" },
+			{ NAOMI_BTN1_KEY, "BOMB" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors puyoda_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "STAR" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors puyofev_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "ROTATE1" },
+			{ NAOMI_BTN1_KEY, "ROTATE2" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors radirgy_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOOT" },
+			{ NAOMI_BTN1_KEY, "SWORD" },
+			{ NAOMI_BTN2_KEY, "SHIELD/SPECIAL" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors rhytngk_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT A" },
+			{ NAOMI_BTN1_KEY, "SHOT B" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors samba_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "MARACAS R" },
+			{ NAOMI_BTN1_KEY, "MARACAS L" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "MARACAS R X", Full, 0 },
+			{ "MARACAS R Y", Full, 1 },
+			{ "MARACAS L X", Full, 2 },
+			{ "MARACAS L Y", Full, 3 },
+			{ NULL },
+	  },
+};
+
+InputDescriptors senko_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "ACTION" },
+			{ NAOMI_BTN1_KEY, "MAIN" },
+			{ NAOMI_BTN2_KEY, "SUB" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors senkosp_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "MAIN" },
+			{ NAOMI_BTN1_KEY, "SUB" },
+			{ NAOMI_BTN2_KEY, "MAIN+SUB" },
+			{ NAOMI_BTN3_KEY, "ACTION" },
+			{ NAOMI_BTN5_KEY, "OVER DRIVE", 0, NAOMI_BTN4_KEY },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors service_btns_inputs = {
+	  {
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors sgtetris_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SW1" },
+			{ NAOMI_BTN1_KEY, "SW2" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors shaktam_inputs = {
+	  {
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ NAOMI_BTN0_KEY, "SHAKE L" },
+			{ NAOMI_BTN1_KEY, "SHAKE R" },
+			{ NAOMI_BTN2_KEY, "KNOCK", 0, NAOMI_DOWN_KEY },
+			{ NAOMI_DOWN_KEY, "DOWN", 0, NAOMI_LEFT_KEY },
+			{ NAOMI_UP_KEY, "UP", 0, NAOMI_RIGHT_KEY },
+			{ 0 },
+	  },
+	  {
+			{ "TAMBOURINE X", Full, 0 },
+			{ "TAMBOURINE Y", Full, 1 },
+			{ "", Full, 2 },	// unused but P2 starts at axis 4
+			{ "", Full, 3 },	// unused but P2 starts at axis 4
+			{ NULL },
+	  },
+};
+
+InputDescriptors shootout_inputs = {
+	  {
+			{ NAOMI_START_KEY, "START/MODE", 0, NAOMI_BTN2_KEY },
+			{ NAOMI_BTN0_KEY, "TOP/VIEW" },	// !prize
+			{ NAOMI_BTN1_KEY, "BET", 0, NAOMI_BTN6_KEY },	// prize only
+			{ NAOMI_BTN3_KEY, "CUE ROLLER" },	// only used by emulator. press to use cue roller instead of cue aim
+			{ NAOMI_UP_KEY, "ZOOM IN" },
+			{ NAOMI_DOWN_KEY, "ZOOM OUT" },
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "CUE TIP U/D", Full, 1, true },
+			{ "CUE TIP L/R", Full, 0, true },
+			{ NULL },
+	  },
+};
+
+InputDescriptors shot1234_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT1" },
+			{ NAOMI_BTN1_KEY, "SHOT2" },
+			{ NAOMI_BTN2_KEY, "SHOT3" },
+			{ NAOMI_BTN3_KEY, "SHOT4" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors shot12_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT1" },
+			{ NAOMI_BTN1_KEY, "SHOT2" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors sl2007_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "PUSH 1" },
+			{ NAOMI_BTN1_KEY, "PUSH 2" },
+			{ NAOMI_BTN2_KEY, "PUSH 3" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors slashout_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Blade" },
+			{ NAOMI_BTN1_KEY, "Charge" },
+			{ NAOMI_BTN2_KEY, "Jump" },
+			{ NAOMI_BTN3_KEY, "Shift" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors spkrbtl_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "BEAT" },
+			{ NAOMI_BTN1_KEY, "CHARGE" },
+			{ NAOMI_BTN2_KEY, "JUMP" },
+			{ NAOMI_BTN3_KEY, "SHIFT" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors toukon4_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "X" },
+			{ NAOMI_BTN1_KEY, "Y" },
+			{ NAOMI_BTN2_KEY, "R" },
+			{ NAOMI_BTN3_KEY, "A" },
+			{ NAOMI_BTN5_KEY, "B", 0, NAOMI_BTN4_KEY },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors toyfight_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Punch" },
+			{ NAOMI_BTN1_KEY, "Kick" },
+			{ NAOMI_BTN2_KEY, "Dodge" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors trgheart_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "SHOT" },
+			{ NAOMI_BTN1_KEY, "ANCHOR" },
+			{ NAOMI_BTN2_KEY, "BOMB" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors vathlete_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "RUN1" },
+			{ NAOMI_BTN1_KEY, "ACTION" },
+			{ NAOMI_BTN2_KEY, "RUN2" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors virnba_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "PASS" },
+			{ NAOMI_BTN1_KEY, "SHOOT" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+// The I/O board (jvs_namco_v226) reads the sticks and kicks itself, four
+// channels a group: the descriptor gives the size of a group.
+InputDescriptors wldkicks_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "BUTTON" },
+			{ NAOMI_BTN3_KEY, "ENTER" },	// service mode
+			{ NAOMI_UP_KEY, "UP" },	// service mode
+			{ NAOMI_DOWN_KEY, "DOWN" },	// service mode
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "STICK L/R", Full, 0 },	// P1
+			{ "STICK U/D", Full, 1 },
+			{ "", Full, 2 },	// P2
+			{ "", Full, 3 },
+			{ NULL },
+	  },
+};
+
+InputDescriptors wldkickspcb_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "CHANGE" },	// original label: C BUTTON
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "STICK L/R", Full, 0 },
+			{ "STICK U/D", Full, 1 },
+			{ "", Full, 2 },
+			{ "BALL", Half, 4 },	// this is wrong, just to indicate RT is used
+			{ NULL },
+	  },
+};
+
+InputDescriptors wwfroyal_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "ATTACK" },
+			{ NAOMI_BTN1_KEY, "GRAPPLE" },
+			{ NAOMI_BTN2_KEY, "SUPPORT" },
+			{ NAOMI_UP_KEY, "UP" },
+			{ NAOMI_DOWN_KEY, "DOWN" },
+			{ NAOMI_LEFT_KEY, "LEFT" },
+			{ NAOMI_RIGHT_KEY, "RIGHT" },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
 //
 // AtomisWave games
 //
@@ -631,6 +1588,216 @@ InputDescriptors blockpong_inputs = {
 //
 // NAOMI 2 Games
 //
+InputDescriptors aw_lightgun_inputs = {
+	  {
+			{ AWAVE_TRIGGER_KEY, "TRIGGER" },
+			{ AWAVE_BTN0_KEY, "PUMP" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors aw_shot123_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "SHOT1" },
+			{ AWAVE_BTN1_KEY, "SHOT2" },
+			{ AWAVE_BTN2_KEY, "SHOT3" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors basschal_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "ROTATE LEFT" },
+			{ AWAVE_BTN1_KEY, "ROTATE RIGHT" },
+			{ AWAVE_LEFT_KEY, "LEFT POINT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT POINT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors demofist_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "GUARD" },
+			{ AWAVE_BTN1_KEY, "ATTACK" },
+			{ AWAVE_BTN2_KEY, "JUMP" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors dolphin_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "SHOOT" },
+			{ AWAVE_BTN1_KEY, "JUMP" },
+			{ AWAVE_BTN2_KEY, "SPECIAL" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors fotns_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "LP" },
+			{ AWAVE_BTN1_KEY, "HP" },
+			{ AWAVE_BTN2_KEY, "BOOST" },
+			{ AWAVE_BTN3_KEY, "LK" },
+			{ AWAVE_BTN4_KEY, "HK" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors ggx15_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "KICK" },
+			{ AWAVE_BTN1_KEY, "SLASH" },
+			{ AWAVE_BTN2_KEY, "HSLASH" },
+			{ AWAVE_BTN3_KEY, "PUNCH" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors guilty_gear_aw_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "KICK" },
+			{ AWAVE_BTN1_KEY, "SLASH" },
+			{ AWAVE_BTN2_KEY, "HSLASH" },
+			{ AWAVE_BTN3_KEY, "PUNCH" },
+			{ AWAVE_BTN4_KEY, "DUST ATTACK" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors kov7sprt_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "LIGHT ATTACK" },
+			{ AWAVE_BTN1_KEY, "HEAVY ATTACK" },
+			{ AWAVE_BTN2_KEY, "JUMP" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors mslug6_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "SHOOT" },
+			{ AWAVE_BTN1_KEY, "JUMP" },
+			{ AWAVE_BTN2_KEY, "GRENADE" },
+			{ AWAVE_BTN3_KEY, "METAL SLUG ATTACK" },
+			{ AWAVE_BTN4_KEY, "SWITCH WEAPONS" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
+InputDescriptors rumblef_inputs = {
+	  {
+			{ AWAVE_BTN0_KEY, "LP" },
+			{ AWAVE_BTN1_KEY, "SP" },
+			{ AWAVE_BTN2_KEY, "Dodge" },
+			{ AWAVE_BTN3_KEY, "LK" },
+			{ AWAVE_BTN4_KEY, "SK" },
+			{ AWAVE_UP_KEY, "UP" },
+			{ AWAVE_DOWN_KEY, "DOWN" },
+			{ AWAVE_LEFT_KEY, "LEFT" },
+			{ AWAVE_RIGHT_KEY, "RIGHT" },
+			AW_START_DESC
+			AW_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			NO_ANALOG_AXES
+			{ NULL },
+	  },
+};
+
 InputDescriptors vf4_inputs = {
 	  {
 			{ NAOMI_BTN0_KEY, "PUNCH" },
@@ -772,5 +1939,36 @@ InputDescriptors soulsurfer_inputs = {
 			{ NULL },
 	  },
 };
+
+#ifdef NAOMI_MULTIBOARD
+InputDescriptors drvsim_inputs = {
+	  {
+			{ NAOMI_BTN0_KEY, "Turn R" },
+			{ NAOMI_BTN1_KEY, "Turn L" },
+			{ NAOMI_BTN2_KEY, "Shift 2" },
+			{ NAOMI_BTN3_KEY, "Shift 3" },
+			{ NAOMI_BTN4_KEY, "O/D Switch" },
+			{ NAOMI_BTN5_KEY, "S-Brake" },
+			{ NAOMI_BTN6_KEY, "IG-START", NAOMI_LEFT_KEY },
+			{ NAOMI_BTN7_KEY, "Shift 0", NAOMI_BTN0_KEY },
+			{ NAOMI_UP_KEY, "Horn" },
+			{ NAOMI_DOWN_KEY, "Light 0" },
+			{ NAOMI_LEFT_KEY, "Light 1" },
+			{ NAOMI_RIGHT_KEY, "Light 2" },
+			{ NAOMI_BTN8_KEY, "BELT", NAOMI_BTN2_KEY, 0xffffffff },
+			NAO_START_DESC
+			NAO_BASE_BTN_DESC
+			{ 0 },
+	  },
+	  {
+			{ "", Full, 0xffffffff, true },	// Master audio volume
+			{ "Accelerator", Half, 4 },
+			{ "Brake", Half, 5 },
+			{ "Clutch", Half, 6 },
+			{ "Wheel", Full, 0, true },	// only read via ffb board, not jvs
+			{ NULL },
+	  },
+};
+#endif
 
 #endif /* CORE_HW_NAOMI_NAOMI_ROMS_INPUT_H_ */
