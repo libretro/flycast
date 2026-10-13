@@ -330,13 +330,17 @@ static u32 pvr_map32(u32 offset32)
 	return rv;
 }
 
+/* A word of the chip's 32-bit view, as the chip reads it: the two low bits
+ * of the address are not part of it. (Kept, they took a read from an odd
+ * address the game gave - REGION_BASE, say - up to three bytes past the
+ * end of video memory.) */
 f32 vrf(u32 addr)
 {
-	return *(f32*)&vram.data[pvr_map32(addr)];
+	return *(f32*)&vram.data[pvr_map32(addr) & ~3u];
 }
 u32 vri(u32 addr)
 {
-	return *(u32*)&vram.data[pvr_map32(addr)];
+	return *(u32*)&vram.data[pvr_map32(addr) & ~3u];
 }
 
 template<typename T, bool upper>

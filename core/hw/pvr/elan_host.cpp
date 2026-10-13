@@ -17,6 +17,7 @@
 #include "ta_ctx.h"
 #include "pvr_regs.h"
 #include "pvr_mem.h"
+#include "spg.h"
 #include "hw/holly/sb.h"
 #include "hw/holly/holly_intc.h"
 #include "hw/mem/_vmem.h"
@@ -44,6 +45,10 @@ static u32 DYNACALL read_elanreg(u32 paddr)
 		if (addr >= 0x005f6800 && addr <= 0x005f7cff)
 			return sb_ReadMem(addr, 4);
 		if (addr >= 0x005f8000 && addr <= 0x005f9fff)
+		{
+			// the beam's line, as a read of the register at its own address has it
+			if ((addr & pvr_RegMask) == SPG_STATUS_addr)
+				spg_sync();
 			return PvrReg(addr, u32);
 		break;
 	case 0x80:

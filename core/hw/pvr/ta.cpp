@@ -314,6 +314,13 @@ void DYNACALL ta_data32_slow(void* data)
    simd256_t *dst = (simd256_t*)ta_tad.thd_data;
    simd256_t *src = (simd256_t*)data; 
 
+   /* The first block since the lists were started again over data that
+    * was never drawn: the places where lists were continued are places in
+    * that data, and not in this. (Left, the new data was cut into passes
+    * at them, and the first pass ran on into what was left of the old.) */
+   if (ta_tad.thd_data == ta_tad.thd_root && ta_tad.thd_old_data != ta_tad.thd_root)
+      ta_tad.render_pass_count = 0;
+
    // First byte is PCW
    PCW pcw        = *(PCW*)data;
 
@@ -407,6 +414,9 @@ void ta_vtx_data(u32* data, u32 size)
 			size--;
 			continue;
 		}
+		// (as in ta_data32_slow())
+		if (used == 0 && ta_tad.thd_old_data != root)
+			ta_tad.render_pass_count = 0;
 
 		count = (ctx->data_size - used) / 32;
 		if (count > size)

@@ -67,6 +67,12 @@ void elan_dma_done(void);
 
 void elan_get_state(elan_state_t *state);
 void elan_set_state(const elan_state_t *state);
+/* The near and far planes polygons are clipped to. They come with a
+ * model's matrix and stay when the end of a list takes the matrix away,
+ * so they are not worked out again from the state above: a save state
+ * has them besides (elan_set_state() first). */
+void elan_get_planes(float planes[2]);
+void elan_set_planes(const float planes[2]);
 
 /* Vertices put through the chip, and vertices it wrote out, since the
  * last call. For measuring. */

@@ -2123,6 +2123,18 @@ void elan_set_state(const elan_state_t *state)
    update_all();
 }
 
+void elan_get_planes(float planes[2])
+{
+   planes[0] = near_plane;
+   planes[1] = far_plane;
+}
+
+void elan_set_planes(const float planes[2])
+{
+   near_plane = planes[0];
+   far_plane  = planes[1];
+}
+
 void elan_counters(unsigned *in, unsigned *out_vertices)
 {
    *in = count_in;
