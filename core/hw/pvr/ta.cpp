@@ -304,7 +304,11 @@ void DYNACALL ta_data32_slow(void* data)
    	INFO_LOG(PVR, "Warning: data sent to TA prior to ListInit. Ignored");
 		return;
    }
-	if ((u32)(ta_tad.End() - ta_tad.thd_root) >= ta_ctx->data_size)
+	/* Where the next block goes. (Not End(): after the lists are started
+	 * again the next block goes to the start of the buffer, whatever the
+	 * frame before left in it, as the hardware's write pointer goes back to
+	 * the base.) */
+	if ((u32)(ta_tad.thd_data - ta_tad.thd_root) >= ta_ctx->data_size)
 	{
 		INFO_LOG(PVR, "Warning: TA data buffer overflow");
 		asic_RaiseInterrupt(holly_MATR_NOMEM);
@@ -377,10 +381,6 @@ u8 *ta_vtx_room(u32 blocks)
    if (ctx == NULL)
       return NULL;
    used = (u32)(ta_tad.thd_data - ta_tad.thd_root);
-   /* (nothing yet this frame: what the buffer had last is counted, as
-    * ta_data32_slow() counts it) */
-   if (used == 0 && (u32)(ta_tad.thd_old_data - ta_tad.thd_root) >= ctx->data_size)
-      return NULL;
    if (used > ctx->data_size || blocks > (ctx->data_size - used) / 32)
       return NULL;
    return ta_tad.thd_data;
@@ -406,8 +406,7 @@ void ta_vtx_data(u32* data, u32 size)
 		const u8 *from, *stop;
 		bool handled = false;
 
-		if (ctx == NULL || used >= ctx->data_size
-				|| (used == 0 && (u32)(ta_tad.thd_old_data - root) >= ctx->data_size))
+		if (ctx == NULL || used >= ctx->data_size)
 		{
 			ta_data32_slow(data);
 			data += 8;

@@ -60,6 +60,11 @@ void SetCurrentTARC(u32 addr)
 		//set new context
 		ta_ctx = tactx_Find(addr,true);
 
+		/* No memory for it: there is no frame being written, and what the
+		 * game sends is dropped as it is before any list is opened. */
+		if (ta_ctx == NULL)
+			return;
+
 		//copy cached params
 		ta_tad = ta_ctx->tad;
 	}
@@ -150,7 +155,12 @@ TA_context* tactx_Alloc(void)
 	if (!rv)
    {
       rv = new TA_context();
-      rv->Alloc();
+      if (!rv->Alloc())
+      {
+         WARN_LOG(PVR, "Out of memory for a tile accelerator frame: its lists are dropped");
+         delete rv;
+         rv = NULL;
+      }
    }
 
    return rv;
@@ -175,8 +185,15 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
          if (ctx_list[i]->data_size != ta_data_size())
          {
             // left by a machine whose frames are another size
-            ctx_list[i]->Free();
-            ctx_list[i]->Alloc();
+            TA_context *ctx = ctx_list[i];
+            ctx->Free();
+            if (!ctx->Alloc())
+            {
+               delete ctx;
+               ctx_count--;
+               memmove(&ctx_list[i], &ctx_list[i + 1], (ctx_count - i) * sizeof(*ctx_list));
+               return 0;
+            }
          }
          return ctx_list[i];
       }
@@ -195,6 +212,8 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
          ctx_room = room;
       }
       rv = tactx_Alloc();
+      if (!rv)
+         return 0;
       rv->Address=addr;
       ctx_list[ctx_count++] = rv;
 
@@ -236,6 +255,21 @@ void tactx_Reset(void)
 }
 
 const u32 NULL_CONTEXT = ~0u;
+
+/* Past @size bytes of a state that there is nowhere to put. */
+static void skip_state_bytes(void **data, unsigned int *total_size, u32 size)
+{
+	if (*data != NULL)
+	{
+		if (!ra_unserialize_has(*data, size))
+		{
+			ra_unserialize_fail();
+			return;
+		}
+		*data = (u8 *)*data + size;
+	}
+	*total_size += size;
+}
 
 /* The frame a state from before version 21 says was being written to, for
  * pvr_state_before_v21() */
@@ -282,6 +316,20 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
 	SetCurrentTARC(address);
 	u32 size;
 	LIBRETRO_US(size);
+	if (ta_ctx == NULL)
+	{
+		// (no memory for the frame: what the state has of it is passed over)
+		skip_state_bytes(data, total_size, size);
+		if (version >= V12)
+		{
+			u32 count;
+			LIBRETRO_US(count);
+			if (count > 10)
+				count = 10;
+			skip_state_bytes(data, total_size, count * 4);
+		}
+		return;
+	}
 	/* size is attacker-controlled (comes straight from the state). The TA
 	 * buffer is a fixed TA_DATA_SIZE allocation, so a corrupt/malicious state
 	 * with a larger size would memcpy past the end of the heap block. Clamp. */
@@ -470,7 +518,15 @@ bool pvr_unserialize_v21(void **data, unsigned int *total_size)
 
 		ctx = tactx_Find((u32)(key & 15) << 20, true);
 		size = word & ~31u;
-		if (ctx == NULL || (word & 30) != 0 || size > ctx->data_size)
+		if ((word & 30) != 0 || size > ta_data_size())
+			return false;
+		if (ctx == NULL)
+		{
+			// (no memory for the frame: it is passed over, and not written to)
+			skip_state_bytes(data, total_size, passes * 4 + size);
+			continue;
+		}
+		if (size > ctx->data_size)
 			return false;
 
 		tad_context& tad = ctx->tad;

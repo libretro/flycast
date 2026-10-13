@@ -214,7 +214,9 @@ struct TA_context
       rend.proc_end = render_pass == tad.render_pass_count ? tad.End() : 
          tad.render_passes[render_pass];
 	}
-	void Alloc()
+	/* false: there was not the memory for it, and it holds nothing (a
+	 * NAOMI 2's frame takes about 60 megabytes). */
+	bool Alloc()
 	{
       data_size = ta_data_size();
       const unsigned scale = data_size / TA_DATA_SIZE;
@@ -240,8 +242,22 @@ struct TA_context
 		rend.modtrig.Init(modtrig_size,&rend.Overrun, "modtrig");
 
       rend.render_passes.Init(sizeof(RenderPass) * 10, &rend.Overrun, "render_passes");	// 10 render passes
+
+		if (!tad.thd_root || !regs || !rend.verts.daty || !rend.idx.daty
+				|| !rend.global_param_op.daty || !rend.global_param_pt.daty
+				|| !rend.global_param_mvo.daty || !rend.global_param_mvo_tr.daty
+				|| !rend.global_param_tr.daty || !rend.modtrig.daty
+				|| !rend.render_passes.daty)
+		{
+			Free();
+			tad.Reset(NULL);
+			regs = NULL;
+			data_size = 0;
+			return false;
+		}
 		
 		Reset();
+		return true;
 	}
 
 	void Reset()

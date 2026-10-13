@@ -404,15 +404,19 @@ void rend_vblank()
 		const u32 current_ctx = ta_ctx != NULL ? ta_ctx->Address : TACTX_NONE;
 		PARAM_BASE = 0xF00000;
 		SetCurrentTARC(CORE_CURRENT_CTX);
-		ta_ctx->Reset();
-		ta_ctx->rend.isRenderFramebuffer = true;
-		ta_ctx->rend.isRTT = false;
-		rend_start_render();
+		// (NULL: there was not the memory for it, and nothing is shown)
+		if (ta_ctx != NULL)
+		{
+			ta_ctx->Reset();
+			ta_ctx->rend.isRenderFramebuffer = true;
+			ta_ctx->rend.isRTT = false;
+			rend_start_render();
+			produced = true;
+		}
 		PARAM_BASE = saved_ctx_addr;
 		if (current_ctx != TACTX_NONE)
 			SetCurrentTARC(current_ctx);
 		fb_dirty = false;
-		produced = true;
 	}
 	frame_produced = produced && !screen_skipped;
 	render_called = false;
