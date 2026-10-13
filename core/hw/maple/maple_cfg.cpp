@@ -5,6 +5,7 @@
 #include "maple_cfg.h"
 #include "libretro/input_latch.h"
 #include "hw/naomi/naomi_periph.h"
+#include "hw/naomi/naomi_cart.h"
 
 #include "lockfree.h"
 
@@ -380,6 +381,11 @@ void mcfg_CreateDevices()
 			   mcfg_Create(type, bus, port);
 		 }
 	  }
+   }
+   else if (SYSTEM_IS_NAOMI() && naomi_cart_systemsp)
+   {
+      /* A System SP has no I/O board on its maple bus, nor anything else:
+       * its ROM board has the inputs (systemsp.cpp). */
    }
    else if (SYSTEM_IS_NAOMI())
    {

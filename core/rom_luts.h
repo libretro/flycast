@@ -112,6 +112,9 @@ static struct game_type_naomi lut_games_naomi[] =
    { "hotd2p"                            , -1, -1, -1,  -1, JVS::LightGunAsAnalog, 1 },		  /* The House of The Dead 2 (prototype) */
    { "INU NO OSANPO"                     , -1, -1, -1,  -1, JVS::DogWalking, 1 },   		  	  /* Dog Walking */
    { " TOUCH DE UNOH -------------"      , -1, -1, -1,  -1, JVS::TouchDeUno, 1 },				  /* Touch de Uno! */
+   { " TOUCH DE UNOH 2 -----------"      , -1, -1, -1,  -1, JVS::TouchDeUno, 1 },				  /* Touch de Uno! 2 */
+   { "MIRAI YOSOU STUDIO"                , -1, -1, -1,  -1, JVS::TouchDeUno, 1 },				  /* Nittere Shiki! Mirai Yosou Studio */
+   { "ANPANMAN POPCORN KOUJOU 2"         , -1, -1, -1,  -1, JVS::SegaMarineFishing, 1 },      /* Soreike! Anpanman Popcorn Koujou 2: I/O board 837-13844 */
 
    /* Input descriptors */
    { " BIOHAZARD  GUN SURVIVOR2"         , -1, -1, -1,  -1, JVS::GunSurvivor, 1, &gunsur2_inputs }, /* Gun Survivor 2 Biohazard Code: Veronica */

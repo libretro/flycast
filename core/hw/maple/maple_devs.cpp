@@ -1753,6 +1753,9 @@ public:
 	// What a board has had in a save state since V21: see maple_jvs_serialize_v21()
 	void maple_serialize_v21(void **data, unsigned int *total_size);
 	void maple_state_v21(const u32 *coins, const u8 *flags);
+	// What a board has had in a save state since V25: see maple_jvs_serialize_v25()
+	virtual u8 get_state_v25() { return 0; }
+	virtual void set_state_v25(u8 v) { }
 
 	bool lightgun_as_analog = false;
 
@@ -1765,6 +1768,17 @@ protected:
 		return remap_buttons(keycode);
 	}
 	virtual void write_digital_out(int count, u8 *data) { }
+	// The cabinet's test switch, as the board reports it
+	virtual bool read_test_switch() { return !(kcode[0] & NAOMI_TEST_KEY); }
+	// Where a player's gun or finger is, as the board reports it
+	virtual void read_screen_position(int player_num, s16& x, s16& y)
+	{
+		// Correct for Ninja Assault. Revisit for other games
+		u32 xr = 0x19d - 0x37;
+		u32 yr = 0x1fe - 0x40;
+		x = mo_x_abs[player_num] * xr / 639 + 0x37;
+		y = mo_y_abs[player_num] * yr / 479 + 0x40;
+	}
 	// What a drive board last answered, on a board that is wired to one
 	virtual u8 get_drive_board() { return 0; }
 	virtual void set_drive_board(u8 value) { }
@@ -1830,6 +1844,50 @@ public:
 	}
 };
 
+/* Mushiking: the card dispenser's switches are on the players' inputs. It
+ * says it has cards (P1 START) unless the test switch is down, never that
+ * it is empty (P1 RIGHT) or jammed (P2 START). The test switch is seen a
+ * read later than it goes down, or the BIOS menu cannot be used with it. */
+class jvs_837_13551_mushiking : public jvs_837_13551
+{
+public:
+	jvs_837_13551_mushiking(u8 node_id, maple_naomi_jamma *parent, int first_player = 0)
+		: jvs_837_13551(node_id, parent, first_player) { }
+protected:
+	virtual bool read_test_switch() override
+	{
+		if (kcode[0] & NAOMI_TEST_KEY)
+		{
+			test_down = 0;
+			return false;
+		}
+		if (!test_down)
+		{
+			test_down = 1;
+			return false;
+		}
+		return true;
+	}
+	virtual u32 read_digital_in(int player_num) override
+	{
+		u32 rv = jvs_837_13551::read_digital_in(player_num);
+		if (player_num == 0)
+		{
+			if (kcode[0] & NAOMI_TEST_KEY)
+				rv |= NAOMI_START_KEY;
+			rv &= ~NAOMI_RIGHT_KEY;
+		}
+		else if (player_num == 1)
+			rv &= ~NAOMI_START_KEY;
+		return rv;
+	}
+public:
+	virtual u8 get_state_v25() override { return test_down; }
+	virtual void set_state_v25(u8 v) override { test_down = v & 1; }
+private:
+	u8 test_down = 0;
+};
+
 // Rotary encoders 2nd board
 // Virtua Golf, Outtrigger, Shootout Pool
 class jvs_837_13938 : public jvs_io_board
@@ -1883,6 +1941,20 @@ public:
 		: jvs_837_13844(node_id, parent, first_player)
 	{
 		light_gun_count = 1;
+	}
+protected:
+	/* The touchscreen gives where it is touched on the 640x480 screen, with
+	 * the top bits set while it is touched (any value from 0x1000 does,
+	 * once the screen is calibrated: Touch de Uno 1 and 2). */
+	virtual void read_screen_position(int player_num, s16& x, s16& y) override
+	{
+		x = (s16)std::min(std::max(mo_x_abs[player_num], 0.f), 639.f);
+		y = (s16)std::min(std::max(mo_y_abs[player_num], 0.f), 479.f);
+		if (~kcode[player_num] & NAOMI_BTN0_KEY)
+		{
+			x |= 0xf000;
+			y |= 0xf000;
+		}
 	}
 };
 
@@ -2319,7 +2391,11 @@ struct maple_naomi_jamma : maple_sega_controller
 	   {
 	   case JVS::Default:
 	   default:
-		  io_boards.emplace_back(new jvs_837_13551(1, this));
+		  if (!strncmp(naomi_game_id, "MKG TKOB", 8) || !strncmp(naomi_game_id, "MUSHIKING", 9)
+				|| !strcmp(naomi_game_id, "MUSHIUSA '04 1ST VER0.900-"))
+			 io_boards.emplace_back(new jvs_837_13551_mushiking(1, this));
+		  else
+			 io_boards.emplace_back(new jvs_837_13551(1, this));
 		  break;
 	   case JVS::FourPlayers:
 		  io_boards.emplace_back(new jvs_837_13551_4P(1, this));
@@ -3293,7 +3369,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						LOGJVS("btns ");
 
 						u8 global_btns = 0;
-						if (!(kcode[0] & NAOMI_TEST_KEY))		// Global test button
+						if (read_test_switch())		// Global test button
 						   global_btns |= 0x80;
 						LOGJVS("glob %02x ", global_btns);
 						JVS_OUT(global_btns);		// test, tilt1, tilt2, tilt3, unused, unused, unused, unused
@@ -3512,11 +3588,8 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						{
 						   //u16 x = mo_x_abs[player_num] * 0xFFFF / 639 + 0.5f;
 						   //u16 y = (479 - mo_y_abs[player_num]) * 0xFFFF / 479 + 0.5f;
-						   // Correct for Ninja Assault. Revisit for other games
-						   u32 xr = 0x19d - 0x37;
-						   u32 yr = 0x1fe - 0x40;
-						   s16 x = mo_x_abs[player_num] * xr / 639 + 0x37;
-						   s16 y = mo_y_abs[player_num] * yr / 479 + 0x40;
+						   s16 x, y;
+						   read_screen_position(player_num, x, y);
 						   LOGJVS("P%d lightgun %4x,%4x ", player_num + 1, x, y);
 						   JVS_OUT(x >> 8);		// X, MSB
 						   JVS_OUT(x);			// X, LSB
@@ -3732,6 +3805,45 @@ void maple_jvs_state_before_v21(void)
 	  return;
    for (u32 i = 0; i < jamma->io_boards.size(); i++)
 	  jamma->io_boards[i]->maple_state_v21(coins, flags);
+}
+
+/* What the I/O boards have had in a save state since V25, after everything
+ * older: a byte for each of the two boards a cabinet can have, which only
+ * Mushiking's uses (whether its test switch was down at the last read), 0
+ * for any other or no board. 2 bytes. */
+void maple_jvs_serialize_v25(void **data, unsigned int *total_size)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+   u8 boards[JVS_STATE_BOARDS] = { 0 };
+
+   for (u32 i = 0; i < JVS_STATE_BOARDS; i++)
+	  if (jamma != NULL && i < jamma->io_boards.size())
+		 boards[i] = jamma->io_boards[i]->get_state_v25();
+   LIBRETRO_SA(boards, JVS_STATE_BOARDS);
+}
+
+bool maple_jvs_unserialize_v25(void **data, unsigned int *total_size)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+   u8 boards[JVS_STATE_BOARDS] = { 0 };
+
+   LIBRETRO_USA(boards, JVS_STATE_BOARDS);
+   for (u32 i = 0; i < JVS_STATE_BOARDS; i++)
+	  if (jamma != NULL && i < jamma->io_boards.size())
+		 jamma->io_boards[i]->set_state_v25(boards[i]);
+   return true;
+}
+
+/* A state from before V25: the boards are new ones, as they were on every
+ * load until now (the test switch not seen down). */
+void maple_jvs_state_before_v25(void)
+{
+   maple_naomi_jamma *jamma = jvs_state_device();
+
+   if (jamma == NULL)
+	  return;
+   for (u32 i = 0; i < jamma->io_boards.size(); i++)
+	  jamma->io_boards[i]->set_state_v25(0);
 }
 
 /*

@@ -921,5 +921,6 @@ enum serialize_version_enum {
    V22,
    V23,
    V24,
-   VCUR_LIBRETRO = V24,
+   V25,
+   VCUR_LIBRETRO = V25,
 };

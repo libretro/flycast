@@ -46,6 +46,7 @@ void writeMemArea0(u32 addr, T v);
 
 class SystemSpCart;
 class IOPortManager;
+class DinokichCardReader;
 
 // What is plugged into one of the ROM board's serial ports
 class SerialPipe
@@ -180,6 +181,8 @@ public:
 	std::string getCardPath(int index) const;
 	// the touchscreen on the first port, if there is one
 	SerialPipe *touchscreen = nullptr;
+	// the IC card reader on the first port, if there is one (the port has it)
+	DinokichCardReader *dinokich = nullptr;
 
 private:
 	friend class BootIdLoader;
@@ -298,3 +301,8 @@ private:
 void systemsp_serialize_v24(void **data, unsigned int *total_size);
 bool systemsp_unserialize_v24(void **data, unsigned int *total_size);
 void systemsp_state_before_v24(void);
+/* And from V25: the IC card reader of dinokich and loveber3cn (nothing for
+ * any other machine or game). */
+void systemsp_serialize_v25(void **data, unsigned int *total_size);
+bool systemsp_unserialize_v25(void **data, unsigned int *total_size);
+void systemsp_state_before_v25(void);

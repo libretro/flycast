@@ -22,7 +22,9 @@
 #include <ctime>
 #include <streams/file_stream.h>
 #include "systemsp.h"
+#include "dinokich.h"
 #include "naomi_cart.h"
+#include "naomi_periph.h"
 #include "hw/flashrom/flashrom.h"
 #include "hw/maple/maple_devs.h"
 #include "hw/sh4/sh4_sched.h"
@@ -1820,6 +1822,9 @@ T SystemSpCart::readMemArea0(u32 addr)
 		switch (addr - 0x10100)
 		{
 		case 0x0: // IN_PORT0 (CN9 17-24)
+			// (the "Insert Card" button of a game with a barcode reader: there
+			// is no I/O board on the maple bus to read it with the others)
+			naomi_periph_poll();
 			return ioPortManager->getCN9_17_24();
 
 		case 0x4: // IN_PORT1 (CN9 41-48)
@@ -2477,10 +2482,10 @@ bool SystemSpCart::Init()
 		}
 	}
 
-	// dinoki4 doesn't use rfid chips. dinokich and loveber3cn use a different reader/writer protocol
+	// dinoki4 doesn't use rfid chips. dinokich and loveber3cn have an IC card reader instead
 	if (gameName == "dinokich" || gameName == "loveber3cn")
 	{
-		WARN_LOG(NAOMI, "System SP: %s's card reader is not emulated", gameName.c_str());
+		dinokich = new DinokichCardReader(&uart1, gameName, getCardPath(1), getCardPath(2));
 	}
 	else if ((gameName.compare(0, 6, "dinoki") == 0 && gameName != "dinoki4")
 			|| gameName.compare(0, 7, "loveber") == 0)
@@ -3183,4 +3188,33 @@ bool systemsp_unserialize_v24(void **data, unsigned int *total_size)
  * be run before: nothing to do. */
 void systemsp_state_before_v24(void)
 {
+}
+
+static systemsp::DinokichCardReader *stateDinokich()
+{
+	if (SYSTEM_IS_NAOMI() && naomi_cart_systemsp && systemsp::SystemSpCart::Instance != nullptr)
+		return systemsp::SystemSpCart::Instance->dinokich;
+	return nullptr;
+}
+
+void systemsp_serialize_v25(void **data, unsigned int *total_size)
+{
+	systemsp::DinokichCardReader *reader = stateDinokich();
+	if (reader != nullptr)
+		reader->serializeV25(data, total_size);
+}
+
+bool systemsp_unserialize_v25(void **data, unsigned int *total_size)
+{
+	systemsp::DinokichCardReader *reader = stateDinokich();
+	if (reader != nullptr)
+		reader->unserializeV25(data, total_size);
+	return true;
+}
+
+void systemsp_state_before_v25(void)
+{
+	systemsp::DinokichCardReader *reader = stateDinokich();
+	if (reader != nullptr)
+		reader->stateBeforeV25();
 }

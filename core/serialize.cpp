@@ -321,6 +321,14 @@ void naomi_periph_state_before_v24(void);
 void systemsp_serialize_v24(void **data, unsigned int *total_size);
 bool systemsp_unserialize_v24(void **data, unsigned int *total_size);
 void systemsp_state_before_v24(void);
+/* and since V25: the dinokich IC card reader of a System SP (systemsp.cpp)
+ * and what a Mushiking I/O board holds back (maple_devs.cpp) */
+void systemsp_serialize_v25(void **data, unsigned int *total_size);
+bool systemsp_unserialize_v25(void **data, unsigned int *total_size);
+void systemsp_state_before_v25(void);
+void maple_jvs_serialize_v25(void **data, unsigned int *total_size);
+bool maple_jvs_unserialize_v25(void **data, unsigned int *total_size);
+void maple_jvs_state_before_v25(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -874,6 +882,9 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	vmu_beep_serialize_v24(data, total_size);
 	naomi_periph_serialize_v24(data, total_size);
 	systemsp_serialize_v24(data, total_size);
+	// V25
+	systemsp_serialize_v25(data, total_size);
+	maple_jvs_serialize_v25(data, total_size);
 
 	return true ;
 }
@@ -1664,6 +1675,17 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 		vmu_beep_state_before_v24();
 		naomi_periph_state_before_v24();
 		systemsp_state_before_v24();
+	}
+	if (version >= V25)
+	{
+		if (!systemsp_unserialize_v25(data, total_size)
+				|| !maple_jvs_unserialize_v25(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+	{
+		systemsp_state_before_v25();
+		maple_jvs_state_before_v25();
 	}
 	sched_events_loaded();
 	/* A sound DMA is under way only while its end is to come: a start is
