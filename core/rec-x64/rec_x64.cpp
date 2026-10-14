@@ -1571,12 +1571,17 @@ public:
             case shop_frswap:
                lea(rax, Ctx(op.rs1.reg_ptr()));
                lea(rcx, Ctx(op.rd.reg_ptr()));
+					/* The wide registers' upper parts are cleared after:
+					 * left dirty, every SSE instruction after this - all of
+					 * the floating-point code, and the C library's - has to
+					 * merge with them. Nothing keeps more than the low lanes. */
 					if (cpu.has(Xbyak::util::Cpu::tAVX512F))
 					{
 						vmovaps(zmm0, zword[rax]);
 						vmovaps(zmm1, zword[rcx]);
 						vmovaps(zword[rax], zmm1);
 						vmovaps(zword[rcx], zmm0);
+						vzeroupper();
 					}
 					else if (cpu.has(Xbyak::util::Cpu::tAVX))
 					{
@@ -1589,6 +1594,7 @@ public:
 						vmovaps(ymm1, yword[rcx + 32]);
 						vmovaps(yword[rax + 32], ymm1);
 						vmovaps(yword[rcx + 32], ymm0);
+						vzeroupper();
 					}
 					else
 					{
