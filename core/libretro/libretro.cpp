@@ -3388,7 +3388,7 @@ static void UpdateInputStateNaomi(u32 port)
 		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_DOWN);
 		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_LEFT);
 		 setDeviceButtonState(port, RETRO_DEVICE_JOYPAD, RETRO_DEVICE_ID_JOYPAD_RIGHT);
-		 updatePointerAsLightgun(port, SYSTEM_IS_NAOMI() ? NAOMI_BTN0_KEY : AWAVE_TRIGGER_KEY, 0);
+		 updatePointerAsLightgun(port, SYSTEM_IS_NAOMI() ? (u32)NAOMI_BTN0_KEY : (u32)AWAVE_TRIGGER_KEY, 0);
 	  }
 	  else
 	  {
