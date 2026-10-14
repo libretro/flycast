@@ -18,6 +18,10 @@ u32 VREG;
 u32 ARMRST;
 u32 rtc_EN;
 int dma_sched_id;
+/* SB_ADST. It is read through Read_SB_ADST(), and a register read through
+ * a function keeps the function's address where the others keep their
+ * value, so its value is kept here; in a save state from V29. */
+u32 sb_adst;
 u32 RealTimeClock;
 int rtc_schid = -1;
 
@@ -482,6 +486,29 @@ void aica_sb_Reset(bool hard)
 	 * to come and say it is over.) */
 	if (hard && sh4_sched_is_scheduled(dma_sched_id))
 		sh4_sched_request(dma_sched_id, -1);
+	if (hard)
+		sb_adst = 0;
+}
+
+void aica_sb_serialize_v29(void **data, unsigned int *total_size)
+{
+	LIBRETRO_S(sb_adst);
+}
+
+bool aica_sb_unserialize_v29(void **data, unsigned int *total_size)
+{
+	LIBRETRO_US(sb_adst);
+	// bit 0, a transfer under way, and bit 1, its end told once (see above)
+	sb_adst &= 3;
+	return true;
+}
+
+/* An older state: what it had of SB_ADST went to a dummy, and the transfer
+ * under way is known by its end being on its way, which the check after
+ * the scheduler's events are back in place (dc_unserialize()) settles. */
+void aica_sb_state_before_v29(void)
+{
+	sb_adst = 1;
 }
 
 void aica_sb_Term()

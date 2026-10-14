@@ -356,6 +356,11 @@ void naomi_printer_state_before_v27(void);
 void pvr_serialize_v28(void **data, unsigned int *total_size);
 bool pvr_unserialize_v28(void **data, unsigned int *total_size);
 void pvr_state_before_v28(void);
+/* and since V29: SB_ADST, the AICA DMA's start register, which is read
+ * through a function and so is not in the register block (aica_if.cpp) */
+void aica_sb_serialize_v29(void **data, unsigned int *total_size);
+bool aica_sb_unserialize_v29(void **data, unsigned int *total_size);
+void aica_sb_state_before_v29(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -921,6 +926,8 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	naomi_printer_serialize_v27(data, total_size);
 	// V28
 	pvr_serialize_v28(data, total_size);
+	// V29
+	aica_sb_serialize_v29(data, total_size);
 
 	return true ;
 }
@@ -1752,6 +1759,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	else
 		pvr_state_before_v28();
+	if (version >= V29)
+	{
+		if (!aica_sb_unserialize_v29(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+		aica_sb_state_before_v29();
 	sched_events_loaded();
 	/* A sound DMA is under way only while its end is to come: a start is
 	 * not taken while one is, and SB_ADST set with no end on its way would
