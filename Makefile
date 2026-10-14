@@ -899,6 +899,9 @@ ifeq ($(WITH_DYNAREC), x86)
 	CFLAGS += -m32
 endif
 	HAVE_VULKAN = 1
+ifeq ($(platform), win)
+	HAVE_D3D11 ?= 1
+endif
 
 endif
 
@@ -1110,6 +1113,10 @@ endif
 
 ifeq ($(HAVE_VULKAN), 1)
 	CORE_DEFINES += -DHAVE_VULKAN
+endif
+
+ifeq ($(HAVE_D3D11), 1)
+	CORE_DEFINES += -DHAVE_D3D11
 endif
 
 ifeq ($(DEBUG), 1)

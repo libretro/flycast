@@ -123,6 +123,17 @@ void rend_create_renderer()
 		renderer = rend_OITVulkan();
 		break;
 #endif
+#ifdef HAVE_D3D11
+	case 6:
+		NOTICE_LOG(PVR, "Creating Direct3D 11 per-triangle/strip renderer");
+		renderer = rend_D3D11();
+		break;
+	case 7:
+		NOTICE_LOG(PVR, "Creating Direct3D 11 per-pixel renderer");
+		renderer = rend_OITD3D11();
+		fallback_renderer = rend_D3D11();
+		break;
+#endif
 	}
 }
 

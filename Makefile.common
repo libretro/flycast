@@ -320,6 +320,20 @@ ifeq ($(HAVE_VULKAN), 1)
 					$(CORE_DIR)/core/rend/vulkan/oit/oit_shaders.cpp
 endif
 
+# Direct3D 11, on Windows: the frontend's device, the shaders compiled when
+# they are first needed
+ifeq ($(HAVE_D3D11), 1)
+	SOURCES_CXX += \
+					$(CORE_DIR)/core/rend/dx11/dx11context_lr.cpp \
+					$(CORE_DIR)/core/rend/dx11/dx11_overlay.cpp \
+					$(CORE_DIR)/core/rend/dx11/dx11_renderer.cpp \
+					$(CORE_DIR)/core/rend/dx11/dx11_renderstate.cpp \
+					$(CORE_DIR)/core/rend/dx11/dx11_shaders.cpp \
+					$(CORE_DIR)/core/rend/dx11/dx11_texture.cpp \
+					$(CORE_DIR)/core/rend/dx11/oit/dx11_oitrenderer.cpp \
+					$(CORE_DIR)/core/rend/dx11/oit/dx11_oitshaders.cpp
+endif
+
 SOURCES_CXX += $(CORE_DIR)/core/hw/naomi/naomi.cpp \
 					$(CORE_DIR)/core/hw/naomi/naomi_cart.cpp \
 					$(CORE_DIR)/core/hw/naomi/decrypt.cpp \

@@ -36,6 +36,10 @@ char* strdup(const char *str)
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
 #include <glsm/glsm.h>
 #endif
+#ifdef HAVE_D3D11
+// (before anything that has hw/pvr/pvr_regs.h's macros)
+#include "rend/dx11/dx11context_lr.h"
+#endif
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
 #endif
@@ -622,7 +626,7 @@ static void set_variable_visibility(void)
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
    // Only for per-pixel renderers
-   option_display.visible = settings.pvr.rend == 3 || settings.pvr.rend == 5;
+   option_display.visible = settings.pvr.rend == 3 || settings.pvr.rend == 5 || settings.pvr.rend == 7;
    option_display.key = CORE_OPTION_NAME "_oit_abuffer_size";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
@@ -852,6 +856,8 @@ static void update_variables(bool first_startup)
       		settings.pvr.rend = 4;
       	else if (settings.pvr.rend == 3)
       		settings.pvr.rend = 0;
+      	else if (settings.pvr.rend == 7)
+      		settings.pvr.rend = 6;
          settings.pvr.Emulation.AlphaSortMode = 1;
       }
       else if (!strcmp(var.value, "per-triangle (normal)"))
@@ -860,6 +866,8 @@ static void update_variables(bool first_startup)
       		settings.pvr.rend = 4;
       	else if (settings.pvr.rend == 3)
       		settings.pvr.rend = 0;
+      	else if (settings.pvr.rend == 7)
+      		settings.pvr.rend = 6;
          settings.pvr.Emulation.AlphaSortMode = 0;
       }
       else if (!strcmp(var.value, "per-pixel (accurate)"))
@@ -868,6 +876,8 @@ static void update_variables(bool first_startup)
       		settings.pvr.rend = 5;
       	else if (settings.pvr.rend == 0)
       		settings.pvr.rend = 3;
+      	else if (settings.pvr.rend == 6)
+      		settings.pvr.rend = 7;
          settings.pvr.Emulation.AlphaSortMode = 0;	// Not used
       }
    }
@@ -877,6 +887,8 @@ static void update_variables(bool first_startup)
    		settings.pvr.rend = 4;
    	else if (settings.pvr.rend == 3)
    		settings.pvr.rend = 0;
+   	else if (settings.pvr.rend == 7)
+   		settings.pvr.rend = 6;
       settings.pvr.Emulation.AlphaSortMode = 0;
    }
    if (!first_startup && previous_renderer != settings.pvr.rend)
@@ -938,7 +950,7 @@ static void update_variables(bool first_startup)
 
    }
 
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
+#if defined(HAVE_GL4) || defined(HAVE_VULKAN) || defined(HAVE_D3D11)
    {
       const u64 previous_size = pixel_buffer_size;
 
@@ -962,7 +974,7 @@ static void update_variables(bool first_startup)
       /* The per-pixel renderers make the buffer when they are set up: the
        * one in use is set up again, as for a change of renderer. */
       if (!first_startup && pixel_buffer_size != previous_size
-            && (settings.pvr.rend == 3 || settings.pvr.rend == 5))
+            && (settings.pvr.rend == 3 || settings.pvr.rend == 5 || settings.pvr.rend == 7))
          renderer_changed = true;
    }
 #endif
@@ -1483,14 +1495,16 @@ void retro_run (void)
       const bool was_changed = renderer_changed;
 
       update_variables(false);
-#ifdef HAVE_VULKAN
+#if defined(HAVE_VULKAN) || defined(HAVE_D3D11)
       /* An option that has the renderer set up again - another renderer,
        * another size of buffer. The Vulkan renderers' pictures are their
        * own and go with them: the one on the screen is kept for the new
        * renderer, as it is across a new context, and a game that draws
        * part of the screen has the rest from it. (With OpenGL the picture
-       * is in the frontend's buffer, which stays.) */
-      if (renderer_changed && !was_changed && (settings.pvr.rend == 4 || settings.pvr.rend == 5))
+       * is in the frontend's buffer, which stays.) So are the Direct3D
+       * renderers'. */
+      if (renderer_changed && !was_changed && (settings.pvr.rend == 4 || settings.pvr.rend == 5
+            || settings.pvr.rend == 6 || settings.pvr.rend == 7))
          rend_keep_picture();
 #endif
    }
@@ -1589,7 +1603,12 @@ void retro_run (void)
 	   FlushAudioFrame();
 	   maple_FlushSaves();
    }
-#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN)
+#ifdef HAVE_D3D11
+   /* the frame is handed to the frontend as the Direct3D interface has it */
+   if (!is_dupe && (settings.pvr.rend == 6 || settings.pvr.rend == 7))
+      DX11Context::Instance()->Present();
+#endif
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
 #endif
    is_dupe = true;
@@ -2159,6 +2178,86 @@ static bool set_vulkan_hw_render()
 }
 #endif
 
+#ifdef HAVE_D3D11
+/* Direct3D 11: the frontend's device, through its interface */
+static void dx11_context_reset(void)
+{
+	retro_hw_render_interface_d3d11 *iface = NULL;
+	if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&iface) || iface == NULL
+			|| iface->interface_type != RETRO_HW_RENDER_INTERFACE_D3D11)
+	{
+		ERROR_LOG(RENDERER, "Get DX11 HW interface failed");
+		return;
+	}
+	if (iface->interface_version != RETRO_HW_RENDER_INTERFACE_D3D11_VERSION
+			&& iface->interface_version != RETRO_HW_RENDER_INTERFACE_D3D11_VERSION_2)
+	{
+		ERROR_LOG(RENDERER, "Unsupported DX11 interface version %d", iface->interface_version);
+		return;
+	}
+	context_resets++;
+	take_pending_size();
+	if (!DX11Context::Instance()->Init(iface))
+		ERROR_LOG(RENDERER, "DX11 context initialization failed");
+	renderer_changed = true;
+}
+
+static void dx11_context_destroy(void)
+{
+	/* what was rendered to textures and video memory has not got yet, while it can still be fetched */
+	rtt_watch_flush();
+	rend_keep_picture();
+	rend_term_renderer();
+	renderer_changed = true;
+	DX11Context::Instance()->Term();
+}
+
+static bool set_dx11_hw_render(void)
+{
+	retro_hw_render_callback hw_render;
+	memset(&hw_render, 0, sizeof(hw_render));
+	hw_render.context_type = RETRO_HW_CONTEXT_D3D11;
+	hw_render.version_major = 11;
+	hw_render.version_minor = 0;
+	hw_render.context_reset = dx11_context_reset;
+	hw_render.context_destroy = dx11_context_destroy;
+
+	if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render))
+		return false;
+
+	/* Version 2 of the interface, where the frontend has it: the context
+	 * taken in turns with a frontend that presents from a thread of its
+	 * own, which with version 1 hands over a context that cannot read
+	 * anything back, and the frame handed over without being copied. A
+	 * frontend that does not know of it answers version 0, and version 1
+	 * is what is given. */
+	static const struct retro_hw_render_context_negotiation_interface_d3d11 negotiation_interface = {
+		RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_D3D11,
+		RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_D3D11_VERSION,
+		RETRO_HW_RENDER_INTERFACE_D3D11_VERSION_2,
+	};
+	struct retro_hw_render_context_negotiation_interface probe;
+	memset(&probe, 0, sizeof(probe));
+	probe.interface_type = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_D3D11;
+	probe.interface_version = 0;
+	if (environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT, &probe)
+			&& probe.interface_version >= 1)
+		environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void *)&negotiation_interface);
+
+	if (settings.pvr.rend == 0)
+		settings.pvr.rend = 6;
+	else if (settings.pvr.rend == 3)
+		settings.pvr.rend = 7;
+	renderer_changed = true;
+	return true;
+}
+#else
+static bool set_dx11_hw_render(void)
+{
+	return false;
+}
+#endif
+
 static bool set_opengl_hw_render(u32 preferred)
 {
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
@@ -2553,6 +2652,12 @@ bool retro_load_game(const struct retro_game_info *game)
    {
       foundRenderApi = set_vulkan_hw_render();
    }
+   /* (and where there is no Direct3D 11 renderer, or the frontend will not
+    * have it after all, whatever else there is, as before) */
+   else if (preferred == RETRO_HW_CONTEXT_D3D11 && set_dx11_hw_render())
+   {
+      foundRenderApi = true;
+   }
    else
    {
       // fallback when not supported (or auto-switching disabled), let's try all supported drivers
@@ -2568,6 +2673,8 @@ bool retro_load_game(const struct retro_game_info *game)
       if (!foundRenderApi)
          foundRenderApi = set_opengl_hw_render(RETRO_HW_CONTEXT_OPENGL);
 #endif
+      if (!foundRenderApi)
+         foundRenderApi = set_dx11_hw_render();
    }
 
    if (!foundRenderApi)
