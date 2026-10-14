@@ -69,6 +69,15 @@ static int touchSchedId = -1;
 static u16 le16(const u8 *p) { return p[0] | (p[1] << 8); }
 static u32 le32(const u8 *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24); }
 
+/* The length of the string at @s, @max at most. (strnlen() is POSIX, and
+ * some C libraries, newlib's for the Switch among them, do not declare it
+ * in C++11.) */
+static size_t boundedLength(const char *s, size_t max)
+{
+	const char *end = (const char *)memchr(s, 0, max);
+	return end != NULL ? (size_t)(end - s) : max;
+}
+
 /* A scheduler event as a save state has it, and back: one that the state
  * says is waiting more than @most cycles from now (a bad state) is due at
  * once. */
@@ -2324,7 +2333,7 @@ public:
 		if (memcmp(&buffer[0], "SPCF", 4))
 			// wrong signature
 			return false;
-		std::string imageName((const char *)&buffer[0x80], strnlen((const char *)&buffer[0x80], 0x80));
+		std::string imageName((const char *)&buffer[0x80], boundedLength((const char *)&buffer[0x80], 0x80));
 		if (imageName.length() > 12)
 		{
 			// make short 8.3 name
@@ -2941,7 +2950,7 @@ void SystemSpCart::process()
 		{
 			const u32 addr = readNetMem<u32>(0x208) & (NETMEM_SIZE - 1);
 			const char *s = (const char *)&netmem[addr];
-			const u32 ipaddr = parseInetAddr(s, strnlen(s, NETMEM_SIZE - addr));
+			const u32 ipaddr = parseInetAddr(s, boundedLength(s, NETMEM_SIZE - addr));
 			writeNetMem(2, NET_OK);
 			writeNetMem(4, ipaddr);
 		}
