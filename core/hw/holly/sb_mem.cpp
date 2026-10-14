@@ -435,6 +435,10 @@ T DYNACALL ReadMem_area0(u32 addr)
 		}
       else if (likely(addr >= 0x005F6800 && addr <= 0x005F7CFF)) // /*:PVR i/f Control Reg.*/ -> ALL SB registers now
 		{
+			// (one that is only storage is read here, as sb_ReadMem() would: games poll some)
+			const RegisterStruct& reg = sb_regs[(addr - SB_BASE) >> 2];
+			if (!(reg.flags & (REG_RF | REG_WO)))
+				return (T)(sz == 4 ? reg.data32 : sz == 2 ? reg.data16 : reg.data8);
 			return (T)sb_ReadMem(addr,sz);
 		}
       else if (likely(addr >= 0x005F8000 && addr <= 0x005F9FFF)) // :TA / PVR Core Reg.
@@ -511,6 +515,31 @@ T DYNACALL ReadMem_area0(u32 addr)
 #endif
 	}
 	return 0;
+}
+
+/* For a recompiler, a read of @sz bytes at the constant address @addr that
+ * goes to @handler: where in memory the value is, when the read is a system
+ * bus register that is only storage and the handler would read just that,
+ * or NULL. Games poll such registers, and a load costs less than the call.
+ * The registers' kinds are set when the machine is made, before any code
+ * is. */
+const void *area0_read_const(void *handler, u32 addr, u32 sz)
+{
+	if (!((sz == 4 && handler == (void *)&ReadMem_area0<u32>)
+			|| (sz == 2 && handler == (void *)&ReadMem_area0<u16>)
+			|| (sz == 1 && handler == (void *)&ReadMem_area0<u8>)))
+		return nullptr;
+	if (addr & 0x02000000)
+		return nullptr;
+	addr &= 0x01FFFFFF;
+	if (addr < 0x005F6800 || addr > 0x005F7CFF
+			|| (addr >= 0x005F7000 && addr <= 0x005F70FF))
+		return nullptr;
+	const RegisterStruct& reg = sb_regs[(addr - SB_BASE) >> 2];
+	if (reg.flags & (REG_RF | REG_WO))
+		return nullptr;
+	// (data32, data16 and data8 all start at the register's first byte)
+	return &reg.data32;
 }
 
 template<class T>

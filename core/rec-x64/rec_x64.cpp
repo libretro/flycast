@@ -21,6 +21,7 @@
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_rom.h"
 #include "hw/sh4/dyna/wait_site.h"
+#include "hw/holly/sb_mem.h"
 #include "x64_regalloc.h"
 #include "x64_vector.h"
 
@@ -2236,6 +2237,16 @@ private:
 		}
 		bool isram = false;
 		void* ptr = _vmem_read_const(addr, isram, size > 4 ? 4 : size);
+		if (!isram && size <= 4)
+		{
+			// a system bus register that is only storage is read as memory
+			const void *reg = area0_read_const(ptr, addr, size);
+			if (reg != nullptr)
+			{
+				ptr = (void *)reg;
+				isram = true;
+			}
+		}
 
 		if (isram)
 		{
