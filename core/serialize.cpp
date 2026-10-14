@@ -361,6 +361,11 @@ void pvr_state_before_v28(void);
 void aica_sb_serialize_v29(void **data, unsigned int *total_size);
 bool aica_sb_unserialize_v29(void **data, unsigned int *total_size);
 void aica_sb_state_before_v29(void);
+/* and since V30: the cards the NAOMI's card readers and IC card readers
+ * keep out of the reader, as the game last wrote them (card_reader.cpp) */
+void naomi_cards_serialize_v30(void **data, unsigned int *total_size);
+bool naomi_cards_unserialize_v30(void **data, unsigned int *total_size);
+void naomi_cards_state_before_v30(void);
 void tmu_state_loaded(void);
 
 /* The modem's part is this long on a Dreamcast (modem_serialize_v21() in
@@ -928,6 +933,8 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	pvr_serialize_v28(data, total_size);
 	// V29
 	aica_sb_serialize_v29(data, total_size);
+	// V30
+	naomi_cards_serialize_v30(data, total_size);
 
 	return true ;
 }
@@ -1766,6 +1773,13 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	}
 	else
 		aica_sb_state_before_v29();
+	if (version >= V30)
+	{
+		if (!naomi_cards_unserialize_v30(data, total_size))
+			ra_unserialize_fail();
+	}
+	else
+		naomi_cards_state_before_v30();
 	sched_events_loaded();
 	/* A sound DMA is under way only while its end is to come: a start is
 	 * not taken while one is, and SB_ADST set with no end on its way would

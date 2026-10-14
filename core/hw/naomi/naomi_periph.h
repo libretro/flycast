@@ -101,6 +101,9 @@ const u8 *getRfidCardData(int playerNum);
 void rfid_serialize_v24(void **data, unsigned int *total_size);
 bool rfid_unserialize_v24(void **data, unsigned int *total_size);
 void rfid_state_before_v24(void);
+// The two IC cards as their files have them, 256 bytes (V30, naomi_cards_serialize_v30())
+void rfid_files_serialize_v30(void **data, unsigned int *total_size);
+bool rfid_files_unserialize_v30(void **data, unsigned int *total_size);
 
 // The RS-422 port of the I/O board bridge, which a card reader can be on (maple_devs.cpp)
 void naomi_mie_set_pipe(SerialPort::Pipe *pipe);

@@ -4466,6 +4466,25 @@ void rfid_state_before_v24(void)
 	memset(rfid_card, 0, sizeof(rfid_card));
 }
 
+/* What each card out of its reader is - its file, or what the game last
+ * wrote on it - in a state from V30 on (naomi_cards_serialize_v30()),
+ * 256 bytes: a card put in after a state load is the one the state was
+ * saved with. Read past when the game has no readers. */
+void rfid_files_serialize_v30(void **data, unsigned int *total_size)
+{
+	LIBRETRO_SA(&rfid_file[0][0], sizeof(rfid_file));
+}
+
+bool rfid_files_unserialize_v30(void **data, unsigned int *total_size)
+{
+	static u8 files[2][128];
+	if (!LIBRETRO_USA(&files[0][0], sizeof(files)))
+		return false;
+	if (rfid_game)
+		memcpy(rfid_file, files, sizeof(rfid_file));
+	return true;
+}
+
 struct maple_rfid_reader : maple_base
 {
 	virtual MapleDeviceType get_device_type()

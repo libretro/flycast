@@ -41,3 +41,8 @@ bool unserialize_v24(void **data, unsigned int *total_size);
 void state_before_v24();
 
 }
+
+// The cards out of the readers in a save state from V30 on (card_reader.cpp)
+void naomi_cards_serialize_v30(void **data, unsigned int *total_size);
+bool naomi_cards_unserialize_v30(void **data, unsigned int *total_size);
+void naomi_cards_state_before_v30(void);

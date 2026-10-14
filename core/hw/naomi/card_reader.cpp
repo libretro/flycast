@@ -83,6 +83,7 @@ public:
 	{
 		st.clear();
 		// The card in its file, read once: putting it in later reads it from here
+		memset(fileCard, 0, sizeof(fileCard));
 		fileSize = (u32)periph_load_file(".card", fileCard, cardSize);
 	}
 	~CardReaderWriter() override = default;
@@ -123,6 +124,25 @@ protected:
 	}
 
 	const u32 cardSize;
+
+public:
+	/* The card out of the reader - what its file has, or what the game last
+	 * wrote on it - is the machine's too, in a state: put in after a state
+	 * load, it is the card as it was when the state was saved. */
+	static constexpr u32 FILE_STATE_SIZE = 1 + 0x45 * 3;
+
+	void serializeFile(void **data, unsigned int *total_size)
+	{
+		u8 have = fileSize != 0;
+		LIBRETRO_S(have);
+		LIBRETRO_SA(fileCard, sizeof(fileCard));
+	}
+
+	void setFile(const u8 *state)
+	{
+		memcpy(fileCard, state + 1, sizeof(fileCard));
+		fileSize = state[0] != 0 ? cardSize : 0;
+	}
 
 private:
 	u8 fileCard[0x45 * 3];
@@ -872,4 +892,61 @@ void state_before_v24()
 		barcodeReader->toSend.clear();
 }
 
+}
+
+/* The cards out of the readers, in a save state from V30 on, on a NAOMI: a
+ * byte with the card reader's kind (bits 0-2) and whether there are IC card
+ * readers (bit 3); then the card reader's card as its file has it (208
+ * bytes), and the two IC cards' (256 bytes). 1 byte for a game with none,
+ * 209 with a card reader, 257 with IC card readers. What the game wrote on
+ * a card goes to its file and stays there whatever state is loaded; without
+ * this the card put in after a load was the one written after the state was
+ * saved (and run-ahead writes ahead of what is shown). A card the state has
+ * and the game has no reader for is read past. */
+enum { V30_RFID = 8 };
+
+void naomi_cards_serialize_v30(void **data, unsigned int *total_size)
+{
+	using namespace card_reader;
+	if (!SYSTEM_IS_NAOMI())
+		return;
+	u8 have = (u8)(cardReader != NULL ? cardReader->kind : KIND_NONE);
+	if (getRfidCardData(0) != NULL)
+		have |= V30_RFID;
+	LIBRETRO_S(have);
+	if (cardReader != NULL)
+		cardReader->serializeFile(data, total_size);
+	if (have & V30_RFID)
+		rfid_files_serialize_v30(data, total_size);
+}
+
+bool naomi_cards_unserialize_v30(void **data, unsigned int *total_size)
+{
+	using namespace card_reader;
+	if (!SYSTEM_IS_NAOMI())
+		return true;
+	u8 have = 0;
+	if (!LIBRETRO_US(have))
+		return false;
+	const u8 kind = have & 7;
+	// (anything else, and how much follows is not known)
+	if (kind > KIND_CLUBKART || (have & ~(7 | V30_RFID)) != 0)
+		return false;
+	if (kind != KIND_NONE)
+	{
+		u8 file[CardReaderWriter::FILE_STATE_SIZE];
+		if (!LIBRETRO_USA(file, sizeof(file)))
+			return false;
+		if (cardReader != NULL && cardReader->kind == kind)
+			cardReader->setFile(file);
+	}
+	if (have & V30_RFID)
+		return rfid_files_unserialize_v30(data, total_size);
+	return true;
+}
+
+/* An older state: the cards out of the readers are what they are now, as
+ * they were with such a state before. */
+void naomi_cards_state_before_v30(void)
+{
 }
