@@ -93,8 +93,6 @@ class Arm7Compiler : public Xbyak::CodeGenerator
 	static const u32 C_FLAG = 1 << 29;
 	static const u32 V_FLAG = 1 << 28;
 
-	Xbyak::util::Cpu cpu;
-
 	Xbyak::Operand getOperand(const ArmOp::Operand& arg, Xbyak::Reg32 scratch_reg)
 	{
 		Xbyak::Reg32 r;
