@@ -446,6 +446,7 @@ public:
 					Str(w10, sh4_context_mem_operand(&next_pc));
 				}
 				Mov(*call_regs[0], op.rs3._imm);
+				GenSliceLeft();
 
 				if (!mmu_enabled())
 				{
@@ -1301,8 +1302,17 @@ public:
 		return MemOperand(Register::GetXRegFromCode(scratch.GetCode()));
 	}
 
+	/* What is left of the time slice, where the timers find it, before a
+	 * call that can reach an on-chip register: see cycle_counter in
+	 * sh4_if.h. */
+	void GenSliceLeft()
+	{
+		Str(w27, MemOperand(x28, offsetof(Sh4Context, cycle_counter)));
+	}
+
 	void GenReadMemorySlow(u32 size)
 	{
+		GenSliceLeft();
 		switch (size)
 		{
 		case 1:
@@ -1343,6 +1353,7 @@ public:
 
 	void GenWriteMemorySlow(u32 size)
 	{
+		GenSliceLeft();
 		switch (size)
 		{
 		case 1:
@@ -1631,6 +1642,9 @@ public:
 		if (mmu_enabled())
 			Str(w27, MemOperand(sp, 8));
 		Mov(x29, lr);				// Trashing pc here but it will be reset at the end of the block or in DoInterrupts
+		// (the timers' time is the end of the slice here: see cycle_counter in sh4_if.h)
+		Mov(w0, SH4_TIMESLICE);
+		Str(w0, MemOperand(x28, offsetof(Sh4Context, cycle_counter)));
 		GenCallRuntime(UpdateSystem);
 		Mov(lr, x29);
 		Cbnz(w0, &do_interrupts);
@@ -1884,6 +1898,8 @@ private:
 		else
 		{
 			// Not RAM
+			if (sh4_area7(addr))
+				GenSliceLeft();
 			if (size == 8)
 			{
 				// Need to call the handler twice
@@ -2190,6 +2206,8 @@ private:
 		else
 		{
 			// Not RAM
+			if (sh4_area7(addr))
+				GenSliceLeft();
 			Mov(w0, addr);
 			if (size == 8)
 			{
@@ -2292,6 +2310,7 @@ private:
 					const bool after = load && (MEM_KIND_F(kind) || data != 0);
 
 					mem_stubs[kind][addr][data] = GetCursorAddress<u8 *>();
+					GenSliceLeft();
 					if (after)
 						Str(x30, MemOperand(sp, -16, PreIndex));
 					// (neither the address nor what is stored is ever in the other's place)

@@ -20,8 +20,6 @@
 sh4_icache icache;
 sh4_ocache ocache;
 
-static s32 l;
-
 // The cycles of what is being run, for the accurate setting
 static Sh4Cycles timing;
 
@@ -31,9 +29,9 @@ static void ExecuteOpcode(u16 op)
 		RaiseFPUDisableException();
 	OpPtr[op](op);
 	if (settings.dynarec.AccurateTiming)
-		l -= timing.count(op, mmu_enabled() ? 5 : 2);
+		Sh4cntx.cycle_counter -= timing.count(op, mmu_enabled() ? 5 : 2);
 	else
-		l -= CPU_RATIO;
+		Sh4cntx.cycle_counter -= CPU_RATIO;
 }
 
 static u16 ReadNexOp()
@@ -50,7 +48,7 @@ void Sh4_int_Run()
 	HostFloatModeSave();
 	RestoreHostRoundingMode();
 
-	l = SH4_TIMESLICE;
+	Sh4cntx.cycle_counter = SH4_TIMESLICE;
 
    do
    {
@@ -62,15 +60,15 @@ void Sh4_int_Run()
 			u32 op = ReadNexOp();
 
             ExecuteOpcode(op);
-         } while (l > 0);
-         l += SH4_TIMESLICE;
+         } while (Sh4cntx.cycle_counter > 0);
+         Sh4cntx.cycle_counter += SH4_TIMESLICE;
          timing.reset();
          UpdateSystem_INTC();
 #if !defined(NO_MMU)
       }
       catch (SH4ThrownException& ex) {
          Do_Exception(ex.epc, ex.expEvn, ex.callVect);
-         l -= CPU_RATIO * 5;	// an exception requires the instruction pipeline to drain, so approx 5 cycles
+         Sh4cntx.cycle_counter -= CPU_RATIO * 5;	// an exception requires the instruction pipeline to drain, so approx 5 cycles
       }
 #endif
    } while(sh4_int_bCpuRun);
@@ -85,7 +83,7 @@ void Sh4_int_Stop()
 	{
 		sh4_int_bCpuRun=false;
 		// and the time slice ends with the instruction being executed
-		l = 0;
+		Sh4cntx.cycle_counter = 0;
 	}
 }
 
@@ -131,6 +129,8 @@ void Sh4_int_Reset(bool hard)
 
 		memset(&p_sh4rcb->cntx, 0, sizeof(p_sh4rcb->cntx));
 		Sh4cntx.sh4_sched_next = sched_next;
+		// (none of the slice gone, for a recompiler that never writes it)
+		Sh4cntx.cycle_counter = SH4_TIMESLICE;
 	}
 	next_pc = 0xA0000000;
 

@@ -7,6 +7,11 @@
 #include "tmu.h"
 #include "hw/sh4/sh4_interrupts.h"
 #include "hw/sh4/sh4_mmr.h"
+#include "hw/sh4/sh4_if.h"
+#include "hw/sh4/sh4_interpreter.h"
+#if FEAT_SHREC != DYNAREC_NONE
+#include "hw/sh4/dyna/wait_site.h"
+#endif
 
 
 #define tmu_underflow 0x0100
@@ -78,11 +83,27 @@ void UpdateTMU_i(u32 Cycles)
 u32 tmu_ch_base[3];
 u64 tmu_ch_base64[3];
 
+/* The time the timers count by: the scheduler's clock, which stands still
+ * through a time slice at its start, and the cycles the processor has run
+ * in the slice so far - what the CPU core has left in the context comes off
+ * the slice (see cycle_counter in sh4_if.h). A count read within a slice
+ * then falls as the slice goes on; it used to fall only from one slice to
+ * the next, 448 cycles, up to 28 of the timer's ticks at its fastest. With
+ * the processor stopped - a state being loaded, a reset - it is the clock. */
+static inline u64 tmu_now()
+{
+	const u64 now = sh4_sched_now64();
+
+	if (!Sh4cntx.CpuRunning)
+		return now;
+	return now + (SH4_TIMESLICE - (s64)Sh4cntx.cycle_counter);
+}
+
 /* The count as it stands, in 64 bits: below 0 is a count that has gone
  * past 0 and has not been loaded again yet. */
 static s64 read_TMU_TCNTch64(u32 ch)
 {
-	return tmu_ch_base64[ch] - ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask64[ch]);
+	return tmu_ch_base64[ch] - ((tmu_now() >> tmu_shift[ch])&tmu_mask64[ch]);
 }
 
 static void sched_chan_tick(int ch)
@@ -102,16 +123,17 @@ static void sched_chan_tick(int ch)
 	 * count of thousands of millions times a divider of thousands does not
 	 * fit 32, and what was left of it there was any time at all. More
 	 * than the scheduler takes is cut down to that, and the call that
-	 * comes then asks again. */
-	const u64 now = sh4_sched_now64();
-	const s64 togo = (s64)((((now >> tmu_shift[ch]) + read_TMU_TCNTch64(ch) + 1) << tmu_shift[ch]) - 1 - now);
+	 * comes then asks again. The scheduler counts from its own clock, at
+	 * the start of the slice. */
+	const u64 now = tmu_now();
+	const s64 togo = (s64)((((now >> tmu_shift[ch]) + read_TMU_TCNTch64(ch) + 1) << tmu_shift[ch]) - 1 - sh4_sched_now64());
 
 	sh4_sched_request(tmu_sched[ch], togo <= 0 ? 0 : togo > SH4_MAIN_CLOCK ? SH4_MAIN_CLOCK : (int)togo);
 }
 
 static void write_TMU_TCNTch(u32 ch, u32 data)
 {
-	tmu_ch_base64[ch] = data + ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask64[ch]);
+	tmu_ch_base64[ch] = data + ((tmu_now() >> tmu_shift[ch])&tmu_mask64[ch]);
 	tmu_ch_base[ch] = (u32)tmu_ch_base64[ch];
 
 	sched_chan_tick(ch);
@@ -138,9 +160,10 @@ static u32 tmu_underflowed(u32 ch, s64 past)
 	return (u32)next;
 }
 
-/* What the counter reads now. The scheduler's call comes before anything
- * can read a count that has underflowed, the clock moving only between
- * time slices; were one read all the same, it is put right here. */
+/* What the counter reads now. A count that has underflowed within the
+ * time slice is read before the scheduler's call for it, which comes at
+ * the end of the slice: it is put right here, and the call that comes then
+ * finds nothing to do. */
 static u32 read_TMU_TCNTch(u32 ch)
 {
 	const s64 count = read_TMU_TCNTch64(ch);
@@ -153,6 +176,13 @@ static u32 read_TMU_TCNTch(u32 ch)
 template<u32 ch>
 u32 read_TMU_TCNT(u32 addr)
 {
+#if FEAT_SHREC != DYNAREC_NONE
+	/* A running count can read differently on the next pass of a loop
+	 * within the slice: a loop that reads it is not one that only waits
+	 * (see wait_site.h). */
+	if (tmu_mask64[ch])
+		sh4_write_gen++;
+#endif
 	return read_TMU_TCNTch(ch);
 }
 
@@ -319,7 +349,7 @@ void tmu_state_loaded(void)
 		s64 count = read_TMU_TCNTch64(ch);
 		if (count > 0xFFFFFFFFll || count < -0xFFFFFFFFll)
 			count = (u32)count;
-		tmu_ch_base64[ch] = count + ((sh4_sched_now64() >> tmu_shift[ch])&tmu_mask64[ch]);
+		tmu_ch_base64[ch] = count + ((tmu_now() >> tmu_shift[ch])&tmu_mask64[ch]);
 		tmu_ch_base[ch] = (u32)tmu_ch_base64[ch];
 
 		InterruptPend(tmu_intID[ch],TMU_TCR(ch) & tmu_underflow);
@@ -341,8 +371,8 @@ void tmu_state_loaded(void)
 			 * here, it would be the same call with other numbers in the
 			 * scheduler, and two machines in the same state would save
 			 * states that are not the same bytes. */
-			const u64 now = sh4_sched_now64();
-			const s64 togo = (s64)((((now >> tmu_shift[ch]) + count + 1) << tmu_shift[ch]) - 1 - now);
+			const u64 now = tmu_now();
+			const s64 togo = (s64)((((now >> tmu_shift[ch]) + count + 1) << tmu_shift[ch]) - 1 - sh4_sched_now64());
 
 			if (!sh4_sched_is_scheduled(tmu_sched[ch])
 					|| (s64)(s32)sh4_sched_remaining(tmu_sched[ch]) > togo)

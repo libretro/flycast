@@ -997,6 +997,19 @@ u32 memop_bytes(mem_op_type tp)
 	call MEMHANDER<r1> // call MEMHANDLER64
 	vmov rd,r0 // vmov.d rd,r3:r2
 */
+/* What is left of the time slice, where the timers find it, before a call
+ * that can reach an on-chip register: see cycle_counter in sh4_if.h. (r8
+ * is the end of the context.) */
+static void slice_left(eCC CC = CC_AL)
+{
+	static_assert(offsetof(Sh4Context, cycle_counter) - sizeof(Sh4Context) == (size_t)-136, "cycle_counter is where ngen_arm.S writes it");
+#ifdef __MACH__
+	STR(r11, r8, -136, Offset, CC);
+#else
+	STR(rfp_r9, r8, -136, Offset, CC);
+#endif
+}
+
 size_t _mem_hndl_SQ32[14];
 size_t _mem_hndl[2][3][14];
 size_t _mem_func[2][5]=
@@ -1138,6 +1151,7 @@ static void mmu_slowpath(RuntimeBlockInfo *block, shil_opcode *op, eReg raddr, e
 			*crosses = 0x0A000000 | ((u32)((u32 *)EMIT_GET_PTR() - crosses - 2) & 0x00FFFFFF);
 	}
 
+	slice_left();
 	if (raddr != r0)
 		MOV(r0, (eReg)raddr);
 
@@ -1470,6 +1484,8 @@ bool ngen_readm_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool staging
 	else
 	{
 		// Not RAM
+		if (sh4_area7(op->rs1._imm))
+			slice_left();
 		if (optp == SZ_64F)
 		{
 			// Need to call the handler twice
@@ -1590,6 +1606,8 @@ bool ngen_writemem_immediate(RuntimeBlockInfo* block, shil_opcode* op, bool stag
 	}
 	else
 	{
+		if (sh4_area7(op->rs1._imm))
+			slice_left();
 		MOV32(r0, op->rs1._imm);
 		/* (A handler takes the byte or the word it is given as it comes:
 		 * extending a small argument is the caller's job on this host, and
@@ -1946,6 +1964,7 @@ void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool staging,
 			}
 
 			MOV32(r0, op->rs3._imm);
+			slice_left();
 #ifndef NO_MMU
 			if (mmu_enabled())
 			{
@@ -3002,35 +3021,26 @@ void ngen_init(void)
 			if (i==1 || i ==2 || i == 3 || i == 4 || i==12 || i==13)
 				continue;
 
-			size_t v;
+			// (every one writes what is left of the time slice first: see slice_left())
+			size_t v=(size_t)EMIT_GET_PTR();
+			slice_left();
 			if (read)
 			{
-				if (i==0)
-					v=(size_t)fn;
-				else
-				{
-					v=(size_t)EMIT_GET_PTR();
+				if (i!=0)
 					MOV(r0,(eReg)(i));
-					JUMP((u32)fn);
-				}
+				JUMP((u32)fn);
 			}
 			else
 			{
 				/* (a byte or a word is extended for the handler, as in
 				 * ngen_writemem_immediate(): the value is in r1) */
-				if (i==0 && s==5)
-					v=(size_t)fn;
-				else
-				{
-					v=(size_t)EMIT_GET_PTR();
-					if (i!=0)
-						MOV(r0,(eReg)(i));
-					if (s==3)
-						UXTB(r1,r1);
-					else if (s==4)
-						UXTH(r1,r1);
-					JUMP((u32)fn);
-				}
+				if (i!=0)
+					MOV(r0,(eReg)(i));
+				if (s==3)
+					UXTB(r1,r1);
+				else if (s==4)
+					UXTH(r1,r1);
+				JUMP((u32)fn);
 			}
 
 			_mem_hndl[read][s%3][i]=v;
@@ -3050,10 +3060,22 @@ void ngen_init(void)
 		MOV(r0,(eReg)i);
 		ADD(r3,r3,r8);
 		CMP(r2,0x38);
+		slice_left(CC_NE);
 		JUMP((size_t)&_vmem_WriteMem32,CC_NE);
 		STR(r1,r3,rcb_noffs(sq_both));
 		BX(LR);
 	}
+
+	// the floating-point ones, which take the address in r0
+	for (int read=0;read<2;read++)
+		for (int s=3;s<5;s++)
+		{
+			const size_t fn=s==3 ? (read ? (size_t)_vmem_ReadMem32 : (size_t)_vmem_WriteMem32)
+					: (read ? (size_t)_vmem_ReadMem64 : (size_t)_vmem_WriteMem64);
+			_mem_func[read][s]=(size_t)EMIT_GET_PTR();
+			slice_left();
+			JUMP((u32)fn);
+		}
 
 	INFO_LOG(DYNAREC, "readm helpers: up to %p", EMIT_GET_PTR());
 	emit_SetBaseAddr();

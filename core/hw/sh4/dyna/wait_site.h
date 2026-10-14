@@ -12,8 +12,9 @@
  * between, then the processor is exactly where it was: it will do the same
  * again, and again, until something from outside changes what it reads. In
  * this emulator that only happens between time slices - interrupts are
- * taken there, devices are run there, and the clock and timers a program
- * can read stand still within one. So the passes that would still have
+ * taken there, devices are run there, and the clock stands still within
+ * one. (A running timer does not: reading one moves sh4_write_gen on, as a
+ * store does.) So the passes that would still have
  * been made in the slice are taken off its cycles at once, all but the
  * last, which is run: every pass costs what the one between the two looks
  * did, and the slice ends where, and with what left over, it would have

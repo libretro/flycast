@@ -103,6 +103,7 @@ extern "C" {
 #define PC 135266120
 #define SCHED_NEXT 135266152
 #define INTERRUPT_PEND 135266156
+#define CYCLE_COUNTER 135266168
 /* Recompiled code keeps r15 pointing into the SH4's context, so that a
  * register in it is reached with one short instruction where it took a
  * 64-bit address in rax and then the access. It points 160 bytes in: a
@@ -216,6 +217,8 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
                         "movl %edx, " _S(SCHED_NEXT) "(%rax)   \n\t"
                         "jmp 1b                                                         \n"
                 "4:                                                                             \n\t"
+                        // (the timers' time is the end of the slice here: see cycle_counter in sh4_if.h)
+                        "movl $" _S(SH4_TIMESLICE) ", " _S(CYCLE_COUNTER) "(%rax)   \n\t"
                         "call " _U "UpdateSystem_INTC           \n\t"
                         "jmp 1b                                                         \n"             // run_loop
 
@@ -429,6 +432,8 @@ static void mem_stub_make(int kind, int addr, int data)
 	Xbyak::CodeGenerator stub(64, emit_GetCCPtr());
 
 	mem_stubs[kind][addr][data] = (u8 *)stub.getCode();
+	// what is left of the time slice, for the timers (see cycle_counter in sh4_if.h)
+	stub.mov(stub.dword[stub.r15 + (CYCLE_COUNTER - CTX_BASE)], stub.r14d);
 	// the address and what is stored to where a function takes them (neither is ever in the other's place)
 	if (addr != 0)
 		stub.mov(first, Xbyak::Reg32(alloc_regs[addr - 1]));
@@ -892,6 +897,7 @@ public:
                }
 
                mov(call_regs[0], op.rs3._imm);
+					GenSliceLeft();
 
 					if (!mmu_enabled())
 						GenCall(OpDesc[op.rs3._imm]->oph);
@@ -1846,6 +1852,14 @@ public:
 		}
 	}
 
+	/* What is left of the time slice, where the timers find it, before a
+	 * call that can reach an on-chip register: see cycle_counter in
+	 * sh4_if.h. */
+	void GenSliceLeft()
+	{
+		mov(dword[CtxAt(&p_sh4rcb->cntx.cycle_counter)], r14d);
+	}
+
 	void GenWaitCheck(const RuntimeBlockInfo *block)
 	{
 		WaitSite *site = sh4_wait_site(block);
@@ -1979,6 +1993,7 @@ public:
 			jmp(lut_done, T_NEAR);
 			L(lut_miss);
 		}
+		GenSliceLeft();
 		if (mmu_enabled())
 			mov(call_regs[1], block->vaddr + op.guest_offs - (op.delay_slot ? 1 : 0));	// pc
 
@@ -2047,6 +2062,7 @@ public:
 			jmp(lut_done, T_NEAR);
 			L(lut_miss);
 		}
+		GenSliceLeft();
 		if (mmu_enabled())
 			mov(call_regs[2], block->vaddr + op.guest_offs - (op.delay_slot ? 1 : 0));	// pc
 
@@ -2307,6 +2323,8 @@ private:
 		else
 		{
 			// Not RAM: the returned pointer is a memory handler
+			if (sh4_area7(addr))
+				GenSliceLeft();
 			if (size == 8)
 			{
 				// Need to call the handler twice
@@ -2458,6 +2476,8 @@ private:
 		else
 		{
 			// Not RAM: the returned pointer is a memory handler
+			if (sh4_area7(addr))
+				GenSliceLeft();
 			if (size == 8)
 			{
 				// a 32-bit handler: called for each half, as for a read (only the first half was written)
@@ -3082,6 +3102,7 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 	verify(PC == offsetof(Sh4RCB, cntx.pc));
 	static_assert(SCHED_NEXT == offsetof(Sh4RCB, cntx.sh4_sched_next), "main loop's offset of sh4_sched_next");
 	static_assert(INTERRUPT_PEND == offsetof(Sh4RCB, cntx.interrupt_pend), "main loop's offset of interrupt_pend");
+	static_assert(CYCLE_COUNTER == offsetof(Sh4RCB, cntx.cycle_counter), "main loop's offset of cycle_counter");
 	verify(CTX_BASE == offsetof(Sh4RCB, cntx) + CTX_BIAS);
 	verify(emit_FreeSpace() >= CODE_MARGIN);
 

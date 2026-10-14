@@ -350,11 +350,26 @@ struct Sh4Context
 
 			u32 exception_pc;	// not used any more; here so that what follows is where it was
 			u32 temp_reg;
+
+			/* What is left of the time slice, for the timers (tmu.cpp) to
+			 * know how far into it the processor is. The interpreter counts
+			 * in it. A recompiler keeps the count in a register and writes
+			 * it here before a call that can reach an on-chip register, and
+			 * writes SH4_TIMESLICE here before the end-of-slice update. */
+			int cycle_counter;
 		};
 		u64 raw[64-8];
 	};
 
 };
+
+/* Whether an address is in area 7, where the on-chip registers are, in any
+ * of the regions that reach it: a recompiler calling the handler of a
+ * known address there writes cycle_counter first. */
+static inline bool sh4_area7(u32 addr)
+{
+	return (addr & 0x1C000000) == 0x1C000000;
+}
 
 void DYNACALL do_sqw_mmu(u32 dst);
 extern "C" void DYNACALL do_sqw_nommu_area_3(u32 dst, u8* sqb);

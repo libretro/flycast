@@ -171,6 +171,8 @@ CSYM(intc_sched):        @ next_pc _MUST_ be on ram
     add r9,r9,#SH4_TIMESLICE
 #endif
 	mov r4,lr
+	mov r0,#SH4_TIMESLICE	@ the timers' time is the end of the slice here:
+	str r0,[r8,#-136]	@ cycle_counter (see sh4_if.h)
     bl CSYM(UpdateSystem)
 	mov lr,r4
 	cmp r0,#0
@@ -218,6 +220,8 @@ CSYM(intc_sched_mmu):
     add r9,r9,#SH4_TIMESLICE
 #endif
 	mov r4,lr
+	mov r0,#SH4_TIMESLICE	@ the timers' time is the end of the slice here:
+	str r0,[r8,#-136]	@ cycle_counter (see sh4_if.h)
     bl CSYM(UpdateSystem)
 	mov lr,r4
 	cmp r0,#0
