@@ -8,6 +8,8 @@ void spg_Reset(bool Manual);
 void CalculateSync(bool reschedule = true);
 double spg_get_refresh_rate();
 void read_lightgun_position(int x, int y);
+// The game cancelled the gun's occupation of the bus: no end owed at vblank out
+void spg_gun_occupy_cancel();
 // Before a read of SPG_STATUS: brings its scanline up to where the beam is
 void spg_sync();
 // A write to SPG_HBLANK_INT, SPG_VBLANK_INT or SPG_VBLANK

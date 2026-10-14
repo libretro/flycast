@@ -12,6 +12,7 @@
 #include "hw/holly/sb.h"
 #include "hw/maple/maple_helper.h"
 #include "maple_cfg.h"
+#include "hw/pvr/spg.h"
 
 enum MaplePattern
 {
@@ -358,6 +359,9 @@ static void maple_DoDma(void)
 		break;
 
 		case MP_SDCKBOccupyCancel:
+			// (the transfer ends in its own time, and not at vblank out)
+			occupy = false;
+			spg_gun_occupy_cancel();
 			addr += 1 * 4;
 			break;
 

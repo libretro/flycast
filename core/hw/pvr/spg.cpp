@@ -332,6 +332,12 @@ void read_lightgun_position(int x, int y)
       sh4_sched_request(vblank_schid, (int)(line_start(spg_next_line()) - beam));
 }
 
+// The game cancelled the gun's occupation of the bus: its transfer ends in its own time
+void spg_gun_occupy_cancel()
+{
+   gun_dma_owed = false;
+}
+
 /* The light gun in a save state, from version 21 on (pvr_serialize_v21()):
  * the line and the place on it where the gun will be found to point, 0xffff
  * for no line; whether the transfer that asked is still to be ended; and
