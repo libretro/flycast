@@ -1810,7 +1810,8 @@ static void reios_boot_naomi()
 
 	/* the header's copy, and the time */
 	memcpy(GetMemPtr(0x8c01f400, sizeof(header)), header, sizeof(header));
-	now = GetRTC_now();
+	// (the machine's clock, read from the host once, as the machine starts)
+	now = RealTimeClock;
 	WriteMem32(0x8c01f130, now);
 
 	/* the system routines, in the ROM where a game looks for them and in

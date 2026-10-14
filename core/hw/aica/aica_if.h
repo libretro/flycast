@@ -3,6 +3,8 @@
 #include "hw/arm7/arm7.h"
 
 extern u32 VREG;
+// The machine's clock, in seconds since 1950 (aica_if.cpp)
+extern u32 RealTimeClock;
 extern VArray2 aica_ram;
 u32 GetRTC_now();
 u32 ReadMem_aica_rtc(u32 addr,u32 sz);
