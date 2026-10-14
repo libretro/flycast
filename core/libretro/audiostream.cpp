@@ -11,23 +11,26 @@
  * as long as the sync generator says, so an NTSC or VGA frame (59.94 Hz)
  * carries 735 or 736 samples and a PAL frame (50 Hz) 882.
  *
- * The AICA is emulated a tick of 32 samples at a time, so at the end of a
- * frame the sound made so far is whole ticks: 704 or 736 samples for an
- * NTSC frame, not what the hardware puts out. FlushAudioFrame() therefore
- * asks how far into the current tick the frame ended and sends exactly the
- * samples due by then, keeping the rest for the next frame. To have them to
- * send it runs one tick, 32 samples or 0.7 ms, behind.
+ * The AICA is emulated a tick of AICA_TICK_SAMPLES (hw/aica/aica.cpp, 1 to
+ * 32) samples at a time, so at the end of a frame the sound made so far is
+ * whole ticks, not always what the hardware puts out. FlushAudioFrame()
+ * therefore asks how far into the current tick the frame ended and sends
+ * exactly the samples due by then, keeping the rest for the next frame. To
+ * have them to send it runs up to one tick behind: 32 samples, 0.7 ms, with
+ * ticks of 32, one sample with ticks of one.
  *
  * The buffer comfortably exceeds one frame's worth of samples. If it is
  * ever exceeded it is flushed early as a safety valve. */
 #define AUDIO_BUFFER_SIZE 4096
 
-/* Samples in one AICA tick: how far FlushAudioFrame() runs behind. */
+/* The most samples an AICA tick can have, and so the most FlushAudioFrame()
+ * holds back: a state has room for this many. */
 #define AUDIO_TICK_SAMPLES 32
 
 extern retro_audio_sample_batch_t audio_batch_cb;
 
-/* Samples of the current AICA tick the hardware has put out by now, 0..31. */
+/* Samples of the current AICA tick the hardware has put out by now, plus the
+ * ones a tick shorter than 32 samples does not have: 0..31. */
 u32 libAICA_SamplesIntoTick();
 
 /* File-scope so the batch boundary can be reset deterministically on state
@@ -92,9 +95,9 @@ void ResetAudioBuffer(void)
  * AICA in the state has already made and will not make again. (A load
  * dropped them, and the frontend heard a gap of up to a tick at every load:
  * at every frame, under run-ahead.) Between two frames there are never more
- * than a tick's worth; the room for a whole tick is always written, the part
- * not used as zeroes, so that a state is the same size and the same bytes
- * for the same machine. */
+ * than AUDIO_TICK_SAMPLES; the room for that many is always written, the
+ * part not used as zeroes, so that a state is the same size and the same
+ * bytes for the same machine. */
 void AudioHoldbackSerialize(void **data, unsigned int *total_size)
 {
    s16 samples[AUDIO_TICK_SAMPLES * 2];

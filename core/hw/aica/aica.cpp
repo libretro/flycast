@@ -91,18 +91,16 @@ static void UpdateSh4Ints()
 AicaTimer timers[3];
 int aica_schid = -1;
 /* The sound chip, and its ARM7 with it, is run AICA_TICK_SAMPLES samples
- * at a time. Upstream runs it one sample at a time (in batches of 32 the
- * ARM7 and the SH4 do not see each other for 0.7 ms at a time, and the
- * sound of some Windows CE games broke up there); 1 works here, but the
- * scheduler's work for a tick every sample costs 11-18% of the emulation,
- * so it stays at 32.
+ * at a time, at most 32. It is run one sample at a time: in batches of 32
+ * the ARM7 and the SH4 do not see each other for 0.7 ms at a time, and the
+ * sound of some Windows CE games broke up.
  *
- * A tick of 32 samples at 44100 Hz takes 200,000,000 * 32 / 44100 SH4
- * cycles, which is 145124 and 31600/44100. A tick is the whole cycles of
- * that, and the 44100ths left over are counted up in aica_tick_frac: every
- * time they come to a whole cycle the next tick is one cycle longer, and in
- * the long run the rate is 44100 Hz exactly. */
-#define AICA_TICK_SAMPLES 32
+ * A tick of one sample at 44100 Hz takes 200,000,000 / 44100 SH4 cycles,
+ * which is 4535 and 6500/44100. A tick is the whole cycles of that, and the
+ * 44100ths left over are counted up in aica_tick_frac: every time they come
+ * to a whole cycle the next tick is one cycle longer, and in the long run
+ * the rate is 44100 Hz exactly. */
+#define AICA_TICK_SAMPLES 1
 #define AICA_TICK_DEN 44100
 const int AICA_TICK = (int)((u64)SH4_MAIN_CLOCK * AICA_TICK_SAMPLES / AICA_TICK_DEN);
 static const u32 AICA_TICK_REM = (u32)((u64)SH4_MAIN_CLOCK * AICA_TICK_SAMPLES % AICA_TICK_DEN);
