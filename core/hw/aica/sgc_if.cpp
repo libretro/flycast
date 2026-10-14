@@ -1103,12 +1103,14 @@ __forceinline void StepDecodeSample(ChannelEx* ch,u32 CA)
 	switch(PCMS)
 	{
 	case -1:
-		ch->noise_state = ch->noise_state*16807 + 0xbeef;	//beef is good
-
+		/* The ANSI C generator, as Highly Theoretical's noise: each of the
+		 * two samples a new number. */
+		ch->noise_state = ch->noise_state * 0x41c64e6d + 0x3039;
 		s0=ch->noise_state;
 		s0>>=16;
-		
-		s1=ch->noise_state*16807 + 0xbeef;
+
+		ch->noise_state = ch->noise_state * 0x41c64e6d + 0x3039;
+		s1=ch->noise_state;
 		s1>>=16;
 		break;
 

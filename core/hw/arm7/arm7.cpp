@@ -68,8 +68,15 @@ void arm_Run_(u32 CycleCount)
 	if (!Arm7Enabled)
 		return;
 
+	/* The cycles the last instruction ran past the end of the last sample
+	 * are this one's, as the recompiler counts them, in the same register
+	 * (one from a state is a few cycles at most). */
+	s32 left = (s32)reg[CYCL_CNT].I;
+	if (left > 0 || left < -(s32)CycleCount)
+		left = 0;
+	left += (s32)CycleCount;
 	u32 clockTicks=0;
-	while (clockTicks<CycleCount)
+	while ((s32)clockTicks < left)
 	{
 		if (reg[INTR_PEND].I)
 		{
@@ -79,6 +86,7 @@ void arm_Run_(u32 CycleCount)
 		reg[15].I = armNextPC + 8;
 		#include "arm-new.h"
 	}
+	reg[CYCL_CNT].I = (u32)(left - (s32)clockTicks);
 }
 #endif
 
@@ -1777,13 +1785,14 @@ extern "C" void CompileCode()
 
 				else*/
 #if HOST_CPU==CPU_X86
-					armv_imm_to_reg(15,rand());
+					armv_imm_to_reg(15,0xF87641FF);
 #endif
 
 				VirtualizeOpcode(opcd,op_flags,pc);
 
 #if HOST_CPU==CPU_X86
-				armv_imm_to_reg(15,rand());
+				// (a marker, not a value: the op reads the pc as a constant)
+				armv_imm_to_reg(15,0xF87641FF);
 #endif
 			}
 			break;
