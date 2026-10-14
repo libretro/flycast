@@ -220,10 +220,13 @@ void FixUpFlash()
      	u8 *console_id = &sys_nvmem_flash.data[0x1A058];
      	if (!memcmp(console_id, "\377\377\377\377\377\377", 6))
      	{
-     		srand(now);
+     		// made from the clock the flash was just given, with a generator
+     		// of its own: the C library's rand() is shared with everything
+     		u32 seed = now;
      		for (int i = 0; i < 6; i++)
      		{
-     			console_id[i] = rand();
+     			seed = seed * 1103515245u + 12345u;
+     			console_id[i] = seed >> 16;
      			console_id[i + 0xA0] = console_id[i];	// copy at 1A0F8
      		}
      	}

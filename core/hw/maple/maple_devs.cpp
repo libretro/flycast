@@ -4315,10 +4315,17 @@ static const char *rfid_file_suffix(int player)
 	return player == 0 ? "-p1.card" : "-p2.card";
 }
 
+static u8 rfid_random(u32& seed)
+{
+	seed = seed * 1103515245u + 12345u;
+	return seed >> 16;
+}
+
 /* A player's card from its file, or a new one: a Mushiking card with its
  * serial number and the key made from it, or a blank Virtua Fighter 4
- * card with the random bytes the game makes its card number of. */
-static void rfid_load_card(int player)
+ * card with the random bytes the game makes its card number of, from
+ * @seed (not rand(), which anything else in the process can move on). */
+static void rfid_load_card(int player, u32& seed)
 {
 	u8 *card = rfid_file[player];
 	if (periph_load_file(rfid_file_suffix(player), card, sizeof(rfid_file[0])) != 0)
@@ -4341,7 +4348,7 @@ static void rfid_load_card(int player)
 		};
 		memcpy(card, MUSHIKING_CHIP_DATA, sizeof(MUSHIKING_CHIP_DATA));
 		for (int i = 0; i < 8; i++)
-			card[i] = rand() & 0xff;
+			card[i] = rfid_random(seed);
 		u32 mask = 0;
 		if (!strcmp(naomi_game_id, "MKG TKOB 2 JPN VER2.001-")		// mushik2e
 				|| !strcmp(naomi_game_id, "MKG TKOB 4 JPN VER2.000-"))	// mushik4e
@@ -4365,11 +4372,11 @@ static void rfid_load_card(int player)
 		card[12] = 4;
 		card[13] = 0x6c;
 		card[127] = 0xff;
-		card[2] = rand() & 0xff;
-		card[4] = rand() & 0xff;
-		card[5] = rand() & 0xff;
-		card[6] = rand() & 0xff;
-		card[7] = rand() & 0xff;
+		card[2] = rfid_random(seed);
+		card[4] = rfid_random(seed);
+		card[5] = rfid_random(seed);
+		card[6] = rfid_random(seed);
+		card[7] = rfid_random(seed);
 	}
 	INFO_LOG(NAOMI, "Card P%d initialized", player + 1);
 }
@@ -4388,10 +4395,10 @@ void rfid_init(bool game, bool insert)
 	memset(rfid_card, 0, sizeof(rfid_card));
 	if (!game)
 		return;
-	srand(time(0));
+	u32 seed = (u32)time(0) * 2654435761u;
 	for (int i = 0; i < 2; i++)
 	{
-		rfid_load_card(i);
+		rfid_load_card(i, seed);
 		if (insert)
 			insertRfidCard(i);
 	}
