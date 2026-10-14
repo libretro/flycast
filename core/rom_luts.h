@@ -95,6 +95,10 @@ static struct game_type_naomi lut_games_naomi[] =
    { "OUTTRIGGER     JAPAN"              , -1, -1, -1,  -1, JVS::OutTrigger, 1 },             /* Outtrigger: rotary encoders */
    { "SEGA MARINE FISHING JAPAN"         , -1, -1, -1,  -1, JVS::SegaMarineFishing, 1 },      /* Sega Marine Fishing */
    { "RINGOUT 4X4 JAPAN"                 , -1, -1, -1,  -1, JVS::DualIOBoards4P, 1 },         /* Ring Out 4x4 (4 players, also needs to be set in service menu) */
+   { "VIRTUA ATHLETE"                    , -1, -1, -1,  -1, JVS::DualIOBoards4P, 1 },         /* Virtua Athlete: 2 I/O boards, the second has P1/P2 (maple_devs.cpp) */
+   { "ROYAL RUMBLE"                      , -1, -1, -1,  -1, JVS::DualIOBoards4P, 1 },         /* WWF Royal Rumble: the same */
+   { "BEACH SPIKERS JAPAN"               , -1, -1, -1,  -1, JVS::DualIOBoards4P, 1 },         /* Beach Spikers: the same */
+   { "MJ JAPAN"                          , -1, -1, -1,  -1, JVS::DualIOBoards4P, 1 },         /* Sega Yonin Uchi Mahjong MJ: the same */
    { "Sports Shooting USA"               , -1, -1, -1,  -1, JVS::LightGun, 1 },               /* Sports Shooting USA (light guns) */
    { "SEGA CLAY CHALLENGE"               , -1, -1, -1,  -1, JVS::LightGun, 1 },               /* Sega Clay Challenge (light guns) */
    { "RANGER MISSION"                    , -1, -1, -1,  -1, JVS::LightGun, 1 },               /* Ranger Mission (light guns) */

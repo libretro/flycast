@@ -1102,6 +1102,46 @@ int naomi_cart_GetRotation()
 	return game_rotation;
 }
 
+// The header's title is the game's (GetGameId() has it without the spaces after it)
+static bool naomi_header_is_game(const u8 *header)
+{
+	const size_t len = strlen(naomi_game_id);
+	if (len == 0 || len > 0x20 || memcmp(header + 0x30, naomi_game_id, len))
+		return false;
+	for (size_t i = len; i < 0x20; i++)
+		if (header[0x30 + i] != ' ')
+			return false;
+	return true;
+}
+
+/* The game's header, @size bytes of it: the ROM board's first 0x500 bytes
+ * (an M2 board with none there has it at 8 MB), a GD-ROM game's program's.
+ * The BIOS sets the EEPROM up from it. Read() has no side effect on a ROM,
+ * M2 or GD-ROM cartridge, which is what the callers' games have (an M1 or
+ * M4 board's moves its decryption on). False if what is there is not this
+ * game's. */
+bool naomi_cart_GetBootHeader(u8 *header, u32 size)
+{
+	if (CurrentCartridge == NULL || size < 0x50)
+		return false;
+	memset(header, 0, size);
+	CurrentCartridge->Read(0, size, header);
+	if (naomi_header_is_game(header))
+		return true;
+	if (CurrentCartridge->GetSize() >= 0x800000 + size)
+	{
+		u32 len = size;
+		const void *p = CurrentCartridge->GetPtr(0x800000, len);
+		if (p != NULL && len == size)
+		{
+			memcpy(header, p, size);
+			if (naomi_header_is_game(header))
+				return true;
+		}
+	}
+	return false;
+}
+
 #ifdef _WIN32
 #define CloseFile(f)	CloseHandle(f)
 #else

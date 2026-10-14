@@ -1445,6 +1445,109 @@ struct maple_sega_purupuru : maple_base
 char EEPROM[0x100];
 bool EEPROM_loaded = false;
 
+bool naomi_cart_GetBootHeader(u8 *header, u32 size);	// naomi_cart.cpp
+
+/* The games with two I/O boards whose players 1 and 2 are on the second
+ * board (node 2) when the cabinet is set for more than two. */
+static bool jvs_dual_reversed_game(void)
+{
+	return settings.mapping.JammaSetup == JVS::WorldKicksPCB
+			|| (settings.mapping.JammaSetup == JVS::DualIOBoards4P
+				&& (!strcmp(naomi_game_id, "VIRTUA ATHLETE")
+					|| !strcmp(naomi_game_id, "ROYAL RUMBLE")
+					|| !strcmp(naomi_game_id, "BEACH SPIKERS JAPAN")
+					|| !strcmp(naomi_game_id, "MJ JAPAN")));
+}
+
+/* The EEPROM's first record, the BIOS's settings: bytes 2 to 17, their
+ * CRC in bytes 0 and 1, and all of it again in bytes 18 to 35. Byte 8 is
+ * the cabinet: bit 0 the coin chutes (individual), bits 4-5 the players
+ * less one. */
+static u16 naomi_eeprom_crc(const u8 *buf, int size)
+{
+	u32 n = 0xdebdeb00;
+
+	for (int i = 0; i <= size; i++)
+	{
+		// (and a zero byte after the last)
+		n = (n & 0xffffff00) + (i < size ? buf[i] : 0);
+		for (int c = 0; c < 8; c++)
+			n = (n & 0x80000000) ? (n << 1) + 0x10210000 : n << 1;
+	}
+	return n >> 16;
+}
+
+static void naomi_eeprom_bios_set(u32 offset, u8 value)
+{
+	u8 *eeprom = (u8 *)EEPROM;
+	eeprom[offset] = value;
+	eeprom[offset + 18] = value;
+	const u16 crc = naomi_eeprom_crc(eeprom + 2, 16);
+	eeprom[0] = eeprom[18] = (u8)crc;
+	eeprom[1] = eeprom[19] = (u8)(crc >> 8);
+}
+
+/* A cabinet of these games is set for four players when the EEPROM has
+ * not been set up for the game (its file is not there, or is another
+ * game's): the BIOS's settings are then what the BIOS would make from the
+ * game's header, with the four-player cabinet. One that has been is left
+ * as it is, unless its number of players is one the header says the game
+ * cannot have. */
+static void naomi_eeprom_dual_cabinet(void)
+{
+	u8 header[0x500];
+	const u8 *eeprom = (const u8 *)EEPROM;
+
+	if (!jvs_dual_reversed_game() || !naomi_cart_GetBootHeader(header, sizeof(header)))
+		return;
+	const u8 *game_id = &header[0x134];
+	const u8 *coin = &header[0x1e0];		// the first region's coin settings
+	const u8 cabinet = header[0x429];		// the numbers of players the game can have, a bit each
+	const u8 vertical = header[0x42b];
+
+	if (memcmp(game_id, eeprom + 3, 4))
+	{
+		for (int i = 0; i < 4; i++)
+			naomi_eeprom_bios_set(3 + i, game_id[i]);
+		naomi_eeprom_bios_set(7, 9);
+		naomi_eeprom_bios_set(8, cabinet == 0 || (cabinet & 8) ? 0x30
+				: (cabinet & 4) ? 0x20 : (cabinet & 2) ? 0x10 : 0);
+		if (coin[0] == 1)
+		{
+			// the game's own
+			naomi_eeprom_bios_set(2, (coin[1] & 1) | 0x10);
+			if (coin[2] == 1)
+				naomi_eeprom_bios_set(8, eeprom[8] | 1);
+			naomi_eeprom_bios_set(9, coin[3] - 1);
+			naomi_eeprom_bios_set(10, std::max(coin[6], (u8)1));
+			naomi_eeprom_bios_set(11, std::max(coin[4], (u8)1));
+			naomi_eeprom_bios_set(12, std::max(coin[5], (u8)1));
+			naomi_eeprom_bios_set(13, coin[7]);
+			for (int i = 0; i < 4; i++)
+				naomi_eeprom_bios_set(14 + i, coin[8 + i * 2] | (coin[9 + i * 2] << 4));
+		}
+		else
+		{
+			// the BIOS's
+			naomi_eeprom_bios_set(2, (vertical & 2) ? 0x11 : 0x10);
+			naomi_eeprom_bios_set(9, 0);
+			naomi_eeprom_bios_set(10, 1);
+			naomi_eeprom_bios_set(11, 1);
+			naomi_eeprom_bios_set(12, 1);
+			naomi_eeprom_bios_set(13, 0);
+			for (int i = 0; i < 4; i++)
+				naomi_eeprom_bios_set(14 + i, 0x11);
+		}
+		NOTICE_LOG(MAPLE, "EEPROM: set up for game %s, %d-player cabinet", naomi_game_id, (eeprom[8] >> 4) + 1);
+	}
+	if (cabinet != 0 && cabinet < 0x10 && !(cabinet & (1 << (eeprom[8] >> 4))))
+	{
+		const u8 players = (cabinet & 8) ? 0x30 : (cabinet & 4) ? 0x20 : (cabinet & 2) ? 0x10 : 0;
+		NOTICE_LOG(MAPLE, "EEPROM: %d-player cabinet", (players >> 4) + 1);
+		naomi_eeprom_bios_set(8, players | (eeprom[8] & 1));
+	}
+}
+
 u8 kb_shift; 		// shift keys pressed (bitmask)
 u8 kb_led; 			// leds currently lit
 u8 kb_key[6]={0};	// normal keys pressed
@@ -1763,6 +1866,8 @@ public:
 	virtual void set_state_v27(const u8 *v) { output0 = v[0]; }
 
 	bool lightgun_as_analog = false;
+	// Whose inputs the board has: the players' from this one on
+	void set_first_player(u8 player) { first_player = player; }
 
 protected:
 	virtual const char *get_id() = 0;
@@ -2608,28 +2713,17 @@ protected:
 		return (0xff - axis_y) << 8;
 	}
 
+	// (each player's stick: the second board has players 3 and 4)
 	virtual u16 read_analog_axis(int player_num, int player_axis, bool inverted) override {
-		switch (player_num)
+		if (player_num >= 0 && player_num < 4)
 		{
-		case 0:
 			switch (player_axis)
 			{
 			case 0:
-				return read_joystick_x(0);
+				return read_joystick_x(player_num);
 			case 1:
-				return read_joystick_y(0);
+				return read_joystick_y(player_num);
 			}
-			break;
-
-		case 1:
-			switch (player_axis)
-			{
-			case 0:
-				return read_joystick_x(1);
-			case 1:
-				return read_joystick_y(1);
-			}
-			break;
 		}
 		return 0x8000;
 	}
@@ -2661,6 +2755,8 @@ struct maple_naomi_jamma : maple_sega_controller
 
 	std::vector<jvs_io_board *> io_boards;
 	bool crazy_mode = false;
+	// The two boards' players follow the cabinet setting (order_boards()): set from the game's ID
+	bool cabinet_order = false;
 	// The firmware is The House of the Dead 2 prototype's. A state does not
 	// have this: on a load it is worked out from the game's name.
 	bool hotd2p = false;
@@ -2717,6 +2813,7 @@ struct maple_naomi_jamma : maple_sega_controller
 		}
 		else if (naomi_default_eeprom != NULL)
 			memcpy(EEPROM, naomi_default_eeprom, 0x80);
+		naomi_eeprom_dual_cabinet();
 	}
 
 	/* The EEPROM, when the game has written to it, to its file: made
@@ -2774,6 +2871,7 @@ struct maple_naomi_jamma : maple_sega_controller
 	   case JVS::DualIOBoards4P:
 		  io_boards.emplace_back(new jvs_837_13551(1, this));
 		  io_boards.emplace_back(new jvs_837_13551(2, this, 2));
+		  cabinet_order = jvs_dual_reversed_game();
 		  break;
 	   case JVS::LightGun:
 		  io_boards.emplace_back(new jvs_namco_jyu(1, this));
@@ -2801,6 +2899,8 @@ struct maple_naomi_jamma : maple_sega_controller
 		  break;
 	   case JVS::WorldKicksPCB:
 		  io_boards.emplace_back(new jvs_namco_v226_pcb(1, this));
+		  io_boards.emplace_back(new jvs_namco_v226_pcb(2, this, 2));
+		  cabinet_order = true;
 		  break;
 	   case JVS::WaveRunnerGP:
 		  io_boards.emplace_back(new jvs_837_13844_wrungp(1, this));
@@ -2831,10 +2931,25 @@ struct maple_naomi_jamma : maple_sega_controller
 		return last_node ? 0x8E : 0x8F;
 	}
 
+	/* The players on each of the two boards, from the cabinet setting in
+	 * the EEPROM: set for three or four players, the game has players 1
+	 * and 2 on the second board (node 2) and 3 and 4 on the first; for one
+	 * or two, it reads the first, and that has players 1 and 2. So
+	 * the first two ports are players 1 and 2 either way, and the board
+	 * order follows what the game is set for as soon as it is set. */
+	void order_boards()
+	{
+		const bool reversed = (EEPROM[8] & 0x30) >= 0x20;
+		io_boards[0]->set_first_player(reversed ? 2 : 0);
+		io_boards[1]->set_first_player(reversed ? 0 : 2);
+	}
+
 	void send_jvs_message(u32 node_id, u32 channel, u32 length, u8 *data)
 	{
 		if (node_id - 1 < io_boards.size())
 		{
+			if (cabinet_order)
+				order_boards();
 			u8 temp_buffer[256];
 			u32 out_len = io_boards[node_id - 1]->handle_jvs_message(data, length, temp_buffer);
 			if (out_len > 0)
@@ -3891,7 +4006,7 @@ u32 jvs_io_board::handle_jvs_message(u8 *buffer_in, u32 length_in, u8 *buffer_ou
 						   else
 							  axes_per_player = i;
 						}
-						if (settings.mapping.JammaSetup == JVS::DualIOBoards4P)
+						if (settings.mapping.JammaSetup == JVS::DualIOBoards4P && !parent->cabinet_order)
 						   // Hack for Ring Out 4x4
 						   axes_per_player = 2;
 
