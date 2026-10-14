@@ -100,6 +100,8 @@ extern "C" {
 #define _S(x) STRINGIFY(x)
 #define CPU_RUNNING 135266148
 #define PC 135266120
+#define SCHED_NEXT 135266152
+#define INTERRUPT_PEND 135266156
 /* Recompiled code keeps r15 pointing into the SH4's context, so that a
  * register in it is reached with one short instruction where it took a
  * 64-bit address in rax and then the access. It points 160 bytes in: a
@@ -199,6 +201,20 @@ WIN32_ONLY(     ".seh_pushreg %r14                              \n\t")
                         "jg 2b                                                          \n\t"   // slice_loop
 
                         "addl $" _S(SH4_TIMESLICE) ", %r14d             \n\t"
+                        /* UpdateSystem_INTC(), here, for the slices - most
+                         * of them - at whose end no event is due and no
+                         * interrupt waits: the slice is taken off the time
+                         * to the next event, and that is all it would have
+                         * done. Otherwise it is called, and does all of it. */
+                        "movq " _U "p_sh4rcb(%rip), %rax        \n\t"
+                        "movl " _S(SCHED_NEXT) "(%rax), %edx   \n\t"
+                        "subl $" _S(SH4_TIMESLICE) ", %edx              \n\t"
+                        "js 4f                                                          \n\t"
+                        "cmpl $0, " _S(INTERRUPT_PEND) "(%rax) \n\t"
+                        "jne 4f                                                         \n\t"
+                        "movl %edx, " _S(SCHED_NEXT) "(%rax)   \n\t"
+                        "jmp 1b                                                         \n"
+                "4:                                                                             \n\t"
                         "call " _U "UpdateSystem_INTC           \n\t"
                         "jmp 1b                                                         \n"             // run_loop
 
@@ -3047,6 +3063,8 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 {
 	verify(CPU_RUNNING == offsetof(Sh4RCB, cntx.CpuRunning));
 	verify(PC == offsetof(Sh4RCB, cntx.pc));
+	static_assert(SCHED_NEXT == offsetof(Sh4RCB, cntx.sh4_sched_next), "main loop's offset of sh4_sched_next");
+	static_assert(INTERRUPT_PEND == offsetof(Sh4RCB, cntx.interrupt_pend), "main loop's offset of interrupt_pend");
 	verify(CTX_BASE == offsetof(Sh4RCB, cntx) + CTX_BIAS);
 	verify(emit_FreeSpace() >= CODE_MARGIN);
 
