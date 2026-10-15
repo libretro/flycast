@@ -125,6 +125,9 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 	bool fragmentStoresAndAtomics = supportedFeatures.fragmentStoresAndAtomics;
 	VulkanContext::Instance()->samplerAnisotropy = supportedFeatures.samplerAnisotropy;
 	VulkanContext::Instance()->storageImageExtendedFormats = supportedFeatures.shaderStorageImageExtendedFormats;
+	VulkanContext::Instance()->multiDrawIndirect = supportedFeatures.multiDrawIndirect;
+	VulkanContext::Instance()->drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
+	VulkanContext::Instance()->drawIndirectCount = false;
 
 	// Enable VK_KHR_dedicated_allocation if available
 	bool getMemReq2Supported = false;
@@ -144,6 +147,12 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 			deviceExtensions.push_back(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
 			VulkanContext::Instance()->dedicatedAllocationSupported = true;
 		}
+		else if (!strcmp(property.extensionName, VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME))
+		{
+			// (GPU-side TA processing's translucent draws: see TaDecoder)
+			deviceExtensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+			VulkanContext::Instance()->drawIndirectCount = true;
+		}
 	}
 	VulkanContext::Instance()->dedicatedAllocationSupported &= getMemReq2Supported;
 
@@ -160,6 +169,10 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 		features.samplerAnisotropy = true;
 	if (VulkanContext::Instance()->storageImageExtendedFormats)
 		features.shaderStorageImageExtendedFormats = true;
+	if (VulkanContext::Instance()->multiDrawIndirect)
+		features.multiDrawIndirect = true;
+	if (VulkanContext::Instance()->drawIndirectFirstInstance)
+		features.drawIndirectFirstInstance = true;
 	vk::Device device = physicalDevice.createDevice(vk::DeviceCreateInfo(vk::DeviceCreateFlags(),
 			context->queue_family_index == context->presentation_queue_family_index ? 1 : 2, deviceQueueCreateInfos,
 			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features));
@@ -217,6 +230,9 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	maxSamplerAnisotropy =  properties->limits.maxSamplerAnisotropy;
 	vendorID = properties->vendorID;
 	apiVersion = props.apiVersion;
+	maxDrawIndirectCount = properties->limits.maxDrawIndirectCount;
+	cmdDrawIndexedIndirectCount = drawIndirectCount
+			? (PFN_vkCmdDrawIndexedIndirectCountKHR)device.getProcAddr("vkCmdDrawIndexedIndirectCountKHR") : nullptr;
 	QueryVramBudget();
 
 	vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(vk::Format::eR5G5B5A1UnormPack16);

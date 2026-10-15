@@ -106,6 +106,14 @@ public:
 	u32 GetVendorID() const { return vendorID; }
 	// what video memory there was to use when the context was set up
 	const VramBudget& GetVramBudget() const { return vramBudget; }
+	/* Indirect draws, as the device was made with them: several draws in
+	 * one (the most a call can take), firstInstance in their arguments, and
+	 * the count read from a buffer (vkCmdDrawIndexedIndirectCountKHR(),
+	 * null without it) */
+	bool SupportsMultiDrawIndirect() const { return multiDrawIndirect; }
+	u32 GetMaxDrawIndirectCount() const { return multiDrawIndirect ? maxDrawIndirectCount : 1; }
+	bool SupportsDrawIndirectFirstInstance() const { return drawIndirectFirstInstance; }
+	PFN_vkCmdDrawIndexedIndirectCountKHR GetDrawIndexedIndirectCount() const { return cmdDrawIndexedIndirectCount; }
 
 private:
 	vk::Format FindDepthFormat();
@@ -130,7 +138,14 @@ public:
 	bool storageImageExtendedFormats = false;
 	f32 maxSamplerAnisotropy = 0.f;
 	bool dedicatedAllocationSupported = false;
+	/* enabled on the device when the core made it and the GPU has them;
+	 * a device the frontend made has none of them */
+	bool multiDrawIndirect = false;
+	bool drawIndirectFirstInstance = false;
+	bool drawIndirectCount = false;		// VK_KHR_draw_indirect_count
 private:
+	u32 maxDrawIndirectCount = 1;
+	PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
 	u32 vendorID = 0;
 	u32 apiVersion = 0;	// the device's
 	VramBudget vramBudget;
