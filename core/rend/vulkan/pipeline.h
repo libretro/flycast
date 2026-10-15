@@ -184,7 +184,7 @@ public:
 	{
 		// (SSAA: shaded at each sample, but for what is drawn at a single rate)
 		const bool sampleRate = samples > 1 && !SsaaSingleRate(pp);
-		const u32 pipehash = hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28) | ((u32)sampleRate << 30);
+		const u32 pipehash = key(listType, sortTriangles, pp, shadowPass, sampleRate);
 		const auto &pipeline = pipelines.find(pipehash);
 		if (pipeline != pipelines.end())
 			return pipeline->second.get();
@@ -192,7 +192,7 @@ public:
 		CreatePipeline(listType, sortTriangles, pp, shadowPass, sampleRate);
 		/* the polygon's other rate is made with it: a polygon like it but
 		 * for the rate costs no compile later (SSAA) */
-		if (samples > 1 && pipelines.find(pipehash ^ (1u << 30)) == pipelines.end())
+		if (samples > 1 && pipelines.find(key(listType, sortTriangles, pp, shadowPass, !sampleRate)) == pipelines.end())
 			CreatePipeline(listType, sortTriangles, pp, shadowPass, !sampleRate);
 
 		return *pipelines[pipehash];
@@ -242,6 +242,15 @@ private:
 		hash |= (u32)(pp->tcw.PixelFmt == PixelBumpMap) << 28;
 
 		return hash;
+	}
+	/* What a pipeline is kept under: the polygon's bits above, then what it
+	 * is drawn for, in bits of their own. (The shadow pass was put at bit
+	 * 28, the bump map's: a bump-mapped polygon drawn as itself and the same
+	 * polygon drawn again for its shadow had one key, and whichever pipeline
+	 * was made first was used for both.) */
+	u32 key(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass, bool sampleRate) const
+	{
+		return hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 29) | ((u32)sampleRate << 31);
 	}
 	u32 hash(ModVolMode mode, int cullMode) const
 	{
