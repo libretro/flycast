@@ -47,6 +47,8 @@ static struct
 	u32 edge_frames, edge_trials, edge_agree;	// the overrun check at the exact boundary
 	u32 verts, idx, strips;
 	std::vector<double> prep_us, parse_us;
+	std::vector<double> draw_us;	// the header pass made ready to draw, sort and shadows and all (TA_GPU_DRAW)
+	std::vector<double> flat_us;	// ...of it, the flat strips found (TAG_FLAT)
 	double gpu_ms;
 	// the translucent triangles sorted from the frame's depths (TA_GPU_SORT), against GenSorted()
 	u32 sort_frames, sort_same, sort_differ;
@@ -99,6 +101,12 @@ static void report(void)
 	printf("ta_gpu_test: made ready to draw from the GPU: %u frames, %u with the parse's draws, %u different, %u left to the parse "
 			"(%u frame skipping, %u that might run out of room)\n",
 			st.drawn, st.draw_same, st.draw_differ, st.draw_left, st.draw_why[TA_GPU_WHY_PARSE], st.draw_why[TA_GPU_WHY_ROOM]);
+	if (!st.draw_us.empty())
+		printf("ta_gpu_test: the header pass made ready to draw%s: mean %.1f us, p99 %.1f us, max %.1f us\n",
+				ta_flat_strips() ? ", flat strips looked for" : "", mean(st.draw_us), pct(st.draw_us, 0.99), pct(st.draw_us, 1.0));
+	if (!st.flat_us.empty())
+		printf("ta_gpu_test: of it, the flat strips found from the depth words: mean %.1f us, p99 %.1f us, max %.1f us\n",
+				mean(st.flat_us), pct(st.flat_us, 0.99), pct(st.flat_us, 1.0));
 	printf("ta_gpu_test: overrun at the exact room: %u frames, %u trials, the parse and the GPU agree on %u\n",
 			st.edge_frames, st.edge_trials, st.edge_agree);
 	printf("ta_gpu_test: sorted from the frame's depths: %u frames, %u the same as GenSorted(), %u different; per frame %.0f triangles, %.0f draws; "
@@ -123,6 +131,9 @@ static void setup(void)
 
 	ta_set_gpu_processing(true);
 	ta_gpu_sort_reserve(true);
+	// (TAG_FLAT=1: flat strips looked for, as with SSAA; the draw groups' single-rate bits compared too)
+	if (getenv("TAG_FLAT") != NULL && atoi(getenv("TAG_FLAT")) != 0)
+		ta_set_flat_strips(true);
 	ta_gpu_sizes(&sz);
 	ts.ta_words = ta_data_size() / 4;
 	ts.table_words = sz.table_words;
@@ -465,6 +476,12 @@ static bool same_draw_state(const PolyParam &a, const PolyParam &b)
 			&& a.tileclip == b.tileclip && a.texid == b.texid && a.texid1 == b.texid1;
 }
 
+// ...and at the same rate
+static bool same_draw_rate(const PolyParam &a, const PolyParam &b)
+{
+	return same_draw_state(a, b) && ((a.pcw.full ^ b.pcw.full) & 0x100u) == 0;
+}
+
 /* GenSorted() of the parse's frame, each sorted render pass, the draws'
  * first counting from the first pass's first index, as the Vulkan
  * per-triangle renderer has them (Drawer::SortTriangles()); the polygon
@@ -671,7 +688,14 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 
 	TaGpuFrame gf;
 	const int cnt = ta_parse_cnt;
+	const clk::time_point t0 = clk::now();
 	const bool ok = ta_gpu_prepare(ctx, &layout, table, table_room, &gf, flags | TA_GPU_DRAW);
+	if (ok)
+	{
+		st.draw_us.push_back(std::chrono::duration<double, std::micro>(clk::now() - t0).count());
+		if (ta_flat_strips())
+			st.flat_us.push_back(ta_gpu_flat_ns() / 1e3);
+	}
 	const char *d = NULL;
 	if (!ok)
 	{
@@ -681,7 +705,9 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 	else
 	{
 		ta_parse_cnt = cnt;
-		auto same_state = same_draw_state;
+		/* with flat strips looked for, the single-rate bit is the same too:
+		 * a group's, and each translucent strip's */
+		bool (*same_state)(const PolyParam &, const PolyParam &) = ta_flat_strips() ? same_draw_rate : same_draw_state;
 		for (u32 l = 0; l < 3 && d == NULL; l++)
 		{
 			size_t next = 0;

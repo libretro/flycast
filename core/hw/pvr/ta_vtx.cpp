@@ -51,17 +51,11 @@ static u32 tileclip_val = 0;
 static bool flat_strips_wanted;
 static u32 strip_z_and = PVR_FLAT_AND_INIT;
 static u32 strip_z_or = PVR_FLAT_OR_INIT;
-/* What poly_same_state() compares of the control and depth words: the
- * single-rate bit only where flat strips are looked for - a flat strip and
- * one that is not are drawn at different rates then, and are not joined;
- * otherwise the bit is whatever the game left there, and is left out */
-static u32 poly_ctl_mask_words[2] = { ~PVR_PCW_SINGLE_RATE, ~0u };	// (pcw, then isp)
 
 /* (from the thread that renders, which is the one that parses) */
 void ta_set_flat_strips(bool on)
 {
 	flat_strips_wanted = on;
-	poly_ctl_mask_words[0] = on ? ~0u : ~PVR_PCW_SINGLE_RATE;
 }
 
 bool ta_flat_strips(void)
@@ -1890,10 +1884,11 @@ typedef char ta_poly_layout[(offsetof(PolyParam, tcw) == offsetof(PolyParam, tsp
  * the same clipping rectangle and mode, and the same second shading and
  * texture words (those of a polygon under two volumes; all ones on any
  * other). Two words are compared at a time and there is one test for all
- * of them. The single-rate bit is compared only while flat strips are
- * looked for (poly_ctl_mask_words). */
+ * of them. The single-rate bit is left out of the control word's
+ * comparison: a draw group's is its strips' together (flat_groups()). */
 static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
 {
+	static const u32 ctl_mask_words[2] = { ~PVR_PCW_SINGLE_RATE, ~0u };	// (pcw, then isp)
 	u64 a_tex, b_tex, a_ctl, b_ctl, a_tex1, b_tex1, ctl_mask;
 
 	memcpy(&a_tex,  &a->tsp,  sizeof(a_tex));
@@ -1902,10 +1897,48 @@ static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
 	memcpy(&b_ctl,  &b->pcw,  sizeof(b_ctl));
 	memcpy(&a_tex1, &a->tsp1, sizeof(a_tex1));
 	memcpy(&b_tex1, &b->tsp1, sizeof(b_tex1));
-	memcpy(&ctl_mask, poly_ctl_mask_words, sizeof(ctl_mask));
+	memcpy(&ctl_mask, ctl_mask_words, sizeof(ctl_mask));
 
 	return ((a_tex ^ b_tex) | ((a_ctl ^ b_ctl) & ctl_mask) | (a_tex1 ^ b_tex1)
 			| (u64)(a->tileclip ^ b->tileclip)) == 0;
+}
+
+/* Where flat strips are looked for: a draw group - polygons one after
+ * another in a render pass's list drawn the same way (poly_same_state()),
+ * which make_index() joins and the GPU's decode draws as one - is drawn at
+ * a single rate only if every strip of it is flat (or a sprite, or the
+ * background), and then all of its strips have the bit; strips with no
+ * vertices count for nothing. The groups are the GPU's decode's (see
+ * ta_gpu_prepare()), so that a frame is drawn at the same rates whichever
+ * of the two made it; the translucent strips, which are drawn one by one,
+ * too. One pass over the polygon parameters, none over the vertices. */
+static void flat_groups(const List<PolyParam> *polys, int first, int end)
+{
+	PolyParam *const pp = polys->head();
+	int i = first;
+	while (i < end)
+	{
+		if (pp[i].count == 0)
+		{
+			i++;
+			continue;
+		}
+		u32 bit = PVR_PCW_SINGLE_RATE;
+		int j = i, last = i;
+		for (; j < end; j++)
+		{
+			if (pp[j].count == 0)
+				continue;
+			if (!poly_same_state(&pp[last], &pp[j]))
+				break;
+			bit &= pp[j].pcw.full;
+			last = j;
+		}
+		for (int k = i; k < j; k++)
+			if (pp[k].count != 0)
+				pp[k].pcw.full = (pp[k].pcw.full & ~PVR_PCW_SINGLE_RATE) | bit;
+		i = j;
+	}
 }
 
 static void make_index(const List<PolyParam> *polys, int first, int end, bool merge, rend_context* ctx)
@@ -2110,6 +2143,12 @@ static bool ta_parse_vdrc_full(TA_context* ctx)
 			{
 				RenderPass *render_pass = vd_rc.render_passes.Append();
 				render_pass->op_count = vd_rc.global_param_op.used();
+				if (flat_strips_wanted)
+				{
+					flat_groups(&vd_rc.global_param_op, op_poly_count, vd_rc.global_param_op.used());
+					flat_groups(&vd_rc.global_param_pt, pt_poly_count, vd_rc.global_param_pt.used());
+					flat_groups(&vd_rc.global_param_tr, tr_poly_count, vd_rc.global_param_tr.used());
+				}
 				make_index(&vd_rc.global_param_op, op_poly_count,
 						render_pass->op_count, true, &vd_rc);
 				op_poly_count = render_pass->op_count;
@@ -3971,6 +4010,69 @@ static void ta_gpu_shadow_areas(const TaWalkFrame &f, const u8 *root, f32 (*area
 	}
 }
 
+/* Where flat strips are looked for (SSAA), each header's strips: whether
+ * all of them are flat, in its pp's single-rate bit, as the full parse
+ * finds it from its vertices. From the frame's own blocks, as the sort
+ * reads them: of each vertex only its depth word and its end-of-strip
+ * bit, the AND and the OR of the depths' bits over a strip
+ * (PVR_FLAT_RATE_BIT()). A sprite's bit is set already, and the
+ * background's. The draw groups are then given their strips' bits
+ * together, as flat_groups() gives the parse's. */
+static u64 gflat_ns;	// the last frame's (ta_gpu_flat_ns())
+
+u64 ta_gpu_flat_ns(void)
+{
+	return gflat_ns;
+}
+
+static void ta_gpu_flat_headers(TaWalkFrame &f, const u8 *root)
+{
+	const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+	u32 open_hdr = TA_WALK_NO_GROUP;
+	u32 z_and = PVR_FLAT_AND_INIT, z_or = PVR_FLAT_OR_INIT;
+
+	for (u32 i = 0; i < f.headers; i++)
+		if (f.header[i].format != TA_WALK_SPRITE)
+			f.header[i].pp.pcw.full |= PVR_PCW_SINGLE_RATE;
+	for (u32 i = 0; i < f.runs; i++)
+	{
+		const TaWalkRun &run = f.run[i];
+		if (run.header & TA_WALK_MODVOL)
+			continue;
+		TaWalkHeader &h = f.header[run.header];
+		if (h.format == TA_WALK_SPRITE)
+			continue;
+		// (its vertices: up to the next run of vertices, or the frame's last)
+		u32 j = i + 1, end = f.verts;
+		while (j < f.runs && (f.run[j].header & TA_WALK_MODVOL))
+			j++;
+		if (j < f.runs)
+			end = f.run[j].vertex;
+		const u32 n = end - run.vertex;
+		if (open_hdr != run.header)
+		{
+			// (a strip does not go on from one header to the next: the header pass leaves such a frame to the parse)
+			open_hdr = run.header;
+			z_and = PVR_FLAT_AND_INIT;
+			z_or = PVR_FLAT_OR_INIT;
+		}
+		const u32 stride = h.vblocks * 8;
+		const u32 *w = (const u32 *)(root + (size_t)run.block * 32);
+		for (u32 k = 0; k < n; k++, w += stride)
+		{
+			z_and &= w[3];
+			z_or |= w[3];
+			if (((const PCW *)w)->EndOfStrip)
+			{
+				h.pp.pcw.full &= ~PVR_PCW_SINGLE_RATE | PVR_FLAT_RATE_BIT(z_and, z_or);
+				z_and = PVR_FLAT_AND_INIT;
+				z_or = PVR_FLAT_OR_INIT;
+			}
+		}
+	}
+	gflat_ns = (u64)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+}
+
 bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out, u32 flags)
 {
 	TaWalkFrame &f = walk_frame[0];
@@ -3993,7 +4095,7 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 		 * region array's table, which are made from the vertices */
 		out->why = TA_GPU_WHY_PARSE;
 		if (!(ctx->rend.isRTT || 0 == ((ta_parse_cnt + 1) % (settings.pvr.ta_skip + 1)))
-				|| flat_strips_wanted || region_table_wanted)
+				|| region_table_wanted)
 			return false;
 		/* A renderer that sorts translucent polygons on the CPU sorts them
 		 * from the CPU's vertices: it has the full parse for a frame that
@@ -4113,6 +4215,8 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 		out->why = TA_GPU_WHY_SORT;
 		if ((flags & TA_GPU_SORT) && !ta_gpu_sort_frame(f, ctx->tad.thd_root))
 			return false;
+		if (flat_strips_wanted)
+			ta_gpu_flat_headers(f, ctx->tad.thd_root);
 		/* Drawn from here on: the lists hold a polygon parameter for each
 		 * draw group (see TA_GPU_DRAW) */
 		rc.global_param_op.Clear();
@@ -4199,6 +4303,9 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 			}
 			else
 				lists[list]->LastPtr()->count += cnt;
+			// (a group is drawn at a single rate where all of its strips are flat: see ta_gpu_flat_headers())
+			if (!fresh && flat_strips_wanted)
+				lists[list]->LastPtr()->pcw.full &= pp.pcw.full | ~PVR_PCW_SINGLE_RATE;
 		}
 		w[TAG_H_VFIRST] = first;
 		w[TAG_H_VCOUNT] = cnt;

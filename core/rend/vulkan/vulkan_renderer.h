@@ -115,10 +115,9 @@ public:
 			textureCache.ClearLater();
 		}
 
-		/* SSAA draws flat strips at a single rate where the frame is parsed
-		 * on the CPU: the GPU's decode does not look for them (its frames
-		 * have only sprites and the background at a single rate) */
-		ta_set_flat_strips(samples > 1 && !ta_gpu_wanted());
+		/* SSAA draws flat strips at a single rate: the parse and the GPU's
+		 * decode's header pass look for them then, and only then */
+		ta_set_flat_strips(samples > 1);
 		/* GPU-side TA processing: the header pass makes the frame ready to
 		 * be drawn from the GPU's decode, in the full parse's place; or it
 		 * is parsed as ever */

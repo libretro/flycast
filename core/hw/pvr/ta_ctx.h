@@ -494,6 +494,8 @@ u32 ta_gpu_sorted_indices(void);
 void ta_gpu_sorted_write(u32 *dst);
 // ...and what the last sort took, in nanoseconds (0 for none)
 u64 ta_gpu_sorted_ns(void);
+// (TA_GPU_DRAW, with flat strips looked for) how long the last frame's took to find, in ns
+u64 ta_gpu_flat_ns(void);
 
 /* The GPU pool: @count contexts made now whose data are the slices of
  * @slice bytes from @base (the renderer's persistently mapped, host-cached

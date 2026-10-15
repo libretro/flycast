@@ -17,7 +17,9 @@
 # be built for this machine first (make platform=unix). Needs
 # glslangValidator, and a Vulkan device: Mesa's software one (lavapipe,
 # mesa-vulkan-drivers) is used where it is installed. The validation layer
-# is on where it is installed; TAG_VALIDATE=0 turns it off. The program and
+# is on where it is installed; TAG_VALIDATE=0 turns it off. TAG_FLAT=1 looks
+# for flat strips (as SSAA does) and compares the draw groups' single-rate
+# bits as well. The program and
 # the kernels are made in $WORK (default: a new directory in $TMPDIR),
 # kept with KEEP=1 or when $WORK is given.
 set -e
