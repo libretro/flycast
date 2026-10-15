@@ -1,10 +1,10 @@
 /* GPU-side TA processing in OpenGL 4.3: see ta_decoder_gl.h */
 #include "gles.h"
 #include "ta_decoder_gl.h"
+#include "glprogram_cache.h"
 #include "rend/ta_gpu.h"
 #include "stdclass.h"
 
-#include <streams/file_stream.h>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -71,12 +71,6 @@ static_assert(TAG_C_WORDS == 5, "a record is an indexed indirect draw");
 #endif
 #ifndef GL_PROGRAM_BINARY_RETRIEVABLE_HINT
 #define GL_PROGRAM_BINARY_RETRIEVABLE_HINT 0x8257
-#endif
-#ifndef GL_NUM_PROGRAM_BINARY_FORMATS
-#define GL_NUM_PROGRAM_BINARY_FORMATS 0x87FE
-#endif
-#ifndef GL_PROGRAM_BINARY_LENGTH
-#define GL_PROGRAM_BINARY_LENGTH 0x8741
 #endif
 #ifndef GL_TIMESTAMP
 #define GL_TIMESTAMP 0x8E28
@@ -240,109 +234,9 @@ static bool kernels_from_spirv(GLuint *programs)
 	return true;
 }
 
-/* ---- The kernels from their text, and the programs kept on disk ---- */
+/* ---- The kernels from their text, through the programs kept on disk
+ * (glprogram_cache.h): compiled the first time, taken from there after ---- */
 
-static const char *const ProgramCacheFile = "gl_ta_kernels.bin";
-static const u32 ProgramCacheMagic = 0x4B415446;	// "FTAK"
-
-static u64 fnv1a(u64 h, const char *s)
-{
-	for (; *s != 0; s++)
-		h = (h ^ (u8)*s) * 0x100000001B3ull;
-	return h;
-}
-
-/* What a program kept on disk is good for: this driver (its vendor,
- * renderer and version) and this text of the kernels */
-static u64 program_cache_key()
-{
-	u64 h = 0xCBF29CE484222325ull;
-	const GLenum names[] = { GL_VENDOR, GL_RENDERER, GL_VERSION };
-	for (GLenum n : names)
-	{
-		const char *s = (const char *)glGetString(n);
-		h = fnv1a(h, s != nullptr ? s : "");
-		h = fnv1a(h, "|");
-	}
-	for (size_t i = 0; i < sizeof(ta_gpu_glsl) / sizeof(ta_gpu_glsl[0]); i++)
-		h = fnv1a(h, ta_gpu_glsl[i]);
-	return h;
-}
-
-/* The programs kept the last time: the file is the magic, the key, then
- * for each kernel its binary's format and length and the binary */
-static bool kernels_from_cache(GLuint *programs, u64 key)
-{
-	const std::string path = get_writable_data_path(ProgramCacheFile);
-	RFILE *f = filestream_open(path.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-	if (f == nullptr)
-		return false;
-	const int64_t size = filestream_get_size(f);
-	std::vector<u8> data(size > 0 && size < (64 << 20) ? (size_t)size : 0);
-	const bool read = !data.empty() && filestream_read(f, data.data(), (int64_t)data.size()) == (int64_t)data.size();
-	filestream_close(f);
-	if (!read || data.size() < 12)
-		return false;
-	u32 magic;
-	u64 had;
-	memcpy(&magic, &data[0], 4);
-	memcpy(&had, &data[4], 8);
-	if (magic != ProgramCacheMagic || had != key)
-		return false;
-	size_t at = 12;
-	for (int k = 1; k <= TAG_KERNELS; k++)
-	{
-		u32 format, length;
-		if (at + 8 > data.size())
-			return false;
-		memcpy(&format, &data[at], 4);
-		memcpy(&length, &data[at + 4], 4);
-		at += 8;
-		if (length == 0 || length > data.size() - at)
-			return false;
-		programs[k] = glCreateProgram();
-		glProgramBinary(programs[k], (GLenum)format, &data[at], (GLsizei)length);
-		at += length;
-		// (a driver may turn down what it made itself, after an update of it: then they are compiled)
-		if (!program_linked(programs[k]))
-			return false;
-	}
-	return true;
-}
-
-static void kernels_to_cache(const GLuint *programs, u64 key)
-{
-	std::vector<u8> data(12);
-	memcpy(&data[0], &ProgramCacheMagic, 4);
-	memcpy(&data[4], &key, 8);
-	for (int k = 1; k <= TAG_KERNELS; k++)
-	{
-		GLint length = 0;
-		glGetProgramiv(programs[k], GL_PROGRAM_BINARY_LENGTH, &length);
-		if (length <= 0)
-			return;
-		const size_t at = data.size();
-		data.resize(at + 8 + (size_t)length);
-		GLenum format = 0;
-		GLsizei got = 0;
-		glGetProgramBinary(programs[k], length, &got, &format, &data[at + 8]);
-		if (got <= 0)
-			return;
-		const u32 f32 = (u32)format, l32 = (u32)got;
-		memcpy(&data[at], &f32, 4);
-		memcpy(&data[at + 4], &l32, 4);
-		data.resize(at + 8 + (size_t)got);
-	}
-	const std::string path = get_writable_data_path(ProgramCacheFile);
-	RFILE *f = filestream_open(path.c_str(), RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-	if (f == nullptr)
-		return;
-	(void)filestream_write(f, data.data(), (int64_t)data.size());
-	filestream_close(f);
-	INFO_LOG(RENDERER, "OpenGL: TA processing's kernels kept in %s (%u bytes)", path.c_str(), (unsigned)data.size());
-}
-
-// The kernels compiled from the header's text, with the lines in front of it that make each
 static bool kernels_from_text(GLuint *programs)
 {
 	const size_t lines = sizeof(ta_gpu_glsl) / sizeof(ta_gpu_glsl[0]);
@@ -354,10 +248,7 @@ static bool kernels_from_text(GLuint *programs)
 		char prefix[128];
 		snprintf(prefix, sizeof(prefix), "#version 430\n#define TAG_SHADER_GLSL\n#define TAG_SHADER_GL\n#define TAG_KERNEL %d\n", k);
 		source[0] = prefix;
-		const GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-		glShaderSource(shader, (GLsizei)source.size(), source.data(), nullptr);
-		glCompileShader(shader);
-		programs[k] = link_compute(shader);
+		programs[k] = glprog_make_compute(source.data(), (u32)source.size());
 		if (programs[k] == 0)
 			return false;
 	}
@@ -518,19 +409,8 @@ bool GlTaDecoder::Init()
 	if (!kernels)
 	{
 		delete_programs(r->programs);
-		GLint formats = 0;
-		glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats);
-		const u64 key = formats > 0 ? program_cache_key() : 0;
-		made = "kept programs";
-		kernels = formats > 0 && kernels_from_cache(r->programs, key);
-		if (!kernels)
-		{
-			delete_programs(r->programs);
-			made = "text, compiled";
-			kernels = kernels_from_text(r->programs);
-			if (kernels && formats > 0)
-				kernels_to_cache(r->programs, key);
-		}
+		made = "text, or the programs kept";
+		kernels = kernels_from_text(r->programs);
 	}
 	if (!kernels)
 		return no("the kernels did not compile");

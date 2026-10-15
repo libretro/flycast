@@ -23,8 +23,8 @@
  * - The kernels are the SPIR-V for OpenGL made when the core is built
  *   (rend/ta_gpu_gl_spv.inc) where OpenGL takes SPIR-V (4.6 or
  *   ARB_gl_spirv); elsewhere the header's text (rend/ta_gpu_glsl.inc) is
- *   compiled, once, and the programs kept on disk in the system directory
- *   (glGetProgramBinary()), by the driver and the text, for the next time.
+ *   compiled, once, and the programs kept on disk with the renderers' own
+ *   (glprogram_cache.h), by the driver and the text, for the next time.
  *   Every buffer (sized for the largest frame the machine has) is made in
  *   Setup(), when the renderer is set up or the option changes: nothing is
  *   allocated or compiled while a game runs.
