@@ -153,6 +153,9 @@ struct rend_context
 	 * and gpu_modtrig modifier volume triangles are on the GPU only */
 	bool gpu;
 	u32 gpu_modtrig;
+	/* ...and with TA_GPU_SHADOWS, what each render pass's opaque modifier
+	 * volumes cover (ModVolBounds()): min x, min y, max x, max y */
+	f32 gpu_shadow_area[10][4];
 
 	void Clear()
 	{
@@ -414,6 +417,7 @@ struct TaGpuFrame
 	FB_Y_CLIP_type y_clip;
 	bool rv;		// there is something to draw
 	u32 trd;		// translucent draw record slots the frame takes (TAG_H_TRB)
+	u32 shadows;		// (TA_GPU_SHADOWS) the draw groups whose second drawing for shadows the GPU decides
 	u32 why;		// TA_GPU_WHY_*: why it was not decoded, if it was not
 };
 
@@ -438,6 +442,20 @@ struct TaGpuFrame
 /* The translucent draw records number each strip as its polygon parameter
  * (firstInstance: the per-pixel renderer's polygon number) */
 #define TA_GPU_INSTANCE 8u
+/* ...by a renderer that sorts translucent triangles as GenSorted() does
+ * (rend/sorter.h, its Vulkan provoking vertex): each sorted render pass's
+ * translucent triangles are sorted here from the depths of the blocks the
+ * game sent - nothing else of a vertex is read - in GenSorted()'s order,
+ * ties and all, for ta_gpu_sorted() and ta_gpu_sorted_write(). Needs
+ * ta_gpu_sort_reserve(); without it, a frame that may have a sorted pass is
+ * left to the full parse as with TA_GPU_NO_SORT. */
+#define TA_GPU_SORT     16u
+/* ...by a renderer that draws the polygons that take shadows a second
+ * time where the opaque modifier volumes are (rend/shadows.h): each render
+ * pass's volumes' bounds are worked out here from their blocks
+ * (rend_context::gpu_shadow_area), and the GPU decides which of its draw
+ * groups reach into them (TaGpuFrame::shadows, TAG_K_SHADOW) */
+#define TA_GPU_SHADOWS  32u
 
 enum { TA_GPU_WHY_NONE, TA_GPU_WHY_TABLE, TA_GPU_WHY_PARSE, TA_GPU_WHY_SORT, TA_GPU_WHY_WALK, TA_GPU_WHY_ROOM, TA_GPU_WHY_COUNT };
 
@@ -459,6 +477,23 @@ bool ta_gpu_wanted(void);
  * (@out->why says which); with TA_GPU_DRAW, it is also made ready to
  * draw in the full parse's place (@flags: TA_GPU_*). (From the thread that renders.) */
 bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out, u32 flags);
+
+/* TA_GPU_SORT's memory, made (or freed) now, for frames of the machine's
+ * size: about 50 bytes for each triangle a frame can have. (From the
+ * thread that renders, between frames.) */
+bool ta_gpu_sort_reserve(bool on);
+struct SortTrigDrawParam;
+/* What the last ta_gpu_prepare() with TA_GPU_SORT sorted, until the next:
+ * render pass @pass's draws (GenSorted()'s @pidx_sort, first counting from
+ * the first pass's first index, as Drawer::SortTriangles() has them), and
+ * how many there are; NULL and 0 for a pass that is not sorted. The
+ * polygon parameters they point to are the header pass's. */
+const SortTrigDrawParam *ta_gpu_sorted(u32 pass, u32 *count);
+// ...the indices of all of them (GenSorted()'s @vidx_sort, pass after pass)
+u32 ta_gpu_sorted_indices(void);
+void ta_gpu_sorted_write(u32 *dst);
+// ...and what the last sort took, in nanoseconds (0 for none)
+u64 ta_gpu_sorted_ns(void);
 
 /* The GPU pool: @count contexts made now whose data are the slices of
  * @slice bytes from @base (the renderer's persistently mapped, host-cached

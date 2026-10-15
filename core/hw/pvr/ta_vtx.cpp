@@ -10,6 +10,8 @@
 #include "Renderer_if.h"
 #include "rend/tile/pvr_tile.h"
 #include "rend/ta_gpu.h"
+#include "rend/sorter.h"
+#include "rend/shadows.h"
 #include <retro_atomic.h>
 
 /* The larger and the smaller of two, as std::max() and std::min() have
@@ -18,6 +20,7 @@
 #define ta_min(a, b) ((b) < (a) ? (b) : (a))
 
 #include <cmath>
+#include <algorithm>
 
 // TODO/FIXME - should be moved later
 
@@ -1618,6 +1621,8 @@ private:
 
 		cv[1].x=sv->x2;
 	}
+public:
+	// (also the GPU sort's, for the depth of a sprite's corner: see ta_gpu_sort_strips())
 	static void CaclulateSpritePlane(Vertex* base)
 	{
 		const Vertex& A=base[2];
@@ -1666,6 +1671,7 @@ private:
 		P.u = A_u + k1 * AB_u + k2 * AC_u;
 		P.v = A_v + k1 * AB_v + k2 * AC_v;
 	}
+private:
 	__forceinline
 		static void AppendSpriteVertexB(TA_Sprite1B* sv)
 	{
@@ -3507,7 +3513,8 @@ void ta_gpu_sizes(TaGpuSizes *sz)
 	sz->headers = TA_WALK_MAX * scale + 1;
 	sz->runs = TA_WALK_MAX * scale + 16;
 	sz->table_words = TAG_T_WORDS + sz->runs * TAG_R_WORDS + sz->headers * TAG_H_WORDS
-			+ sz->runs * TAG_M_WORDS + TAG_MAX_SEG * TAG_G_WORDS + 4 * TAG_V_WORDS;
+			+ sz->runs * TAG_M_WORDS + TAG_MAX_SEG * TAG_G_WORDS + 4 * TAG_V_WORDS
+			+ TAG_SH_ENTRY + sz->headers;
 }
 
 bool ta_gpu_processing(void)
@@ -3530,6 +3537,430 @@ static bool ta_gpu_any_autosort(const TA_context *ctx)
 	return false;
 }
 
+/* ---- TA_GPU_SORT: the translucent triangles of the sorted render passes ----
+ *
+ * The per-triangle renderer draws a sorted pass's translucent triangles in
+ * the order GenSorted() gives them, one draw for each run of them drawn the
+ * same way, and only the CPU can choose the pipeline and texture of a draw.
+ * So the order is worked out here, from the frame's own blocks: of each
+ * translucent vertex of a sorted pass, only its position (whether it is an
+ * infinite vertex, is_vertex_inf(), and its depth) and its end-of-strip
+ * bit are read, and a sprite's fourth corner is solved as the parse solves
+ * it. Each strip's indices are what make_index() gives it (the translucent
+ * lists are never joined), its triangles are GenSorted()'s, with the
+ * winding of the Vulkan provoking vertex, and their depths are each the
+ * least of its three vertices'. A stable radix sort of those depths as
+ * integers that order as the floats do (tag_fkey(); no vertex that makes
+ * an index has a depth that is not a number) gives std::stable_sort()'s
+ * order; the draws are made as GenSorted() makes them. The vertices,
+ * colours, indices and the rest are the GPU's: the indices written here
+ * name the GPU decode's vertices, by their number. Nothing
+ * is allocated: the room, made by ta_gpu_sort_reserve(), is for as many
+ * triangles as a frame can have indices. */
+static struct TaGpuSortState
+{
+	u32 room;			// triangles
+	u32 *tri;			// 4 words a triangle: its three indices, its header
+	u64 *keys[2];			// depth key << 32 | triangle
+	SortTrigDrawParam *run;
+	u32 pass_first[TAG_MAX_PASS], pass_count[TAG_MAX_PASS];	// each pass's triangles (0: not sorted)
+	u8 pass_buf[TAG_MAX_PASS];	// ...and which of keys[] has them sorted
+	u32 pass_run[TAG_MAX_PASS], pass_runs[TAG_MAX_PASS];
+	u32 tris;
+	u64 ns;
+} gsort;
+
+bool ta_gpu_sort_reserve(bool on)
+{
+	TaGpuSortState &g = gsort;
+	TaGpuSizes sz;
+	if (on)
+	{
+		ta_gpu_sizes(&sz);
+		if (g.room >= sz.idx)
+			return true;
+	}
+	free(g.tri);
+	free(g.keys[0]);
+	free(g.keys[1]);
+	free(g.run);
+	memset(&g, 0, sizeof(g));
+	if (!on)
+		return true;
+	/* (a frame's indices are at most its room, and a triangle takes an
+	 * index or more) */
+	const u32 room = sz.idx;
+	g.tri = (u32 *)malloc((size_t)room * 4 * sizeof(u32));
+	g.keys[0] = (u64 *)malloc((size_t)room * sizeof(u64));
+	g.keys[1] = (u64 *)malloc((size_t)room * sizeof(u64));
+	g.run = (SortTrigDrawParam *)malloc((size_t)room * sizeof(SortTrigDrawParam));
+	if (g.tri == NULL || g.keys[0] == NULL || g.keys[1] == NULL || g.run == NULL)
+	{
+		ta_gpu_sort_reserve(false);
+		WARN_LOG(PVR, "TA processing: no memory for sorting translucent triangles");
+		return false;
+	}
+	// (touched now, so that no frame takes the page faults of their first use)
+	memset(g.tri, 0, (size_t)room * 4 * sizeof(u32));
+	memset(g.keys[0], 0, (size_t)room * sizeof(u64));
+	memset(g.keys[1], 0, (size_t)room * sizeof(u64));
+	memset(g.run, 0, (size_t)room * sizeof(SortTrigDrawParam));
+	g.room = room;
+	return true;
+}
+
+const SortTrigDrawParam *ta_gpu_sorted(u32 pass, u32 *count)
+{
+	if (pass >= TAG_MAX_PASS || gsort.pass_runs[pass] == 0)
+	{
+		*count = 0;
+		return NULL;
+	}
+	*count = gsort.pass_runs[pass];
+	return gsort.run + gsort.pass_run[pass];
+}
+
+u32 ta_gpu_sorted_indices(void)
+{
+	return gsort.tris * 3;
+}
+
+void ta_gpu_sorted_write(u32 *dst)
+{
+	const TaGpuSortState &g = gsort;
+	for (u32 p = 0; p < TAG_MAX_PASS; p++)
+	{
+		const u64 *k = g.keys[g.pass_buf[p]] + g.pass_first[p];
+		for (u32 n = g.pass_count[p]; n != 0; n--, k++, dst += 3)
+		{
+			const u32 *t = &g.tri[(u32)*k * 4];
+			dst[0] = t[0];
+			dst[1] = t[1];
+			dst[2] = t[2];
+		}
+	}
+}
+
+u64 ta_gpu_sorted_ns(void)
+{
+	return gsort.ns;
+}
+
+/* make_index() of one strip at a time, an index at a time (no strip is
+ * joined to another in a translucent list), with each index's depth key,
+ * and GenSorted()'s triangles of the indices as they come */
+struct TaGpuSortStrip
+{
+	TaGpuSortState &g;
+	u32 hdr;		// the strip's header
+	u32 count;		// its indices so far
+	int last_good;		// the last kept vertex's place, -1 for none yet
+	u32 last_good_key;
+	bool dupe;		// the next kept vertex goes in twice (a link)
+	bool link;		// infinite vertices have come since the last kept one
+	u32 i;			// the vertex's place in the strip
+	u32 h_place[2], h_key[2];	// the two indices before
+	bool full;		// more triangles than the room (cannot be: see ta_gpu_sort_reserve())
+
+	TaGpuSortStrip(TaGpuSortState &state) : g(state), full(false) {}
+
+	void start(u32 header)
+	{
+		hdr = header;
+		count = 0;
+		last_good = -1;
+		dupe = false;
+		link = false;
+		i = 0;
+	}
+
+	void put(u32 place, u32 key)
+	{
+		if (count >= 2)
+		{
+			const u32 t = g.tris;
+			if (t == g.room)
+				full = true;
+			else
+			{
+				/* GenSorted(), firstProvoking: every other triangle starts
+				 * with the vertex that holds its colour */
+				u32 *d = &g.tri[t * 4];
+				if ((count - 2) & 1)
+				{
+					d[0] = h_place[0];
+					d[1] = place;
+					d[2] = h_place[1];
+				}
+				else
+				{
+					d[0] = h_place[0];
+					d[1] = h_place[1];
+					d[2] = place;
+				}
+				d[3] = hdr;
+				u32 key3 = h_key[0] < h_key[1] ? h_key[0] : h_key[1];
+				if (key < key3)
+					key3 = key;
+				g.keys[0][t] = ((u64)key3 << 32) | t;
+				g.tris = t + 1;
+			}
+		}
+		h_place[0] = h_place[1];
+		h_key[0] = h_key[1];
+		h_place[1] = place;
+		h_key[1] = key;
+		count++;
+	}
+
+	// the strip's next vertex, number @place (make_index()'s loop, its look ahead for the next kept vertex turned round)
+	void vertex(u32 place, u32 x, u32 y, u32 z)
+	{
+		if (tag_inf(x, y, z) != 0)
+			link = true;
+		else
+		{
+			if (link && last_good >= 0)
+			{
+				put((u32)last_good, last_good_key);
+				dupe = true;
+			}
+			link = false;
+			const u32 key = tag_fkey(z);
+			last_good = (int)place;
+			last_good_key = key;
+			if (dupe)
+			{
+				put(place, key);
+				dupe = false;
+			}
+			if ((i ^ count) & 1)
+				put(place, key);
+			put(place, key);
+		}
+		i++;
+	}
+};
+
+/* The translucent strips of the sorted render passes, from their blocks,
+ * in the order the parse makes them: the runs as they came, and each
+ * header's strips in its runs */
+static bool ta_gpu_sort_strips(const TaWalkFrame &f, const u8 *root, const bool *sorted)
+{
+	TaGpuSortState &g = gsort;
+	TaGpuSortStrip s(g);
+	u32 cur_pass = TAG_MAX_PASS;
+	u32 open_hdr = TA_WALK_NO_GROUP;
+
+	for (u32 i = 0; i < f.runs; i++)
+	{
+		const TaWalkRun &run = f.run[i];
+		if (run.header & TA_WALK_MODVOL)
+			continue;
+		const TaWalkHeader &h = f.header[run.header];
+		if (h.list != ListType_Translucent || !sorted[h.pass])
+			continue;
+		if (h.pass != cur_pass)
+		{
+			cur_pass = h.pass;
+			g.pass_first[cur_pass] = g.tris;
+		}
+		// (its vertices: up to the next run of vertices, or the frame's last)
+		u32 j = i + 1, end = f.verts;
+		while (j < f.runs && (f.run[j].header & TA_WALK_MODVOL))
+			j++;
+		if (j < f.runs)
+			end = f.run[j].vertex;
+		const u32 n = end - run.vertex;
+		// (the GPU decode's vertex buffer has them in the order they came, as the parse's)
+		const u32 place = run.vertex;
+		if (open_hdr != run.header)
+		{
+			// (a strip does not go on from one header to the next: the header pass leaves such a frame to the parse)
+			s.start(run.header);
+			open_hdr = run.header;
+		}
+		if (h.format == TA_WALK_SPRITE)
+		{
+			for (u32 k = 0; k + 4 <= n; k += 4)
+			{
+				const u32 *w = (const u32 *)(root + (size_t)(run.block + 2 * (k >> 2)) * 32);
+				/* the corners as AppendSpriteVertexA() and B() put them, and
+				 * the first's depth as the parse works it out */
+				Vertex c[4];
+				memset(c, 0, sizeof(c));
+				memcpy(&c[2].x, &w[1], 12);
+				memcpy(&c[3].x, &w[4], 12);
+				memcpy(&c[1].x, &w[7], 12);
+				memcpy(&c[0].x, &w[10], 8);
+				FifoSplitter::CaclulateSpritePlane(c);
+				u32 z0;
+				memcpy(&z0, &c[0].z, 4);
+				s.start(run.header);
+				s.vertex(place + k, w[10], w[11], z0);
+				s.vertex(place + k + 1, w[7], w[8], w[9]);
+				s.vertex(place + k + 2, w[1], w[2], w[3]);
+				s.vertex(place + k + 3, w[4], w[5], w[6]);
+			}
+			open_hdr = TA_WALK_NO_GROUP;
+		}
+		else
+		{
+			const u32 vb = h.vblocks;
+			const u32 *w = (const u32 *)(root + (size_t)run.block * 32);
+			for (u32 k = 0; k < n; k++, w += vb * 8)
+			{
+				s.vertex(place + k, w[1], w[2], w[3]);
+				if (((const PCW *)w)->EndOfStrip)
+					s.start(run.header);
+			}
+		}
+		g.pass_count[cur_pass] = g.tris - g.pass_first[cur_pass];
+	}
+	return !s.full;
+}
+
+/* A stable sort of @n keys from @k[0] by their top 32 bits, a digit of 11,
+ * 11 and 10 bits at a time, from the lowest; a digit all of them share
+ * takes no pass. Which of the two has them in the end. (A few hundred are
+ * sorted whole, the triangle's number in the low half breaking ties: the
+ * same order, without the passes' fixed cost.) */
+static u32 ta_gpu_sort_keys(u64 *k[2], u32 first, u32 n)
+{
+	static u32 hist[3][2048];
+	static const u32 shift[3] = { 32, 43, 54 };
+	u32 at = 0;
+	if (n <= 256)
+	{
+		std::sort(k[0] + first, k[0] + first + n);
+		return 0;
+	}
+	memset(hist, 0, sizeof(hist));
+	const u64 *a = k[0] + first;
+	for (u32 i = 0; i < n; i++)
+	{
+		const u64 v = a[i];
+		hist[0][(v >> 32) & 2047]++;
+		hist[1][(v >> 43) & 2047]++;
+		hist[2][(v >> 54) & 1023]++;
+	}
+	for (u32 d = 0; d < 3; d++)
+	{
+		const u64 *src = k[at] + first;
+		if (hist[d][(src[0] >> shift[d]) & 2047] == n)
+			continue;
+		u32 sum = 0;
+		for (u32 b = 0; b < 2048; b++)
+		{
+			const u32 c = hist[d][b];
+			hist[d][b] = sum;
+			sum += c;
+		}
+		u64 *dst = k[at ^ 1] + first;
+		for (u32 i = 0; i < n; i++)
+		{
+			const u64 v = src[i];
+			dst[hist[d][(v >> shift[d]) & 2047]++] = v;
+		}
+		at ^= 1;
+	}
+	return at;
+}
+
+/* The sorted passes of the frame the header pass made (before its lists
+ * are made into draw groups), with @seg_v each segment's vertices: false
+ * if they do not fit (which cannot be) */
+static bool ta_gpu_sort_frame(TaWalkFrame &f, const u8 *root)
+{
+	TaGpuSortState &g = gsort;
+	bool sorted[TAG_MAX_PASS];
+	u32 p;
+	const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+
+	g.tris = 0;
+	memset(g.pass_first, 0, sizeof(g.pass_first));
+	memset(g.pass_count, 0, sizeof(g.pass_count));
+	memset(g.pass_buf, 0, sizeof(g.pass_buf));
+	bool any = false;
+	for (p = 0; p < TAG_MAX_PASS; p++)
+	{
+		sorted[p] = p < f.passes && f.pass[p].autosort;
+		any = any || sorted[p];
+	}
+	if (!any)
+		return true;
+	if (!ta_gpu_sort_strips(f, root, sorted))
+		return false;
+
+	// each pass: sorted, and its draws made as GenSorted() makes them
+	u32 nrun = 0;
+	for (p = 0; p < f.passes; p++)
+	{
+		const u32 n = g.pass_count[p];
+		g.pass_run[p] = nrun;
+		if (n == 0)
+			continue;
+		g.pass_buf[p] = (u8)ta_gpu_sort_keys(g.keys, g.pass_first[p], n);
+		const u64 *k = g.keys[g.pass_buf[p]] + g.pass_first[p];
+		u32 cur = g.tri[(u32)k[0] * 4 + 3];
+		u32 start = 0;
+		for (u32 j = 1; j <= n; j++)
+		{
+			u32 h = 0;
+			if (j < n)
+			{
+				h = g.tri[(u32)k[j] * 4 + 3];
+				// (another strip of the same polygon, or one drawn the same way: the same draw)
+				if (h == cur || SortSameDraw(&f.header[h].pp, &f.header[cur].pp))
+					continue;
+			}
+			SortTrigDrawParam &r = g.run[nrun++];
+			r.ppid = &f.header[cur].pp;
+			r.first = (g.pass_first[p] + start) * 3;
+			r.count = (j - start) * 3;
+			cur = h;
+			start = j;
+		}
+		g.pass_runs[p] = nrun - g.pass_run[p];
+	}
+	g.ns = (u64)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+	return true;
+}
+
+/* TA_GPU_SHADOWS: what each render pass's opaque modifier volumes cover,
+ * from the triangles' blocks, as ModVolBounds() has it from the parse's */
+static void ta_gpu_shadow_areas(const TaWalkFrame &f, const u8 *root, f32 (*area)[4])
+{
+	u32 r = 0, prev = 0;
+	for (u32 p = 0; p < f.passes; p++)
+	{
+		ScreenBounds b = { 1e30f, 1e30f, -1e30f, -1e30f };
+		for (u32 m = prev; m < f.pass[p].mvo_count; m++)
+		{
+			const ModifierVolumeParam &mp = f.mvo[0][m];
+			for (u32 t = mp.first; t < mp.first + mp.count; t++)
+			{
+				// (the runs of both lists' volumes' triangles, which are numbered together, in their order)
+				while (r < f.runs && (!(f.run[r].header & TA_WALK_MODVOL) || f.run[r].vertex + (f.run[r].blocks + 1) / 2 <= t))
+					r++;
+				if (r == f.runs)
+					break;
+				const u32 *w = (const u32 *)(root + (size_t)(f.run[r].block + 2 * (t - f.run[r].vertex)) * 32);
+				float c[9];
+				memcpy(c, &w[1], sizeof(c));
+				b.add(c[0], c[1]);
+				b.add(c[3], c[4]);
+				b.add(c[6], c[7]);
+			}
+		}
+		prev = f.pass[p].mvo_count;
+		area[p][0] = b.min_x;
+		area[p][1] = b.min_y;
+		area[p][2] = b.max_x;
+		area[p][3] = b.max_y;
+	}
+}
+
 bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out, u32 flags)
 {
 	TaWalkFrame &f = walk_frame[0];
@@ -3537,6 +3968,12 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	const bool draw = (flags & TA_GPU_DRAW) != 0;
 
 	out->why = TA_GPU_WHY_TABLE;
+	out->shadows = 0;
+	// (nothing sorted, until this frame is)
+	gsort.tris = 0;
+	gsort.ns = 0;
+	memset(gsort.pass_count, 0, sizeof(gsort.pass_count));
+	memset(gsort.pass_runs, 0, sizeof(gsort.pass_runs));
 	if (!ta_gpu_on || !ta_walk_table(ctx, &count))
 		return false;
 	if (draw)
@@ -3552,7 +3989,7 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 		 * from the CPU's vertices: it has the full parse for a frame that
 		 * may have a sorted pass */
 		out->why = TA_GPU_WHY_SORT;
-		if ((flags & TA_GPU_NO_SORT) && ta_gpu_any_autosort(ctx))
+		if (((flags & TA_GPU_NO_SORT) || ((flags & TA_GPU_SORT) && gsort.room == 0)) && ta_gpu_any_autosort(ctx))
 			return false;
 	}
 	out->why = TA_GPU_WHY_WALK;
@@ -3602,7 +4039,10 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	const u32 off_mvrun = off_hdr + nhdr * TAG_H_WORDS;
 	const u32 off_seg = off_mvrun + nmvruns * TAG_M_WORDS;
 	const u32 off_bg = off_seg + nseg * TAG_G_WORDS;
-	const u32 words = off_bg + 4 * TAG_V_WORDS;
+	const u32 off_shd = off_bg + 4 * TAG_V_WORDS;
+	const bool shadows = draw && (flags & TA_GPU_SHADOWS) != 0;
+	// (an entry for each draw group at most, which is a header at most)
+	const u32 words = off_shd + (shadows ? TAG_SH_ENTRY + nhdr : 0);
 	if (words > table_room || nhdr > sz.headers)
 		return false;
 
@@ -3658,6 +4098,11 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 			if ((u64)ls[0] + 1 > lroom[0] || (u64)ls[1] + 1 > lroom[1] || (u64)ls[2] + 1 > lroom[2])
 				return false;
 		}
+		/* The sorted passes' translucent triangles, in the order the
+		 * per-triangle renderer draws them */
+		out->why = TA_GPU_WHY_SORT;
+		if ((flags & TA_GPU_SORT) && !ta_gpu_sort_frame(f, ctx->tad.thd_root))
+			return false;
 		/* Drawn from here on: the lists hold a polygon parameter for each
 		 * draw group (see TA_GPU_DRAW) */
 		rc.global_param_op.Clear();
@@ -3835,6 +4280,9 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	memcpy(&t[TAG_T_TA_BASE], layout->words, sizeof(layout->words));
 	t[TAG_T_NPASS] = f.passes;
 	t[TAG_T_ROOM_VTX] = sz.verts;
+	t[TAG_T_OFF_SHD] = off_shd;
+	t[TAG_T_NSHD] = 0;
+	t[TAG_T_SHD_CMD] = sz.headers;
 
 	out->table_words = words;
 	out->verts = f.verts;
@@ -3879,6 +4327,34 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 		rc.gpu = true;
 		rc.gpu_modtrig = f.modtrig;
 		ta_parse_cnt++;
+		/* The draw groups the per-triangle renderer draws again for
+		 * shadows (Drawer::DrawShadowed()), each with its render pass's
+		 * volumes' bounds, for the GPU to say which reach into them */
+		if (shadows)
+		{
+			u32 *sh = &table[off_shd];
+			u32 nsh = 0, prev[2] = { 0, 0 };
+			ta_gpu_shadow_areas(f, ctx->tad.thd_root, rc.gpu_shadow_area);
+			for (u32 p = 0; p < f.passes; p++)
+			{
+				memcpy(&sh[TAG_SH_AREA + p * 4], rc.gpu_shadow_area[p], 4 * sizeof(u32));
+				const ScreenBounds area = { rc.gpu_shadow_area[p][0], rc.gpu_shadow_area[p][1], rc.gpu_shadow_area[p][2], rc.gpu_shadow_area[p][3] };
+				const RenderPass &rp = rc.render_passes.head()[p];
+				const u32 end[2] = { rp.op_count, rp.pt_count };
+				for (l = 0; l < 2; l++)
+				{
+					for (i = prev[l]; i < end[l] && !area.empty(); i++)
+					{
+						const PolyParam &pp = lists[l]->head()[i];
+						if (CanDrawShadowed(l == 0 ? ListType_Opaque : ListType_Punch_Through, &pp))
+							sh[TAG_SH_ENTRY + nsh++] = TAG_SH(pp.first, p);
+					}
+					prev[l] = end[l];
+				}
+			}
+			t[TAG_T_NSHD] = nsh;
+			out->shadows = nsh;
+		}
 	}
 	return true;
 }
@@ -3890,6 +4366,8 @@ void ta_set_gpu_processing(bool on)
 	if (on && !ta_walk_init())
 		on = false;
 	ta_gpu_on = on;
+	if (!on)
+		ta_gpu_sort_reserve(false);
 	if (!on && !ta_walk_checking)
 		ta_walk_term();
 	ta_set_walk(on || ta_walk_checking);

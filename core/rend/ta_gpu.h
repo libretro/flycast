@@ -51,6 +51,12 @@
  *               their first, as the Vulkan renderers draw them
  *               (BaseDrawer::SetProvokingVertices(), whose order of reads
  *               and writes it keeps).
+ *  14 shadow    (TAG_T_NSHD) one workgroup a draw group the CPU names: the
+ *               rectangle around the vertices its indices reach, against
+ *               the part of the screen its render pass's opaque modifier
+ *               volumes cover, which the CPU gives; its draw command again
+ *               for its second drawing for shadows, with no indices if
+ *               they do not meet (PolyOverlaps() in rend/shadows.h).
  * Nothing is read back: the counts are indirect dispatch and draw
  * arguments, and the farthest depth (fZ_max) is a word of the frame
  * buffer for the GPU to read.
@@ -84,7 +90,8 @@
 #define TAG_K_BLEED    11
 #define TAG_K_TRDRAW   12
 #define TAG_K_PROVOKE  13
-#define TAG_KERNELS    13
+#define TAG_K_SHADOW   14
+#define TAG_KERNELS    14
 
 #if defined(TAG_SHADER_GLSL)
 
@@ -188,7 +195,10 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_T_REC_TR   29
 #define TAG_T_NPASS    30
 #define TAG_T_ROOM_VTX 31  /* vertices the output buffer has room for */
-#define TAG_T_WORDS    32
+#define TAG_T_OFF_SHD  32  /* the shadow table (TAG_SH_*) */
+#define TAG_T_NSHD     33  /* ...its entries */
+#define TAG_T_SHD_CMD  34  /* where the second commands go in the command buffer (a slot's: this plus the slot) */
+#define TAG_T_WORDS    36
 
 #define TAG_FLAG_BLEED 1u  /* the texture bleeding fix (above 480 lines) */
 #define TAG_FLAG_PROVOKE 2u  /* the provoking vertex's colours (kernel 13) */
@@ -229,6 +239,17 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_S_TSP1   4
 #define TAG_S_TCW1   5
 #define TAG_S_CLIP   6
+
+/* The shadow table: for each render pass the part of the screen its
+ * opaque modifier volumes cover, as the floats' bits (min x, min y, max x,
+ * max y: ModVolBounds()), then an entry for each draw group the
+ * per-triangle renderer draws again for shadows: its command's slot and
+ * its render pass */
+#define TAG_SH_AREA    0
+#define TAG_SH_ENTRY   (TAG_MAX_PASS * 4)
+#define TAG_SH(slot, pass) (TAG_U32(slot) | (TAG_U32(pass) << 24))
+#define TAG_SH_SLOT(e) ((e) & 0xFFFFFFu)
+#define TAG_SH_PASS(e) ((e) >> 24)
 
 /* A segment: one list of one render pass */
 #define TAG_G_VSTART 0
@@ -655,6 +676,53 @@ TAG_FN tag_u32 tag_u2f(tag_u32 n)
       return 0u;
    e = 31u - tag_clz(n);
    return ((127u + e) << 23) | ((n << (23u - e)) & 0x7FFFFFu);
+}
+
+/* ---- Shadows: a rectangle around vertices ----
+ *
+ * As ScreenBounds and PolyOverlaps() have it (rend/shadows.h): from 1e30
+ * down and -1e30 up, a coordinate that is not a number changes nothing,
+ * and the corners are compared as floats are. Kept as tag_fkey()s, so
+ * that the smallest and largest come out the same on any GPU. */
+TAG_STRUCT(tag_bounds)
+{
+   tag_u32 lo_x, lo_y, hi_x, hi_y;
+}
+TAG_STRUCT_END(tag_bounds)
+
+TAG_FN tag_u32 tag_umin(tag_u32 a, tag_u32 b) { return a < b ? a : b; }
+TAG_FN tag_u32 tag_umax(tag_u32 a, tag_u32 b) { return a > b ? a : b; }
+
+TAG_FN tag_bounds tag_bounds_none(void)
+{
+   tag_bounds b;
+   b.lo_x = tag_fkey(0x7149F2CAu);   /* 1e30f */
+   b.lo_y = b.lo_x;
+   b.hi_x = tag_fkey(0xF149F2CAu);   /* -1e30f */
+   b.hi_y = b.hi_x;
+   return b;
+}
+
+TAG_FN tag_bounds tag_bounds_add(tag_bounds b, tag_u32 x, tag_u32 y)
+{
+   if (tag_isnan(x) == 0u)
+   {
+      b.lo_x = tag_umin(b.lo_x, tag_fkey(x));
+      b.hi_x = tag_umax(b.hi_x, tag_fkey(x));
+   }
+   if (tag_isnan(y) == 0u)
+   {
+      b.lo_y = tag_umin(b.lo_y, tag_fkey(y));
+      b.hi_y = tag_umax(b.hi_y, tag_fkey(y));
+   }
+   return b;
+}
+
+/* whether @b meets the rectangle of the floats' bits @x0 @y0 to @x1 @y1
+ * (which are numbers) */
+TAG_FN tag_u32 tag_bounds_meet(tag_bounds b, tag_u32 x0, tag_u32 y0, tag_u32 x1, tag_u32 y1)
+{
+   return (b.lo_x <= tag_fkey(x1) && b.hi_x >= tag_fkey(x0) && b.lo_y <= tag_fkey(y1) && b.hi_y >= tag_fkey(y0)) ? 1u : 0u;
 }
 
 /* ---- The vertex formats ---- */
@@ -1867,6 +1935,65 @@ void main()
          vtx.w[o + TAG_V_SPC1] = c3;
       }
       memoryBarrierBuffer();
+      barrier();
+   }
+}
+#endif
+
+#if TAG_KERNEL == TAG_K_SHADOW
+/* A workgroup for each entry of the shadow table (as many workgroups as
+ * there are, up to the most a dispatch has, each then taking every so
+ * many): the rectangle around the vertices of its draw group's indices,
+ * gathered by its 64 threads, against its render pass's; its command
+ * again, with its indices if they meet, none if not. The CPU's walk stops
+ * as soon as the rectangle meets, which the rectangle of all of them then
+ * does too. */
+layout(local_size_x = 64) in;
+shared uint s_b[256];
+void main()
+{
+   uint t = gl_LocalInvocationID.x, n = tab.w[TAG_T_NSHD], base = tab.w[TAG_T_OFF_SHD], e, i, h;
+   for (e = gl_WorkGroupID.x; e < n; e += gl_NumWorkGroups.x)
+   {
+      uint w = tab.w[base + TAG_SH_ENTRY + e];
+      uint at = TAG_SH_SLOT(w) * TAG_C_WORDS, a = base + TAG_SH_AREA + TAG_SH_PASS(w) * 4u;
+      uint count = cmd.w[at + TAG_C_COUNT], first = cmd.w[at + TAG_C_FIRST];
+      tag_bounds b = tag_bounds_none();
+      for (i = t; i < count; i += 64u)
+      {
+         uint o = idx.w[first + i] * TAG_V_WORDS;
+         b = tag_bounds_add(b, vtx.w[o + TAG_V_X], vtx.w[o + TAG_V_Y]);
+      }
+      s_b[t] = b.lo_x;
+      s_b[64u + t] = b.lo_y;
+      s_b[128u + t] = b.hi_x;
+      s_b[192u + t] = b.hi_y;
+      barrier();
+      for (h = 32u; h > 0u; h >>= 1)
+      {
+         if (t < h)
+         {
+            s_b[t] = min(s_b[t], s_b[t + h]);
+            s_b[64u + t] = min(s_b[64u + t], s_b[64u + t + h]);
+            s_b[128u + t] = max(s_b[128u + t], s_b[128u + t + h]);
+            s_b[192u + t] = max(s_b[192u + t], s_b[192u + t + h]);
+         }
+         barrier();
+      }
+      if (t == 0u)
+      {
+         uint o = (tab.w[TAG_T_SHD_CMD] + TAG_SH_SLOT(w)) * TAG_C_WORDS;
+         b.lo_x = s_b[0];
+         b.lo_y = s_b[64];
+         b.hi_x = s_b[128];
+         b.hi_y = s_b[192];
+         cmd.w[o + TAG_C_COUNT] = count != 0u && tag_bounds_meet(b, tab.w[a], tab.w[a + 1u], tab.w[a + 2u], tab.w[a + 3u]) != 0u
+               ? count : 0u;
+         cmd.w[o + TAG_C_INST] = 1u;
+         cmd.w[o + TAG_C_FIRST] = first;
+         cmd.w[o + 3u] = 0u;
+         cmd.w[o + 4u] = 0u;
+      }
       barrier();
    }
 }

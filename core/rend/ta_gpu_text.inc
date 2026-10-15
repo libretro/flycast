@@ -53,6 +53,12 @@ R"TAG_TEXT(
  *               their first, as the Vulkan renderers draw them
  *               (BaseDrawer::SetProvokingVertices(), whose order of reads
  *               and writes it keeps).
+ *  14 shadow    (TAG_T_NSHD) one workgroup a draw group the CPU names: the
+ *               rectangle around the vertices its indices reach, against
+ *               the part of the screen its render pass's opaque modifier
+ *               volumes cover, which the CPU gives; its draw command again
+ *               for its second drawing for shadows, with no indices if
+ *               they do not meet (PolyOverlaps() in rend/shadows.h).
  * Nothing is read back: the counts are indirect dispatch and draw
  * arguments, and the farthest depth (fZ_max) is a word of the frame
  * buffer for the GPU to read.
@@ -86,7 +92,8 @@ R"TAG_TEXT(
 #define TAG_K_BLEED    11
 #define TAG_K_TRDRAW   12
 #define TAG_K_PROVOKE  13
-#define TAG_KERNELS    13
+#define TAG_K_SHADOW   14
+#define TAG_KERNELS    14
 
 #if defined(TAG_SHADER_GLSL)
 
@@ -190,7 +197,10 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_T_REC_TR   29
 #define TAG_T_NPASS    30
 #define TAG_T_ROOM_VTX 31  /* vertices the output buffer has room for */
-#define TAG_T_WORDS    32
+#define TAG_T_OFF_SHD  32  /* the shadow table (TAG_SH_*) */
+#define TAG_T_NSHD     33  /* ...its entries */
+#define TAG_T_SHD_CMD  34  /* where the second commands go in the command buffer (a slot's: this plus the slot) */
+#define TAG_T_WORDS    36
 
 #define TAG_FLAG_BLEED 1u  /* the texture bleeding fix (above 480 lines) */
 #define TAG_FLAG_PROVOKE 2u  /* the provoking vertex's colours (kernel 13) */
@@ -232,6 +242,17 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_S_TCW1   5
 #define TAG_S_CLIP   6
 
+/* The shadow table: for each render pass the part of the screen its
+ * opaque modifier volumes cover, as the floats' bits (min x, min y, max x,
+ * max y: ModVolBounds()), then an entry for each draw group the
+ * per-triangle renderer draws again for shadows: its command's slot and
+ * its render pass */
+#define TAG_SH_AREA    0
+#define TAG_SH_ENTRY   (TAG_MAX_PASS * 4)
+#define TAG_SH(slot, pass) (TAG_U32(slot) | (TAG_U32(pass) << 24))
+#define TAG_SH_SLOT(e) ((e) & 0xFFFFFFu)
+#define TAG_SH_PASS(e) ((e) >> 24)
+
 /* A segment: one list of one render pass */
 #define TAG_G_VSTART 0
 #define TAG_G_VEND   1
@@ -239,6 +260,7 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 
 #define TAG_NONE     0xFFFFFFFFu
 
+)TAG_TEXT" R"TAG_TEXT(
 /* A header's format, its vertices' size (1 or 2 blocks), its list (0
  * opaque, 1 punch-through, 2 translucent), its segment, and whether it is
  * textured */
@@ -262,7 +284,6 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_O_ARGSCH  7    /* ...a workgroup a 1024 strips (TAG_CH_WG x TAG_CH) */
 #define TAG_O_ARGS1   10   /* ...a workgroup a strip */
 #define TAG_O_PASS    16   /* each render pass's polygon parameters, as the lists have them at its end: 3 words */
-)TAG_TEXT" R"TAG_TEXT(
 #define TAG_O_SEG     48   /* each segment: TAG_OS_* */
 #define TAG_O_WORDS   176
 #define TAG_OS_SFIRST 0    /* its first strip */
@@ -623,6 +644,7 @@ TAG_FN tag_u32 tag_fdiv(tag_u32 a, tag_u32 b)
          r -= mb;
          q |= 1u;
       }
+)TAG_TEXT" R"TAG_TEXT(
       r <<= 1;
    }
    return tag_round_pack(s, ez, q | (r != 0u ? 1u : 0u));
@@ -660,6 +682,53 @@ TAG_FN tag_u32 tag_u2f(tag_u32 n)
    return ((127u + e) << 23) | ((n << (23u - e)) & 0x7FFFFFu);
 }
 
+/* ---- Shadows: a rectangle around vertices ----
+ *
+ * As ScreenBounds and PolyOverlaps() have it (rend/shadows.h): from 1e30
+ * down and -1e30 up, a coordinate that is not a number changes nothing,
+ * and the corners are compared as floats are. Kept as tag_fkey()s, so
+ * that the smallest and largest come out the same on any GPU. */
+TAG_STRUCT(tag_bounds)
+{
+   tag_u32 lo_x, lo_y, hi_x, hi_y;
+}
+TAG_STRUCT_END(tag_bounds)
+
+TAG_FN tag_u32 tag_umin(tag_u32 a, tag_u32 b) { return a < b ? a : b; }
+TAG_FN tag_u32 tag_umax(tag_u32 a, tag_u32 b) { return a > b ? a : b; }
+
+TAG_FN tag_bounds tag_bounds_none(void)
+{
+   tag_bounds b;
+   b.lo_x = tag_fkey(0x7149F2CAu);   /* 1e30f */
+   b.lo_y = b.lo_x;
+   b.hi_x = tag_fkey(0xF149F2CAu);   /* -1e30f */
+   b.hi_y = b.hi_x;
+   return b;
+}
+
+TAG_FN tag_bounds tag_bounds_add(tag_bounds b, tag_u32 x, tag_u32 y)
+{
+   if (tag_isnan(x) == 0u)
+   {
+      b.lo_x = tag_umin(b.lo_x, tag_fkey(x));
+      b.hi_x = tag_umax(b.hi_x, tag_fkey(x));
+   }
+   if (tag_isnan(y) == 0u)
+   {
+      b.lo_y = tag_umin(b.lo_y, tag_fkey(y));
+      b.hi_y = tag_umax(b.hi_y, tag_fkey(y));
+   }
+   return b;
+}
+
+/* whether @b meets the rectangle of the floats' bits @x0 @y0 to @x1 @y1
+ * (which are numbers) */
+TAG_FN tag_u32 tag_bounds_meet(tag_bounds b, tag_u32 x0, tag_u32 y0, tag_u32 x1, tag_u32 y1)
+{
+   return (b.lo_x <= tag_fkey(x1) && b.hi_x >= tag_fkey(x0) && b.lo_y <= tag_fkey(y1) && b.hi_y >= tag_fkey(y0)) ? 1u : 0u;
+}
+
 /* ---- The vertex formats ---- */
 
 /* saturate01() of a float's bits: 0 to 1, anything negative 0; anything
@@ -671,7 +740,6 @@ TAG_FN tag_u32 tag_sat(tag_u32 b)
    return b > 0x3F800000u ? 0x3F800000u : b;
 }
 
-)TAG_TEXT" R"TAG_TEXT(
 /* float_to_satu8(): the clamped value times 255, truncated. (The product
  * of a number from 0 to 1 and 255 is the same correctly rounded on any
  * GPU, and one too small to count is 0 whether the GPU keeps denormals or
@@ -938,6 +1006,7 @@ TAG_FN tag_u32 tag_find_header(tag_u32 p)
       else
          hi = mid;
    }
+)TAG_TEXT" R"TAG_TEXT(
    return base + lo * TAG_H_WORDS;
 }
 
@@ -1021,7 +1090,6 @@ TAG_FN tag_unpacked tag_unpack(tag_u32 v)
  *      same way, and that group has indices), after an even number of the
  *      group's indices;
  *   2  the same after an odd number.
-)TAG_TEXT" R"TAG_TEXT(
  * Joined, it starts with the group's last index again, and its first kept
  * vertex twice; a run of infinite vertices between two kept ones is
  * bridged by the last kept one and the next, twice; and a vertex is
@@ -1349,6 +1417,7 @@ TAG_FN uint tag_strip_record(uint k, uint hdr)
    uint list = TAG_INFO_LIST(info);
    uint base = list == 0u ? tab.w[TAG_T_REC_OP] : list == 1u ? tab.w[TAG_T_REC_PT] : tab.w[TAG_T_REC_TR];
    uint room = list == 0u ? tab.w[TAG_T_ROOM_OP] : list == 1u ? tab.w[TAG_T_ROOM_PT] : tab.w[TAG_T_ROOM_TR];
+)TAG_TEXT" R"TAG_TEXT(
    return li < room ? base + li * TAG_C_WORDS : TAG_NONE;
 }
 
@@ -1437,7 +1506,6 @@ void main()
    for (s = 1u; s < TAG_SCAN_WG; s <<= 1)
    {
       uint add = t >= s ? s_sum[t - s] : 0u;
-)TAG_TEXT" R"TAG_TEXT(
       barrier();
       s_sum[t] += add;
       barrier();
@@ -1736,6 +1804,7 @@ void main()
    uint k = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
    uint sst = tab.w[TAG_T_W_SSTATE];
    if (work.w[sst + k * TAG_ST_WORDS + 1u] != 0u || frm.w[TAG_O_OVERRUN] != 0u)
+)TAG_TEXT" R"TAG_TEXT(
       return;
    uint hdr = work.w[tab.w[TAG_T_W_SSUM] + k * TAG_SS_WORDS + 4u];
    uint r = tag_strip_record(k, hdr);
@@ -1813,7 +1882,6 @@ void main()
    trd.w[at + TAG_C_COUNT] = rec.w[r + TAG_C_COUNT];
    trd.w[at + TAG_C_INST] = 1u;
    trd.w[at + TAG_C_FIRST] = rec.w[r + TAG_C_FIRST];
-)TAG_TEXT" R"TAG_TEXT(
    trd.w[at + 3u] = 0u;
    trd.w[at + TAG_C_INSTANCE] = (tab.w[TAG_T_FLAGS] & TAG_FLAG_INSTANCE) != 0u ? li : 0u;
    bool last = k + 1u == ns;
@@ -1874,6 +1942,65 @@ void main()
          vtx.w[o + TAG_V_SPC1] = c3;
       }
       memoryBarrierBuffer();
+      barrier();
+   }
+}
+#endif
+
+#if TAG_KERNEL == TAG_K_SHADOW
+/* A workgroup for each entry of the shadow table (as many workgroups as
+ * there are, up to the most a dispatch has, each then taking every so
+ * many): the rectangle around the vertices of its draw group's indices,
+ * gathered by its 64 threads, against its render pass's; its command
+ * again, with its indices if they meet, none if not. The CPU's walk stops
+ * as soon as the rectangle meets, which the rectangle of all of them then
+ * does too. */
+layout(local_size_x = 64) in;
+shared uint s_b[256];
+void main()
+{
+   uint t = gl_LocalInvocationID.x, n = tab.w[TAG_T_NSHD], base = tab.w[TAG_T_OFF_SHD], e, i, h;
+   for (e = gl_WorkGroupID.x; e < n; e += gl_NumWorkGroups.x)
+   {
+      uint w = tab.w[base + TAG_SH_ENTRY + e];
+      uint at = TAG_SH_SLOT(w) * TAG_C_WORDS, a = base + TAG_SH_AREA + TAG_SH_PASS(w) * 4u;
+      uint count = cmd.w[at + TAG_C_COUNT], first = cmd.w[at + TAG_C_FIRST];
+      tag_bounds b = tag_bounds_none();
+      for (i = t; i < count; i += 64u)
+      {
+         uint o = idx.w[first + i] * TAG_V_WORDS;
+         b = tag_bounds_add(b, vtx.w[o + TAG_V_X], vtx.w[o + TAG_V_Y]);
+      }
+      s_b[t] = b.lo_x;
+      s_b[64u + t] = b.lo_y;
+      s_b[128u + t] = b.hi_x;
+      s_b[192u + t] = b.hi_y;
+      barrier();
+      for (h = 32u; h > 0u; h >>= 1)
+      {
+         if (t < h)
+         {
+            s_b[t] = min(s_b[t], s_b[t + h]);
+            s_b[64u + t] = min(s_b[64u + t], s_b[64u + t + h]);
+            s_b[128u + t] = max(s_b[128u + t], s_b[128u + t + h]);
+            s_b[192u + t] = max(s_b[192u + t], s_b[192u + t + h]);
+         }
+         barrier();
+      }
+      if (t == 0u)
+      {
+         uint o = (tab.w[TAG_T_SHD_CMD] + TAG_SH_SLOT(w)) * TAG_C_WORDS;
+         b.lo_x = s_b[0];
+         b.lo_y = s_b[64];
+         b.hi_x = s_b[128];
+         b.hi_y = s_b[192];
+         cmd.w[o + TAG_C_COUNT] = count != 0u && tag_bounds_meet(b, tab.w[a], tab.w[a + 1u], tab.w[a + 2u], tab.w[a + 3u]) != 0u
+               ? count : 0u;
+         cmd.w[o + TAG_C_INST] = 1u;
+         cmd.w[o + TAG_C_FIRST] = first;
+         cmd.w[o + 3u] = 0u;
+         cmd.w[o + 4u] = 0u;
+      }
       barrier();
    }
 }
