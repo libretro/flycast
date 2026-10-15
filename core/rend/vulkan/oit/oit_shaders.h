@@ -22,17 +22,18 @@
 #include <map>
 #include "../vulkan.h"
 #include "../utils.h"
+#include "../shaders.h"
 
 enum class Pass { Depth, Color, OIT };
 
+/* The per-pixel renderer's shaders, made in Init(), before any pipeline
+ * is: SPIR-V of vulkan/shaders/ (raster_spv.inc) */
 class OITShaderManager
 {
 public:
 	struct VertexShaderParams
 	{
 		bool gouraud;
-
-		u32 hash() { return (u32)gouraud; }
 	};
 
 	// alpha test, clip test, use alpha, texture, ignore alpha, shader instr, offset, fog, gouraud, bump, clamp
@@ -54,113 +55,61 @@ public:
 		Pass pass;
 		int sampleRate;	// SSAA: shaded at each sample (1), or once a pixel at its centre (2); 0 without SSAA
 
-		u32 hash()
+		// what the shader is specialized for (pso_key.h): all but gouraud, pass and sampleRate
+		s32 key() const
 		{
-			return ((u32)alphaTest) | ((u32)insideClipTest << 1) | ((u32)useAlpha << 2)
-				| ((u32)texture << 3) | ((u32)ignoreTexAlpha << 4) | (shaderInstr << 5)
-				| ((u32)offset << 7) | ((u32)fog << 8) | ((u32)gouraud << 10)
-				| ((u32)bumpmap << 11) | ((u32)clamping << 12) | ((u32)twoVolume << 13)
-				| ((u32)palette << 14) | ((int)pass << 15) | ((u32)sampleRate << 17);
+			return ((s32)alphaTest << OIT_SC_ALPHA_TEST) | ((s32)insideClipTest << OIT_SC_CLIP_INSIDE)
+				| ((s32)useAlpha << OIT_SC_USE_ALPHA) | ((s32)texture << OIT_SC_TEXTURE)
+				| ((s32)ignoreTexAlpha << OIT_SC_IGNORE_TEX_A) | (shaderInstr << OIT_SC_SHAD_INSTR)
+				| ((s32)offset << OIT_SC_OFFSET) | (fog << OIT_SC_FOG_CTRL) | ((s32)twoVolume << OIT_SC_TWO_VOLUMES)
+				| ((s32)bumpmap << OIT_SC_BUMP_MAP) | ((s32)clamping << OIT_SC_CLAMPING) | ((s32)palette << OIT_SC_PALETTE);
 		}
 	};
 
-	vk::ShaderModule GetVertexShader(const VertexShaderParams& params) { return getShader(vertexShaders, params); }
-	vk::ShaderModule GetFragmentShader(const FragmentShaderParams& params) { return getShader(fragmentShaders, params); }
-	vk::ShaderModule GetModVolVertexShader()
+	void Init()
 	{
-		if (!modVolVertexShader)
-			modVolVertexShader = compileModVolVertexShader();
-		return *modVolVertexShader;
+		modules.Make(RSPV_MODVOL_VERT, RSPV_MODVOL_VERT);
+		modules.Make(RSPV_OIT_VERT_G0, RSPV_OIT_FINAL_VERT);
 	}
-	vk::ShaderModule GetModVolShader()
+	vk::ShaderModule GetVertexShader(const VertexShaderParams& params) const
 	{
-		if (!modVolShader)
-			modVolShader = compileModVolFragmentShader();
-		return *modVolShader;
+		return modules.Get(params.gouraud ? RSPV_OIT_VERT_G1 : RSPV_OIT_VERT_G0);
 	}
-	vk::ShaderModule GetTrModVolShader(ModVolMode mode)
+	// the module of @params' interpolation, pass and sample rate: the rest is its key()
+	vk::ShaderModule GetFragmentShader(const FragmentShaderParams& params) const
 	{
-		if (trModVolShaders.empty() || !trModVolShaders[(size_t)mode])
-			compileTrModVolFragmentShader(mode);
-		return *trModVolShaders[(size_t)mode];
+		// G0_P0_R0 ... G0_P2_R2, without the lists' at each sample: eight a gouraud
+		static const int byPassRate[3][3] = { { 0, 1, 2 }, { 3, 4, 5 }, { 6, -1, 7 } };
+		return modules.Get((RasterSpv)(RSPV_OIT_FRAG_G0_P0_R0 + (params.gouraud ? 8 : 0) + byPassRate[(int)params.pass][params.sampleRate]));
+	}
+	vk::ShaderModule GetModVolVertexShader() const { return modules.Get(RSPV_MODVOL_VERT); }
+	vk::ShaderModule GetModVolShader() const { return modules.Get(RSPV_OIT_MODVOL_FRAG); }
+	vk::ShaderModule GetTrModVolShader(ModVolMode mode) const
+	{
+		return modules.Get((RasterSpv)(RSPV_OIT_TRMODVOL_FRAG_M0_S0 + 2 * (int)mode + (samples > 1 ? 1 : 0)));
 	}
 
 	/* @perSample: SSAA's, of a render pass that is not the last, which puts
 	 * each sample together; else the last one's, which resolves them too */
-	vk::ShaderModule GetFinalShader(bool perSample = false)
+	vk::ShaderModule GetFinalShader(bool perSample = false) const
 	{
-		vk::UniqueShaderModule& shader = perSample ? finalPerSampleShader : finalAutosortShader;
-		if (!shader)
-			shader = compileFinalShader(perSample);
-		return *shader;
+		return modules.Get(samples <= 1 ? RSPV_OIT_FINAL_FRAG_S0 : perSample ? RSPV_OIT_FINAL_FRAG_S2 : RSPV_OIT_FINAL_FRAG_S1);
 	}
-	/* SSAA's samples a pixel (1: off): the shaders made for another count
-	 * are dropped */
+	/* SSAA's samples a pixel (1: off): what the pipelines are specialized
+	 * for, and which modules they take */
 	void SetSamples(u32 samples)
 	{
-		if (samples != this->samples)
-		{
-			Term();
-			this->samples = samples;
-		}
+		this->samples = samples;
 	}
-	vk::ShaderModule GetFinalVertexShader()
-	{
-		if (!finalVertexShader)
-			finalVertexShader = compileFinalVertexShader();
-		return *finalVertexShader;
-	}
-	vk::ShaderModule GetClearShader()
-	{
-		if (!clearShader)
-			clearShader = compileClearShader();
-		return *clearShader;
-	}
+	u32 GetSamples() const { return samples; }
+	vk::ShaderModule GetFinalVertexShader() const { return modules.Get(RSPV_OIT_FINAL_VERT); }
+	vk::ShaderModule GetClearShader() const { return modules.Get(RSPV_OIT_CLEAR_FRAG); }
 	void Term()
 	{
-		vertexShaders.clear();
-		fragmentShaders.clear();
-		modVolVertexShader.reset();
-		modVolShader.reset();
-		trModVolShaders.clear();
-		finalVertexShader.reset();
-		finalAutosortShader.reset();
-		finalSortedShader.reset();
-		finalPerSampleShader.reset();
-		clearShader.reset();
+		modules.Term();
 	}
 
 private:
-	template<typename T>
-	vk::ShaderModule getShader(std::map<u32, vk::UniqueShaderModule>& map, T params)
-	{
-		auto it = map.find(params.hash());
-		if (it != map.end())
-			return it->second.get();
-		map[params.hash()] = compileShader(params);
-		return map[params.hash()].get();
-	}
-	vk::UniqueShaderModule compileShader(const VertexShaderParams& params);
-	vk::UniqueShaderModule compileShader(const FragmentShaderParams& params);
-	vk::UniqueShaderModule compileModVolVertexShader();
-	vk::UniqueShaderModule compileModVolFragmentShader();
-	void compileTrModVolFragmentShader(ModVolMode mode);
-	vk::UniqueShaderModule compileFinalShader(bool perSample);
-	std::string WithSsaa(const std::string& source, bool perSample = false) const;
-	vk::UniqueShaderModule compileFinalVertexShader();
-	vk::UniqueShaderModule compileClearShader();
-
-	std::map<u32, vk::UniqueShaderModule> vertexShaders;
-	std::map<u32, vk::UniqueShaderModule> fragmentShaders;
-	vk::UniqueShaderModule modVolVertexShader;
-	vk::UniqueShaderModule modVolShader;
-	std::vector<vk::UniqueShaderModule> trModVolShaders;
-
-	vk::UniqueShaderModule finalVertexShader;
-	vk::UniqueShaderModule finalAutosortShader;
-	vk::UniqueShaderModule finalSortedShader;
-	vk::UniqueShaderModule finalPerSampleShader;
-	vk::UniqueShaderModule clearShader;
+	RasterModules modules;
 	u32 samples = 1;
 };
-

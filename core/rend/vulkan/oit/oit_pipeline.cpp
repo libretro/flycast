@@ -177,10 +177,11 @@ void OITPipelineManager::CreatePipeline(u32 listType, bool autosort, const PolyP
 	params.palette = BaseTextureCacheData::IsGpuHandledPaletted(pp.tsp, pp.tcw);
 	params.sampleRate = renderPasses->GetSamples() > 1 ? (sampleRate ? 1 : 2) : 0;
 	vk::ShaderModule fragment_module = shaderManager->GetFragmentShader(params);
+	const PsoSpecialization specialization(params.key(), renderPasses->GetSamples());
 
 	vk::PipelineShaderStageCreateInfo stages[] = {
 			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main" },
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main", &specialization.info },
 	};
 	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
 	(
@@ -265,10 +266,11 @@ void OITPipelineManager::CreateFinalPipeline(bool perSample)
 
 	vk::ShaderModule vertex_module = shaderManager->GetFinalVertexShader();
 	vk::ShaderModule fragment_module = shaderManager->GetFinalShader(perSample);
+	const PsoSpecialization specialization(0, renderPasses->GetSamples());
 
 	vk::PipelineShaderStageCreateInfo stages[] = {
 			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main" },
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main", &specialization.info },
 	};
 	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
 	(

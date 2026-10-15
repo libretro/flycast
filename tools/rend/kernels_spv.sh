@@ -1,15 +1,24 @@
 #!/bin/sh
-# The Vulkan renderer's compute kernels as SPIR-V, made here and committed,
-# so that the core compiles none of them when it runs, and a build of it
-# needs no glslangValidator:
+# The Vulkan renderers' shaders as SPIR-V, made here and committed, so that
+# the core compiles none of them when it runs, and a build of it needs no
+# glslangValidator:
 #
 #   core/rend/ta_gpu_spv.inc     GPU-side TA processing's decode
 #                                (rend/ta_gpu.h; vulkan/ta_decoder.cpp)
 #   core/rend/texdecode_spv.inc  textures made on the GPU
 #                                (rend/texdecode.h; vulkan/tex_decoder.cpp)
+#   core/rend/vulkan/raster_spv.inc
+#                                the raster renderers' shaders
+#                                (vulkan/shaders/; vulkan/shaders.cpp)
 #
-#   sh tools/rend/kernels_spv.sh update   both made again from the headers
-#   sh tools/rend/kernels_spv.sh check    whether both are the headers' still
+#   sh tools/rend/kernels_spv.sh update   all three made again from their sources
+#   sh tools/rend/kernels_spv.sh check    whether all three are their sources' still
+#
+# The raster shaders are modules of a few #defines each: what changes what
+# a shader declares (interpolation, the sample rate, the per-pixel
+# renderer's pass, SSAA). Everything else a polygon needs is in the bits of
+# a specialization constant (vulkan/pso_key.h), so the same words serve all
+# of them and no module is made for a combination of them.
 #
 # Each kernel is the header with the lines the renderer used to put in front
 # of it, compiled with glslangValidator -V -g0 --target-env vulkan1.0 (what
@@ -24,6 +33,8 @@ TA_INC=core/rend/ta_gpu_spv.inc
 TEXD_INC=core/rend/texdecode_spv.inc
 TAG_KERNELS=$(awk '$1 == "#define" && $2 == "TAG_KERNELS" { print $3 }' core/rend/ta_gpu.h)
 TEXD_FORMATS="r8ui r16ui r32ui"
+RASTER_INC=core/rend/vulkan/raster_spv.inc
+RS=core/rend/vulkan/shaders
 
 WORK=${TMPDIR:-/tmp}/kernels_spv.$$
 mkdir -p "$WORK"
@@ -104,21 +115,116 @@ make_texd() {
    echo "static const size_t texdecode_spv_size[] = { sizeof(texdecode_spv_r8ui), sizeof(texdecode_spv_r16ui), sizeof(texdecode_spv_r32ui) };"
 }
 
+# The raster modules, one a line: the name, the stage, the #defines
+# (NAME=VALUE, comma separated, - for none) and what the text is made of
+raster_list() {
+   for g in 0 1; do echo "TRI_VERT_G$g vert pp_Gouraud=$g tri.vert"; done
+   for g in 0 1; do for r in 0 1 2; do
+      echo "TRI_FRAG_G${g}_R$r frag pp_Gouraud=$g,pp_SampleRate=$r key tri.frag"
+   done; done
+   echo "MODVOL_VERT vert - modvol.vert"
+   echo "MODVOL_FRAG frag - modvol.frag"
+   echo "QUAD_VERT vert - quad.vert"
+   echo "QUAD_FRAG frag - quad.frag"
+   echo "SSAA_RESOLVE_VERT vert - ssaa_resolve.vert"
+   echo "SSAA_RESOLVE_FRAG frag - key resolve ssaa_resolve.frag"
+   for t in 0 1; do for g in 0 1; do for r in 0 1 2; do
+      echo "PREPASS_FRAG_T${t}_G${g}_R$r frag pp_Texture=$t,pp_Gouraud=$g,pp_SampleRate=$r key prepass.frag"
+   done; done; done
+   for g in 0 1; do echo "OIT_VERT_G$g vert pp_Gouraud=$g oit.vert"; done
+   for g in 0 1; do for p in 0 1 2; do for r in 0 1 2; do
+      [ $p = 2 ] && [ $r = 1 ] && continue
+      ss=; [ $r != 0 ] && ss=,SSAA=1
+      echo "OIT_FRAG_G${g}_P${p}_R$r frag pp_Gouraud=$g,PASS=$p,pp_SampleRate=$r$ss key oit_header.glsl oit.frag"
+   done; done; done
+   echo "OIT_MODVOL_FRAG frag - key oit_header.glsl oit_modvol.frag"
+   echo "OIT_CLEAR_FRAG frag - key oit_header.glsl oit_clear.frag"
+   for m in 0 1 2 3; do
+      echo "OIT_TRMODVOL_FRAG_M${m}_S0 frag MV_MODE=$m key oit_header.glsl oit_trmodvol.frag"
+      echo "OIT_TRMODVOL_FRAG_M${m}_S1 frag MV_MODE=$m,SSAA=1 key oit_header.glsl oit_trmodvol.frag"
+   done
+   echo "OIT_FINAL_FRAG_S0 frag - key oit_header.glsl oit_final.frag"
+   echo "OIT_FINAL_FRAG_S1 frag SSAA=1 key resolve oit_header.glsl oit_final.frag"
+   echo "OIT_FINAL_FRAG_S2 frag SSAA=1,SSAA_PER_SAMPLE=1 key resolve oit_header.glsl oit_final.frag"
+   echo "OIT_FINAL_VERT vert - oit_final.vert"
+}
+
+# a raster module's text: @1 its defines, then what it is made of
+raster_source() {
+   echo "#version 450"
+   if [ "$1" != - ]; then echo "$1" | tr ',' '\n' | sed 's/^\([^=]*\)=\(.*\)$/#define \1 \2/'; fi
+   shift
+   for part in "$@"; do
+      case $part in
+      key) cat core/rend/vulkan/pso_key.h ;;
+      resolve) echo "#define PVR_SHADER_GLSL"; echo "#define PVR_LANE_NONE"; sed -e '1,2d' -e '$d' core/rend/tile/pvr_resolve_text.inc ;;
+      *) cat $RS/$part ;;
+      esac
+   done
+}
+
+raster_sums() {
+   raster_list | while read name stage defs parts; do
+      raster_source $defs $parts > "$WORK/s.glsl"
+      echo " * module $name $(sha1sum < "$WORK/s.glsl" | cut -c1-40)"
+   done
+}
+
+make_raster() {
+   echo "/* SPIR-V of the raster renderers' shaders (vulkan/shaders/, with the"
+   echo " * #defines of each module and vulkan/pso_key.h): made by"
+   echo " * tools/rend/kernels_spv.sh update from them. Not to be edited."
+   echo " * glslang $(glslang_version)"
+   raster_sums
+   echo " */"
+   echo "#ifndef VK_RASTER_SPV_IDS"
+   echo "#define VK_RASTER_SPV_IDS"
+   echo "enum RasterSpv {"
+   raster_list | while read name stage defs parts; do echo "	RSPV_$name,"; done
+   echo "	RSPV_COUNT"
+   echo "};"
+   echo "#endif"
+   echo "#if defined(RASTER_SPV_WORDS) && !defined(VK_RASTER_SPV_WORDS)"
+   echo "#define VK_RASTER_SPV_WORDS"
+   raster_list | while read name stage defs parts; do
+      raster_source $defs $parts > "$WORK/s.$stage"
+      glslangValidator -V -g0 --target-env vulkan1.0 -S $stage -o "$WORK/k.spv" "$WORK/s.$stage" > "$WORK/log" || { cat "$WORK/log" >&2; echo "$name" >&2; exit 1; }
+      echo "static const u32 raster_spv_$name[] = {"
+      od -An -v -w32 -tx4 --endian=little "$WORK/k.spv" | awk '{ s = ""; for (i = 1; i <= NF; i++) s = s "0x" $i ","; print s }'
+      echo "};"
+   done
+   echo "// by RasterSpv: the words, and their size in bytes"
+   printf 'static const u32 * const raster_spv[] = {'
+   raster_list | while read name stage defs parts; do printf ' raster_spv_%s,' $name; done
+   echo ' };'
+   printf 'static const size_t raster_spv_size[] = {'
+   raster_list | while read name stage defs parts; do printf ' sizeof(raster_spv_%s),' $name; done
+   echo ' };'
+   echo "#endif"
+}
+
 case "$1" in
 update)
    command -v glslangValidator > /dev/null || { echo "$0: glslangValidator is needed to make them" >&2; exit 1; }
    make_ta > "$WORK/ta.inc"
    make_texd > "$WORK/texd.inc"
+   make_raster > "$WORK/raster.inc"
    cp "$WORK/ta.inc" $TA_INC
    cp "$WORK/texd.inc" $TEXD_INC
-   echo "made $TA_INC and $TEXD_INC"
+   cp "$WORK/raster.inc" $RASTER_INC
+   echo "made $TA_INC, $TEXD_INC and $RASTER_INC"
    ;;
 check)
    rc=0
-   for t in ta texd; do
-      if [ $t = ta ]; then inc=$TA_INC; else inc=$TEXD_INC; fi
-      sums $t > "$WORK/sums"
-      grep '^ \* kernel ' $inc > "$WORK/had" || true
+   for t in ta texd raster; do
+      case $t in ta) inc=$TA_INC ;; texd) inc=$TEXD_INC ;; raster) inc=$RASTER_INC ;; esac
+      if [ $t = raster ]; then
+         raster_sums > "$WORK/sums"
+         grep '^ \* module ' $inc > "$WORK/had" || true
+      else
+         sums $t > "$WORK/sums"
+         grep '^ \* kernel ' $inc > "$WORK/had" || true
+      fi
       if ! cmp -s "$WORK/sums" "$WORK/had"; then
          echo "FAIL: $inc is not the SPIR-V of its header as it is: run '$0 update'" >&2
          rc=1
@@ -126,7 +232,7 @@ check)
       fi
       v=$(glslang_version)
       if [ -n "$v" ] && grep -q "^ \* glslang $v\$" $inc; then
-         if [ $t = ta ]; then make_ta > "$WORK/new.inc"; else make_texd > "$WORK/new.inc"; fi
+         case $t in ta) make_ta > "$WORK/new.inc" ;; texd) make_texd > "$WORK/new.inc" ;; raster) make_raster > "$WORK/new.inc" ;; esac
          if ! cmp -s "$WORK/new.inc" $inc; then
             echo "FAIL: $inc is not what glslangValidator $v makes of its header: run '$0 update'" >&2
             rc=1

@@ -1,0 +1,388 @@
+// The per-pixel renderer's polygons (oit_shaders.cpp), after oit_header.glsl.
+// Made with pp_Gouraud (0 or 1), PASS (0 depth, 1 colour, 2 the lists) and
+// pp_SampleRate (0 without SSAA; with it, 1 shaded at each sample, 2 once a
+// pixel) defined, and SSAA with SSAA: tools/rend/kernels_spv.sh. What else
+// a polygon needs are the bits of the key (pso_key.h).
+
+layout (constant_id = PSO_SC_KEY) const int sc_key = -1;
+
+#define PI 3.1415926
+
+/* SSAA: shaded at each sample, its inputs taken there (1); or once a
+ * pixel, its inputs taken at the pixel's centre as without SSAA (2) -
+ * where else they are taken when not said is the device's choice */
+#if pp_SampleRate == 1
+#define AT_SAMPLE sample
+#define OWN_SAMPLE gl_SampleID
+#else
+#define AT_SAMPLE
+// (the first sample it covers: a modifier volume's edge is a pixel's, not a sample's, for it)
+#define OWN_SAMPLE findLSB(gl_SampleMaskIn[0])
+#endif
+#if pp_SampleRate == 2
+// (or, where it covers only some of the samples, at a place it covers, as without SSAA it would only be drawn where it covers the centre)
+#define AT_CENTRE(v) (gl_SampleMaskIn[0] == ((1 << SSAA_SAMPLES) - 1) ? interpolateAtOffset(v, vec2(0.0)) : interpolateAtCentroid(v))
+#else
+#define AT_CENTRE(v) (v)
+#endif
+// (a flat input is not interpolated, and is not to be asked for at a place)
+#if pp_Gouraud == 1
+#define AT_CENTRE_SMOOTH(v) AT_CENTRE(v)
+#else
+#define AT_CENTRE_SMOOTH(v) (v)
+#endif
+
+#define PASS_DEPTH 0
+#define PASS_COLOR 1
+#define PASS_OIT 2
+
+#if PASS == PASS_DEPTH || PASS == PASS_COLOR
+layout (location = 0) out vec4 FragColor;
+#define gl_FragColor FragColor
+#endif
+
+#if pp_Gouraud == 0
+#define INTERPOLATION flat
+#else
+#define INTERPOLATION smooth AT_SAMPLE
+#endif
+
+layout (push_constant) uniform pushBlock
+{
+	vec4 clipTest;
+	ivec4 blend_mode0;
+	float trilinearAlpha;
+	int pp_Number;
+	float palette_index;
+
+	// two volume mode
+	ivec4 blend_mode1;
+	int shading_instr0;
+	int shading_instr1;
+	int fog_control0;
+	int fog_control1;
+	int use_alpha0;
+	int use_alpha1;
+	int ignore_tex_alpha0;
+	int ignore_tex_alpha1;
+	int key;	// the bits, when sc_key is -1
+} pushConstants;
+
+#define KEY (sc_key >= 0 ? sc_key : pushConstants.key)
+#define KEY_BIT(n) ((KEY >> (n)) & 1)
+#define cp_AlphaTest KEY_BIT(OIT_SC_ALPHA_TEST)
+#define pp_ClipInside KEY_BIT(OIT_SC_CLIP_INSIDE)
+#define pp_UseAlpha KEY_BIT(OIT_SC_USE_ALPHA)
+#define pp_Texture KEY_BIT(OIT_SC_TEXTURE)
+#define pp_IgnoreTexA KEY_BIT(OIT_SC_IGNORE_TEX_A)
+#define pp_ShadInstr ((KEY >> OIT_SC_SHAD_INSTR) & 3)
+#define pp_Offset KEY_BIT(OIT_SC_OFFSET)
+#define pp_FogCtrl ((KEY >> OIT_SC_FOG_CTRL) & 3)
+#define pp_TwoVolumes KEY_BIT(OIT_SC_TWO_VOLUMES)
+#define pp_BumpMap KEY_BIT(OIT_SC_BUMP_MAP)
+#define ColorClamping KEY_BIT(OIT_SC_CLAMPING)
+#define pp_Palette KEY_BIT(OIT_SC_PALETTE)
+
+layout (set = 1, binding = 0) uniform sampler2D tex0;
+layout (set = 1, binding = 1) uniform sampler2D tex1;
+layout (set = 0, binding = 6) uniform sampler2D palette;
+
+#ifdef SSAA
+#if PASS == PASS_COLOR
+layout (input_attachment_index = 0, set = 0, binding = 4) uniform usubpassInputMS shadow_stencil;
+#define STENCIL_LOAD() subpassLoad(shadow_stencil, OWN_SAMPLE)
+#endif
+#if PASS == PASS_OIT
+layout (input_attachment_index = 0, set = 0, binding = 5) uniform subpassInputMS DepthTex;
+#endif
+#else
+#if PASS == PASS_COLOR
+layout (input_attachment_index = 0, set = 0, binding = 4) uniform usubpassInput shadow_stencil;
+#define STENCIL_LOAD() subpassLoad(shadow_stencil)
+#endif
+#if PASS == PASS_OIT
+layout (input_attachment_index = 0, set = 0, binding = 5) uniform subpassInput DepthTex;
+#endif
+#endif
+
+// Vertex input
+layout (location = 0) INTERPOLATION in lowp vec4 in_vtx_base;
+layout (location = 1) INTERPOLATION in lowp vec4 in_vtx_offs;
+layout (location = 2) AT_SAMPLE     in vec2 in_vtx_uv;
+layout (location = 3) INTERPOLATION in lowp vec4 in_vtx_base1;			// new for OIT. Only if 2 vol
+layout (location = 4) INTERPOLATION in lowp vec4 in_vtx_offs1;
+layout (location = 5) AT_SAMPLE     in vec2 in_vtx_uv1;
+#define vtx_base AT_CENTRE_SMOOTH(in_vtx_base)
+#define vtx_offs AT_CENTRE_SMOOTH(in_vtx_offs)
+#define vtx_uv AT_CENTRE(in_vtx_uv)
+#define vtx_base1 AT_CENTRE_SMOOTH(in_vtx_base1)
+#define vtx_offs1 AT_CENTRE_SMOOTH(in_vtx_offs1)
+#define vtx_uv1 AT_CENTRE(in_vtx_uv1)
+layout (location = 6) flat          in uint vtx_pp;
+
+layout (set = 0, binding = 2) uniform sampler2D fog_table;
+
+// The fog coefficient for a depth, worked out the way the PowerVR2 does it.
+// The depth times the fog density, between 1 and just under 256, is taken
+// apart as a float: its exponent and the top four bits of its mantissa
+// pick one of the 128 table entries, and the next eight bits of mantissa
+// blend that entry with the following one. The blend is done in whole
+// numbers out of 256 and so is the result, which is returned over 256.
+// Splitting the float is done by comparing and halving, which is exact
+// and costs less than the log2() and pow() this used to take.
+float fog_mode2(float w)
+{
+	float z = w * uniformBuffer.sp_FOG_DENSITY;
+	// Not clamp(): where the depth is infinite and the density zero their
+	// product is not a number, and that has to come out as 1 like anything
+	// else below 1. The texture lookup this used to end in swallowed it.
+	if (!(z >= 1.0))
+		z = 1.0;
+	if (z > 255.9999)
+		z = 255.9999;
+	float e = 0.0;
+	if (z >= 16.0) { z *= 0.0625; e = 4.0; }
+	if (z >= 4.0) { z *= 0.25; e += 2.0; }
+	if (z >= 2.0) { z *= 0.5; e += 1.0; }
+	float t = (z - 1.0) * 16.0;
+	float i = floor(t);
+	float blend = floor((t - i) * 256.0);
+	float u = (e * 16.0 + i + 0.5) / 128.0;
+	// The table is two rows: the entry's own value under 0.75, the next entry's under 0.25
+	float next = floor(texture(fog_table, vec2(u, 0.25)).r * 255.0 + 0.5);
+	float cur = floor(texture(fog_table, vec2(u, 0.75)).r * 255.0 + 0.5);
+	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
+}
+
+vec4 colorClamp(vec4 col)
+{
+// TODO This can change in two-volume mode
+	if (ColorClamping == 1)
+		return clamp(col, uniformBuffer.colorClampMin, uniformBuffer.colorClampMax);
+	return col;
+}
+
+vec4 palettePixel(sampler2D tex, vec2 coords)
+{
+	// palette_index is where the middle of the palette's first colour is in the row of 1024
+	vec4 c = vec4(texture(tex, coords).r * (255.0 / 1024.0) + pushConstants.palette_index, 0.5, 0.0, 0.0);
+	return texture(palette, c.xy);
+}
+
+void main()
+{
+	setFragDepth();
+
+	#if PASS == PASS_OIT && defined(SSAA)
+		/* Manual depth testing, at each sample the fragment covers (with its
+		 * depth at the pixel's centre: it is shaded once a pixel), which
+		 * leaves the samples it is seen at */
+		uint coverage = 0u;
+		for (int s = 0; s < SSAA_SAMPLES; s++)
+			if ((gl_SampleMaskIn[0] & (1 << s)) != 0 && gl_FragDepth >= subpassLoad(DepthTex, s).r)
+				coverage |= 1u << s;
+		if (coverage == 0u)
+			discard;
+	#elif PASS == PASS_OIT
+		// Manual depth testing
+		highp float frontDepth = subpassLoad(DepthTex).r;
+		if (gl_FragDepth < frontDepth)
+			discard;
+	#endif
+
+	// Clip inside the box
+	if (pp_ClipInside == 1)
+	{
+		if (gl_FragCoord.x >= pushConstants.clipTest.x && gl_FragCoord.x <= pushConstants.clipTest.z
+				&& gl_FragCoord.y >= pushConstants.clipTest.y && gl_FragCoord.y <= pushConstants.clipTest.w)
+			discard;
+	}
+
+	highp vec4 color = vtx_base;
+	lowp vec4 offset = vtx_offs;
+	vec2 uv = vtx_uv;
+	bool area1 = false;
+	ivec2 cur_blend_mode = pushConstants.blend_mode0.xy;
+
+	// (what the two-volume mode reads; the others have their own bits)
+	bool cur_use_alpha = pushConstants.use_alpha0 != 0;
+	bool cur_ignore_tex_alpha = pushConstants.ignore_tex_alpha0 != 0;
+	int cur_shading_instr = pushConstants.shading_instr0;
+	int cur_fog_control = pushConstants.fog_control0;
+	#if PASS == PASS_COLOR
+	if (pp_TwoVolumes == 1)
+	{
+		uvec4 stencil = STENCIL_LOAD();
+		if (stencil.r == 0x81u) {
+			color = vtx_base1;
+			offset = vtx_offs1;
+			uv = vtx_uv1;
+			area1 = true;
+			cur_blend_mode = pushConstants.blend_mode1.xy;
+			cur_use_alpha = pushConstants.use_alpha1 != 0;
+			cur_ignore_tex_alpha = pushConstants.ignore_tex_alpha1 != 0;
+			cur_shading_instr = pushConstants.shading_instr1;
+			cur_fog_control = pushConstants.fog_control1;
+		}
+	}
+	else
+	{
+		// Inside a modifier volume the PowerVR2 scales what the polygon is shaded
+		// with, its base and offset colours, before the texture is combined with
+		// them. Scaling the combined colour instead is the same thing for a
+		// modulated texture, but also darkens a decal texture, which the
+		// hardware leaves alone.
+		uvec4 stencil = STENCIL_LOAD();
+		if (stencil.r == 0x81u) {
+			color.rgb *= uniformBuffer.shade_scale_factor;
+			offset.rgb *= uniformBuffer.shade_scale_factor;
+		}
+	}
+	#endif
+	if (pp_TwoVolumes == 1 ? !cur_use_alpha : pp_UseAlpha == 0)
+		color.a = 1.0;
+	if (pp_Texture == 1)
+	{
+		highp vec4 texcol;
+		// only the first volume's texture is ever one of palette indices
+		if (pp_TwoVolumes == 1 && area1)
+			texcol = texture(tex1, uv);
+		else if (pp_Palette == 0)
+			texcol = texture(tex0, uv);
+		else
+			texcol = palettePixel(tex0, uv);
+		if (pp_BumpMap == 1)
+		{
+			highp float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
+			highp float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
+			texcol.a = clamp(vtx_offs.a + vtx_offs.r * sin(s) + vtx_offs.g * cos(s) * cos(r - 2.0 * PI * vtx_offs.b), 0.0, 1.0);
+			texcol.rgb = vec3(1.0, 1.0, 1.0);
+		}
+		else if (pp_TwoVolumes == 1 ? cur_ignore_tex_alpha : pp_IgnoreTexA == 1)
+			texcol.a = 1.0;
+		if (pp_TwoVolumes == 1 ? cur_shading_instr == 0 : pp_ShadInstr == 0) // DECAL
+		{
+			color = texcol;
+		}
+		if (pp_TwoVolumes == 1 ? cur_shading_instr == 1 : pp_ShadInstr == 1) // MODULATE
+		{
+			color.rgb *= texcol.rgb;
+			color.a = texcol.a;
+		}
+		if (pp_TwoVolumes == 1 ? cur_shading_instr == 2 : pp_ShadInstr == 2) // DECAL ALPHA
+		{
+			color.rgb = mix(color.rgb, texcol.rgb, texcol.a);
+		}
+		if (pp_TwoVolumes == 1 ? cur_shading_instr == 3 : pp_ShadInstr == 3) // MODULATE ALPHA
+		{
+			color *= texcol;
+		}
+
+		if (pp_Offset == 1 && pp_BumpMap == 0)
+		{
+			color.rgb += offset.rgb;
+		}
+	}
+
+	color = colorClamp(color);
+
+	// Look-up table mode 2: the fog colour takes the place of the pixel's
+	// colour and the fog coefficient the place of its alpha. This is a mode
+	// of the fog unit, which comes after the texture has been combined in,
+	// so it is the combined colour that is replaced: a textured polygon
+	// comes out in plain fog colour. It used to be done to the base colour,
+	// before texturing, and the texture was then applied on top.
+	if (pp_TwoVolumes == 1 ? cur_fog_control == 3 : pp_FogCtrl == 3) // LUT Mode 2
+		color = vec4(uniformBuffer.sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
+	if (pp_TwoVolumes == 1 ? cur_fog_control == 0 : pp_FogCtrl == 0) // LUT
+	{
+		float fog = fog_mode2(gl_FragCoord.w);
+		color.rgb = color.rgb * (255.0 / 256.0 - fog) + uniformBuffer.sp_FOG_COL_RAM.rgb * fog;
+	}
+	if (pp_Offset == 1 && pp_BumpMap == 0 && (pp_TwoVolumes == 1 ? cur_fog_control == 1 : pp_FogCtrl == 1))  // Per vertex
+	{
+		float fog = offset.a * (255.0 / 256.0);
+		color.rgb = color.rgb * (255.0 / 256.0 - fog) + uniformBuffer.sp_FOG_COL_VERT.rgb * fog;
+	}
+
+	color *= pushConstants.trilinearAlpha;
+
+	// Punch-through polygons are tested on the alpha of the finished colour,
+	// after the texture and the vertex colours are combined and clamped.
+	if (cp_AlphaTest == 1)
+	{
+		if (uniformBuffer.cp_AlphaTestValue > color.a)
+			discard;
+		color.a = 1.0;
+	}
+
+	#if PASS == PASS_COLOR
+		FragColor = color;
+	#elif PASS == PASS_OIT
+		// Discard as many pixels as possible
+		switch (cur_blend_mode.y) // DST
+		{
+		case ONE:
+			switch (cur_blend_mode.x) // SRC
+			{
+				case ZERO:
+					discard;
+				case ONE:
+				case OTHER_COLOR:
+				case INVERSE_OTHER_COLOR:
+					if (color == vec4(0.0))
+						discard;
+					break;
+				case SRC_ALPHA:
+					if (color.a == 0.0 || color.rgb == vec3(0.0))
+						discard;
+					break;
+				case INVERSE_SRC_ALPHA:
+					if (color.a == 1.0 || color.rgb == vec3(0.0))
+						discard;
+					break;
+			}
+			break;
+		// Destination times a white source is not left alone when the
+		// fragment turns out to be in a shadow: its colour is scaled then.
+		case INVERSE_OTHER_COLOR:
+			if (cur_blend_mode.x <= SRC_ALPHA && color == vec4(0.0))
+				discard;
+			break;
+		case SRC_ALPHA:
+			if ((cur_blend_mode.x == ZERO || cur_blend_mode.x == INVERSE_SRC_ALPHA) && color.a == 1.0)
+				discard;
+			break;
+		case INVERSE_SRC_ALPHA:
+			switch (cur_blend_mode.x) // SRC
+			{
+				case ZERO:
+				case SRC_ALPHA:
+					if (color.a == 0.0)
+						discard;
+					break;
+				case ONE:
+				case OTHER_COLOR:
+				case INVERSE_OTHER_COLOR:
+					if (color == vec4(0.0))
+						discard;
+					break;
+			}
+			break;
+		}
+
+		ivec2 coords = ivec2(gl_FragCoord.xy);
+		uint idx =  getNextPixelIndex();
+
+		Pixel pixel;
+		pixel.color = packColors(clamp(color, vec4(0.0), vec4(1.0)));
+		pixel.depth = gl_FragDepth;
+		pixel.seq_num = uint(pushConstants.pp_Number) + vtx_pp;
+		#ifdef SSAA
+			pixel.seq_num |= coverage << COVERAGE_SHIFT;
+		#endif
+		pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);
+		storePixel(idx, pixel);
+
+	#endif
+}

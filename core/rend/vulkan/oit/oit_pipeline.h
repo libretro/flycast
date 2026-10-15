@@ -233,6 +233,7 @@ public:
 	virtual void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers, u32 samples = 1)
 	{
 		this->shaderManager = shaderManager;
+		shaderManager->Init();
 		if (samples != renderPasses->GetSamples())
 		{
 			// everything was made for the render passes of the other count

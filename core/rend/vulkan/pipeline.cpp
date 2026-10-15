@@ -338,10 +338,11 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	params.sampleRate = samples > 1 ? (sampleRate ? 1 : 2) : 0;
 	params.samples = samples;
 	vk::ShaderModule fragment_module = shaderManager->GetFragmentShader(params);
+	const PsoSpecialization specialization(params.key(), samples);
 
 	vk::PipelineShaderStageCreateInfo stages[] = {
 			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main" },
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main", &specialization.info },
 	};
 	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
 	(
@@ -397,11 +398,12 @@ void PipelineManager::CreatePrepassPipelines()
 					params.gouraud = gouraud == 1;
 					params.sampleRate = samples > 1 ? (rate == 1 ? 1 : 2) : 0;
 					params.samples = samples;
+					const PsoSpecialization specialization(0, samples);
 					vk::PipelineShaderStageCreateInfo stages[] = {
 							{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex,
 									shaderManager->GetVertexShader(VertexShaderParams{ gouraud == 1 }), "main" },
 							{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
-									shaderManager->GetPrepassShader(params), "main" },
+									shaderManager->GetPrepassShader(params), "main", &specialization.info },
 					};
 					vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo(vk::PipelineCreateFlags(), 2, stages,
 							&pipelineVertexInputStateCreateInfo, &pipelineInputAssemblyStateCreateInfo, nullptr,

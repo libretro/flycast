@@ -22,7 +22,6 @@
 #include "quad.h"
 #include "vulkan_context.h"
 #include "commandpool.h"
-#include "compiler.h"
 #include "ssaa.h"
 #include "rend/ssaa_pattern.h"
 
@@ -125,6 +124,7 @@ void QuadPipeline::CreatePipeline(bool alpha)
 void QuadPipeline::Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass, u32 samples)
 {
 	this->shaderManager = shaderManager;
+	shaderManager->Init();
 
 	if (!pipelineLayout)
 	{
@@ -236,40 +236,6 @@ void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, 
 	buffer->Draw(commandBuffer);
 }
 
-const char PvrResolveText[] =
-#include "rend/tile/pvr_resolve_text.inc"
-;
-
-// a triangle over the whole framebuffer, from nothing but its vertex index
-static const char SsaaResolveVertexSource[] = R"(#version 450
-void main()
-{
-	vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-	gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-)";
-
-/* Each sample as the unorm8 it is held in (the attachment is RGBA8:
- * packUnorm4x8() gives back its bytes), summed two channels a word, and
- * (sum + N/2) / N per channel - which is the value written */
-static const char SsaaResolveFragmentSource[] = R"(
-layout (input_attachment_index = 0, set = 0, binding = 0) uniform subpassInputMS samples;
-layout (location = 0) out vec4 FragColor;
-
-void main()
-{
-	uint rb = 0u;
-	uint ga = 0u;
-	for (int s = 0; s < SSAA_SAMPLES; s++)
-	{
-		uint c = packUnorm4x8(subpassLoad(samples, s));
-		rb += pvr_resolve_rb(c);
-		ga += pvr_resolve_ga(c);
-	}
-	FragColor = unpackUnorm4x8(pvr_resolve_join(rb, ga, SSAA_LOG2N));
-}
-)";
-
 void SsaaResolve::Init(vk::RenderPass renderPass, u32 subpass, u32 samples, vk::ImageView samplesView)
 {
 	VulkanContext *context = VulkanContext::Instance();
@@ -279,17 +245,12 @@ void SsaaResolve::Init(vk::RenderPass renderPass, u32 subpass, u32 samples, vk::
 		vk::DescriptorSetLayoutBinding binding(0, vk::DescriptorType::eInputAttachment, 1, vk::ShaderStageFlagBits::eFragment);
 		setLayout = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), 1, &binding));
 		pipelineLayout = device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), 1, &setLayout.get()));
-		vertexShader = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eVertex, SsaaResolveVertexSource);
+		// (shaders/ssaa_resolve.*: the count of samples is a specialization constant)
+		vertexShader = MakeRasterModule(RSPV_SSAA_RESOLVE_VERT);
+		fragmentShader = MakeRasterModule(RSPV_SSAA_RESOLVE_FRAG);
 	}
-	if (this->samples != samples || !fragmentShader)
-	{
-		this->samples = samples;
-		std::string source = "#version 450\n#define PVR_SHADER_GLSL\n#define PVR_LANE_NONE\n#define SSAA_SAMPLES " + std::to_string(samples)
-				+ "\n#define SSAA_LOG2N " + std::to_string(SSAA_LOG2(samples)) + "u\n";
-		source += PvrResolveText;
-		source += SsaaResolveFragmentSource;
-		fragmentShader = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, source);
-	}
+	this->samples = samples;
+	const PsoSpecialization specialization(0, samples);
 	if (!descSet)
 		descSet = std::move(device.allocateDescriptorSetsUnique(
 				vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &setLayout.get())).front());
@@ -312,7 +273,7 @@ void SsaaResolve::Init(vk::RenderPass renderPass, u32 subpass, u32 samples, vk::
 	vk::PipelineDynamicStateCreateInfo dynamic(vk::PipelineDynamicStateCreateFlags(), ARRAY_SIZE(dynamicStates), dynamicStates);
 	vk::PipelineShaderStageCreateInfo stages[] = {
 			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, *vertexShader, "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, *fragmentShader, "main" },
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, *fragmentShader, "main", &specialization.info },
 	};
 	vk::GraphicsPipelineCreateInfo info(vk::PipelineCreateFlags(), 2, stages, &vertexInput, &inputAssembly, nullptr, &viewportState,
 			&rasterization, &multisample, &depthStencil, &blend, &dynamic, *pipelineLayout, renderPass, subpass);

@@ -21,13 +21,65 @@
 #pragma once
 
 #include "vulkan.h"
-#include "SPIRV/GlslangToSpv.h"
+#include "pso_key.h"
+#include "raster_spv.inc"
+
+/* The raster renderers' shaders are SPIR-V made when the core is built
+ * (raster_spv.inc, from vulkan/shaders/ by tools/rend/kernels_spv.sh):
+ * nothing is compiled when it runs. A module is made from its words. */
+vk::UniqueShaderModule MakeRasterModule(RasterSpv id);
+
+/* The modules a renderer draws with, all made in Make(): they are only
+ * read after, from any thread */
+class RasterModules
+{
+public:
+	// [first, last]
+	void Make(RasterSpv first, RasterSpv last)
+	{
+		for (int i = first; i <= last; i++)
+			if (!modules[i])
+				modules[i] = MakeRasterModule((RasterSpv)i);
+	}
+	vk::ShaderModule Get(RasterSpv id) const { return *modules[id]; }
+	void Term()
+	{
+		for (auto& module : modules)
+			module.reset();
+	}
+
+private:
+	vk::UniqueShaderModule modules[RSPV_COUNT];
+};
+
+/* A pipeline's specialization constants (pso_key.h): the key, -1 for
+ * the one read from the push constants, and SSAA's samples a pixel */
+struct PsoSpecialization
+{
+	s32 values[3];
+	vk::SpecializationMapEntry entries[3];
+	vk::SpecializationInfo info;
+
+	PsoSpecialization(s32 key, u32 samples)
+	{
+		values[0] = key;
+		values[1] = (s32)samples;
+		u32 log2n = 0;
+		while ((2u << log2n) <= samples)
+			log2n++;
+		values[2] = (s32)log2n;
+		entries[0] = vk::SpecializationMapEntry(PSO_SC_KEY, 0, sizeof(s32));
+		entries[1] = vk::SpecializationMapEntry(PSO_SC_SSAA_SAMPLES, sizeof(s32), sizeof(s32));
+		entries[2] = vk::SpecializationMapEntry(PSO_SC_SSAA_LOG2N, 2 * sizeof(s32), sizeof(s32));
+		info = vk::SpecializationInfo(3, entries, sizeof(values), values);
+	}
+	PsoSpecialization(const PsoSpecialization&) = delete;
+	PsoSpecialization& operator=(const PsoSpecialization&) = delete;
+};
 
 struct VertexShaderParams
 {
 	bool gouraud;
-
-	u32 hash() { return (u32)gouraud; }
 };
 
 // alpha test, clip test, use alpha, texture, ignore alpha, shader instr, offset, fog, gouraud, bump, clamp, trilinear
@@ -50,39 +102,27 @@ struct FragmentShaderParams
 	int sampleRate;	// SSAA: shaded at each sample (1), or once a pixel at its centre (2); 0 without SSAA
 	int samples;	// SSAA's (with sampleRate 2), 1 without
 
-	u32 hash()
+	// what the shader is specialized for (pso_key.h): all but gouraud, sampleRate and samples
+	s32 key() const
 	{
-		return ((u32)alphaTest) | ((u32)insideClipTest << 1) | ((u32)useAlpha << 2)
-			| ((u32)texture << 3) | ((u32)ignoreTexAlpha << 4) | (shaderInstr << 5)
-			| ((u32)offset << 7) | ((u32)fog << 8) | ((u32)gouraud << 10)
-			| ((u32)bumpmap << 11) | ((u32)clamping << 12) | ((u32)trilinear << 13)
-			| ((u32)palette << 14) | ((u32)shadowed << 15) | ((u32)sampleRate << 16) | ((u32)samples << 18);
+		return ((s32)alphaTest << TRI_SC_ALPHA_TEST) | ((s32)insideClipTest << TRI_SC_CLIP_INSIDE)
+			| ((s32)useAlpha << TRI_SC_USE_ALPHA) | ((s32)texture << TRI_SC_TEXTURE)
+			| ((s32)ignoreTexAlpha << TRI_SC_IGNORE_TEX_A) | (shaderInstr << TRI_SC_SHAD_INSTR)
+			| ((s32)offset << TRI_SC_OFFSET) | (fog << TRI_SC_FOG_CTRL) | ((s32)bumpmap << TRI_SC_BUMP_MAP)
+			| ((s32)clamping << TRI_SC_CLAMPING) | ((s32)trilinear << TRI_SC_TRILINEAR)
+			| ((s32)palette << TRI_SC_PALETTE) | ((s32)shadowed << TRI_SC_SHADOWED);
 	}
 };
 
-/* The depth prepass's shader (rend/sorter.h): what it is made for, the
- * rest being the push constants' flags (PREPASS_*) */
+/* The depth prepass's shader (rend/sorter.h): what its module is made for,
+ * the rest being the push constants' flags (PREPASS_*, pso_key.h) */
 struct PrepassShaderParams
 {
 	bool texture;
 	bool gouraud;
 	int sampleRate;	// as FragmentShaderParams
 	int samples;
-	u32 hash()
-	{
-		return (u32)texture | ((u32)gouraud << 1) | ((u32)sampleRate << 2) | ((u32)samples << 4);
-	}
 };
-// The flags, in the push constant where the colour pass has its trilinear alpha
-#define PREPASS_CLIP_INSIDE   1u
-#define PREPASS_USE_ALPHA     2u
-#define PREPASS_PALETTE       4u
-#define PREPASS_BUMP_MAP      8u
-#define PREPASS_IGNORE_TEX_A  16u
-#define PREPASS_SHAD_INSTR    32u	// two bits: the shading instruction
-#define PREPASS_CLAMP         128u
-#define PREPASS_FOG_ALPHA     256u	// fog mode 3: the fog in the alpha
-#define PREPASS_ALWAYS        512u	// every pixel hides what is behind it
 
 // std140 alignment required
 struct VertexShaderUniforms
@@ -102,70 +142,39 @@ struct FragmentShaderUniforms
 	float shade_scale_factor;
 };
 
+/* The per-triangle renderer's shaders, and the quads': made in Init(),
+ * before any pipeline is */
 class ShaderManager
 {
 public:
-	vk::ShaderModule GetVertexShader(const VertexShaderParams& params) { return getShader(vertexShaders, params); }
-	vk::ShaderModule GetFragmentShader(const FragmentShaderParams& params) { return getShader(fragmentShaders, params); }
-	vk::ShaderModule GetPrepassShader(const PrepassShaderParams& params) { return getShader(prepassShaders, params); }
-	vk::ShaderModule GetModVolVertexShader()
+	void Init()
 	{
-		if (!modVolVertexShader)
-			modVolVertexShader = compileModVolVertexShader();
-		return *modVolVertexShader;
+		modules.Make(RSPV_TRI_VERT_G0, RSPV_PREPASS_FRAG_T1_G1_R2);
 	}
-	vk::ShaderModule GetModVolShader()
+	vk::ShaderModule GetVertexShader(const VertexShaderParams& params) const
 	{
-		if (!modVolShader)
-			modVolShader = compileModVolFragmentShader();
-		return *modVolShader;
+		return modules.Get(params.gouraud ? RSPV_TRI_VERT_G1 : RSPV_TRI_VERT_G0);
 	}
-	vk::ShaderModule GetQuadVertexShader()
+	// the module of @params' interpolation and sample rate: the rest is its key()
+	vk::ShaderModule GetFragmentShader(const FragmentShaderParams& params) const
 	{
-		if (!quadVertexShader)
-			quadVertexShader = compileQuadVertexShader();
-		return *quadVertexShader;
+		return modules.Get((RasterSpv)(RSPV_TRI_FRAG_G0_R0 + (params.gouraud ? 3 : 0) + params.sampleRate));
 	}
-	vk::ShaderModule GetQuadFragmentShader()
+	vk::ShaderModule GetPrepassShader(const PrepassShaderParams& params) const
 	{
-		if (!quadFragmentShader)
-			quadFragmentShader = compileQuadFragmentShader();
-		return *quadFragmentShader;
+		return modules.Get((RasterSpv)(RSPV_PREPASS_FRAG_T0_G0_R0 + (params.texture ? 6 : 0) + (params.gouraud ? 3 : 0) + params.sampleRate));
 	}
+	vk::ShaderModule GetModVolVertexShader() const { return modules.Get(RSPV_MODVOL_VERT); }
+	vk::ShaderModule GetModVolShader() const { return modules.Get(RSPV_MODVOL_FRAG); }
+	vk::ShaderModule GetQuadVertexShader() const { return modules.Get(RSPV_QUAD_VERT); }
+	vk::ShaderModule GetQuadFragmentShader() const { return modules.Get(RSPV_QUAD_FRAG); }
+	vk::ShaderModule GetSsaaResolveVertexShader() const { return modules.Get(RSPV_SSAA_RESOLVE_VERT); }
+	vk::ShaderModule GetSsaaResolveShader() const { return modules.Get(RSPV_SSAA_RESOLVE_FRAG); }
 	void Term()
 	{
-		vertexShaders.clear();
-		fragmentShaders.clear();
-		prepassShaders.clear();
-		modVolVertexShader.reset();
-		modVolShader.reset();
-		quadVertexShader.reset();
-		quadFragmentShader.reset();
+		modules.Term();
 	}
 
 private:
-	template<typename T>
-	vk::ShaderModule getShader(std::map<u32, vk::UniqueShaderModule>& map, T params)
-	{
-		auto it = map.find(params.hash());
-		if (it != map.end())
-			return it->second.get();
-		map[params.hash()] = compileShader(params);
-		return map[params.hash()].get();
-	}
-	vk::UniqueShaderModule compileShader(const VertexShaderParams& params);
-	vk::UniqueShaderModule compileShader(const FragmentShaderParams& params);
-	vk::UniqueShaderModule compileShader(const PrepassShaderParams& params);
-	vk::UniqueShaderModule compileModVolVertexShader();
-	vk::UniqueShaderModule compileModVolFragmentShader();
-	vk::UniqueShaderModule compileQuadVertexShader();
-	vk::UniqueShaderModule compileQuadFragmentShader();
-
-	std::map<u32, vk::UniqueShaderModule> vertexShaders;
-	std::map<u32, vk::UniqueShaderModule> fragmentShaders;
-	std::map<u32, vk::UniqueShaderModule> prepassShaders;
-	vk::UniqueShaderModule modVolVertexShader;
-	vk::UniqueShaderModule modVolShader;
-	vk::UniqueShaderModule quadVertexShader;
-	vk::UniqueShaderModule quadFragmentShader;
+	RasterModules modules;
 };

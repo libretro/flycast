@@ -318,8 +318,7 @@ ifeq ($(HAVE_VULKAN), 1)
 					$(CORE_DIR)/core/rend/vulkan/oit/oit_drawer.cpp \
 					$(CORE_DIR)/core/rend/vulkan/oit/oit_pipeline.cpp \
 					$(CORE_DIR)/core/rend/vulkan/oit/oit_renderer.cpp \
-					$(CORE_DIR)/core/rend/vulkan/oit/oit_renderpass.cpp \
-					$(CORE_DIR)/core/rend/vulkan/oit/oit_shaders.cpp
+					$(CORE_DIR)/core/rend/vulkan/oit/oit_renderpass.cpp
 endif
 
 # Direct3D 11, on Windows: the frontend's device, the shaders compiled when

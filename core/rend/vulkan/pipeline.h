@@ -144,6 +144,7 @@ public:
 	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass, u32 samples = 1)
 	{
 		this->shaderManager = shaderManager;
+		shaderManager->Init();
 
 		if (!perFrameLayout)
 		{

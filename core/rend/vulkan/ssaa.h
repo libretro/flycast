@@ -39,9 +39,6 @@ static inline vk::PipelineMultisampleStateCreateInfo SsaaMultisample(u32 samples
 	return info;
 }
 
-// rend/tile/pvr_lane.h and pvr_resolve.h as GLSL, for the shaders that resolve (quad.cpp)
-extern const char PvrResolveText[];
-
 /* The resolve of an attachment of N samples into the subpass's single
  * sample colour attachment, as its input attachment 0: a triangle over
  * the whole framebuffer. Everything made in Init(). */
