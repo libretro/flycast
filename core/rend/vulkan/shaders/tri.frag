@@ -25,6 +25,20 @@ layout (location = 0) out vec4 FragColor;
 #else
 #define AT_CENTRE(v) (v)
 #endif
+#if pp_SampleRate == 2
+/* ...and a texture is filtered with the derivatives of its coordinates at
+ * the pixels' centres, as without SSAA. Where the polygon covers only some
+ * of a pixel's samples its coordinates are taken at their centroid, so the
+ * differences across a 2x2 block of pixels with such a pixel in it (along
+ * every edge between two triangles) are not the texture's footprint: they
+ * hold part of a half pixel's step in another direction, and anisotropic
+ * filtering took its texels along that wrong line, far across the texture
+ * - a dotted line of speckles on each edge. */
+vec4 uvGrad;	// the coordinates' dFdx and dFdy at the centres (main())
+#define TEX(t, coords, g) textureGrad(t, coords, (g).xy, (g).zw)
+#else
+#define TEX(t, coords, g) texture(t, coords)
+#endif
 // (a flat input is not interpolated, and is not to be asked for at a place)
 #if pp_Gouraud == 1
 #define AT_CENTRE_SMOOTH(v) AT_CENTRE(v)
@@ -127,12 +141,20 @@ vec4 colorClamp(vec4 col)
 vec4 palettePixel(sampler2D tex, vec2 coords)
 {
 	// palette_index is where the middle of the palette's first colour is in the row of 1024
-	vec4 c = vec4(texture(tex, coords).r * (255.0 / 1024.0) + pushConstants.palette_index, 0.5, 0.0, 0.0);
+	vec4 c = vec4(TEX(tex, coords, uvGrad).r * (255.0 / 1024.0) + pushConstants.palette_index, 0.5, 0.0, 0.0);
 	return texture(palette, c.xy);
 }
 
 void main()
 {
+#if pp_SampleRate == 2
+	// (first, while nothing is discarded: derivatives are defined only then)
+	if (pp_Texture == 1)
+	{
+		const vec2 c = interpolateAtOffset(in_vtx_uv, vec2(0.0));
+		uvGrad = vec4(dFdx(c), dFdy(c));
+	}
+#endif
 	// Clip inside the box
 	if (pp_ClipInside == 1)
 	{
@@ -157,7 +179,7 @@ void main()
 	{
 		vec4 texcol;
 		if (pp_Palette == 0)
-			texcol = texture(tex, vtx_uv);
+			texcol = TEX(tex, vtx_uv, uvGrad);
 		else
 			texcol = palettePixel(tex, vtx_uv);
 

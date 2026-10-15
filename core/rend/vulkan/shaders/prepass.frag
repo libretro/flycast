@@ -15,6 +15,13 @@ layout (constant_id = PSO_SC_SSAA_SAMPLES) const int SSAA_SAMPLES = 1;
 #else
 #define AT_CENTRE(v) (v)
 #endif
+#if pp_SampleRate == 2 && pp_Texture == 1
+// (a texture's derivatives at the pixels' centres: tri.frag)
+vec4 uvGrad;
+#define TEX(t, coords, g) textureGrad(t, coords, (g).xy, (g).zw)
+#else
+#define TEX(t, coords, g) texture(t, coords)
+#endif
 #if pp_Gouraud == 1
 #define AT_CENTRE_SMOOTH(v) AT_CENTRE(v)
 #else
@@ -82,13 +89,18 @@ float fog_mode2(float w)
 #if pp_Texture == 1
 vec4 palettePixel(sampler2D tex, vec2 coords)
 {
-	vec4 c = vec4(texture(tex, coords).r * (255.0 / 1024.0) + pushConstants.palette_index, 0.5, 0.0, 0.0);
+	vec4 c = vec4(TEX(tex, coords, uvGrad).r * (255.0 / 1024.0) + pushConstants.palette_index, 0.5, 0.0, 0.0);
 	return texture(palette, c.xy);
 }
 #endif
 
 void main()
 {
+#if pp_SampleRate == 2 && pp_Texture == 1
+	// (first, while nothing is discarded: derivatives are defined only then)
+	const vec2 c = interpolateAtOffset(in_vtx_uv, vec2(0.0));
+	uvGrad = vec4(dFdx(c), dFdy(c));
+#endif
 	uint f = uint(pushConstants.flags);
 	if ((f & PREPASS_CLIP_INSIDE) != 0u)
 	{
@@ -105,7 +117,7 @@ void main()
 	{
 		vec4 texcol;
 		if ((f & PREPASS_PALETTE) == 0u)
-			texcol = texture(tex, vtx_uv);
+			texcol = TEX(tex, vtx_uv, uvGrad);
 		else
 			texcol = palettePixel(tex, vtx_uv);
 
