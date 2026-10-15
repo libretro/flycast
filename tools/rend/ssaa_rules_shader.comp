@@ -1,0 +1,46 @@
+// The shared rules' headers read as GLSL: every rule called once, so that
+// a compiler checks they are GLSL as well as C. Compiled, not run, by
+// ssaa_rules_test.sh: as Vulkan GLSL 4.50 with subgroup operations
+// (PVR_LANE_SUBGROUP), and as OpenGL GLSL 4.30 with the shared-memory
+// exchanges. The version line comes from the script.
+#extension GL_GOOGLE_include_directive : require
+#define PVR_SHADER_GLSL
+#ifndef PVR_LANE_SUBGROUP
+#define PVR_LANE_COUNT 32
+#define PVR_LANE_GROUP_SIZE 64
+#endif
+#include "tile/pvr_lane.h"
+#include "ssaa_pattern.h"
+#include "tile/pvr_tile.h"
+#include "tile/pvr_resolve.h"
+#include "tile/pvr_modvol.h"
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer Data
+{
+	uint words[];
+};
+
+void main()
+{
+	uint i = gl_GlobalInvocationID.x;
+	uint c = words[i];
+	uint log2n = SSAA_LOG2(4u);
+	uint r = pvr_resolve_lanes(c, log2n) ^ pvr_resolve_lanes_uniform(c, log2n);
+	r ^= pvr_resolve_join(pvr_resolve_rb(c), pvr_resolve_ga(c), 0u);
+	r ^= SSAA_SAMPLE_X16(8u, i & 7u) | (SSAA_SAMPLE_Y16(8u, i & 7u) << 4);
+	r ^= ssaa_clamp_samples(8u, c, 100u, ssaa_per_sample_kib(640u, 480u, 4u));
+	r ^= uint(pvr_snap_edge(uintBitsToFloat(c)));
+	r ^= pvr_edge_inside(pvr_edge_eval(0, 0, 16, 0, int(i & 15u), int(i >> 4)), 16, 0);
+	r ^= PVR_FLAT_RATE_BIT(c & words[i + 1u], c | words[i + 1u]);
+	r ^= pvr_key_before(pvr_key_hi(uintBitsToFloat(c), 1u), pvr_key_lo(i, 1u, 0u), c, i);
+	r ^= PVR_KEY_PRIM(c) ^ PVR_KEY_PARITY(c) ^ PVR_KEY_FLAGS(c);
+	r ^= pvr_tiles_across(640u, PVR_TILE_LOG2_CHIP) ^ pvr_chunk_count(c) ^ PVR_CHUNK_INDEX(c);
+	r ^= pvr_bin_fits(c, i, 1000u) ^ pvr_bin_worst_bytes(300u, c);
+	r ^= PVR_RGN_PASS(pvr_region_entry(c, words[i + 1u], i & 1u));
+	uint mv = pvr_modvol_triangle(0u, pvr_modvol_hit(1u, 0.5, uintBitsToFloat(c)), pvr_modvol_or_mode(0u, 1u));
+	r ^= pvr_modvol_shadowed(pvr_modvol_close(mv, PVR_MV_MODE_INCLUSION));
+	r ^= LANE_SHUFFLE(c, 3u) ^ LANE_FIRST(c) ^ LANE_PREFIX_COUNT(c != 0u) ^ LANE_BALLOT(c > 5u).x ^ LANE_ID();
+	words[i] = r;
+}
