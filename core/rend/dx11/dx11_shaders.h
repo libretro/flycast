@@ -43,6 +43,22 @@ public:
 protected:
 	ID3D11Device *device = nullptr;
 	pD3DCompile compile = nullptr;
+
+	/* The pixel shaders last looked up, by their key: a polygon's is
+	 * looked up for every polygon, and is most often one of a few */
+	struct Memo
+	{
+		u32 key;
+		ID3D11PixelShader *shader;
+	};
+	static const u32 MemoSize = 64;
+	Memo memo[MemoSize] = {};
+	Memo& MemoFor(u32 key) { return memo[(key ^ (key >> 6) ^ (key >> 12)) & (MemoSize - 1)]; }
+	void Forget()
+	{
+		for (Memo& m : memo)
+			m = Memo();
+	}
 };
 
 /* What a polygon's pixel shader is made for: as the Vulkan renderer's */

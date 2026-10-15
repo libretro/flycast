@@ -31,12 +31,12 @@ static const D3D11_COMPARISON_FUNC depthFuncs[] =
 	D3D11_COMPARISON_ALWAYS,			//7	Always
 };
 
-ID3D11DepthStencilState *DX11DepthStencilStates::Get(bool depthTest, bool depthWrite, int depthFunc, DX11Stencil stencil)
+ID3D11DepthStencilState *DX11DepthStencilStates::Make(u32 key)
 {
-	const u32 key = (u32)depthTest | ((u32)depthWrite << 1) | ((u32)(depthFunc & 7) << 2) | ((u32)stencil << 5);
-	auto it = states.find(key);
-	if (it != states.end())
-		return it->second;
+	const bool depthTest = key & 1;
+	const bool depthWrite = (key >> 1) & 1;
+	const int depthFunc = (key >> 2) & 7;
+	const DX11Stencil stencil = (DX11Stencil)(key >> 5);
 
 	D3D11_DEPTH_STENCIL_DESC desc{};
 	desc.DepthEnable = depthTest;
@@ -165,16 +165,12 @@ ID3D11BlendState *DX11BlendStates::Make(const D3D11_BLEND_DESC& desc, ComPtr<ID3
 	return state;
 }
 
-ID3D11BlendState *DX11BlendStates::Get(bool enable, u32 src, u32 dst, bool writeColor)
+ID3D11BlendState *DX11BlendStates::Make(u32 key)
 {
-	src &= 7;
-	dst &= 7;
-	if (!enable)
-		src = dst = 0;
-	const u32 key = (u32)enable | (src << 1) | (dst << 4) | ((u32)writeColor << 7);
-	auto it = states.find(key);
-	if (it != states.end())
-		return it->second;
+	const bool enable = key & 1;
+	const u32 src = (key >> 1) & 7;
+	const u32 dst = (key >> 4) & 7;
+	const bool writeColor = (key >> 7) & 1;
 
 	D3D11_BLEND_DESC desc{};
 	D3D11_RENDER_TARGET_BLEND_DESC& rt = desc.RenderTarget[0];

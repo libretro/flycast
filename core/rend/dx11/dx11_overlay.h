@@ -35,6 +35,14 @@ public:
 	void Prepare();
 	/* Onto the target that is bound, @width by @height */
 	void Draw(int width, int height);
+	/* Nothing to draw */
+	bool IsEmpty() const
+	{
+		for (int i = 0; i < 4; i++)
+			if (vmus[i].view || crosshairs[i].view)
+				return false;
+		return true;
+	}
 	void Term();
 
 private:

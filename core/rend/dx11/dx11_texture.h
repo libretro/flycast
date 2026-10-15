@@ -67,17 +67,28 @@ class DX11Samplers
 {
 public:
 	/* A polygon's: MipMapD, FilterMode, ClampU, ClampV, FlipU, FlipV */
-	ID3D11SamplerState *GetSampler(TSP tsp);
+	ID3D11SamplerState *GetSampler(TSP tsp)
+	{
+		ID3D11SamplerState *sampler = samplers[(tsp.full & TSP_Mask) >> 8];
+		return sampler != nullptr ? sampler : MakeSampler(tsp);
+	}
 	/* Clamped, nearest: the fog table's and the palette's */
 	ID3D11SamplerState *GetPointSampler();
 	/* Clamped, linear: pictures drawn whole onto another */
 	ID3D11SamplerState *GetLinearSampler();
-	void Term() { samplers.clear(); linear.reset(); }
+	void Term()
+	{
+		for (auto& sampler : samplers)
+			sampler.reset();
+		linear.reset();
+	}
 
 	static const u32 TSP_Mask = 0x7ef00;
 
 private:
-	std::map<u32, ComPtr<ID3D11SamplerState>> samplers;
+	ID3D11SamplerState *MakeSampler(TSP tsp);
+	/* (looked up for every polygon: by the bits themselves) */
+	ComPtr<ID3D11SamplerState> samplers[(TSP_Mask >> 8) + 1];
 	ComPtr<ID3D11SamplerState> linear;
 };
 

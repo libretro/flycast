@@ -90,9 +90,13 @@ protected:
 	 * renderer puts the frame together in pictures of its own, and binds
 	 * the screen's only at the end */
 	virtual bool BindsScreen() const { return true; }
+	/* What the polygons' vertices are read with, and the polygon's constants are in */
+	virtual ID3D11InputLayout *PolyInputLayout() const { return mainInputLayout; }
+	virtual ID3D11Buffer *PolyConstantsBuffer() const { return polyConstants; }
 
 	ID3D11Device *device = nullptr;
 	ID3D11DeviceContext *deviceContext = nullptr;
+	DX11Context *context = nullptr;
 	DX11Shaders *shaders = nullptr;
 	DX11Samplers *samplers = nullptr;
 	DX11BlendStates *blendStates = nullptr;
@@ -102,13 +106,19 @@ protected:
 	TransformMatrix<false> matrices;
 
 	ComPtr<ID3D11InputLayout> mainInputLayout;
-	ComPtr<ID3D11InputLayout> positionInputLayout;	// the modifier volumes', and the main vertices' positions alone
-	ComPtr<ID3D11Buffer> vertexBuffer;
-	ComPtr<ID3D11Buffer> indexBuffer;
-	ComPtr<ID3D11Buffer> modVolBuffer;
-	u32 vertexBufferSize = 0;
-	u32 indexBufferSize = 0;
-	u32 modVolBufferSize = 0;
+	ComPtr<ID3D11InputLayout> positionInputLayout;	// the main vertices' positions alone
+	ComPtr<ID3D11InputLayout> modVolInputLayout;	// the modifier volumes', from vertex slot 1
+	/* A render's vertices, indexes and modifier volumes, one after the
+	 * other in one buffer, bound once (vertex slots 0 and 1, and the
+	 * indexes), each render's after the last one's, and the buffer started
+	 * again only when it is full: where this render's are in it */
+	ComPtr<ID3D11Buffer> geometry;
+	u32 geometrySize = 0;
+	u32 geometryUsed = 0;
+	INT vertexBase = 0;			// (in vertices)
+	UINT indexBase = 0;			// (in indexes)
+	UINT modVolBase = 0;		// (in modifier volume vertices)
+	bool haveModVols = false;
 	ComPtr<ID3D11Buffer> vtxConstants;
 	ComPtr<ID3D11Buffer> fragConstants;
 	ComPtr<ID3D11Buffer> polyConstants;
@@ -137,6 +147,11 @@ protected:
 	/* The screen: a picture for each of the frontend's sync indexes (one
 	 * with version 1), the size rendered at */
 	std::vector<ScreenTarget> screenTargets;
+	/* ...and one to draw a second render to the screen in, in a frame whose
+	 * first one has been handed over (version 2) already: it takes the
+	 * place of the one handed over, which stays the frontend's */
+	ScreenTarget extraTarget;
+	bool lastInExtra = false;		// the last picture is in it
 	u32 screenWidth = 0;
 	u32 screenHeight = 0;
 	int screenIndex = 0;			// the one being drawn
@@ -154,7 +169,11 @@ protected:
 	/* What it is drawn from */
 	ID3D11ShaderResourceView *LastPictureView() const
 	{
-		return havePicture ? screenTargets[lastScreen].view.get() : restoredPicture.get();
+		return havePicture ? (lastInExtra ? extraTarget.view.get() : screenTargets[lastScreen].view.get()) : restoredPicture.get();
+	}
+	ID3D11Texture2D *LastPictureTexture() const
+	{
+		return lastInExtra ? extraTarget.texture.get() : screenTargets[lastScreen].texture.get();
 	}
 	/* The last picture drawn whole onto what is bound */
 	void DrawLastPicture(u32 width, u32 height);
@@ -168,8 +187,7 @@ protected:
 	u32 targetHeight = 0;
 
 	D3D11_RECT baseScissor{};
-	D3D11_RECT currentScissor{};
-	void SetScissor(const D3D11_RECT& rect);
+	void SetScissor(const D3D11_RECT& rect) { context->SetScissor(rect); }
 	TileClipping SetTileClip(u32 val, D3D11_RECT& rect);
 	void SetBaseScissor();
 	void SetProvokingVertices();
@@ -178,44 +196,49 @@ protected:
 	template<typename T>
 	void SetConstants(ID3D11Buffer *buffer, const T& constants)
 	{
-		D3D11_MAPPED_SUBRESOURCE mapped;
-		if (SUCCEEDED(deviceContext->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-		{
-			memcpy(mapped.pData, &constants, sizeof(constants));
-			deviceContext->Unmap(buffer, 0);
-		}
+		// (the whole buffer: the constants are a whole number of 16-byte registers)
+		static_assert(sizeof(T) % 16 == 0, "constant buffer size");
+		deviceContext->UpdateSubresource(buffer, 0, nullptr, &constants, 0, 0);
 	}
+	/* ...when they are not what the buffer has already */
+	template<typename T>
+	void SetConstants(ID3D11Buffer *buffer, const T& constants, T& uploaded, bool& valid)
+	{
+		if (valid && !memcmp(&constants, &uploaded, sizeof(constants)))
+			return;
+		SetConstants(buffer, constants);
+		uploaded = constants;
+		valid = true;
+	}
+	VertexConstants vtxUploaded;
+	FragmentConstants fragUploaded;
+	PolyConstants polyUploaded;
+	bool vtxUploadedValid = false;
+	bool fragUploadedValid = false;
+	bool polyUploadedValid = false;
 	void MakeFragmentConstants(FragmentConstants& constants);
 	/* The polygons, the volumes and the indexes, and the sorted triangles'
 	 * indexes after those (sortedIndexes) */
 	bool UploadGeometry();
 	/* What every polygon of the frame is drawn with */
 	void SetupFrame();
-	void ResetState();
+	/* The geometry buffer, bound */
+	void BindGeometry() { context->SetGeometry(geometry, sizeof(Vertex), sizeof(float) * 3, geometry); }
 
-	/* What was last set, so that nothing is set twice */
-	struct
+	/* (the context's, which sets only what differs from what is bound) */
+	void SetVS(ID3D11VertexShader *vs) { context->SetVS(vs); }
+	void SetPS(ID3D11PixelShader *ps) { context->SetPS(ps); }
+	void SetBlend(ID3D11BlendState *blend) { context->SetBlend(blend); }
+	void SetDepthStencil(ID3D11DepthStencilState *depth, UINT ref = 0) { context->SetDepthStencil(depth, ref); }
+	void SetTexture(int slot, ID3D11ShaderResourceView *view, ID3D11SamplerState *sampler)
 	{
-		ID3D11VertexShader *vs;
-		ID3D11PixelShader *ps;
-		ID3D11BlendState *blend;
-		ID3D11DepthStencilState *depth;
-		UINT stencilRef;
-		ID3D11RasterizerState *raster;
-		ID3D11ShaderResourceView *srv[4];
-		ID3D11SamplerState *sampler[4];
-		D3D11_PRIMITIVE_TOPOLOGY topology;
-		PolyConstants poly;
-		bool polyValid;
-	} state;
-	u32 stateChanges = 0;
-	void SetVS(ID3D11VertexShader *vs);
-	void SetPS(ID3D11PixelShader *ps);
-	void SetBlend(ID3D11BlendState *blend);
-	void SetDepthStencil(ID3D11DepthStencilState *depth, UINT ref = 0);
-	void SetTexture(int slot, ID3D11ShaderResourceView *view, ID3D11SamplerState *sampler);
-	void SetTopology(D3D11_PRIMITIVE_TOPOLOGY topology);
-	void BindMainGeometry();
+		context->SetPSResource(slot, view);
+		context->SetPSSampler(slot, sampler);
+	}
+	void SetTopology(D3D11_PRIMITIVE_TOPOLOGY topology) { context->SetTopology(topology); }
+
+	/* The context taken by Process() and kept for the Render() after it */
+	bool heldFromProcess = false;
 
 	// Per-triangle sort results
 	std::vector<std::vector<SortTrigDrawParam>> sortedPolys;
@@ -224,6 +247,7 @@ protected:
 	void SortTriangles();
 
 private:
+	bool ProcessLocked(TA_context* ctx);
 	bool BeginScreen();
 	void EndScreen();
 	bool BeginRTT();

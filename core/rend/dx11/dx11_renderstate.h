@@ -48,28 +48,57 @@ class DX11DepthStencilStates
 {
 public:
 	/* @depthFunc: the ISP's depth mode, 0 never to 7 always */
-	ID3D11DepthStencilState *Get(bool depthTest, bool depthWrite, int depthFunc, DX11Stencil stencil = DX11Stencil::None);
-	void Term() { states.clear(); }
+	ID3D11DepthStencilState *Get(bool depthTest, bool depthWrite, int depthFunc, DX11Stencil stencil = DX11Stencil::None)
+	{
+		const u32 key = (u32)depthTest | ((u32)depthWrite << 1) | ((u32)(depthFunc & 7) << 2) | ((u32)stencil << 5);
+		ID3D11DepthStencilState *state = states[key & (KeyCount - 1)];
+		return state != nullptr ? state : Make(key & (KeyCount - 1));
+	}
+	void Term()
+	{
+		for (auto& state : states)
+			state.reset();
+	}
 
 private:
-	std::unordered_map<u32, ComPtr<ID3D11DepthStencilState>> states;
+	/* (looked up for every polygon: by the key itself) */
+	static const u32 KeyCount = 1 << 9;
+	ComPtr<ID3D11DepthStencilState> states[KeyCount];
+	ID3D11DepthStencilState *Make(u32 key);
 };
 
 class DX11BlendStates
 {
 public:
 	/* The TSP's instructions, 0 to 7 */
-	ID3D11BlendState *Get(bool enable, u32 src = 1, u32 dst = 0, bool writeColor = true);
+	ID3D11BlendState *Get(bool enable, u32 src = 1, u32 dst = 0, bool writeColor = true)
+	{
+		src &= 7;
+		dst &= 7;
+		if (!enable)
+			src = dst = 0;
+		const u32 key = (u32)enable | (src << 1) | (dst << 4) | ((u32)writeColor << 7);
+		ID3D11BlendState *state = states[key];
+		return state != nullptr ? state : Make(key);
+	}
 	/* by the source's alpha: the crosshairs */
 	ID3D11BlendState *GetAlpha();
 	/* by the alpha of the blend factor: the VMUs' screens */
 	ID3D11BlendState *GetFactorAlpha();
-	void Term() { states.clear(); alpha.reset(); factorAlpha.reset(); }
+	void Term()
+	{
+		for (auto& state : states)
+			state.reset();
+		alpha.reset();
+		factorAlpha.reset();
+	}
 
 private:
 	ID3D11BlendState *Make(const D3D11_BLEND_DESC& desc, ComPtr<ID3D11BlendState>& state);
+	ID3D11BlendState *Make(u32 key);
 
-	std::unordered_map<u32, ComPtr<ID3D11BlendState>> states;
+	/* (looked up for every polygon: by the key itself) */
+	ComPtr<ID3D11BlendState> states[256];
 	ComPtr<ID3D11BlendState> alpha;
 	ComPtr<ID3D11BlendState> factorAlpha;
 };

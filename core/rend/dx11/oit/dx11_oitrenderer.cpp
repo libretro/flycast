@@ -48,6 +48,8 @@ static const D3D11_INPUT_ELEMENT_DESC OITLayout[] =
 	{ "COLOR",    2, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, col1), D3D11_INPUT_PER_VERTEX_DATA, 0 },
 	{ "COLOR",    3, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, spc1), D3D11_INPUT_PER_VERTEX_DATA, 0 },
 	{ "TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT,    0, (UINT)offsetof(Vertex, u1), D3D11_INPUT_PER_VERTEX_DATA, 0 },
+	// the polygon's number, from the numbers at vertex slot 2: the draw's first instance's
+	{ "POLYNUMBER", 0, DXGI_FORMAT_R32_UINT,      2, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
 };
 
 class DX11OITRenderer final : public DX11Renderer
@@ -74,12 +76,13 @@ public:
 
 		D3D11_BUFFER_DESC desc{};
 		desc.ByteWidth = (sizeof(OITPolyConstants) + 15) & ~15u;
-		desc.Usage = D3D11_USAGE_DYNAMIC;
+		// (written whole with UpdateSubresource(), see SetConstants())
+		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		success = success && SUCCEEDED(device->CreateBuffer(&desc, nullptr, oitConstants.put()));
 
 		success = success && buffers.Init(device);
+		lastConstantsValid = false;
 		if (!success)
 		{
 			WARN_LOG(RENDERER, "DX11 per-pixel renderer initialization failed");
@@ -96,6 +99,8 @@ public:
 			trPolyParamsView.reset();
 			trPolyParams.reset();
 			trPolyParamsSize = 0;
+			polyNumbers.reset();
+			polyNumbersCount = 0;
 			for (auto& picture : pictures)
 				picture = Picture();
 			picturesWidth = picturesHeight = 0;
@@ -109,6 +114,8 @@ public:
 
 protected:
 	bool BindsScreen() const override { return false; }
+	ID3D11InputLayout *PolyInputLayout() const override { return oitInputLayout; }
+	ID3D11Buffer *PolyConstantsBuffer() const override { return oitConstants; }
 	void DrawFrame() override;
 
 private:
@@ -143,20 +150,12 @@ private:
 	bool UploadTrPolyParams();
 	void BindOIT(ID3D11RenderTargetView *target, ID3D11DepthStencilView *depth)
 	{
-		buffers.Bind(deviceContext, target, depth);
+		buffers.Bind(context, target, depth);
 	}
 	/* the depth buffer's depth or stencil, for the shaders to read */
 	void SetT4(ID3D11ShaderResourceView *view)
 	{
-		deviceContext->PSSetShaderResources(4, 1, &view);
-	}
-	void BindGeometry()
-	{
-		const UINT stride = sizeof(Vertex);
-		const UINT offset = 0;
-		deviceContext->IASetInputLayout(oitInputLayout);
-		deviceContext->IASetVertexBuffers(0, 1, vertexBuffer.addr(), &stride, &offset);
-		deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+		context->SetPSResource(4, view);
 	}
 	void DrawPoly(u32 listType, bool autosort, DX11OITShaders::Pass pass, const PolyParam& poly, u32 first, u32 count);
 	void DrawList(u32 listType, bool autosort, DX11OITShaders::Pass pass, const List<PolyParam>& polys, u32 first, u32 last);
@@ -172,6 +171,12 @@ private:
 	ComPtr<ID3D11Buffer> trPolyParams;
 	ComPtr<ID3D11ShaderResourceView> trPolyParamsView;
 	u32 trPolyParamsSize = 0;
+	/* The numbers 0, 1, 2... as many as there are translucent polygons:
+	 * a polygon's number is read from here as the instance it is drawn as,
+	 * and its constants are then the same as the polygon's before more
+	 * often than not */
+	ComPtr<ID3D11Buffer> polyNumbers;
+	u32 polyNumbersCount = 0;
 	std::vector<u32> trPolyParamsData;
 	/* What the opaque and punch-through polygons are drawn into, two of
 	 * them: with several render passes, each draws on what the last one
@@ -267,7 +272,33 @@ bool DX11OITRenderer::UploadTrPolyParams()
 		return false;
 	memcpy(mapped.pData, trPolyParamsData.data(), size);
 	deviceContext->Unmap(trPolyParams, 0);
-	deviceContext->PSSetShaderResources(5, 1, trPolyParamsView.addr());
+	context->SetPSResource(5, trPolyParamsView);
+
+	if (!polyNumbers || polyNumbersCount < (u32)count)
+	{
+		polyNumbers.reset();
+		polyNumbersCount = 0;
+		u32 newCount = 4096;
+		while (newCount < (u32)count)
+			newCount *= 2;
+		std::vector<u32> numbers(newCount);
+		for (u32 i = 0; i < newCount; i++)
+			numbers[i] = i;
+		D3D11_BUFFER_DESC desc{};
+		desc.ByteWidth = newCount * sizeof(u32);
+		desc.Usage = D3D11_USAGE_IMMUTABLE;
+		desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+		D3D11_SUBRESOURCE_DATA initial{};
+		initial.pSysMem = numbers.data();
+		if (FAILED(device->CreateBuffer(&desc, &initial, polyNumbers.put())))
+		{
+			WARN_LOG(RENDERER, "DX11: polygon number buffer creation failed");
+			polyNumbers.reset();
+			return false;
+		}
+		polyNumbersCount = newCount;
+	}
+	context->SetVertexBuffer(polyNumbers, sizeof(u32), 2);
 	return true;
 }
 
@@ -279,6 +310,17 @@ void DX11OITRenderer::DrawPoly(u32 listType, bool autosort, DX11OITShaders::Pass
 		SetScissor(scissorRect);
 	else
 		SetScissor(baseScissor);
+
+	/* The depth pass of a polygon whose pixels are kept whatever their
+	 * colour - any but a punch-through one, which is tested on its alpha -
+	 * writes the depth and the stencil only: what only the colour is made
+	 * from is not needed for it, the texture and the constants but for a
+	 * clip test inside the box. (The shader is the one the polygon has,
+	 * all the same: the colour pass draws it where its depth is the one
+	 * this pass wrote, to the last bit, and another shader is another
+	 * compiler's work, which need not come out the same to the last bit.) */
+	const bool depthOnly = pass == DX11OITShaders::Depth && listType != ListType_Punch_Through;
+	const bool insideClipTest = (poly.tileclip >> 28) == 3;
 
 	float trilinearAlpha = 1.f;
 	if (poly.tsp.FilterMode > 1 && poly.pcw.Texture && listType != ListType_Punch_Through && poly.tcw.MipMapped == 1)
@@ -314,7 +356,7 @@ void DX11OITRenderer::DrawPoly(u32 listType, bool autosort, DX11OITShaders::Pass
 	constants.blend_mode0[0] = keepAll ? 8 : (int)poly.tsp.SrcInstr;
 	constants.blend_mode0[1] = keepAll ? 8 : (int)poly.tsp.DstInstr;
 	constants.trilinearAlpha = trilinearAlpha;
-	constants.pp_Number = listType == ListType_Translucent ? (int)(&poly - pvrrc.global_param_tr.head()) : 0;
+	// (pp_Number is not used: the instance's number is the polygon's)
 	constants.palette_index = palette_index;
 	if (twoVolumes)
 	{
@@ -329,14 +371,15 @@ void DX11OITRenderer::DrawPoly(u32 listType, bool autosort, DX11OITShaders::Pass
 		constants.ignore_tex_alpha0 = poly.tsp.IgnoreTexA;
 		constants.ignore_tex_alpha1 = poly.tsp1.IgnoreTexA;
 	}
-	if (!lastConstantsValid || memcmp(&constants, &lastConstants, sizeof(constants)))
+	if ((!depthOnly || insideClipTest)
+			&& (!lastConstantsValid || memcmp(&constants, &lastConstants, sizeof(constants))))
 	{
 		SetConstants(oitConstants.get(), constants);
 		lastConstants = constants;
 		lastConstantsValid = true;
 	}
 
-	if (poly.pcw.Texture)
+	if (poly.pcw.Texture && !depthOnly)
 	{
 		if (poly.texid != 0)
 			SetTexture(0, ((DX11Texture *)(uintptr_t)poly.texid)->textureView, samplers->GetSampler(poly.tsp));
@@ -401,7 +444,8 @@ void DX11OITRenderer::DrawPoly(u32 listType, bool autosort, DX11OITShaders::Pass
 	SetCullMode(poly.isp.CullMode);
 	SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-	deviceContext->DrawIndexed(count, first, 0);
+	const UINT polyNumber = listType == ListType_Translucent ? (UINT)(&poly - pvrrc.global_param_tr.head()) : 0;
+	deviceContext->DrawIndexedInstanced(count, 1, indexBase + first, vertexBase, polyNumber);
 }
 
 void DX11OITRenderer::DrawList(u32 listType, bool autosort, DX11OITShaders::Pass pass, const List<PolyParam>& polys, u32 first, u32 last)
@@ -414,13 +458,11 @@ void DX11OITRenderer::DrawList(u32 listType, bool autosort, DX11OITShaders::Pass
 
 void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count, const ModifierVolumeParam *modVolParams)
 {
-	if (count == 0 || pvrrc.modtrig.used() == 0 || !modVolBuffer)
+	if (count == 0 || !haveModVols)
 		return;
 
-	const UINT stride = sizeof(float) * 3;
-	const UINT offset = 0;
-	deviceContext->IASetInputLayout(positionInputLayout);
-	deviceContext->IASetVertexBuffers(0, 1, modVolBuffer.addr(), &stride, &offset);
+	// (the modifier volumes' triangles are at vertex slot 1)
+	context->SetInputLayout(modVolInputLayout);
 	SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	SetVS(oitShaders.GetModVolVertexShader());
 	SetBlend(blendStates->Get(false, 1, 0, false));
@@ -472,7 +514,7 @@ void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			else
 				SetDepthStencil(depthStencilStates.Get(true, false, 4, DX11Stencil::Xor), 2);
 		}
-		deviceContext->Draw(param.count * 3, param.first * 3);
+		deviceContext->Draw(param.count * 3, modVolBase + param.first * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
@@ -481,12 +523,12 @@ void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 				SetPS(oitShaders.GetTrModVolPixelShader(mv_mode == 1 ? DX11OITShaders::Inclusion : DX11OITShaders::Exclusion));
 			else
 				SetDepthStencil(depthStencilStates.Get(false, false, 7, mv_mode == 1 ? DX11Stencil::Inclusion : DX11Stencil::Exclusion), 1);
-			deviceContext->Draw((param.first + param.count - mod_base) * 3, mod_base * 3);
+			deviceContext->Draw((param.first + param.count - mod_base) * 3, modVolBase + mod_base * 3);
 			mod_base = -1;
 		}
 	}
 	SetScissor(baseScissor);
-	BindGeometry();
+	context->SetInputLayout(oitInputLayout);
 }
 
 /* The lists put together over the opaque polygons' picture, into @target:
@@ -503,22 +545,18 @@ void DX11OITRenderer::Resolve(ID3D11RenderTargetView *target, ID3D11ShaderResour
 	SetCullMode(0);
 	SetScissor(D3D11_RECT{ 0, 0, (LONG)targetWidth, (LONG)targetHeight });
 	SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	deviceContext->IASetInputLayout(nullptr);
+	context->SetInputLayout(nullptr);
 	deviceContext->Draw(4, 0);
-	SetTexture(0, nullptr, state.sampler[0]);
-	deviceContext->IASetInputLayout(oitInputLayout);
+	// (the picture read from is drawn into next)
+	context->SetPSResource(0, nullptr);
+	context->SetInputLayout(oitInputLayout);
 }
 
 void DX11OITRenderer::DrawFrame()
 {
 	if (!MakePictures(targetWidth, targetHeight) || !UploadTrPolyParams() || !buffers.IsValid())
 		return;
-	lastConstantsValid = false;
-	deviceContext->PSSetConstantBuffers(1, 1, oitConstants.addr());
-	BindGeometry();
-
-	const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)targetWidth, (float)targetHeight, 0.f, 1.f };
-	deviceContext->RSSetViewports(1, &vp);
+	context->SetViewport((float)targetWidth, (float)targetHeight);
 
 	/* A framebuffer the game has not drawn to lately starts as the border
 	 * colour, which is what the OpenGL renderers clear it to (never a
@@ -576,10 +614,9 @@ void DX11OITRenderer::DrawFrame()
 		{
 			DrawLastPicture(targetWidth, targetHeight);
 			// (the quad was drawn with its own)
-			deviceContext->RSSetViewports(1, &vp);
-			deviceContext->PSSetConstantBuffers(1, 1, oitConstants.addr());
+			context->SetViewport((float)targetWidth, (float)targetHeight);
+			context->SetInputLayout(oitInputLayout);
 			BindGeometry();
-			SetT4(stencilSRV);
 		}
 
 		// OP + PT
@@ -622,10 +659,9 @@ void DX11OITRenderer::DrawFrame()
 
 		previous_pass = current_pass;
 	}
-	deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
-	ID3D11ShaderResourceView *none[6] = {};
-	deviceContext->PSSetShaderResources(0, 6, none);
-	ResetState();
+	/* (what is bound stays bound: the picture drawn into is unbound when
+	 * it is handed over, and nothing that reads one binds it before
+	 * binding another target) */
 }
 
 Renderer* rend_OITD3D11()

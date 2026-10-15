@@ -43,6 +43,8 @@ struct VertexIn
 	float4 col1 : COLOR2;
 	float4 spec1 : COLOR3;
 	float2 uv1 : TEXCOORD2;
+	// the translucent polygon's number, for the lists: the draw's instance's
+	uint polyNumber : POLYNUMBER;
 };
 
 struct VertexOut
@@ -55,6 +57,7 @@ struct VertexOut
 	INTERPOLATION float4 col1 : COLOR2;		// the second volume's, for opaque and punch-through polygons
 	INTERPOLATION float4 spec1 : COLOR3;
 	float2 uv1 : TEXCOORD2;
+	nointerpolation uint polyNumber : POLYNUMBER;
 };
 
 VertexOut main(in VertexIn vin)
@@ -67,6 +70,7 @@ VertexOut main(in VertexIn vin)
 	vo.col1 = vin.col1;
 	vo.spec1 = vin.spec1;
 	vo.uv1 = vin.uv1;
+	vo.polyNumber = vin.polyNumber;
 	return vo;
 }
 )";
@@ -269,6 +273,7 @@ struct VertexOut
 	INTERPOLATION float4 col1 : COLOR2;
 	INTERPOLATION float4 spec1 : COLOR3;
 	float2 uv1 : TEXCOORD2;
+	nointerpolation uint polyNumber : POLYNUMBER;
 };
 
 struct PSO
@@ -490,7 +495,7 @@ PSO main(in VertexOut inpix)
 		Pixel pixel;
 		pixel.color = packColors(clamp(color, 0.0, 1.0));
 		pixel.depth = pso.depth;
-		pixel.seq_num = uint(pp_Number);
+		pixel.seq_num = inpix.polyNumber;
 		uint next;
 		InterlockedExchange(abufferPointers[coords], idx, next);
 		pixel.next = next;
@@ -747,7 +752,11 @@ ID3D11VertexShader *DX11OITShaders::GetVertexShader(bool gouraud)
 
 ID3D11PixelShader *DX11OITShaders::GetPixelShader(const FragmentShaderParams& params)
 {
-	ComPtr<ID3D11PixelShader>& shader = pixelShaders[params.hash()];
+	const u32 key = params.hash();
+	Memo& m = MemoFor(key);
+	if (m.shader != nullptr && m.key == key)
+		return m.shader;
+	ComPtr<ID3D11PixelShader>& shader = pixelShaders[key];
 	if (!shader)
 	{
 		const D3D_SHADER_MACRO macros[] = {
@@ -770,6 +779,8 @@ ID3D11PixelShader *DX11OITShaders::GetPixelShader(const FragmentShaderParams& pa
 		std::string source = pixelSource(OITPixelShaderSource);
 		shader = CompilePS(source.c_str(), "main", "ps_5_0", macros);
 	}
+	m.key = key;
+	m.shader = shader;
 	return shader;
 }
 
@@ -831,6 +842,7 @@ void DX11OITShaders::Term()
 		shader.reset();
 	vertexBlob.reset();
 	pixelShaders.clear();
+	Forget();
 	modVolVertexShader.reset();
 	modVolVertexBlob.reset();
 	modVolPixelShader.reset();

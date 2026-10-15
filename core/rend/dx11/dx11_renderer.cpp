@@ -38,15 +38,19 @@ static const D3D11_INPUT_ELEMENT_DESC PositionLayout[] =
 {
 	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 };
+static const D3D11_INPUT_ELEMENT_DESC ModVolLayout[] =
+{
+	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+};
 
 static ComPtr<ID3D11Buffer> makeConstantBuffer(ID3D11Device *device, UINT size)
 {
 	ComPtr<ID3D11Buffer> buffer;
 	D3D11_BUFFER_DESC desc{};
 	desc.ByteWidth = (size + 15) & ~15u;
-	desc.Usage = D3D11_USAGE_DYNAMIC;
+	/* (written whole with UpdateSubresource(): one call where mapping it takes two) */
+	desc.Usage = D3D11_USAGE_DEFAULT;
 	desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-	desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 	if (FAILED(device->CreateBuffer(&desc, nullptr, buffer.put())))
 		buffer.reset();
 	return buffer;
@@ -81,7 +85,7 @@ static bool makeTexture(ID3D11Device *device, u32 width, u32 height, DXGI_FORMAT
 
 bool DX11Renderer::Init()
 {
-	DX11Context *context = DX11Context::Instance();
+	context = DX11Context::Instance();
 	device = context->GetDevice();
 	deviceContext = context->GetDeviceContext();
 	if (device == nullptr || deviceContext == nullptr)
@@ -100,7 +104,8 @@ bool DX11Renderer::Init()
 			&& SUCCEEDED(device->CreateInputLayout(MainLayout, ARRAY_SIZE(MainLayout), blob->GetBufferPointer(), blob->GetBufferSize(), mainInputLayout.put()));
 	blob = shaders->GetModVolVertexShaderBlob();
 	success = success && blob != nullptr
-			&& SUCCEEDED(device->CreateInputLayout(PositionLayout, ARRAY_SIZE(PositionLayout), blob->GetBufferPointer(), blob->GetBufferSize(), positionInputLayout.put()));
+			&& SUCCEEDED(device->CreateInputLayout(PositionLayout, ARRAY_SIZE(PositionLayout), blob->GetBufferPointer(), blob->GetBufferSize(), positionInputLayout.put()))
+			&& SUCCEEDED(device->CreateInputLayout(ModVolLayout, ARRAY_SIZE(ModVolLayout), blob->GetBufferPointer(), blob->GetBufferSize(), modVolInputLayout.put()));
 
 	vtxConstants = makeConstantBuffer(device, sizeof(VertexConstants));
 	fragConstants = makeConstantBuffer(device, sizeof(FragmentConstants));
@@ -129,8 +134,10 @@ bool DX11Renderer::Init()
 
 	havePicture = false;
 	lastScreen = -1;
+	lastInExtra = false;
 	screenWidth = screenHeight = 0;
-	stateChanges = context->GetStateChanges() - 1;
+	vtxUploadedValid = fragUploadedValid = polyUploadedValid = false;
+	heldFromProcess = false;
 	if (!success)
 	{
 		WARN_LOG(RENDERER, "DX11 renderer initialization failed");
@@ -144,9 +151,8 @@ void DX11Renderer::Term()
 	DX11Lock lock;
 	if (deviceContext != nullptr)
 	{
-		deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
-		ID3D11ShaderResourceView *none[4] = {};
-		deviceContext->PSSetShaderResources(0, 4, none);
+		context->SetTargets(nullptr, nullptr);
+		context->UnbindPSResources(4);
 	}
 	DX11Context::Instance()->SetFrame(nullptr, nullptr);
 	dx11_rtt_term();
@@ -157,6 +163,8 @@ void DX11Renderer::Term()
 	fbTexture.reset();
 	restoredPicture.reset();
 	screenTargets.clear();
+	extraTarget = ScreenTarget();
+	lastInExtra = false;
 	stencilSRV.reset();
 	depthSRV.reset();
 	depthViewReadOnly.reset();
@@ -173,10 +181,9 @@ void DX11Renderer::Term()
 	polyConstants.reset();
 	fragConstants.reset();
 	vtxConstants.reset();
-	modVolBuffer.reset();
-	indexBuffer.reset();
-	vertexBuffer.reset();
-	vertexBufferSize = indexBufferSize = modVolBufferSize = 0;
+	geometry.reset();
+	geometrySize = geometryUsed = 0;
+	modVolInputLayout.reset();
 	positionInputLayout.reset();
 	mainInputLayout.reset();
 	device = nullptr;
@@ -243,8 +250,25 @@ bool DX11Renderer::Process(TA_context* ctx)
 {
 	if (device == nullptr)
 		return false;
-	DX11Lock lock;
+	/* The context is taken here and kept for the Render() that follows,
+	 * which is then one lock with this. Except when a render to the screen
+	 * is handed over to the other thread when this is done (threaded
+	 * rendering): the frontend is waited for before the screen's picture
+	 * is drawn into, and never with the context taken - and not here,
+	 * which would keep the emulation waiting too. */
+	const bool keep = ctx->rend.isRTT || !settings.rend.ThreadedRendering;
+	if (keep && !ctx->rend.isRTT)
+		context->WaitPresentIndex();
+	context->Lock();
+	const bool result = ProcessLocked(ctx);
+	heldFromProcess = keep && result;
+	if (!heldFromProcess)
+		context->Unlock();
+	return result;
+}
 
+bool DX11Renderer::ProcessLocked(TA_context* ctx)
+{
 	if (!ctx->rend.isRTT)
 		overlay.Prepare();
 	if (!ctx->rend.isRTT && !ctx->rend.isRenderFramebuffer)
@@ -272,112 +296,16 @@ bool DX11Renderer::Process(TA_context* ctx)
 	return result;
 }
 
-/* ---- What is set, and what was ---- */
-
-void DX11Renderer::ResetState()
-{
-	memset(&state, 0, sizeof(state));
-	state.topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-	currentScissor = D3D11_RECT{ -1, -1, -1, -1 };
-	stateChanges = DX11Context::Instance()->GetStateChanges();
-}
-
-void DX11Renderer::SetVS(ID3D11VertexShader *vs)
-{
-	if (vs != state.vs)
-	{
-		deviceContext->VSSetShader(vs, nullptr, 0);
-		state.vs = vs;
-	}
-}
-
-void DX11Renderer::SetPS(ID3D11PixelShader *ps)
-{
-	if (ps != state.ps)
-	{
-		deviceContext->PSSetShader(ps, nullptr, 0);
-		state.ps = ps;
-	}
-}
-
-void DX11Renderer::SetBlend(ID3D11BlendState *blend)
-{
-	if (blend != state.blend)
-	{
-		deviceContext->OMSetBlendState(blend, nullptr, 0xffffffff);
-		state.blend = blend;
-	}
-}
-
-void DX11Renderer::SetDepthStencil(ID3D11DepthStencilState *depth, UINT ref)
-{
-	if (depth != state.depth || ref != state.stencilRef)
-	{
-		deviceContext->OMSetDepthStencilState(depth, ref);
-		state.depth = depth;
-		state.stencilRef = ref;
-	}
-}
-
-void DX11Renderer::SetTexture(int slot, ID3D11ShaderResourceView *view, ID3D11SamplerState *sampler)
-{
-	if (view != state.srv[slot])
-	{
-		deviceContext->PSSetShaderResources(slot, 1, &view);
-		state.srv[slot] = view;
-	}
-	if (sampler != state.sampler[slot])
-	{
-		deviceContext->PSSetSamplers(slot, 1, &sampler);
-		state.sampler[slot] = sampler;
-	}
-}
-
-void DX11Renderer::SetTopology(D3D11_PRIMITIVE_TOPOLOGY topology)
-{
-	if (topology != state.topology)
-	{
-		deviceContext->IASetPrimitiveTopology(topology);
-		state.topology = topology;
-	}
-}
+/* ---- What is set ---- */
 
 void DX11Renderer::SetCullMode(int mode)
 {
-	ID3D11RasterizerState *raster = rasterizers[mode == 3 ? 2 : mode == 2 ? 1 : 0];
-	if (raster != state.raster)
-	{
-		deviceContext->RSSetState(raster);
-		state.raster = raster;
-	}
-}
-
-void DX11Renderer::SetScissor(const D3D11_RECT& rect)
-{
-	if (rect.left != currentScissor.left || rect.top != currentScissor.top
-			|| rect.right != currentScissor.right || rect.bottom != currentScissor.bottom)
-	{
-		deviceContext->RSSetScissorRects(1, &rect);
-		currentScissor = rect;
-	}
+	context->SetRasterizer(rasterizers[mode == 3 ? 2 : mode == 2 ? 1 : 0]);
 }
 
 void DX11Renderer::SetPolyConstants(const PolyConstants& constants)
 {
-	if (state.polyValid && !memcmp(&constants, &state.poly, sizeof(constants)))
-		return;
-	SetConstants(polyConstants.get(), constants);
-	state.poly = constants;
-	state.polyValid = true;
-}
-
-void DX11Renderer::BindMainGeometry()
-{
-	const UINT stride = sizeof(Vertex);
-	const UINT offset = 0;
-	deviceContext->IASetInputLayout(mainInputLayout);
-	deviceContext->IASetVertexBuffers(0, 1, vertexBuffer.addr(), &stride, &offset);
-	deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+	SetConstants(polyConstants.get(), constants, polyUploaded, polyUploadedValid);
 }
 
 /* ---- Clipping ---- */
@@ -432,7 +360,6 @@ void DX11Renderer::SetBaseScissor()
 	{
 		baseScissor = D3D11_RECT{ 0, 0, (LONG)screen_width, (LONG)screen_height };
 	}
-	currentScissor = D3D11_RECT{ -1, -1, -1, -1 };
 }
 
 // Direct3D takes a flat shaded triangle's colours from its first vertex.
@@ -489,45 +416,61 @@ void DX11Renderer::SortTriangles()
 
 /* ---- Buffers ---- */
 
-static bool ensureBuffer(ID3D11Device *device, ComPtr<ID3D11Buffer>& buffer, u32& size, u32 needed, UINT bind)
+/* Where a render's vertices, indexes and modifier volume triangles go in
+ * the geometry buffer if they start at @start: each at a multiple of its
+ * size there, as the draws count them. Returns where they end. */
+static u32 layGeometry(u32 start, u32 vertexBytes, u32 indexBytes, u32 modVolBytes, u32& vertices, u32& indexes, u32& modVols)
 {
-	if (buffer && size >= needed)
-		return true;
-	u32 newSize = std::max(size, 64u * 1024u);
-	while (newSize < needed)
-		newSize *= 2;
-	buffer.reset();
-	size = 0;
-	D3D11_BUFFER_DESC desc{};
-	desc.ByteWidth = newSize;
-	desc.Usage = D3D11_USAGE_DYNAMIC;
-	desc.BindFlags = bind;
-	desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-	if (FAILED(device->CreateBuffer(&desc, nullptr, buffer.put())))
-	{
-		WARN_LOG(RENDERER, "DX11: buffer creation failed (%d bytes)", newSize);
-		buffer.reset();
-		return false;
-	}
-	size = newSize;
-	return true;
+	const u32 modVolSize = sizeof(float) * 3;
+	vertices = (start + sizeof(Vertex) - 1) / sizeof(Vertex) * sizeof(Vertex);
+	indexes = vertices + vertexBytes;
+	modVols = (indexes + indexBytes + modVolSize - 1) / modVolSize * modVolSize;
+	return modVols + modVolBytes;
 }
 
 bool DX11Renderer::UploadGeometry()
 {
-	D3D11_MAPPED_SUBRESOURCE mapped;
-
-	if (!ensureBuffer(device, vertexBuffer, vertexBufferSize, pvrrc.verts.bytes(), D3D11_BIND_VERTEX_BUFFER)
-			|| FAILED(deviceContext->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-		return false;
-	memcpy(mapped.pData, pvrrc.verts.head(), pvrrc.verts.bytes());
-	deviceContext->Unmap(vertexBuffer, 0);
-
+	const u32 vertexBytes = pvrrc.verts.bytes();
 	const u32 indexBytes = pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
-	if (!ensureBuffer(device, indexBuffer, indexBufferSize, indexBytes, D3D11_BIND_INDEX_BUFFER)
-			|| FAILED(deviceContext->Map(indexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+	const u32 modVolBytes = pvrrc.modtrig.bytes();
+	u32 vertices, indexes, modVols;
+	u32 end = layGeometry(geometryUsed, vertexBytes, indexBytes, modVolBytes, vertices, indexes, modVols);
+	/* After what the renders before this one have put there, and not over
+	 * any of it; started again (discarded) when it is full - and always on
+	 * a deferred context, whose commands are each a list of their own */
+	D3D11_MAP mode = D3D11_MAP_WRITE_NO_OVERWRITE;
+	if (!geometry || end > geometrySize || !context->CanReadBack())
+	{
+		mode = D3D11_MAP_WRITE_DISCARD;
+		end = layGeometry(0, vertexBytes, indexBytes, modVolBytes, vertices, indexes, modVols);
+		if (!geometry || end > geometrySize)
+		{
+			/* (larger only, never smaller again: a growing scene does not make it over and over) */
+			u32 newSize = std::max(geometrySize, 256u * 1024u);
+			while (newSize < end)
+				newSize *= 2;
+			geometry.reset();
+			geometrySize = 0;
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth = newSize;
+			desc.Usage = D3D11_USAGE_DYNAMIC;
+			desc.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER;
+			desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+			if (FAILED(device->CreateBuffer(&desc, nullptr, geometry.put())))
+			{
+				WARN_LOG(RENDERER, "DX11: buffer creation failed (%d bytes)", newSize);
+				geometry.reset();
+				return false;
+			}
+			geometrySize = newSize;
+		}
+	}
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (FAILED(deviceContext->Map(geometry, 0, mode, 0, &mapped)))
 		return false;
-	u8 *dst = (u8 *)mapped.pData;
+	u8 *base = (u8 *)mapped.pData;
+	memcpy(base + vertices, pvrrc.verts.head(), vertexBytes);
+	u8 *dst = base + indexes;
 	memcpy(dst, pvrrc.idx.head(), pvrrc.idx.bytes());
 	dst += pvrrc.idx.bytes();
 	for (const std::vector<u32>& idx : sortedIndexes)
@@ -536,16 +479,15 @@ bool DX11Renderer::UploadGeometry()
 			memcpy(dst, idx.data(), idx.size() * sizeof(u32));
 			dst += idx.size() * sizeof(u32);
 		}
-	deviceContext->Unmap(indexBuffer, 0);
+	if (modVolBytes != 0)
+		memcpy(base + modVols, pvrrc.modtrig.head(), modVolBytes);
+	deviceContext->Unmap(geometry, 0);
+	geometryUsed = end;
 
-	if (pvrrc.modtrig.used() != 0)
-	{
-		if (!ensureBuffer(device, modVolBuffer, modVolBufferSize, pvrrc.modtrig.bytes(), D3D11_BIND_VERTEX_BUFFER)
-				|| FAILED(deviceContext->Map(modVolBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-			return false;
-		memcpy(mapped.pData, pvrrc.modtrig.head(), pvrrc.modtrig.bytes());
-		deviceContext->Unmap(modVolBuffer, 0);
-	}
+	vertexBase = (INT)(vertices / sizeof(Vertex));
+	indexBase = indexes / sizeof(u32);
+	modVolBase = modVols / (sizeof(float) * 3);
+	haveModVols = modVolBytes != 0;
 	return true;
 }
 
@@ -594,26 +536,25 @@ void DX11Renderer::SetupFrame()
 		{ normal.sx, -normal.sy, normal.sz, 0.f },
 		{ normal.tx, -normal.ty, normal.tz, 0.f },
 	};
-	SetConstants(vtxConstants.get(), vtx);
+	SetConstants(vtxConstants.get(), vtx, vtxUploaded, vtxUploadedValid);
 	FragmentConstants frag;
 	MakeFragmentConstants(frag);
-	SetConstants(fragConstants.get(), frag);
+	SetConstants(fragConstants.get(), frag, fragUploaded, fragUploadedValid);
 
-	deviceContext->VSSetConstantBuffers(0, 1, vtxConstants.addr());
-	ID3D11Buffer *buffers[] = { fragConstants, polyConstants };
-	deviceContext->PSSetConstantBuffers(0, 2, buffers);
-	ID3D11ShaderResourceView *views[] = { paletteView, fogView };
-	deviceContext->PSSetShaderResources(1, 2, views);
-	ID3D11SamplerState *point = samplers->GetPointSampler();
-	deviceContext->PSSetSamplers(1, 1, &point);
-	state.srv[1] = paletteView;
-	state.srv[2] = fogView;
-	state.sampler[1] = point;
-	deviceContext->GSSetShader(nullptr, nullptr, 0);
-	BindMainGeometry();
+	context->SetVSConstants(vtxConstants);
+	ID3D11Buffer * const buffers[] = { fragConstants, PolyConstantsBuffer() };
+	context->SetPSConstants(0, 2, buffers);
+	ID3D11ShaderResourceView * const views[] = { paletteView, fogView };
+	context->SetPSResources(1, 2, views);
+	context->SetPSSampler(1, samplers->GetPointSampler());
+	context->SetInputLayout(PolyInputLayout());
+	BindGeometry();
 	// (what was pushed, for a polygon that pushes nothing: anything at all)
-	PolyConstants zero = {};
-	SetPolyConstants(zero);
+	if (!polyUploadedValid && PolyConstantsBuffer() == polyConstants.get())
+	{
+		PolyConstants zero = {};
+		SetPolyConstants(zero);
+	}
 }
 
 bool DX11Renderer::EnsureDepth(u32 width, u32 height)
@@ -670,6 +611,23 @@ bool DX11Renderer::EnsureDepth(u32 width, u32 height)
 
 /* ---- The screen ---- */
 
+static bool makeScreenTarget(ID3D11Device *device, ID3D11DeviceContext *deviceContext, u32 width, u32 height,
+		ComPtr<ID3D11Texture2D>& texture, ComPtr<ID3D11ShaderResourceView>& view, ComPtr<ID3D11RenderTargetView>& target)
+{
+	if (!makeTexture(device, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+			texture, view)
+			|| FAILED(device->CreateRenderTargetView(texture, nullptr, target.put())))
+	{
+		target.reset();
+		view.reset();
+		texture.reset();
+		return false;
+	}
+	const float black[4] = { 0.f, 0.f, 0.f, 1.f };
+	deviceContext->ClearRenderTargetView(target, black);
+	return true;
+}
+
 bool DX11Renderer::EnsureScreen(u32 width, u32 height)
 {
 	const unsigned count = DX11Context::Instance()->GetPresentCount();
@@ -680,17 +638,21 @@ bool DX11Renderer::EnsureScreen(u32 width, u32 height)
 		 * picture the next render starts from, at whatever size the screen
 		 * now is (Vulkan's carried picture): nothing is read back or
 		 * loaded again. */
-		if (havePicture && lastScreen >= 0 && (size_t)lastScreen < screenTargets.size())
+		if (havePicture && lastInExtra)
+			restoredPicture = extraTarget.view;
+		else if (havePicture && lastScreen >= 0 && (size_t)lastScreen < screenTargets.size())
 			restoredPicture = screenTargets[lastScreen].view;
 		screenTargets.clear();
+		extraTarget = ScreenTarget();
 		havePicture = false;
+		lastInExtra = false;
 		lastScreen = -1;
 		screenWidth = width;
 		screenHeight = height;
 	}
 	if (screenTargets.size() > count)
 	{
-		if (lastScreen >= (int)count)
+		if (lastScreen >= (int)count && !lastInExtra)
 		{
 			if (havePicture)
 				restoredPicture = screenTargets[lastScreen].view;
@@ -702,17 +664,32 @@ bool DX11Renderer::EnsureScreen(u32 width, u32 height)
 	while (screenTargets.size() < count)
 		screenTargets.push_back(ScreenTarget());
 	ScreenTarget& target = screenTargets[screenIndex];
-	if (!target.texture)
+	if (!target.texture && !makeScreenTarget(device, deviceContext, width, height, target.texture, target.view, target.target))
 	{
-		if (!makeTexture(device, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
-				target.texture, target.view)
-				|| FAILED(device->CreateRenderTargetView(target.texture, nullptr, target.target.put())))
+		target = ScreenTarget();
+		return false;
+	}
+	if (DX11Context::Instance()->IsHandedOver(target.texture))
+	{
+		/* A render to the screen after one this frame has handed over
+		 * already: this one goes to the extra picture, which takes the
+		 * place of the one handed over, and that stays as it is until the
+		 * frontend has shown it. (The last picture goes where its picture
+		 * goes.) */
+		if (!extraTarget.texture
+				&& !makeScreenTarget(device, deviceContext, width, height, extraTarget.texture, extraTarget.view, extraTarget.target))
 		{
-			target = ScreenTarget();
+			extraTarget = ScreenTarget();
 			return false;
 		}
-		const float black[4] = { 0.f, 0.f, 0.f, 1.f };
-		deviceContext->ClearRenderTargetView(target.target, black);
+		std::swap(target, extraTarget);
+		if (lastInExtra)
+		{
+			lastInExtra = false;
+			lastScreen = screenIndex;
+		}
+		else if (lastScreen == screenIndex)
+			lastInExtra = true;
 	}
 	return EnsureDepth(width, height);
 }
@@ -722,13 +699,10 @@ void DX11Renderer::DrawLastPicture(u32 width, u32 height)
 	ID3D11ShaderResourceView *view = LastPictureView();
 	if (view == nullptr)
 		return;
-	const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)width, (float)height, 0.f, 1.f };
-	deviceContext->RSSetViewports(1, &vp);
+	context->SetViewport((float)width, (float)height);
 	/* (the picture kept from another context can be of another size) */
-	DX11Context::Instance()->GetQuad().Draw(view, havePicture ? samplers->GetPointSampler() : samplers->GetLinearSampler());
-	ID3D11ShaderResourceView *none = nullptr;
-	deviceContext->PSSetShaderResources(0, 1, &none);
-	ResetState();
+	context->GetQuad().Draw(view, havePicture ? samplers->GetPointSampler() : samplers->GetLinearSampler());
+	context->SetPSResource(0, nullptr);
 }
 
 bool DX11Renderer::BeginScreen()
@@ -742,13 +716,12 @@ bool DX11Renderer::BeginScreen()
 	targetHeight = screenHeight;
 
 	matrices.CalcMatrices(&pvrrc);
-	ResetState();
 	if (!BindsScreen())
 	{
 		SetBaseScissor();
 		return true;
 	}
-	deviceContext->OMSetRenderTargets(1, target.target.addr(), depthView);
+	context->SetTargets(target.target, depthView);
 	deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.f, 0);
 
 	/* A framebuffer the game has not drawn to lately starts as the border
@@ -758,10 +731,10 @@ bool DX11Renderer::BeginScreen()
 	 * (Only for such a render: one that covers the screen pays nothing.) */
 	if (KeepsLastPicture())
 	{
-		if (havePicture && lastScreen == screenIndex)
+		if (havePicture && LastPictureTexture() == target.texture.get())
 			;
 		else if (havePicture)
-			deviceContext->CopyResource(target.texture, screenTargets[lastScreen].texture);
+			deviceContext->CopyResource(target.texture, LastPictureTexture());
 		else
 		{
 			const float black[4] = { 0.f, 0.f, 0.f, 1.f };
@@ -780,8 +753,7 @@ bool DX11Renderer::BeginScreen()
 		}
 		deviceContext->ClearRenderTargetView(target.target, color);
 	}
-	const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)screenWidth, (float)screenHeight, 0.f, 1.f };
-	deviceContext->RSSetViewports(1, &vp);
+	context->SetViewport((float)screenWidth, (float)screenHeight);
 	SetBaseScissor();
 	return true;
 }
@@ -789,15 +761,18 @@ bool DX11Renderer::BeginScreen()
 void DX11Renderer::EndScreen()
 {
 	ScreenTarget& target = screenTargets[screenIndex];
-	// what goes over the picture, onto it
-	deviceContext->OMSetRenderTargets(1, target.target.addr(), nullptr);
-	const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)screenWidth, (float)screenHeight, 0.f, 1.f };
-	deviceContext->RSSetViewports(1, &vp);
-	overlay.Draw(screenWidth, screenHeight);
-	deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+	// what goes over the picture, onto it (with the depth test off: whatever depth is bound is not looked at)
+	if (!overlay.IsEmpty())
+	{
+		context->SetTargets(target.target, BindsScreen() ? depthView.get() : nullptr);
+		context->SetViewport((float)screenWidth, (float)screenHeight);
+		overlay.Draw(screenWidth, screenHeight);
+	}
+	context->SetTargets(nullptr, nullptr);
 
 	havePicture = true;
 	lastScreen = screenIndex;
+	lastInExtra = false;
 	restoredPicture.reset();
 	DX11Context::Instance()->SetFrame(target.texture, target.view);
 }
@@ -807,7 +782,7 @@ void DX11Renderer::KeepPicture()
 	if (!havePicture || lastScreen < 0 || (size_t)lastScreen >= screenTargets.size())
 		return;
 	u8 *pixels = last_picture_keep(screenWidth, screenHeight);
-	if (pixels != nullptr && !dx11_read_picture(screenTargets[lastScreen].texture, screenWidth, screenHeight, pixels))
+	if (pixels != nullptr && !dx11_read_picture(LastPictureTexture(), screenWidth, screenHeight, pixels))
 		last_picture_drop();
 }
 
@@ -818,7 +793,6 @@ bool DX11Renderer::BeginRTT()
 	DEBUG_LOG(RENDERER, "RenderToTexture packmode=%d stride=%d - %d,%d -> %d,%d @ %08x", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
 			FB_X_CLIP.min, FB_Y_CLIP.min, FB_X_CLIP.max, FB_Y_CLIP.max, FB_W_SOF1 & VRAM_MASK);
 	matrices.CalcMatrices(&pvrrc);
-	ResetState();
 
 	rttAddr = FB_W_SOF1 & VRAM_MASK;
 	// the frame from its first pixel, as far as the pixel clip goes (see TransformMatrix)
@@ -895,28 +869,28 @@ bool DX11Renderer::BeginRTT()
 	targetWidth = upscaledWidth;
 	targetHeight = upscaledHeight;
 
-	/* (a texture this render draws with is not to be bound while it is drawn into) */
-	ID3D11ShaderResourceView *none[4] = {};
-	deviceContext->PSSetShaderResources(0, 4, none);
+	/* (a texture this render draws with is not to be bound while it is
+	 * drawn into: the textures' slots, not the palette's and the fog's) */
+	context->SetPSResource(0, nullptr);
+	context->SetPSResource(3, nullptr);
 	if (BindsScreen())
 	{
-		deviceContext->OMSetRenderTargets(1, rttTexture->spareTarget.addr(), depthView);
+		context->SetTargets(rttTexture->spareTarget, depthView);
 		const float black[4] = { 0.f, 0.f, 0.f, 1.f };
 		deviceContext->ClearRenderTargetView(rttTexture->spareTarget, black);
 		deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.f, 0);
-		const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)upscaledWidth, (float)upscaledHeight, 0.f, 1.f };
-		deviceContext->RSSetViewports(1, &vp);
+		context->SetViewport((float)upscaledWidth, (float)upscaledHeight);
 	}
 	// only the pixel clip is written
 	baseScissor = D3D11_RECT{ (LONG)(clipX * scale), (LONG)(clipY * scale),
 			(LONG)((clipX + clipWidth) * scale), (LONG)((clipY + clipHeight) * scale) };
-	currentScissor = D3D11_RECT{ -1, -1, -1, -1 };
 	return true;
 }
 
 void DX11Renderer::EndRTT()
 {
-	deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+	/* (left bound: whatever binds the texture to be read from binds
+	 * another target first) */
 	rttTexture->SwapWithSpare();
 
 	rttTexture->dirty = 0;
@@ -942,12 +916,42 @@ bool DX11Renderer::UploadFramebuffer()
 
 	if (!fbTexture || width != fbWidth || height != fbHeight)
 	{
-		if (!makeTexture(device, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, fbTexture, fbView))
+		/* (written by the processor every frame: one the card reads where it
+		 * is written, with no copy of it made on the way) */
+		fbView.reset();
+		fbTexture.reset();
+		D3D11_TEXTURE2D_DESC desc{};
+		desc.Width = width;
+		desc.Height = height;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DYNAMIC;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(device->CreateTexture2D(&desc, nullptr, fbTexture.put()))
+				|| FAILED(device->CreateShaderResourceView(fbTexture, nullptr, fbView.put())))
+		{
+			WARN_LOG(RENDERER, "DX11: texture creation failed (%d x %d, format %d)", width, height, (int)desc.Format);
+			fbView.reset();
+			fbTexture.reset();
 			return false;
+		}
 		fbWidth = width;
 		fbHeight = height;
 	}
-	deviceContext->UpdateSubresource(fbTexture, 0, nullptr, pb.data(), width * 4, width * height * 4);
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (FAILED(deviceContext->Map(fbTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+		return false;
+	const u8 *src = (const u8 *)pb.data();
+	u8 *dst = (u8 *)mapped.pData;
+	if (mapped.RowPitch == (UINT)width * 4)
+		memcpy(dst, src, (size_t)width * height * 4);
+	else
+		for (int y = 0; y < height; y++)
+			memcpy(dst + (size_t)y * mapped.RowPitch, src + (size_t)y * width * 4, (size_t)width * 4);
+	deviceContext->Unmap(fbTexture, 0);
 	return true;
 }
 
@@ -960,11 +964,10 @@ void DX11Renderer::DrawFramebuffer()
 		return;
 	ScreenTarget& target = screenTargets[screenIndex];
 	matrices.CalcMatrices(&pvrrc);
-	deviceContext->OMSetRenderTargets(1, target.target.addr(), nullptr);
+	context->SetTargets(target.target, nullptr);
 	const float black[4] = { 0.f, 0.f, 0.f, 1.f };
 	deviceContext->ClearRenderTargetView(target.target, black);
-	const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)screenWidth, (float)screenHeight, 0.f, 1.f };
-	deviceContext->RSSetViewports(1, &vp);
+	context->SetViewport((float)screenWidth, (float)screenHeight);
 
 	const xform& viewport = matrices.GetViewportMatrix();
 	const float x0 = xform_x(&viewport, 0.f), x1 = xform_x(&viewport, 640.f);
@@ -972,8 +975,6 @@ void DX11Renderer::DrawFramebuffer()
 	DX11Context::Instance()->GetQuad().Draw(fbView, samplers->GetLinearSampler(),
 			x0 * 2.f / screenWidth - 1.f, 1.f - y1 * 2.f / screenHeight,
 			(x1 - x0) * 2.f / screenWidth, (y1 - y0) * 2.f / screenHeight);
-	ID3D11ShaderResourceView *none = nullptr;
-	deviceContext->PSSetShaderResources(0, 1, &none);
 	EndScreen();
 }
 
@@ -981,6 +982,15 @@ void DX11Renderer::DrawFramebuffer()
 
 bool DX11Renderer::Render()
 {
+	/* the context, taken by Process() and kept for this, or taken here -
+	 * and given back on the way out */
+	const bool held = heldFromProcess;
+	heldFromProcess = false;
+	struct Unlocker
+	{
+		bool locked;
+		~Unlocker() { if (locked) DX11Context::Instance()->Unlock(); }
+	} unlocker = { held };
 	if (device == nullptr)
 		return false;
 	if (pvrrc.isRTT && (pvrrc.fb_X_CLIP.max < pvrrc.fb_X_CLIP.min || pvrrc.fb_Y_CLIP.max < pvrrc.fb_Y_CLIP.min))
@@ -991,12 +1001,15 @@ bool DX11Renderer::Render()
 				pvrrc.fb_X_CLIP.min, pvrrc.fb_X_CLIP.max, pvrrc.fb_Y_CLIP.min, pvrrc.fb_Y_CLIP.max);
 		return false;
 	}
-	/* the frontend may still be showing what is in the screen's next
-	 * picture: it is waited for, before the context is taken */
-	if (!pvrrc.isRTT)
-		DX11Context::Instance()->WaitPresentIndex();
-	DX11Lock lock;
-	deviceContext->ClearState();
+	if (!held)
+	{
+		/* the frontend may still be showing what is in the screen's next
+		 * picture: it is waited for, before the context is taken */
+		if (!pvrrc.isRTT)
+			context->WaitPresentIndex();
+		context->Lock();
+		unlocker.locked = true;
+	}
 
 	if (pvrrc.isRenderFramebuffer)
 	{
@@ -1013,7 +1026,7 @@ bool DX11Renderer::Render()
 	SetProvokingVertices();
 	if (!UploadGeometry())
 	{
-		deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+		context->SetTargets(nullptr, nullptr);
 		rttTexture = nullptr;
 		return false;
 	}
@@ -1156,7 +1169,7 @@ void DX11Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& p
 	SetCullMode(poly.isp.CullMode);
 	SetTopology(sortTriangles && !settings.pvr.Emulation.AlphaSortMode ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-	deviceContext->DrawIndexed(count, first, 0);
+	deviceContext->DrawIndexed(count, indexBase + first, vertexBase);
 }
 
 // The polygons of a list that take shadows, drawn again where they are in a
@@ -1182,10 +1195,7 @@ void DX11Renderer::DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool 
 		// Sorted translucent polygons are drawn without writing depth. Where
 		// a later render pass needs their depth (Cosmic Smash), it is written
 		// now, for those that do not have Z write disabled.
-		const UINT stride = sizeof(Vertex);
-		const UINT offset = 0;
-		deviceContext->IASetInputLayout(positionInputLayout);
-		deviceContext->IASetVertexBuffers(0, 1, vertexBuffer.addr(), &stride, &offset);
+		context->SetInputLayout(positionInputLayout);
 		SetVS(shaders->GetModVolVertexShader());
 		SetPS(shaders->GetModVolPixelShader());
 		SetBlend(blendStates->Get(false, 1, 0, false));
@@ -1198,9 +1208,9 @@ void DX11Renderer::DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool 
 			D3D11_RECT scissorRect;
 			SetScissor(SetTileClip(param.ppid->tileclip, scissorRect) == TileClipping::Outside ? scissorRect : baseScissor);
 			SetCullMode(param.ppid->isp.CullMode);
-			deviceContext->DrawIndexed(param.count, pvrrc.idx.used() + param.first, 0);
+			deviceContext->DrawIndexed(param.count, indexBase + pvrrc.idx.used() + param.first, vertexBase);
 		}
-		BindMainGeometry();
+		context->SetInputLayout(mainInputLayout);
 	}
 }
 
@@ -1222,13 +1232,11 @@ void DX11Renderer::DrawList(u32 listType, bool sortTriangles, const List<PolyPar
 
 void DX11Renderer::DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
 {
-	if (count == 0 || pvrrc.modtrig.used() == 0 || !modVolBuffer)
+	if (count == 0 || !haveModVols)
 		return;
 
-	const UINT stride = sizeof(float) * 3;
-	const UINT offset = 0;
-	deviceContext->IASetInputLayout(positionInputLayout);
-	deviceContext->IASetVertexBuffers(0, 1, modVolBuffer.addr(), &stride, &offset);
+	// (the modifier volumes' triangles are at vertex slot 1)
+	context->SetInputLayout(modVolInputLayout);
 	SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	SetVS(shaders->GetModVolVertexShader());
 	SetPS(shaders->GetModVolPixelShader());
@@ -1265,18 +1273,18 @@ void DX11Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 			SetDepthStencil(depthStencilStates.Get(true, false, 4, DX11Stencil::Or), 2);	// OR'ing (open volume or quad)
 		else
 			SetDepthStencil(depthStencilStates.Get(true, false, 4, DX11Stencil::Xor), 2);	// XOR'ing (closed volume)
-		deviceContext->Draw(param.count * 3, param.first * 3);
+		deviceContext->Draw(param.count * 3, modVolBase + param.first * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			// Sum the area
 			SetDepthStencil(depthStencilStates.Get(false, false, 7, mv_mode == 1 ? DX11Stencil::Inclusion : DX11Stencil::Exclusion), 1);
-			deviceContext->Draw((param.first + param.count - mod_base) * 3, mod_base * 3);
+			deviceContext->Draw((param.first + param.count - mod_base) * 3, modVolBase + mod_base * 3);
 			mod_base = -1;
 		}
 	}
 	SetScissor(baseScissor);
-	BindMainGeometry();
+	context->SetInputLayout(mainInputLayout);
 
 	// The polygons that take shadows, again, where they are in a volume
 	const ScreenBounds area = ModVolBounds(first, count);
@@ -1292,17 +1300,15 @@ void DX11Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 
 	// What is left: darkened as it is. The background polygon is the
 	// rectangle drawn: the first four vertices' positions.
-	const UINT vstride = sizeof(Vertex);
-	deviceContext->IASetInputLayout(positionInputLayout);
-	deviceContext->IASetVertexBuffers(0, 1, vertexBuffer.addr(), &vstride, &offset);
+	context->SetInputLayout(positionInputLayout);
 	SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	SetVS(shaders->GetModVolVertexShader());
 	SetPS(shaders->GetModVolPixelShader());
 	SetBlend(blendStates->GetAlpha());
 	SetDepthStencil(depthStencilStates.Get(false, false, 7, DX11Stencil::Final), 0x81);
 	SetCullMode(0);
-	deviceContext->DrawIndexed(4, 0, 0);
-	BindMainGeometry();
+	deviceContext->DrawIndexed(4, indexBase, vertexBase);
+	context->SetInputLayout(mainInputLayout);
 }
 
 void DX11Renderer::DrawFrame()

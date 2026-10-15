@@ -433,7 +433,11 @@ ID3D11VertexShader *DX11Shaders::GetVertexShader(bool gouraud)
 
 ID3D11PixelShader *DX11Shaders::GetPixelShader(const DX11FragmentShaderParams& params)
 {
-	ComPtr<ID3D11PixelShader>& shader = pixelShaders[params.hash()];
+	const u32 key = params.hash();
+	Memo& m = MemoFor(key);
+	if (m.shader != nullptr && m.key == key)
+		return m.shader;
+	ComPtr<ID3D11PixelShader>& shader = pixelShaders[key];
 	if (!shader)
 	{
 		const D3D_SHADER_MACRO macros[] = {
@@ -456,6 +460,8 @@ ID3D11PixelShader *DX11Shaders::GetPixelShader(const DX11FragmentShaderParams& p
 		std::string source = std::string(PixelShaderHeader) + DX11FogFunction + PixelShaderSource;
 		shader = CompilePS(source.c_str(), "main", "ps_4_0", macros);
 	}
+	m.key = key;
+	m.shader = shader;
 	return shader;
 }
 
@@ -499,6 +505,7 @@ void DX11Shaders::Term()
 		shader.reset();
 	vertexBlob.reset();
 	pixelShaders.clear();
+	Forget();
 	modVolVertexShader.reset();
 	modVolVertexBlob.reset();
 	modVolPixelShader.reset();

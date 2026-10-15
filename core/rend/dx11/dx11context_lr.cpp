@@ -111,6 +111,8 @@ bool DX11Context::Init(const struct retro_hw_render_interface_d3d11 *iface)
 		return false;
 	}
 
+	/* (what is bound is not known until the context is first taken and cleared) */
+	stateChanges = stateCleared + 1;
 	shaders.Init(device, compile);
 	if (!quad.Init(device, deviceContext, &shaders))
 	{
@@ -125,6 +127,7 @@ void DX11Context::Term()
 {
 	frameView.reset();
 	frameTexture.reset();
+	handedOver = false;
 	quad.Term();
 	blendStates.Term();
 	samplers.Term();
@@ -165,14 +168,22 @@ bool DX11Context::CanGenerateMips(TextureType type) const
 
 void DX11Context::Lock()
 {
-	if (v2 && lockDepth++ == 0 && lock_context(handle))
+	if (lockDepth++ != 0)
+		return;
+	if (v2 && lock_context(handle))
 		/* the frontend has drawn with it since: nothing is as it was left */
-		StateChanged();
+		stateChanges++;
+	if (stateChanges != stateCleared && deviceContext)
+	{
+		deviceContext->ClearState();
+		ClearBound();
+		stateCleared = stateChanges;
+	}
 }
 
 void DX11Context::Unlock()
 {
-	if (v2 && lockDepth > 0 && --lockDepth == 0)
+	if (lockDepth > 0 && --lockDepth == 0 && v2)
 		unlock_context(handle);
 }
 
@@ -184,6 +195,11 @@ void DX11Context::SetFrame(ID3D11Texture2D *texture, ID3D11ShaderResourceView *v
 	if (view != nullptr)
 		view->AddRef();
 	frameView.reset(view);
+	/* (with the context taken, by the render that drew it: no other lock
+	 * of it is needed for this) */
+	handedOver = v2 && texture != nullptr;
+	if (handedOver)
+		set_texture(handle, texture);
 }
 
 void DX11Context::Present()
@@ -192,15 +208,24 @@ void DX11Context::Present()
 		return;
 	if (v2)
 	{
-		DX11Lock lock;
-		set_texture(handle, frameTexture);
+		/* (a frame with no render to the screen in it shows the last one again) */
+		if (!handedOver)
+		{
+			DX11Lock lock;
+			set_texture(handle, frameTexture);
+		}
+		/* from here on the frontend has what it was handed: the next
+		 * render waits for it to be done with it (WaitPresentIndex()) */
+		handedOver = false;
 	}
 	else
 	{
+		DX11Lock lock;
 		/* (a view of a picture that is also bound to be drawn into is not
 		 * bound) */
-		deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
-		deviceContext->PSSetShaderResources(0, 1, frameView.addr());
+		SetTargets(nullptr, nullptr);
+		SetPSResource(0, frameView);
+		/* the frontend draws with the context in video_refresh */
 		StateChanged();
 	}
 }
@@ -228,4 +253,44 @@ void DX11Context::WaitPresentIndex()
 {
 	if (v2 && lockDepth == 0)
 		wait_sync_index(handle);
+}
+
+void DX11Quad::Draw(ID3D11ShaderResourceView *view, ID3D11SamplerState *sampler,
+		float x, float y, float w, float h, float u0, float v0, float u1, float v1,
+		ID3D11BlendState *blend, const float *blendFactor)
+{
+	if (!vertexBuffer)
+		return;
+	const Vertex vertices[4] = {
+		{ x,     y,     u0, v1 },
+		{ x,     y + h, u0, v0 },
+		{ x + w, y,     u1, v1 },
+		{ x + w, y + h, u1, v0 },
+	};
+	DX11Context *context = DX11Context::Instance();
+	D3D11_MAP mode = D3D11_MAP_WRITE_NO_OVERWRITE;
+	/* (a deferred context's commands are each a list of their own) */
+	if (next >= QuadCount || !context->CanReadBack())
+	{
+		mode = D3D11_MAP_WRITE_DISCARD;
+		next = 0;
+	}
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (FAILED(deviceContext->Map(vertexBuffer, 0, mode, 0, &mapped)))
+		return;
+	memcpy((Vertex *)mapped.pData + next * 4, vertices, sizeof(vertices));
+	deviceContext->Unmap(vertexBuffer, 0);
+
+	context->SetInputLayout(inputLayout);
+	context->SetVertexBuffer(vertexBuffer, sizeof(Vertex));
+	context->SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+	context->SetVS(vertexShader);
+	context->SetPS(pixelShader);
+	context->SetRasterizer(rasterizerState);
+	context->SetDepthStencil(depthStencilState);
+	context->SetBlend(blend != nullptr ? blend : opaque.get(), blendFactor);
+	context->SetPSResource(0, view);
+	context->SetPSSampler(0, sampler);
+	deviceContext->Draw(4, next * 4);
+	next++;
 }

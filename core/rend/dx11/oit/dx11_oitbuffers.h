@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <vector>
 #include "../comptr.h"
+#include "../dx11context_lr.h"
 
 extern u64 pixel_buffer_size;
 
@@ -158,12 +159,11 @@ public:
 
 	/* With one render target, the lists at u1, u2 and u3, and how large
 	 * they can be at b2 */
-	void Bind(ID3D11DeviceContext *deviceContext, ID3D11RenderTargetView *target, ID3D11DepthStencilView *depth)
+	void Bind(DX11Context *context, ID3D11RenderTargetView *target, ID3D11DepthStencilView *depth)
 	{
-		ID3D11UnorderedAccessView *views[] = { pixelsView, pointersView, counterView };
-		const UINT counts[] = { (UINT)-1, (UINT)-1, (UINT)-1 };
-		deviceContext->OMSetRenderTargetsAndUnorderedAccessViews(1, &target, depth, 1, 3, views, counts);
-		deviceContext->PSSetConstantBuffers(2, 1, constants.addr());
+		ID3D11UnorderedAccessView * const views[] = { pixelsView, pointersView, counterView };
+		context->SetTargetsAndUAVs(target, depth, views);
+		context->SetPSConstants(2, constants);
 	}
 	/* The buffer starts filling from its beginning again */
 	void ResetCount(ID3D11DeviceContext *deviceContext)

@@ -72,10 +72,11 @@ public:
 			return false;
 
 		D3D11_BUFFER_DESC desc{};
-		desc.ByteWidth = sizeof(Vertex) * 4;
+		desc.ByteWidth = sizeof(Vertex) * 4 * QuadCount;
 		desc.Usage = D3D11_USAGE_DYNAMIC;
 		desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		next = QuadCount;
 		return SUCCEEDED(device->CreateBuffer(&desc, nullptr, vertexBuffer.put()));
 	}
 
@@ -97,37 +98,7 @@ public:
 	void Draw(ID3D11ShaderResourceView *view, ID3D11SamplerState *sampler,
 			float x = -1.f, float y = -1.f, float w = 2.f, float h = 2.f,
 			float u0 = 0.f, float v0 = 0.f, float u1 = 1.f, float v1 = 1.f,
-			ID3D11BlendState *blend = nullptr, const float *blendFactor = nullptr)
-	{
-		if (!vertexBuffer)
-			return;
-		const Vertex vertices[4] = {
-			{ x,     y,     u0, v1 },
-			{ x,     y + h, u0, v0 },
-			{ x + w, y,     u1, v1 },
-			{ x + w, y + h, u1, v0 },
-		};
-		D3D11_MAPPED_SUBRESOURCE mapped;
-		if (FAILED(deviceContext->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-			return;
-		memcpy(mapped.pData, vertices, sizeof(vertices));
-		deviceContext->Unmap(vertexBuffer, 0);
-
-		const UINT stride = sizeof(Vertex);
-		const UINT offset = 0;
-		deviceContext->IASetInputLayout(inputLayout);
-		deviceContext->IASetVertexBuffers(0, 1, vertexBuffer.addr(), &stride, &offset);
-		deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-		deviceContext->VSSetShader(vertexShader, nullptr, 0);
-		deviceContext->PSSetShader(pixelShader, nullptr, 0);
-		deviceContext->GSSetShader(nullptr, nullptr, 0);
-		deviceContext->RSSetState(rasterizerState);
-		deviceContext->OMSetDepthStencilState(depthStencilState, 0);
-		deviceContext->OMSetBlendState(blend != nullptr ? blend : opaque.get(), blendFactor, 0xffffffff);
-		deviceContext->PSSetShaderResources(0, 1, &view);
-		deviceContext->PSSetSamplers(0, 1, &sampler);
-		deviceContext->Draw(4, 0);
-	}
+			ID3D11BlendState *blend = nullptr, const float *blendFactor = nullptr);
 
 private:
 	struct Vertex {
@@ -142,4 +113,8 @@ private:
 	ComPtr<ID3D11RasterizerState> rasterizerState;
 	ComPtr<ID3D11DepthStencilState> depthStencilState;
 	ComPtr<ID3D11BlendState> opaque;
+	/* The rectangles go one after the other into the buffer, and it is
+	 * started again (discarded) only when it is full */
+	static const UINT QuadCount = 64;
+	UINT next = QuadCount;
 };

@@ -30,15 +30,19 @@
  * order: a turn of the bits to the right puts them there. */
 static std::vector<u16> turned;
 
-static const u16 *turnBits(const u8 *data, size_t texels, unsigned by)
+static const u16 *turnBits(u8 *data, size_t texels, unsigned by, bool inPlace)
 {
-	if (turned.size() < texels)
-		turned.resize(texels);
-	const u16 *src = (const u16 *)data;
-	u16 *dst = turned.data();
+	u16 *src = (u16 *)data;
+	u16 *dst = src;
+	if (!inPlace)
+	{
+		if (turned.size() < texels)
+			turned.resize(texels);
+		dst = turned.data();
+	}
 	for (size_t i = 0; i < texels; i++)
 		dst[i] = (u16)((src[i] >> by) | (src[i] << (16 - by)));
-	return turned.data();
+	return dst;
 }
 
 void DX11Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded)
@@ -112,9 +116,39 @@ void DX11Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, b
 			texture.reset();
 		}
 	}
+	if (turn != 0)
+	{
+		size_t texels = (size_t)width * height;
+		if (mipmapsIncluded)
+			for (int dim = width / 2; dim != 0; dim /= 2)
+				texels += (size_t)dim * dim;
+		/* (in the texture cache's own buffer, which nothing reads after
+		 * this but a texture dump, which wants it as it is) */
+		data = (u8 *)turnBits(data, texels, turn, !settings.rend.DumpTextures);
+	}
+	/* A texture made anew is made with its pixels, which saves copying
+	 * them again after (one whose smaller levels the card makes is made,
+	 * and then filled) */
+	D3D11_SUBRESOURCE_DATA initial[16];
+	const bool withData = !generate && levels <= 16;
+	if (withData)
+	{
+		const u8 *p = data;
+		for (u32 i = 0; i < levels; i++)
+		{
+			// (the levels included are from the smallest, 1x1, to the largest)
+			const u32 level = mipmapsIncluded ? levels - i - 1 : 0;
+			const u32 w = mipmapsIncluded ? 1u << i : (u32)width;
+			const u32 h = mipmapsIncluded ? 1u << i : (u32)height;
+			initial[level].pSysMem = p;
+			initial[level].SysMemPitch = w * bpp;
+			initial[level].SysMemSlicePitch = w * h * bpp;
+			p += (size_t)w * h * bpp;
+		}
+	}
 	if (!texture)
 	{
-		HRESULT hr = device->CreateTexture2D(&desc, nullptr, texture.put());
+		HRESULT hr = device->CreateTexture2D(&desc, withData ? initial : nullptr, texture.put());
 		if (FAILED(hr))
 		{
 			ERROR_LOG(RENDERER, "Texture creation failed (%x): type %d, %d x %d, %d levels", (unsigned)hr, (int)tex_type, width, height, levels);
@@ -124,16 +158,10 @@ void DX11Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, b
 		hr = device->CreateShaderResourceView(texture, nullptr, textureView.put());
 		if (FAILED(hr))
 			ERROR_LOG(RENDERER, "Texture view creation failed (%x)", (unsigned)hr);
+		if (withData)
+			return;
 	}
 
-	if (turn != 0)
-	{
-		size_t texels = (size_t)width * height;
-		if (mipmapsIncluded)
-			for (int dim = width / 2; dim != 0; dim /= 2)
-				texels += (size_t)dim * dim;
-		data = (u8 *)turnBits(data, texels, turn);
-	}
 	if (mipmapsIncluded)
 	{
 		// from the smallest level, 1x1, to the largest
@@ -169,12 +197,9 @@ bool DX11Texture::Delete()
 	return true;
 }
 
-ID3D11SamplerState *DX11Samplers::GetSampler(TSP tsp)
+ID3D11SamplerState *DX11Samplers::MakeSampler(TSP tsp)
 {
 	const u32 key = tsp.full & TSP_Mask;
-	auto it = samplers.find(key);
-	if (it != samplers.end())
-		return it->second;
 
 	D3D11_SAMPLER_DESC desc{};
 	if (tsp.FilterMode == 0)
@@ -193,7 +218,7 @@ ID3D11SamplerState *DX11Samplers::GetSampler(TSP tsp)
 	desc.MinLOD = 0.f;
 	desc.MaxLOD = D3D11_FLOAT32_MAX;
 
-	ComPtr<ID3D11SamplerState>& sampler = samplers[key];
+	ComPtr<ID3D11SamplerState>& sampler = samplers[key >> 8];
 	ID3D11Device *device = DX11Context::Instance()->GetDevice();
 	if (device == nullptr || FAILED(device->CreateSamplerState(&desc, sampler.put())))
 		WARN_LOG(RENDERER, "Sampler creation failed");
@@ -354,19 +379,13 @@ static void dx11_rtt_read(const RttWatch *watch, u8 *rgba)
 	}
 	D3D11_TEXTURE2D_DESC src;
 	texture->texture->GetDesc(&src);
-	deviceContext->OMSetRenderTargets(1, smallTarget.addr(), nullptr);
-	const D3D11_VIEWPORT vp = { 0.f, 0.f, (float)w, (float)h, 0.f, 1.f };
-	deviceContext->RSSetViewports(1, &vp);
+	context->SetTargets(smallTarget, nullptr);
+	context->SetViewport((float)w, (float)h);
 	context->GetQuad().Draw(texture->textureView, context->GetSamplers().GetLinearSampler(),
 			-1.f, -1.f, 2.f, 2.f,
 			(float)x0 / src.Width, (float)y0 / src.Height,
 			(float)(x0 + w * scale) / src.Width, (float)(y0 + h * scale) / src.Height);
-	ID3D11RenderTargetView *none = nullptr;
-	deviceContext->OMSetRenderTargets(1, &none, nullptr);
 	readBack(small, 0, 0, w, h, rgba);
-	/* (the renderer sets what it draws with when it next draws: this is
-	 * never in the middle of that) */
-	context->StateChanged();
 }
 
 /* The texture cache's, never this module's to delete. */
