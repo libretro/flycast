@@ -256,6 +256,55 @@ public:
 		lastPicturePipeline = pipeline;
 		lastPicture.Init(pipeline);
 	}
+
+	/* The compute renderer draws frames into this drawer's pictures
+	 * (vulkan/compute_drawer.h), which are then made for it to write too */
+	void SetStoragePicture(bool on) { storagePicture = on; }
+	/* Whether the frame in pvrrc can be drawn by it here: not when it would
+	 * start from the picture kept from another context or size, which this
+	 * drawer scales; @last, whether it starts from the picture before, as
+	 * DrawLastPicture() says */
+	bool ComputeCanStart(bool *last)
+	{
+		matrices.CalcMatrices(&pvrrc);
+		*last = false;
+		if ((!havePicture && !restoredPicture) || lastPicturePipeline == nullptr || pvrrc.clearFramebuffer || !matrices.IsClipped())
+			return true;
+		if (!havePicture)
+			return false;
+		*last = true;
+		return true;
+	}
+	struct ComputeTarget
+	{
+		vk::Image image;
+		vk::ImageView view;
+		vk::ImageView last;	// the picture before, with @last
+	};
+	// the picture it draws the frame in
+	ComputeTarget ComputeBegin(bool last)
+	{
+		NewImage();
+		const int count = (int)finalColorAttachments.size();
+		ComputeTarget t;
+		t.image = finalColorAttachments[GetCurrentImage()]->GetImage();
+		t.view = finalColorAttachments[GetCurrentImage()]->GetImageView();
+		if (last)
+			t.last = finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView();
+		return t;
+	}
+	// ...and once it is recorded, as EndFrame() ends one of this drawer's
+	void ComputeEnd()
+	{
+		havePicture = true;
+		restoredPicture = nullptr;
+		if (carriedPicture)
+			commandPool->DeferDelete(std::move(carriedPicture));
+		commandPool->EndFrame();
+		GetContext()->PresentFrame(finalColorAttachments[GetCurrentImage()]->GetImage(),
+				finalColorAttachments[GetCurrentImage()]->GetImageView(),
+				vk::Offset2D(viewport.extent.width, viewport.extent.height));
+	}
 protected:
 
 private:
@@ -271,6 +320,7 @@ private:
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<OITPipelineManager> screenPipelineManager;
 	GpuFrameTimer timer;
+	bool storagePicture = false;
 };
 
 class OITTextureDrawer : public OITDrawer

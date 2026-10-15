@@ -25,6 +25,8 @@
 #include "oit_shaders.h"
 #include "oit_buffer.h"
 #include "rend/ssaa_pattern.h"
+#include "../compute_drawer.h"
+#include "rend/rend_method.h"
 
 class OITVulkanRenderer final : public BaseVulkanRenderer
 {
@@ -40,6 +42,7 @@ public:
 		textureDrawer.Init(&samplerManager, &rttShaderManager, &textureCache, &oitBuffers);
 		textureDrawer.SetGpuDraw(taDecoder.Draw());
 
+		screenDrawer.SetStoragePicture(rend_compute_wanted);
 		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers, samples);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		screenDrawer.SetGpuDraw(taDecoder.Draw());
@@ -47,6 +50,7 @@ public:
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
 		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1, samples);
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
+		InitCompute();
 
 		return true;
 	}
@@ -70,6 +74,7 @@ public:
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
 		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1, samples);
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
+		InitCompute();
 		// what this size no longer needs is given back once the frames that used it are done
 		GetContext()->GetHeap().TrimSoon();
 	}
@@ -93,6 +98,7 @@ public:
 		GetContext()->LogVramUsage();
 		GetContext()->WaitIdle();
 		texCommandPool.WaitAll();
+		computeDrawer.Term();
 		oitShaderManager.Term();
 		rttShaderManager.Term();
 		samplerManager.Term();
@@ -116,6 +122,21 @@ public:
 			return false;
 		}
 
+		/* Rendering Method: Compute draws the screen's frames it can
+		 * (vulkan/compute_drawer.h) into the same pictures; the others are
+		 * drawn below */
+		if (!pvrrc.isRTT && computeDrawer.Ready() && computeDrawer.CanDraw() && !vmus->Drawing())
+		{
+			bool last;
+			if (screenDrawer.ComputeCanStart(&last) && computeDrawer.Prepare(last, paletteTexture.get()))
+			{
+				const OITScreenDrawer::ComputeTarget target = screenDrawer.ComputeBegin(last);
+				computeDrawer.Record(target.image, target.view, target.last);
+				screenDrawer.ComputeEnd();
+				return true;
+			}
+		}
+
 		OITDrawer *drawer;
 		if (pvrrc.isRTT)
 			drawer = &textureDrawer;
@@ -133,6 +154,15 @@ public:
 	}
 
 private:
+	// the compute renderer, when it is the rendering method: made with the screen's drawer
+	void InitCompute()
+	{
+		if (rend_compute_wanted)
+			computeDrawer.Init(GetContext()->GetViewPort(), samples, &texCommandPool, &samplerManager);
+		else
+			computeDrawer.Term();
+	}
+
 	/* SSAA's samples a pixel, for the screen: as far as the device and
 	 * the video memory budget go for its attachments, after the lists */
 	u32 SsaaSamples() const
@@ -153,6 +183,7 @@ private:
 	OITScreenDrawer screenDrawer;
 	QuadPipeline lastPicturePipeline;
 	OITTextureDrawer textureDrawer;
+	ComputeDrawer computeDrawer;
 };
 
 Renderer* rend_OITVulkan()

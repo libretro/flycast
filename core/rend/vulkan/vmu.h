@@ -48,6 +48,17 @@ public:
 	const std::vector<vk::CommandBuffer>* PrepareOSD(CommandPool *commandPool);
 	// commandPool: the pool commandBuffer is of
 	void DrawOSD(vk::CommandBuffer commandBuffer, vk::Extent2D viewport, CommandPool *commandPool);
+	// whether DrawOSD() has anything to draw
+	bool Drawing() const
+	{
+		for (const auto& t : vmuTextures)
+			if (t)
+				return true;
+		for (const auto& t : xhairTextures)
+			if (t)
+				return true;
+		return false;
+	}
 
 private:
 	std::array<std::unique_ptr<Texture>, VMU_COUNT> vmuTextures;

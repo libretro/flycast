@@ -83,6 +83,7 @@ bool renderer_changed = false;	// Signals the renderer interface to switch rende
 extern EmuBaton emu_baton;
 #endif
 u32 fb_w_cur = 1;
+bool rend_compute_wanted = false;	// rend/rend_method.h
 
 int max_idx,max_mvo,max_op,max_pt,max_tr,max_vtx,max_modt, ovrn;
 bool pend_rend = false;
