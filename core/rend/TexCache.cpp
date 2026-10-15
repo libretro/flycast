@@ -877,7 +877,9 @@ void BaseTextureCacheData::Update()
 					vram_addr = sa_tex + VQMipPoint[i];
 					if (i == 0)
 					{
-						u32 corner[4];
+						/* (room for what a paletted texture's converter
+						 * writes: a block of 4x4 texels, rows 2 apart) */
+						u32 corner[16];
 						PixelBuffer<u32> pb0;
 						pb0.init(2, 2, false, corner);
 						/* The 1x1 level is the corner of a 2x2 block. For a
@@ -966,7 +968,7 @@ void BaseTextureCacheData::Update()
 					vram_addr = sa_tex + VQMipPoint[i];
 					if (i == 0)
 					{
-						u16 corner[4];
+						u16 corner[16];	// (as above)
 						PixelBuffer<u16> pb0;
 						pb0.init(2, 2, false, corner);
 						texconv(&pb0, (u8*)&vram[vram_addr], 2, 2);
