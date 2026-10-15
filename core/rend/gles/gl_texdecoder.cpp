@@ -2,9 +2,8 @@
  * gl_texdecoder.h */
 #include "gles.h"
 #include "gl_texdecoder.h"
+#include "glprogram_cache.h"
 #include "stdclass.h"
-#include <deps/xxhash/xxhash.h>
-#include <streams/file_stream.h>
 #include <string>
 #include <algorithm>
 
@@ -387,9 +386,8 @@ GLuint GLTexDecoder::Link(const u32 *spv, const size_t *spvSize, const char *con
 #endif
 }
 
-/* The programs, all of them now: from SPIR-V with OpenGL 4.6; else from the
- * binaries kept from the last time with this driver and this text, if there
- * are; else compiled, and the binaries kept for the next time */
+/* The programs, all of them now: from SPIR-V with OpenGL 4.6; else from
+ * their text, through the programs kept on disk (glprogram_cache.h) */
 bool GLTexDecoder::MakePrograms()
 {
 #ifndef HAVE_OPENGLES2
@@ -444,100 +442,20 @@ bool GLTexDecoder::MakePrograms()
 		head + "#define TEXD_KERNEL_GL 4\n" + texdecode_glsl,
 	};
 
-	/* The binaries kept: by the driver's name and version and the text */
-	GLint formats = 0;
-	const bool binaries = (versionAtLeast(4, 1) || hasExtension("GL_ARB_get_program_binary"))
-			&& (glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats), formats > 0);
-	std::string key = std::string((const char *)glGetString(GL_VENDOR)) + "\n" + (const char *)glGetString(GL_RENDERER) + "\n"
-			+ (const char *)glGetString(GL_VERSION) + "\n";
-	for (const std::string& t : text)
-		key += t;
-	const u32 keyHash = XXH32(key.data(), key.size(), 0x54584447);
-	const std::string path = get_writable_data_path("flycast_gl_texdecode.bin");
-	const u32 MAGIC = 0x44585446;		// 'FTXD'
-	if (binaries)
+	/* Through the programs kept on disk (glprogram_cache.h): compiled the
+	 * first time, taken from there after, with the renderers' own */
+	programs[PROGRAM_DRAW] = glprog_make(text[2].c_str(), text[3].c_str());
+	if (glprog_failed())
+		programs[PROGRAM_DRAW] = 0;
+	if (compute)
 	{
-		RFILE *f = filestream_open(path.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-		if (f != nullptr)
-		{
-			u32 header[3] = {};
-			bool ok = filestream_read(f, header, sizeof(header)) == sizeof(header) && header[0] == MAGIC && header[1] == keyHash
-					&& header[2] == PROGRAMS;
-			for (int p = 0; p < PROGRAMS && ok; p++)
-			{
-				u32 entry[2] = {};
-				ok = filestream_read(f, entry, sizeof(entry)) == sizeof(entry) && entry[1] < (16u << 20);
-				if (!ok)
-					break;
-				if (entry[1] == 0)
-					continue;	// (a program this context has no use for)
-				std::string bytes(entry[1], '\0');
-				ok = filestream_read(f, &bytes[0], entry[1]) == (int64_t)entry[1];
-				if (!ok)
-					break;
-				programs[p] = glCreateProgram();
-				glProgramBinary(programs[p], entry[0], bytes.data(), (GLsizei)entry[1]);
-				GLint status = GL_FALSE;
-				glGetProgramiv(programs[p], GL_LINK_STATUS, &status);
-				ok = status == GL_TRUE;
-			}
-			filestream_close(f);
-			if (ok && programs[PROGRAM_DRAW] != 0 && (!compute || (programs[PROGRAM_32] != 0 && programs[PROGRAM_8] != 0)))
-				NOTICE_LOG(RENDERER, "OpenGL: texture kernels from the binaries kept in %s", path.c_str());
-			else
-				for (GLuint& p : programs)
-				{
-					if (p != 0)
-						glDeleteProgram(p);
-					p = 0;
-				}
-			while (glGetError() != GL_NO_ERROR)
-				;
-		}
+		const char *k32 = text[0].c_str(), *k8 = text[1].c_str();
+		programs[PROGRAM_32] = glprog_make_compute(&k32, 1);
+		programs[PROGRAM_8] = glprog_make_compute(&k8, 1);
 	}
-	if (programs[PROGRAM_DRAW] == 0)
-	{
-		const char *draw[2] = { text[2].c_str(), text[3].c_str() };
-		programs[PROGRAM_DRAW] = Link(nullptr, nullptr, draw, 2, binaries);
-		if (compute)
-		{
-			const char *k32 = text[0].c_str(), *k8 = text[1].c_str();
-			programs[PROGRAM_32] = Link(nullptr, nullptr, &k32, 1, binaries);
-			programs[PROGRAM_8] = Link(nullptr, nullptr, &k8, 1, binaries);
-		}
-		if (programs[PROGRAM_DRAW] == 0 || (compute && (programs[PROGRAM_32] == 0 || programs[PROGRAM_8] == 0)))
-			return false;
-		NOTICE_LOG(RENDERER, "OpenGL: texture kernels compiled%s", binaries ? ", their binaries kept for the next time" : "");
-		if (binaries)
-		{
-			RFILE *f = filestream_open(path.c_str(), RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-			if (f != nullptr)
-			{
-				const u32 header[3] = { MAGIC, keyHash, PROGRAMS };
-				filestream_write(f, header, sizeof(header));
-				for (int p = 0; p < PROGRAMS; p++)
-				{
-					GLint length = 0;
-					GLenum format = 0;
-					std::string bytes;
-					if (programs[p] != 0)
-						glGetProgramiv(programs[p], GL_PROGRAM_BINARY_LENGTH, &length);
-					if (length > 0)
-					{
-						bytes.resize(length);
-						glGetProgramBinary(programs[p], length, &length, &format, &bytes[0]);
-					}
-					const u32 entry[2] = { (u32)format, (u32)std::max(length, 0) };
-					filestream_write(f, entry, sizeof(entry));
-					if (entry[1] != 0)
-						filestream_write(f, bytes.data(), entry[1]);
-				}
-				filestream_close(f);
-			}
-			while (glGetError() != GL_NO_ERROR)
-				;
-		}
-	}
+	if (programs[PROGRAM_DRAW] == 0 || (compute && (programs[PROGRAM_32] == 0 || programs[PROGRAM_8] == 0)))
+		return false;
+	NOTICE_LOG(RENDERER, "OpenGL: texture kernels from their text, or the programs kept");
 	for (int p = 0; p < PROGRAMS; p++)
 	{
 		if (programs[p] == 0)
