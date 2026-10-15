@@ -591,6 +591,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled",
    },
    {
+      CORE_OPTION_NAME "_ta_header_check",
+      "TA Header Pass Check (Debug)",
+      NULL,
+      "For development: puts every frame through the header pass of GPU-side TA processing as well as the usual parse, logs any difference between the two and the time each takes. Slower when on.",
+      NULL,
+      "video",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
+   {
       CORE_OPTION_NAME "_enable_purupuru",
       "Purupuru Pack/Vibration Pack",
       NULL,

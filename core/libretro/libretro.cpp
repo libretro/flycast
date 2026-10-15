@@ -60,6 +60,7 @@ char* strdup(const char *str)
 #include "hw/maple/vmu_beep.h"
 #include "hw/maple/maple_cfg.h"
 #include "../hw/pvr/spg.h"
+#include "../hw/pvr/ta.h"
 #include "../hw/naomi/naomi_cart.h"
 #include "../hw/naomi/naomi_periph.h"
 #include "../hw/naomi/midiffb.h"
@@ -704,6 +705,9 @@ static void set_variable_visibility(void)
    }
 }
 
+// (the TA header pass check: core option reicast_ta_header_check)
+static bool ta_header_check;
+
 static void update_variables(bool first_startup)
 {
    struct retro_variable var;
@@ -1197,6 +1201,11 @@ static void update_variables(bool first_startup)
    }
    else
 	   settings.pvr.ta_skip = 0;
+
+   var.key = CORE_OPTION_NAME "_ta_header_check";
+   ta_header_check = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("enabled", var.value);
+   ta_set_walk_check(ta_header_check);
 
    var.key = CORE_OPTION_NAME "_enable_purupuru";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -2705,6 +2714,8 @@ bool retro_load_game(const struct retro_game_info *game)
    }
 
    dc_prepare_system();
+   // (again, for frames of the machine's size, now that it is known)
+   ta_set_walk_check(ta_header_check);
 
    naomi_ffb_word = 0;
    retro_atomic_store_release_int(&naomi_ffb_request, 0);
@@ -2768,6 +2779,8 @@ void retro_unload_game(void)
 	   dc_stop();
 	   dc_term();
    }
+   // (its log, and its memory; the next game's options turn it on again)
+   ta_set_walk_check(false);
    /* The next game's first frame starts its own emulation thread: a
     * frontend that loads it without retro_deinit() in between waited for
     * ever on a thread that was never started. */
