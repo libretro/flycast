@@ -148,6 +148,11 @@ void setImageLayout(vk::CommandBuffer const& commandBuffer, vk::Image image, vk:
 }
 
 #include "rend/upload_layout.h"
+#include "tex_decoder.h"
+#include "commandpool.h"
+#include "hw/pvr/pvr_mem.h"
+
+TexDecoder *Texture::decoder;
 
 /* A texel of this texture's, in bytes */
 static u32 texel_bytes(TextureType type)
@@ -220,8 +225,9 @@ u8 *UploadRing::Allocate(size_t bytes, vk::Buffer *buffer, vk::DeviceSize *offse
 }
 
 /* Makes the image what a texture of this size and kind needs, if it is not
- * already. Returns whether it was made anew. */
-bool Texture::Prepare(int width, int height, bool mipmapped, bool mipmapsIncluded)
+ * already, for @maker to write; in format @native, if one is given.
+ * Returns whether it was made anew. */
+bool Texture::Prepare(int width, int height, bool mipmapped, bool mipmapsIncluded, Maker maker, vk::Format native)
 {
 	vk::Format format = vk::Format::eUndefined;
 	switch (tex_type)
@@ -242,14 +248,86 @@ bool Texture::Prepare(int width, int height, bool mipmapped, bool mipmapsInclude
 		format = vk::Format::eR8Unorm;
 		break;
 	}
-	if (width == (int)extent.width && height == (int)extent.height && format == this->format)
+	if (native != vk::Format::eUndefined)
+		format = native;
+	if (width == (int)extent.width && height == (int)extent.height && format == this->format
+			// an image made for the CPU to write where it is, or not for the kernel
+			&& (maker == CPU || needsStaging) && (maker != KERNEL || storage)
+			&& (imageUsage & vk::ImageUsageFlagBits::eTransferDst || !needsStaging))
 		return false;
-	Init(width, height, format, width * height * texel_bytes(tex_type), mipmapped, mipmapsIncluded);
+	Init(width, height, format, width * height * texel_bytes(tex_type), mipmapped, mipmapsIncluded, maker);
+	return true;
+}
+
+void Texture::CancelDecode()
+{
+	if (decodeJob >= 0 && decoder != nullptr && decodeSerial == decoder->Serial() && decoder->Cancel(decodeJob))
+		// what was to make it from nothing did not: the next upload does
+		fresh = true;
+	decodeJob = -1;
+}
+
+/* The kernel's, or a copy of the texels as they are: see tex_decoder.h.
+ * Everything that can say no does before anything is changed. */
+bool Texture::GpuDecode(const texd_plan& plan)
+{
+	if (decoder == nullptr || !decoder->Ready())
+		return false;
+	const vk::Format nativeFormat = plan.native ? decoder->NativeFormat(tex_type) : vk::Format::eUndefined;
+	const bool copy = nativeFormat != vk::Format::eUndefined;
+	if (!copy)
+	{
+		vk::Format format;
+		switch (tex_type)
+		{
+		case TextureType::_5551: format = vk::Format::eR5G5B5A1UnormPack16; break;
+		case TextureType::_565: format = vk::Format::eR5G6B5UnormPack16; break;
+		case TextureType::_4444: format = vk::Format::eR4G4B4A4UnormPack16; break;
+		case TextureType::_8888: format = vk::Format::eR8G8B8A8Unorm; break;
+		default: format = vk::Format::eR8Unorm; break;
+		}
+		if (!decoder->Takes(format))
+			return false;
+	}
+	const u32 bytes = plan.pal + plan.pal_entries * 4;
+	if (!decoder->Room(bytes, copy ? 0 : plan.levels))
+		return false;
+
+	CancelDecode();
+	prepared = false;
+	Prepare(plan.width, plan.height, IsMipmapped(), plan.mipmapped != 0, copy ? COPY : KERNEL, nativeFormat);
+	u32 offset;
+	u8 * const to = decoder->Reserve(bytes, &offset);
+	memcpy(to, &vram[plan.src], plan.bytes);
+	if (plan.pal_entries != 0)
+		memcpy(to + plan.pal, (plan.out == TEXD_OUT16 ? palette16_ram : palette32_ram) + plan.pal_index, plan.pal_entries * 4);
+
+	if (copy)
+		decodeJob = decoder->AddCopy(*image, fresh, offset, plan.level[0].sr & 0xFFFF, plan.width, plan.height);
+	else
+	{
+		TexDecoder::Level levels[TEXD_MAX_LEVELS];
+		for (u32 i = 0; i < plan.levels; i++)
+		{
+			const texd_level& lv = plan.level[i];
+			levels[i].view = *storageViews[lv.mip];
+			levels[i].pc[0] = offset / 4;
+			levels[i].pc[1] = lv.data;
+			levels[i].pc[2] = plan.pal;
+			levels[i].pc[3] = lv.wh;
+			levels[i].pc[4] = lv.sr;
+			levels[i].pc[5] = lv.mode;
+		}
+		decodeJob = decoder->AddDecode(*image, fresh, mipmapLevels, plan.out, levels, plan.levels);
+	}
+	decodeSerial = decoder->Serial();
+	fresh = false;
 	return true;
 }
 
 void *Texture::UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps)
 {
+	CancelDecode();
 	prepared = true;
 	preparedNew = Prepare(width, height, IsMipmapped(), mipmaps);
 	if (!needsStaging)
@@ -269,13 +347,16 @@ void Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool 
 		for (int w = width / 2; w != 0; w /= 2)
 			dataSize += w * w * pixel;
 	if (!prepared)
+	{
+		CancelDecode();
 		preparedNew = Prepare(width, height, mipmapped, mipmapsIncluded);
+	}
 	prepared = false;
 	SetImage(dataSize, data, preparedNew, mipmapped && !mipmapsIncluded);
 	slot = nullptr;
 }
 
-void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool mipmapped, bool mipmapsIncluded)
+void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool mipmapped, bool mipmapsIncluded, Maker maker)
 {
 	this->extent = vk::Extent2D(width, height);
 	this->format = format;
@@ -283,6 +364,40 @@ void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool 
 	if (mipmapped)
 		mipmapLevels += floor(log2(std::max(width, height)));
 
+	if (maker != CPU)
+	{
+		/* Optimal, written by the GPU, and copied to as well: a texture
+		 * made here once can be converted on the CPU the next time */
+		needsStaging = true;
+		vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
+		vk::ImageCreateFlags flags;
+		if (maker == KERNEL)
+		{
+			/* written through views of a format of integers of the same
+			 * size: the 16- and 8-bit formats cannot be storage images
+			 * themselves */
+			usage |= vk::ImageUsageFlagBits::eStorage;
+			flags = vk::ImageCreateFlagBits::eMutableFormat;
+			if (format != vk::Format::eR8G8B8A8Unorm)
+				flags |= vk::ImageCreateFlagBits::eExtendedUsage;
+		}
+		CreateImage(vk::ImageTiling::eOptimal, usage, vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor, flags);
+		if (maker == KERNEL)
+		{
+			const vk::Format viewFormat = format == vk::Format::eR8G8B8A8Unorm ? vk::Format::eR32Uint
+					: format == vk::Format::eR8Unorm ? vk::Format::eR8Uint : vk::Format::eR16Uint;
+			const vk::ImageViewUsageCreateInfo viewUsage(vk::ImageUsageFlagBits::eStorage);
+			for (u32 level = 0; level < mipmapLevels; level++)
+			{
+				vk::ImageViewCreateInfo viewInfo(vk::ImageViewCreateFlags(), image.get(), vk::ImageViewType::e2D, viewFormat, vk::ComponentMapping(),
+						vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, level, 1, 0, 1));
+				viewInfo.pNext = &viewUsage;
+				storageViews[level] = device.createImageViewUnique(viewInfo);
+			}
+			storage = true;
+		}
+		return;
+	}
 	vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(format);
 
 	vk::ImageTiling imageTiling = (formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage)
@@ -313,10 +428,16 @@ void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool 
 }
 
 void Texture::CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usage, vk::ImageLayout initialLayout,
-		const vk::ImageAspectFlags& aspectMask)
+		const vk::ImageAspectFlags& aspectMask, vk::ImageCreateFlags flags)
 {
+	// the old image's storage views go with it
+	CancelDecode();
+	for (auto& view : storageViews)
+		view.reset();
+	storage = false;
+	fresh = true;
 	imageUsage = usage;
-	vk::ImageCreateInfo imageCreateInfo(vk::ImageCreateFlags(), vk::ImageType::e2D, format, vk::Extent3D(extent, 1), mipmapLevels, 1,
+	vk::ImageCreateInfo imageCreateInfo(flags, vk::ImageType::e2D, format, vk::Extent3D(extent, 1), mipmapLevels, 1,
 										vk::SampleCountFlagBits::e1, tiling, usage,
 										vk::SharingMode::eExclusive, 0, nullptr, initialLayout);
 	image = device.createImageUnique(imageCreateInfo);
@@ -324,14 +445,28 @@ void Texture::CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usa
 	allocation = VulkanContext::Instance()->GetHeap().AllocateForImage(*image,
 			tiling == vk::ImageTiling::eLinear, !needsStaging);
 
-	vk::ImageViewCreateInfo imageViewCreateInfo(vk::ImageViewCreateFlags(), image.get(), vk::ImageViewType::e2D, format, vk::ComponentMapping(),
+	/* A 4444 texture copied as it is: the PowerVR has alpha, red, green
+	 * and blue from the top, which this format calls blue, green, red and
+	 * alpha */
+	const vk::ComponentMapping components = format == vk::Format::eB4G4R4A4UnormPack16
+			? vk::ComponentMapping(vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eR, vk::ComponentSwizzle::eA, vk::ComponentSwizzle::eB)
+			: vk::ComponentMapping();
+	vk::ImageViewCreateInfo imageViewCreateInfo(vk::ImageViewCreateFlags(), image.get(), vk::ImageViewType::e2D, format, components,
 			vk::ImageSubresourceRange(aspectMask, 0, mipmapLevels, 0, 1));
+	// (sampled only: the image's other uses are through views of other formats)
+	const vk::ImageViewUsageCreateInfo viewUsage(usage & ~vk::ImageUsageFlagBits::eStorage);
+	if (flags & vk::ImageCreateFlagBits::eExtendedUsage)
+		imageViewCreateInfo.pNext = &viewUsage;
 	imageView = device.createImageViewUnique(imageViewCreateInfo);
 }
 
 void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 {
+	if (!commandBuffer && commandPool != nullptr)
+		commandBuffer = commandPool->Allocate();
 	verify((bool)commandBuffer);
+	isNew = isNew || fresh;
+	fresh = false;
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
 	if (!isNew && !needsStaging)

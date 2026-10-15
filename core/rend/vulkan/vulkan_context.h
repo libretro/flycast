@@ -96,6 +96,8 @@ public:
 	vk::Format GetDepthFormat() const { return depthFormat; }
 	static VulkanContext *Instance() { return contextInstance; }
 	bool SupportsSamplerAnisotropy() const { return samplerAnisotropy; }
+	bool SupportsStorageImageExtendedFormats() const { return storageImageExtendedFormats; }
+	u32 GetApiVersion() const { return apiVersion; }
 	bool SupportsDedicatedAllocation() const { return dedicatedAllocationSupported; }
 	VulkanHeap& GetHeap() { return heap; }
 	vk::DeviceSize GetMaxMemoryAllocationSize() const { return maxMemoryAllocationSize; }
@@ -123,10 +125,14 @@ private:
 	bool optimalTilingSupported4444 = false;
 public:
 	bool samplerAnisotropy = false;
+	/* 16- and 8-bit storage images (R16_UINT, R8_UINT), for texture decoding:
+	 * enabled on the device when the core made it and the GPU has them */
+	bool storageImageExtendedFormats = false;
 	f32 maxSamplerAnisotropy = 0.f;
 	bool dedicatedAllocationSupported = false;
 private:
 	u32 vendorID = 0;
+	u32 apiVersion = 0;	// the device's
 	VramBudget vramBudget;
 	vk::Format colorFormat = vk::Format::eR8G8B8A8Unorm;
 

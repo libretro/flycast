@@ -22,6 +22,7 @@
 #include "vulkan_context.h"
 #include "buffer.h"
 #include "rend/TexCache.h"
+#include "rend/texdecode.h"
 #include "hw/pvr/Renderer_if.h"
 
 #include <algorithm>
@@ -32,6 +33,9 @@
 #include <vector>
 
 void setImageLayout(vk::CommandBuffer const& commandBuffer, vk::Image image, vk::Format format, u32 mipmapLevels, vk::ImageLayout oldImageLayout, vk::ImageLayout newImageLayout);
+
+class CommandPool;
+class TexDecoder;
 
 /* Where textures wait on the way to their images: memory that stays mapped,
  * handed out a piece per upload and taken back a frame at a time.
@@ -76,9 +80,13 @@ private:
 class Texture : public BaseTextureCacheData
 {
 public:
+	~Texture() { CancelDecode(); }
 	void UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded = false) override;
 	void *UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps) override;
+	bool GpuDecode(const texd_plan& plan) override;
 	static UploadRing& Ring();
+	/* The renderer's, while it has one */
+	static void SetDecoder(TexDecoder *decoder) { Texture::decoder = decoder; }
 	u64 GetIntId() { return (u64)reinterpret_cast<uintptr_t>(this); }
 	std::string GetId() override { char s[20]; sprintf(s, "%p", this); return s; }
 	bool IsNew() const { return !image.get(); }
@@ -86,17 +94,26 @@ public:
 	vk::Image GetImage() const { return *image; }
 	vk::ImageView GetReadOnlyImageView() const { return readOnlyImageView ? readOnlyImageView : *imageView; }
 	void SetCommandBuffer(vk::CommandBuffer commandBuffer) { this->commandBuffer = commandBuffer; }
+	/* Where a command buffer comes from when an upload needs one: a
+	 * texture made on the GPU records nothing of its own */
+	void SetCommandPool(CommandPool *commandPool) { this->commandPool = commandPool; }
 	virtual bool Force32BitTexture(TextureType type) const override { return !VulkanContext::Instance()->IsFormatSupported(type); }
 
 	void SetPhysicalDevice(vk::PhysicalDevice physicalDevice) { this->physicalDevice = physicalDevice; }
 	void SetDevice(vk::Device device) { this->device = device; }
 
 private:
-	void Init(u32 width, u32 height, vk::Format format ,u32 dataSize, bool mipmapped, bool mipmapsIncluded);
-	bool Prepare(int width, int height, bool mipmapped, bool mipmapsIncluded);
+	/* What an image is made for: written by the CPU as before; by the
+	 * decoding kernel; by a copy of the texture's texels as they are */
+	enum Maker { CPU, KERNEL, COPY };
+	void Init(u32 width, u32 height, vk::Format format ,u32 dataSize, bool mipmapped, bool mipmapsIncluded, Maker maker = CPU);
+	bool Prepare(int width, int height, bool mipmapped, bool mipmapsIncluded, Maker maker = CPU, vk::Format native = vk::Format::eUndefined);
 	void SetImage(u32 size, void *data, bool isNew, bool genMipmaps);
    void CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usage, vk::ImageLayout initialLayout,
-			const vk::ImageAspectFlags& aspectMask);
+			const vk::ImageAspectFlags& aspectMask, vk::ImageCreateFlags flags = vk::ImageCreateFlags());
+	/* The job this texture has with the decoder this frame is not done
+	 * after all: it is made another way, or goes */
+	void CancelDecode();
 	/* what the image was made to be used for */
 	vk::ImageUsageFlags imageUsage;
 	void GenerateMipmaps();
@@ -114,6 +131,15 @@ private:
 	bool prepared = false;
 	bool preparedNew = false;
 	vk::CommandBuffer commandBuffer;
+	CommandPool *commandPool = nullptr;
+	/* the image has never been written: it is made from nothing */
+	bool fresh = false;
+	/* made for the kernel to write, with a view for each level */
+	bool storage = false;
+	vk::UniqueImageView storageViews[TEXD_MAX_LEVELS];
+	int decodeJob = -1;
+	u32 decodeSerial = 0;
+	static TexDecoder *decoder;
 
 	Allocation allocation;
 	vk::UniqueImage image;
@@ -226,8 +252,14 @@ public:
 	{
 		if (!texture->image)
 			return;
+		texture->CancelDecode();
 		trashedImages[currentIndex].push_back(std::move(texture->image));
 		trashedImageViews[currentIndex].push_back(std::move(texture->imageView));
+		if (texture->storage)
+			for (auto& view : texture->storageViews)
+				if (view)
+					trashedImageViews[currentIndex].push_back(std::move(view));
+		texture->storage = false;
 		trashedMem[currentIndex].push_back(std::move(texture->allocation));
 		texture->format = vk::Format::eUndefined;
 	}

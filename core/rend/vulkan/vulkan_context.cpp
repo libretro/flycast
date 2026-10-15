@@ -124,6 +124,7 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 	physicalDevice.getFeatures(&supportedFeatures);
 	bool fragmentStoresAndAtomics = supportedFeatures.fragmentStoresAndAtomics;
 	VulkanContext::Instance()->samplerAnisotropy = supportedFeatures.samplerAnisotropy;
+	VulkanContext::Instance()->storageImageExtendedFormats = supportedFeatures.shaderStorageImageExtendedFormats;
 
 	// Enable VK_KHR_dedicated_allocation if available
 	bool getMemReq2Supported = false;
@@ -157,6 +158,8 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 		features.fragmentStoresAndAtomics = true;
 	if (VulkanContext::Instance()->samplerAnisotropy)
 		features.samplerAnisotropy = true;
+	if (VulkanContext::Instance()->storageImageExtendedFormats)
+		features.shaderStorageImageExtendedFormats = true;
 	vk::Device device = physicalDevice.createDevice(vk::DeviceCreateInfo(vk::DeviceCreateFlags(),
 			context->queue_family_index == context->presentation_queue_family_index ? 1 : 2, deviceQueueCreateInfos,
 			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features));
@@ -213,6 +216,7 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	maxStorageBufferRange = properties->limits.maxStorageBufferRange;
 	maxSamplerAnisotropy =  properties->limits.maxSamplerAnisotropy;
 	vendorID = properties->vendorID;
+	apiVersion = props.apiVersion;
 	QueryVramBudget();
 
 	vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(vk::Format::eR5G5B5A1UnormPack16);

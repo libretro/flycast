@@ -24,6 +24,7 @@
 #include "vmu.h"
 
 #include "rtt_read.h"
+#include "tex_decoder.h"
 #include "rend/rtt_watch.h"
 #include "rend/last_picture.h"
 #include <memory>
@@ -39,6 +40,8 @@ public:
 		quadPipeline.Term();
 		vk_rtt_term();
 		textureCache.Clear();
+		Texture::SetDecoder(nullptr);
+		texDecoder.Term();
 		keptPicture = nullptr;
 		fogTexture = nullptr;
 		paletteTexture = nullptr;
@@ -63,16 +66,19 @@ public:
 			// This kills performance when a frame is skipped and lots of texture updated each frame
 			//if (textureCache.IsInFlight(tf))
 			//	textureCache.DestroyLater(tf);
-			tf->SetCommandBuffer(texCommandPool.Allocate());
+			/* a command buffer of its own if it is uploaded from here; one
+			 * made on the GPU is recorded with the others (Process()) */
+			tf->SetCommandPool(&texCommandPool);
 			tf->Update();
 		}
 		else if (tf->IsCustomTextureAvailable())
 		{
 			textureCache.DestroyLater(tf);
-			tf->SetCommandBuffer(texCommandPool.Allocate());
+			tf->SetCommandPool(&texCommandPool);
 			tf->CheckCustomTexture();
 		}
 		tf->SetCommandBuffer(nullptr);
+		tf->SetCommandPool(nullptr);
 		textureCache.SetInFlight(tf);
 
 		return tf->GetIntId();
@@ -82,6 +88,7 @@ public:
 	{
 		texCommandPool.BeginFrame();
 		textureCache.SetCurrentIndex(texCommandPool.GetIndex());
+		texDecoder.BeginFrame(texCommandPool.GetIndex());
 
       if (!ctx->rend.isRTT)
          vmus->PrepareOSD(&texCommandPool);
@@ -99,6 +106,8 @@ public:
 		}
 
 		bool result = ta_parse_vdrc(ctx);
+		// the textures the frame's polygons asked for that are made on the GPU, before the draws
+		texDecoder.Flush(texCommandPool);
 
 		textureCache.Cleanup();
 
@@ -119,6 +128,8 @@ protected:
 	bool BaseInit(vk::RenderPass renderPass, int subpass = 0)
 	{
 		texCommandPool.Init();
+		texDecoder.Init();
+		Texture::SetDecoder(&texDecoder);
 		quadPipeline.Init(&shaderManager, renderPass, subpass);
 		vmus = std::unique_ptr<VulkanOSD>(new VulkanOSD());
 		vmus->Init(&quadPipeline);
@@ -240,6 +251,7 @@ protected:
 	std::unique_ptr<Texture> paletteTexture;
 	CommandPool texCommandPool;
 	std::vector<std::unique_ptr<Texture>> framebufferTextures;
+	TexDecoder texDecoder;		// (before the cache: textures going away tell it)
 	TextureCache textureCache;
 	std::unique_ptr<Texture> keptPicture;
 	QuadPipeline quadPipeline;
