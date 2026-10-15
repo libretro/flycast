@@ -32,6 +32,8 @@
 #include "quad.h"
 #include "ta_decoder.h"
 #include "rend/shadows.h"
+#include "ssaa.h"
+#include "gpu_timer.h"
 
 class BaseDrawer
 {
@@ -223,6 +225,11 @@ protected:
 
 	vk::CommandBuffer currentCommandBuffer;
 	SamplerManager *samplerManager = nullptr;
+	/* SSAA: the samples a pixel of this drawer's render pass (1: off), and
+	 * the resolve its last subpass does at the end of Draw(), over this */
+	u32 samples = 1;
+	SsaaResolve ssaaResolve;
+	virtual vk::Extent2D ResolveExtent() const = 0;
 
 private:
 	void SortTriangles();
@@ -257,8 +264,17 @@ private:
 class ScreenDrawer : public Drawer
 {
 public:
-	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager);
+	// @samples: SSAA's (1: off)
+	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager, u32 samples);
+	void Term()
+	{
+		ssaaResolve.Term();
+		msQuadPipeline.Term();
+		timer.Term();
+	}
 	vk::RenderPass GetRenderPass() const { return *renderPass; }
+	// the subpass the screen's last things are drawn in (the VMUs, the OSD): after the resolve, with SSAA
+	int GetOsdSubpass() const { return samples > 1 ? 1 : 0; }
 	/* rend/last_picture.h: the context is going */
 	void KeepPicture();
 	/* ...and in the new one, the picture that was kept is this image */
@@ -267,13 +283,15 @@ public:
 	void SetQuadPipeline(QuadPipeline *pipeline)
 	{
 		quadPipeline = pipeline;
-		lastPicture.Init(pipeline);
+		// (with SSAA the picture goes into the samples: a pipeline of its own for them)
+		lastPicture.Init(samples > 1 ? &msQuadPipeline : pipeline);
 	}
 	virtual void EndRenderPass() override;
 	vk::CommandBuffer GetCurrentCommandBuffer() const { return currentCommandBuffer; }
 
 protected:
 	virtual vk::CommandBuffer BeginRenderPass() override;
+	virtual vk::Extent2D ResolveExtent() const override { return viewport; }
 
 private:
 	std::unique_ptr<PipelineManager> screenPipelineManager;
@@ -289,6 +307,9 @@ private:
 	 * one, which is then this: kept as it is, with nothing copied */
 	std::unique_ptr<FramebufferAttachment> carriedPicture;
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
+	std::unique_ptr<FramebufferAttachment> samplesAttachment;	// SSAA's colour
+	QuadPipeline msQuadPipeline;	// ...and the last picture's pipeline into it
+	GpuFrameTimer timer;
 	vk::Extent2D viewport;
 	ShaderManager *shaderManager = nullptr;
 };
@@ -296,11 +317,17 @@ private:
 class TextureDrawer : public Drawer
 {
 public:
-	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager, TextureCache *textureCache);
+	// @samples: SSAA's (1: off)
+	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager, TextureCache *textureCache, u32 samples);
+	void Term() { ssaaResolve.Term(); }
 	virtual void EndRenderPass() override;
+	// the largest texture rendered to, a side, at this upscale (SSAA's attachments are made that large)
+	static u32 MaxSide() { return 1024u * (u32)std::max(1, settings.rend.RenderToTextureUpscale); }
 
 protected:
 	virtual vk::CommandBuffer BeginRenderPass() override;
+	virtual vk::Extent2D ResolveExtent() const override { return vk::Extent2D(width, height); }
+	void MakeSsaaAttachments(u32 side);
 
 private:
 	u32 width = 0;
@@ -311,5 +338,6 @@ private:
 	Texture *texture = nullptr;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
+	std::unique_ptr<FramebufferAttachment> samplesAttachment;	// SSAA's colour
 	TextureCache *textureCache = nullptr;
 };

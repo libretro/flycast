@@ -154,6 +154,22 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "1x",
    },
    {
+      CORE_OPTION_NAME "_ssaa",
+      "SSAA",
+      NULL,
+      "Supersampling: each pixel of the Internal Resolution drawn from 2, 4 or 8 samples, its edges smoothed. Sprites and the HUD stay as they are. Vulkan only; fewer samples when the device or its video memory has not room for these.",
+      NULL,
+      "video",
+      {
+         { "disabled", "Off" },
+         { "2x", NULL },
+         { "4x", NULL },
+         { "8x", NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
+   {
       CORE_OPTION_NAME "_screen_rotation",
       "Screen Orientation",
       NULL,

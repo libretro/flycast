@@ -22,6 +22,9 @@
 #include "quad.h"
 #include "vulkan_context.h"
 #include "commandpool.h"
+#include "compiler.h"
+#include "ssaa.h"
+#include "rend/ssaa_pattern.h"
 
 static VulkanContext *GetContext()
 {
@@ -62,6 +65,7 @@ void QuadPipeline::CreatePipeline(bool alpha)
 	vk::PipelineRasterizationStateCreateInfo pipelineRasterizationStateCreateInfo;
 	pipelineRasterizationStateCreateInfo.lineWidth = 1.0;
 	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo;
+	pipelineMultisampleStateCreateInfo.rasterizationSamples = (vk::SampleCountFlagBits)samples;
 
 	// Depth and stencil
 	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo;
@@ -118,7 +122,7 @@ void QuadPipeline::CreatePipeline(bool alpha)
 	(alpha ? alphaPipeline : pipeline) = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo);
 }
 
-void QuadPipeline::Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass)
+void QuadPipeline::Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass, u32 samples)
 {
 	this->shaderManager = shaderManager;
 
@@ -163,11 +167,16 @@ void QuadPipeline::Init(ShaderManager *shaderManager, vk::RenderPass renderPass,
 						16.0f, false, vk::CompareOp::eNever, 0.0f, 0.0f,
 						vk::BorderColor::eFloatOpaqueBlack));
 	}
-	if (this->renderPass != renderPass || this->subpass != subpass)
+	if (this->renderPass != renderPass || this->subpass != subpass || this->samples != samples)
 	{
 		this->renderPass = renderPass;
 		this->subpass = subpass;
+		this->samples = samples;
 		pipeline.reset();
+		alphaPipeline.reset();
+		// (one for a subpass with samples is SSAA's: made now, not when first drawn)
+		if (samples > 1)
+			CreatePipeline(false);
 	}
 }
 
@@ -225,4 +234,108 @@ void QuadDrawer::Draw(vk::CommandBuffer commandBuffer, vk::ImageView imageView, 
 	buffer->Update(vertices);
 	buffer->Bind(commandBuffer);
 	buffer->Draw(commandBuffer);
+}
+
+const char PvrResolveText[] =
+#include "rend/tile/pvr_resolve_text.inc"
+;
+
+// a triangle over the whole framebuffer, from nothing but its vertex index
+static const char SsaaResolveVertexSource[] = R"(#version 450
+void main()
+{
+	vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+	gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+
+/* Each sample as the unorm8 it is held in (the attachment is RGBA8:
+ * packUnorm4x8() gives back its bytes), summed two channels a word, and
+ * (sum + N/2) / N per channel - which is the value written */
+static const char SsaaResolveFragmentSource[] = R"(
+layout (input_attachment_index = 0, set = 0, binding = 0) uniform subpassInputMS samples;
+layout (location = 0) out vec4 FragColor;
+
+void main()
+{
+	uint rb = 0u;
+	uint ga = 0u;
+	for (int s = 0; s < SSAA_SAMPLES; s++)
+	{
+		uint c = packUnorm4x8(subpassLoad(samples, s));
+		rb += pvr_resolve_rb(c);
+		ga += pvr_resolve_ga(c);
+	}
+	FragColor = unpackUnorm4x8(pvr_resolve_join(rb, ga, SSAA_LOG2N));
+}
+)";
+
+void SsaaResolve::Init(vk::RenderPass renderPass, u32 subpass, u32 samples, vk::ImageView samplesView)
+{
+	VulkanContext *context = VulkanContext::Instance();
+	vk::Device device = context->GetDevice();
+	if (!setLayout)
+	{
+		vk::DescriptorSetLayoutBinding binding(0, vk::DescriptorType::eInputAttachment, 1, vk::ShaderStageFlagBits::eFragment);
+		setLayout = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), 1, &binding));
+		pipelineLayout = device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), 1, &setLayout.get()));
+		vertexShader = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eVertex, SsaaResolveVertexSource);
+	}
+	if (this->samples != samples || !fragmentShader)
+	{
+		this->samples = samples;
+		std::string source = "#version 450\n#define PVR_SHADER_GLSL\n#define PVR_LANE_NONE\n#define SSAA_SAMPLES " + std::to_string(samples)
+				+ "\n#define SSAA_LOG2N " + std::to_string(SSAA_LOG2(samples)) + "u\n";
+		source += PvrResolveText;
+		source += SsaaResolveFragmentSource;
+		fragmentShader = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, source);
+	}
+	if (!descSet)
+		descSet = std::move(device.allocateDescriptorSetsUnique(
+				vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &setLayout.get())).front());
+	vk::DescriptorImageInfo imageInfo(vk::Sampler(), samplesView, vk::ImageLayout::eShaderReadOnlyOptimal);
+	vk::WriteDescriptorSet write(*descSet, 0, 0, 1, vk::DescriptorType::eInputAttachment, &imageInfo, nullptr, nullptr);
+	device.updateDescriptorSets(write, nullptr);
+
+	vk::PipelineVertexInputStateCreateInfo vertexInput;
+	vk::PipelineInputAssemblyStateCreateInfo inputAssembly(vk::PipelineInputAssemblyStateCreateFlags(), vk::PrimitiveTopology::eTriangleList);
+	vk::PipelineViewportStateCreateInfo viewportState(vk::PipelineViewportStateCreateFlags(), 1, nullptr, 1, nullptr);
+	vk::PipelineRasterizationStateCreateInfo rasterization;
+	rasterization.lineWidth = 1.0;
+	vk::PipelineMultisampleStateCreateInfo multisample;
+	vk::PipelineDepthStencilStateCreateInfo depthStencil;
+	vk::PipelineColorBlendAttachmentState blendAttachment(false, vk::BlendFactor::eZero, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+			vk::BlendFactor::eZero, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+			vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+	vk::PipelineColorBlendStateCreateInfo blend(vk::PipelineColorBlendStateCreateFlags(), false, vk::LogicOp::eNoOp, 1, &blendAttachment);
+	vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+	vk::PipelineDynamicStateCreateInfo dynamic(vk::PipelineDynamicStateCreateFlags(), ARRAY_SIZE(dynamicStates), dynamicStates);
+	vk::PipelineShaderStageCreateInfo stages[] = {
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, *vertexShader, "main" },
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, *fragmentShader, "main" },
+	};
+	vk::GraphicsPipelineCreateInfo info(vk::PipelineCreateFlags(), 2, stages, &vertexInput, &inputAssembly, nullptr, &viewportState,
+			&rasterization, &multisample, &depthStencil, &blend, &dynamic, *pipelineLayout, renderPass, subpass);
+	pipeline = device.createGraphicsPipelineUnique(context->GetPipelineCache(), info);
+}
+
+void SsaaResolve::Draw(vk::CommandBuffer cmd, vk::Extent2D extent) const
+{
+	cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)extent.width, (float)extent.height, 0.f, 1.f));
+	cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), extent));
+	cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
+	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0, 1, &descSet.get(), 0, nullptr);
+	cmd.draw(3, 1, 0, 0);
+}
+
+void SsaaResolve::SetSamplesView(vk::ImageView samplesView, CommandPool *commandPool)
+{
+	VulkanContext *context = VulkanContext::Instance();
+	if (descSet)
+		commandPool->DeferDelete(std::unique_ptr<vk::UniqueDescriptorSet>(new vk::UniqueDescriptorSet(std::move(descSet))));
+	descSet = std::move(context->GetDevice().allocateDescriptorSetsUnique(
+			vk::DescriptorSetAllocateInfo(context->GetDescriptorPool(), 1, &setLayout.get())).front());
+	vk::DescriptorImageInfo imageInfo(vk::Sampler(), samplesView, vk::ImageLayout::eShaderReadOnlyOptimal);
+	vk::WriteDescriptorSet write(*descSet, 0, 0, 1, vk::DescriptorType::eInputAttachment, &imageInfo, nullptr, nullptr);
+	context->GetDevice().updateDescriptorSets(write, nullptr);
 }

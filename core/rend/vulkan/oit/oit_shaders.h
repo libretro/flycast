@@ -52,6 +52,7 @@ public:
 		bool twoVolume;
 		bool palette;
 		Pass pass;
+		int sampleRate;	// SSAA: shaded at each sample (1), or once a pixel at its centre (2); 0 without SSAA
 
 		u32 hash()
 		{
@@ -59,7 +60,7 @@ public:
 				| ((u32)texture << 3) | ((u32)ignoreTexAlpha << 4) | (shaderInstr << 5)
 				| ((u32)offset << 7) | ((u32)fog << 8) | ((u32)gouraud << 10)
 				| ((u32)bumpmap << 11) | ((u32)clamping << 12) | ((u32)twoVolume << 13)
-				| ((u32)palette << 14) | ((int)pass << 15);
+				| ((u32)palette << 14) | ((int)pass << 15) | ((u32)sampleRate << 17);
 		}
 	};
 
@@ -84,11 +85,24 @@ public:
 		return *trModVolShaders[(size_t)mode];
 	}
 
-	vk::ShaderModule GetFinalShader()
+	/* @perSample: SSAA's, of a render pass that is not the last, which puts
+	 * each sample together; else the last one's, which resolves them too */
+	vk::ShaderModule GetFinalShader(bool perSample = false)
 	{
-		if (!finalAutosortShader)
-			finalAutosortShader = compileFinalShader();
-		return *finalAutosortShader;
+		vk::UniqueShaderModule& shader = perSample ? finalPerSampleShader : finalAutosortShader;
+		if (!shader)
+			shader = compileFinalShader(perSample);
+		return *shader;
+	}
+	/* SSAA's samples a pixel (1: off): the shaders made for another count
+	 * are dropped */
+	void SetSamples(u32 samples)
+	{
+		if (samples != this->samples)
+		{
+			Term();
+			this->samples = samples;
+		}
 	}
 	vk::ShaderModule GetFinalVertexShader()
 	{
@@ -112,6 +126,7 @@ public:
 		finalVertexShader.reset();
 		finalAutosortShader.reset();
 		finalSortedShader.reset();
+		finalPerSampleShader.reset();
 		clearShader.reset();
 	}
 
@@ -130,7 +145,8 @@ private:
 	vk::UniqueShaderModule compileModVolVertexShader();
 	vk::UniqueShaderModule compileModVolFragmentShader();
 	void compileTrModVolFragmentShader(ModVolMode mode);
-	vk::UniqueShaderModule compileFinalShader();
+	vk::UniqueShaderModule compileFinalShader(bool perSample);
+	std::string WithSsaa(const std::string& source, bool perSample = false) const;
 	vk::UniqueShaderModule compileFinalVertexShader();
 	vk::UniqueShaderModule compileClearShader();
 
@@ -143,6 +159,8 @@ private:
 	vk::UniqueShaderModule finalVertexShader;
 	vk::UniqueShaderModule finalAutosortShader;
 	vk::UniqueShaderModule finalSortedShader;
+	vk::UniqueShaderModule finalPerSampleShader;
 	vk::UniqueShaderModule clearShader;
+	u32 samples = 1;
 };
 

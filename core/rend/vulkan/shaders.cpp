@@ -76,15 +76,37 @@ static const char FragmentShaderSource[] = R"(#version 450
 #define pp_TriLinear %d
 #define pp_Palette %d
 #define pp_Shadowed %d
+#define pp_SampleRate %d
+#define SSAA_SAMPLES %d
 #define PI 3.1415926
 
 layout (location = 0) out vec4 FragColor;
 #define gl_FragColor FragColor
 
+/* SSAA: shaded at each sample, its inputs taken there (1); or once a
+ * pixel, its inputs taken at the pixel's centre as without SSAA (2) -
+ * where else they are taken when not said is the device's choice */
+#if pp_SampleRate == 1
+#define AT_SAMPLE sample
+#else
+#define AT_SAMPLE
+#endif
+#if pp_SampleRate == 2
+// (or, where it covers only some of the samples, at a place it covers, as without SSAA it would only be drawn where it covers the centre)
+#define AT_CENTRE(v) (gl_SampleMaskIn[0] == ((1 << SSAA_SAMPLES) - 1) ? interpolateAtOffset(v, vec2(0.0)) : interpolateAtCentroid(v))
+#else
+#define AT_CENTRE(v) (v)
+#endif
+// (a flat input is not interpolated, and is not to be asked for at a place)
+#if pp_Gouraud == 1
+#define AT_CENTRE_SMOOTH(v) AT_CENTRE(v)
+#else
+#define AT_CENTRE_SMOOTH(v) (v)
+#endif
 #if pp_Gouraud == 0
 #define INTERPOLATION flat
 #else
-#define INTERPOLATION smooth
+#define INTERPOLATION smooth AT_SAMPLE
 #endif
 
 layout (std140, set = 0, binding = 1) uniform FragmentShaderUniforms
@@ -113,9 +135,12 @@ layout (set = 0, binding = 3) uniform sampler2D palette;
 #endif
 
 // Vertex input
-layout (location = 0) INTERPOLATION in lowp vec4 vtx_base;
-layout (location = 1) INTERPOLATION in lowp vec4 vtx_offs;
-layout (location = 2)               in vec2 vtx_uv;
+layout (location = 0) INTERPOLATION in lowp vec4 in_vtx_base;
+layout (location = 1) INTERPOLATION in lowp vec4 in_vtx_offs;
+layout (location = 2) AT_SAMPLE     in vec2 in_vtx_uv;
+#define vtx_base AT_CENTRE_SMOOTH(in_vtx_base)
+#define vtx_offs AT_CENTRE_SMOOTH(in_vtx_offs)
+#define vtx_uv AT_CENTRE(in_vtx_uv)
 
 #if pp_FogCtrl != 2
 layout (set = 0, binding = 2) uniform sampler2D fog_table;
@@ -371,7 +396,7 @@ vk::UniqueShaderModule ShaderManager::compileShader(const FragmentShaderParams& 
 	sprintf(buf, FragmentShaderSource, (int)params.alphaTest, (int)params.insideClipTest, (int)params.useAlpha, (int)params.texture,
 			(int)params.ignoreTexAlpha, params.shaderInstr, (int)params.offset, params.fog, (int)params.gouraud,
 			(int)params.bumpmap, (int)params.clamping, (int)params.trilinear, (int)params.palette,
-			(int)params.shadowed);
+			(int)params.shadowed, (int)params.sampleRate, params.samples);
 	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, buf);
 }
 

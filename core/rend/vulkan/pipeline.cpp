@@ -76,7 +76,7 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 	  0.0f,                                         // depthBiasSlopeFactor
 	  1.0f                                          // lineWidth
 	);
-	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo;
+	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, false);
 
 	// Depth and stencil
 	vk::StencilOpState stencilOpState;
@@ -172,7 +172,7 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 					graphicsPipelineCreateInfo);
 }
 
-void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass)
+void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass, bool sampleRate)
 {
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo();
 
@@ -200,7 +200,7 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  0.0f,                                         // depthBiasSlopeFactor
 	  1.0f                                          // lineWidth
 	);
-	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo;
+	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, sampleRate);
 
 	// Depth and stencil
 	vk::CompareOp depthOp;
@@ -335,6 +335,8 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	params.useAlpha = pp.tsp.UseAlpha;
 	params.palette = BaseTextureCacheData::IsGpuHandledPaletted(pp.tsp, pp.tcw);
 	params.shadowed = shadowPass != ShadowPass::None;
+	params.sampleRate = samples > 1 ? (sampleRate ? 1 : 2) : 0;
+	params.samples = samples;
 	vk::ShaderModule fragment_module = shaderManager->GetFragmentShader(params);
 
 	vk::PipelineShaderStageCreateInfo stages[] = {
@@ -359,6 +361,63 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  renderPass                                  // renderPass
 	);
 
-	pipelines[hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28)] = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
+	pipelines[hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28) | ((u32)sampleRate << 30)] = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
 			graphicsPipelineCreateInfo);
+}
+
+vk::UniqueRenderPass MakeSsaaRenderPass(vk::Format colorFormat, u32 samples, vk::ImageLayout pictureLayout)
+{
+	VulkanContext *context = VulkanContext::Instance();
+	const vk::SampleCountFlagBits n = (vk::SampleCountFlagBits)samples;
+	vk::AttachmentDescription attachmentDescriptions[] = {
+			// the picture
+			vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), colorFormat, vk::SampleCountFlagBits::e1,
+					vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore,
+					vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+					vk::ImageLayout::eUndefined, pictureLayout),
+			// the samples' colour and depth
+			vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), colorFormat, n,
+					vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
+					vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+					vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal),
+			vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), context->GetDepthFormat(), n,
+					vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
+					vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
+					vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal),
+	};
+	vk::AttachmentReference pictureReference(0, vk::ImageLayout::eColorAttachmentOptimal);
+	vk::AttachmentReference colorReference(1, vk::ImageLayout::eColorAttachmentOptimal);
+	vk::AttachmentReference depthReference(2, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+	vk::AttachmentReference samplesInput(1, vk::ImageLayout::eShaderReadOnlyOptimal);
+	vk::SubpassDescription subpasses[] = {
+			vk::SubpassDescription(vk::SubpassDescriptionFlags(), vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorReference, nullptr, &depthReference),
+			vk::SubpassDescription(vk::SubpassDescriptionFlags(), vk::PipelineBindPoint::eGraphics, 1, &samplesInput, 1, &pictureReference, nullptr, nullptr),
+	};
+	const vk::PipelineStageFlags fbStages = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+			| vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput;
+	const vk::AccessFlags fbWrites = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+	const vk::AccessFlags fbAll = fbWrites | vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentRead
+			| vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eShaderRead;
+	vk::SubpassDependency dependencies[] = {
+			/* The sample attachments are the same every frame: the one before
+			 * has to be done with them, the resolve's reading included, before
+			 * this one clears them; and the picture is read where it was
+			 * shown or sampled */
+			vk::SubpassDependency(VK_SUBPASS_EXTERNAL, 0, fbStages, fbStages, fbWrites | vk::AccessFlagBits::eShaderRead, fbAll),
+			vk::SubpassDependency(VK_SUBPASS_EXTERNAL, 1, fbStages, fbStages, fbWrites | vk::AccessFlagBits::eShaderRead, fbAll),
+			// the samples drawn, then resolved
+			vk::SubpassDependency(0, 1, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader,
+					vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eInputAttachmentRead, vk::DependencyFlagBits::eByRegion),
+			// the picture, to be shown or sampled
+			vk::SubpassDependency(1, VK_SUBPASS_EXTERNAL, fbStages, fbStages | vk::PipelineStageFlagBits::eTransfer,
+					vk::AccessFlagBits::eColorAttachmentWrite, fbAll | vk::AccessFlagBits::eTransferRead),
+	};
+	return context->GetDevice().createRenderPassUnique(vk::RenderPassCreateInfo(vk::RenderPassCreateFlags(),
+			ARRAY_SIZE(attachmentDescriptions), attachmentDescriptions, ARRAY_SIZE(subpasses), subpasses,
+			ARRAY_SIZE(dependencies), dependencies));
+}
+
+vk::UniqueRenderPass RttPipelineManager::MakeSsaaRenderPass(u32 samples)
+{
+	return ::MakeSsaaRenderPass(vk::Format::eR8G8B8A8Unorm, samples, vk::ImageLayout::eShaderReadOnlyOptimal);
 }

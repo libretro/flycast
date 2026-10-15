@@ -197,7 +197,8 @@ public:
 		: format(vk::Format::eUndefined), physicalDevice(physicalDevice), device(device)
 		{}
    /* @readable: with memory this side can read, to copy the image into (it is as large as the image) */
-   void Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage, bool readable = true);
+   void Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage, bool readable = true,
+		   vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1);
 	void Reset() { image.reset(); imageView.reset(); }
 
 	vk::ImageView GetImageView() const { return *imageView; }

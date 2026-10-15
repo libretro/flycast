@@ -36,6 +36,7 @@ class BaseVulkanRenderer : public Renderer
 public:
 	virtual void Term() override
 	{
+		ta_set_flat_strips(false);
 		shaderManager.Term();
 		vmus.reset();
 		quadPipeline.Term();
@@ -114,6 +115,10 @@ public:
 			textureCache.ClearLater();
 		}
 
+		/* SSAA draws flat strips at a single rate where the frame is parsed
+		 * on the CPU: the GPU's decode does not look for them (its frames
+		 * have only sprites and the background at a single rate) */
+		ta_set_flat_strips(samples > 1 && !ta_gpu_wanted());
 		/* GPU-side TA processing: the header pass makes the frame ready to
 		 * be drawn from the GPU's decode, in the full parse's place; or it
 		 * is parsed as ever */
@@ -264,6 +269,7 @@ protected:
 		paletteTexture->SetCommandBuffer(nullptr);
 	}
 
+	u32 samples = 1;	// SSAA's, a pixel (1: off)
 	ShaderManager shaderManager;
 	std::unique_ptr<Texture> fogTexture;
 	u8 fogUploaded[256];

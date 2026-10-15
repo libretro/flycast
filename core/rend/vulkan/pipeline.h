@@ -25,6 +25,7 @@
 #include "utils.h"
 #include "hw/pvr/ta_ctx.h"
 #include "vulkan_context.h"
+#include "ssaa.h"
 
 class DescriptorSets
 {
@@ -139,7 +140,8 @@ class PipelineManager
 public:
 	virtual ~PipelineManager() = default;
 
-	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass)
+	/* @samples: of the render pass's polygon subpass (SSAA; 1 without) */
+	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass, u32 samples = 1)
 	{
 		this->shaderManager = shaderManager;
 
@@ -165,9 +167,10 @@ public:
 					vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), ARRAY_SIZE(layouts), layouts, 1, &pushConstant));
 		}
 
-		if (this->renderPass != renderPass)
+		if (this->renderPass != renderPass || this->samples != samples)
 		{
 			this->renderPass = renderPass;
+			this->samples = samples;
 			Reset();
 		}
 	}
@@ -179,12 +182,18 @@ public:
 
 	vk::Pipeline GetPipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass = ShadowPass::None)
 	{
-		u32 pipehash = hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28);
+		// (SSAA: shaded at each sample, but for what is drawn at a single rate)
+		const bool sampleRate = samples > 1 && !SsaaSingleRate(pp);
+		const u32 pipehash = hash(listType, sortTriangles, &pp) | ((u32)shadowPass << 28) | ((u32)sampleRate << 30);
 		const auto &pipeline = pipelines.find(pipehash);
 		if (pipeline != pipelines.end())
 			return pipeline->second.get();
 
-		CreatePipeline(listType, sortTriangles, pp, shadowPass);
+		CreatePipeline(listType, sortTriangles, pp, shadowPass, sampleRate);
+		/* the polygon's other rate is made with it: a polygon like it but
+		 * for the rate costs no compile later (SSAA) */
+		if (samples > 1 && pipelines.find(pipehash ^ (1u << 30)) == pipelines.end())
+			CreatePipeline(listType, sortTriangles, pp, shadowPass, !sampleRate);
 
 		return *pipelines[pipehash];
 	}
@@ -265,7 +274,7 @@ private:
 				full ? vertexInputAttributeDescriptions : vertexInputLightAttributeDescriptions);
 	}
 
-	void CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass);
+	void CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass, bool sampleRate);
 
 	std::map<u32, vk::UniquePipeline> pipelines;
 	std::map<u32, vk::UniquePipeline> modVolPipelines;
@@ -278,14 +287,24 @@ protected:
 	VulkanContext *GetContext() const { return VulkanContext::Instance(); }
 
 	vk::RenderPass renderPass;
+	u32 samples = 1;
 	ShaderManager *shaderManager;
 };
 
 class RttPipelineManager : public PipelineManager
 {
 public:
-	void Init(ShaderManager *shaderManager)
+	/* @samples: SSAA's. Then the polygons are drawn into attachments of
+	 * that many samples, and a second subpass resolves them into the
+	 * texture: see MakeSsaaRenderPass(). */
+	void Init(ShaderManager *shaderManager, u32 samples = 1)
 	{
+		if (samples > 1)
+		{
+			rttRenderPass = MakeSsaaRenderPass(samples);
+			PipelineManager::Init(shaderManager, *rttRenderPass, samples);
+			return;
+		}
 		// RTT render pass
 	    vk::AttachmentDescription attachmentDescriptions[] = {
 	    		vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), vk::Format::eR8G8B8A8Unorm, vk::SampleCountFlagBits::e1,
@@ -319,5 +338,14 @@ public:
 	}
 
 private:
+	vk::UniqueRenderPass MakeSsaaRenderPass(u32 samples);
+
 	vk::UniqueRenderPass rttRenderPass;
 };
+
+/* The render pass of SSAA's frames, the screen's and the textures':
+ * attachment 0 the picture (@colorFormat, a single sample), 1 and 2 the
+ * colour and depth attachments of @samples the polygons are drawn into.
+ * Subpass 0 draws, subpass 1 resolves 1 into 0 (SsaaResolve). Only the
+ * picture is stored; it is all written by the resolve, so not loaded. */
+vk::UniqueRenderPass MakeSsaaRenderPass(vk::Format colorFormat, u32 samples, vk::ImageLayout pictureLayout);

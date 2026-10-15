@@ -23,6 +23,8 @@
 
 vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool depthWrites)
 {
+	if (samples > 1)
+		return MakeSsaaRenderPass(initial, last, depthWrites);
     vk::AttachmentDescription attachmentDescriptions[] = {
     		// Swap chain image
     		GetAttachment0Description(initial, last),
@@ -135,3 +137,84 @@ vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool 
 			dependencies.size(), dependencies.data()));
 }
 
+
+/* SSAA: attachment 0 is the picture, of one sample; 1 and 2 the colour
+ * and depth of the samples, one image each for all the render passes of a
+ * frame. The first render pass clears them; one that is not the last
+ * stores them for the next, the last leaves them: with one render pass
+ * they are never stored, and a tiler never backs them. The picture is all
+ * written by the last subpass of the last render pass, so it is never
+ * loaded, and stored by the last only. The colour samples are read and
+ * written in subpass 2 (each put together where it is) and read in 3:
+ * they are in the general layout there. */
+vk::UniqueRenderPass RenderPasses::MakeSsaaRenderPass(bool initial, bool last, bool depthWrites)
+{
+	const vk::SampleCountFlagBits n = (vk::SampleCountFlagBits)samples;
+	const vk::ImageLayout depthLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+	vk::AttachmentDescription attachmentDescriptions[] = {
+			vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetColorFormat(), vk::SampleCountFlagBits::e1,
+					vk::AttachmentLoadOp::eDontCare, last ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare,
+					vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+					vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal),
+			vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetColorFormat(), n,
+					initial ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+					last ? vk::AttachmentStoreOp::eDontCare : vk::AttachmentStoreOp::eStore,
+					vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+					initial ? vk::ImageLayout::eUndefined : vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral),
+			vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetContext()->GetDepthFormat(), n,
+					initial ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+					last ? vk::AttachmentStoreOp::eDontCare : vk::AttachmentStoreOp::eStore,
+					vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
+					initial ? vk::ImageLayout::eUndefined : depthLayout, depthLayout),
+	};
+	vk::AttachmentReference pictureReference(0, vk::ImageLayout::eColorAttachmentOptimal);
+	vk::AttachmentReference colorReference(1, vk::ImageLayout::eColorAttachmentOptimal);
+	vk::AttachmentReference depthReference(2, depthLayout);
+	vk::AttachmentReference depthReadOnlyRef(2, DepthInputLayout(depthWrites));
+	vk::AttachmentReference colorGeneral(1, vk::ImageLayout::eGeneral);
+
+	vk::SubpassDescription subpasses[] = {
+		// depth and stencil, modifier volumes
+		vk::SubpassDescription(vk::SubpassDescriptionFlags(), vk::PipelineBindPoint::eGraphics,
+				0, nullptr, 1, &colorReference, nullptr, &depthReference),
+		// colour, and the translucent lists
+		vk::SubpassDescription(vk::SubpassDescriptionFlags(), vk::PipelineBindPoint::eGraphics,
+				1, &depthReadOnlyRef, 1, &colorReference, nullptr, &depthReadOnlyRef),
+		// translucent modifier volumes; each sample put together and the translucent depth, before another render pass
+		vk::SubpassDescription(vk::SubpassDescriptionFlags(), vk::PipelineBindPoint::eGraphics,
+				1, &colorGeneral, 1, &colorGeneral, nullptr, &depthReference),
+		// the picture put together and resolved
+		vk::SubpassDescription(vk::SubpassDescriptionFlags(), vk::PipelineBindPoint::eGraphics,
+				1, &colorGeneral, 1, &pictureReference, nullptr, nullptr),
+	};
+
+	const vk::PipelineStageFlags fbStages = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+			| vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput;
+	const vk::AccessFlags writes = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+			| vk::AccessFlagBits::eShaderWrite;
+	const vk::AccessFlags all = writes | vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentRead
+			| vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eShaderRead;
+	std::vector<vk::SubpassDependency> dependencies;
+	/* The samples, the lists and the picture's image are the same ones for
+	 * every render pass and every frame: what came before is done with
+	 * them before any subpass uses them */
+	for (u32 subpass = 0; subpass < 4; subpass++)
+		dependencies.emplace_back(VK_SUBPASS_EXTERNAL, subpass, fbStages, fbStages, writes | vk::AccessFlagBits::eShaderRead, all);
+	// each subpass reads and writes what the one before wrote, where it is
+	for (u32 subpass = 0; subpass < 3; subpass++)
+		dependencies.emplace_back(subpass, subpass + 1, fbStages, fbStages, writes, all, vk::DependencyFlagBits::eByRegion);
+	// (the barriers between the passes over the lists in subpasses 2 and 3)
+	for (u32 subpass = 2; subpass < 4; subpass++)
+		dependencies.emplace_back(subpass, subpass, vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eFragmentShader,
+				vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+				vk::DependencyFlagBits::eByRegion);
+	// what the render pass leaves - the picture, to be shown or sampled; the samples, for the next render pass
+	for (u32 subpass = 2; subpass < 4; subpass++)
+		dependencies.emplace_back(subpass, VK_SUBPASS_EXTERNAL, fbStages, fbStages | vk::PipelineStageFlagBits::eTransfer,
+				writes, all | vk::AccessFlagBits::eTransferRead);
+
+	return GetContext()->GetDevice().createRenderPassUnique(vk::RenderPassCreateInfo(vk::RenderPassCreateFlags(),
+			ARRAY_SIZE(attachmentDescriptions), attachmentDescriptions,
+			ARRAY_SIZE(subpasses), subpasses,
+			dependencies.size(), dependencies.data()));
+}

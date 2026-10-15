@@ -25,6 +25,7 @@
 #include "vulkan_renderer.h"
 #include "drawer.h"
 #include "shaders.h"
+#include "rend/ssaa_pattern.h"
 
 class VulkanRenderer final : public BaseVulkanRenderer
 {
@@ -33,15 +34,16 @@ public:
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Init");
 
-		textureDrawer.Init(&samplerManager, &shaderManager, &textureCache);
+		samples = SsaaSamples();
 		textureDrawer.SetCommandPool(&texCommandPool);
+		textureDrawer.Init(&samplerManager, &shaderManager, &textureCache, RttSamples());
 		textureDrawer.SetGpuDraw(taDecoder.Draw());
 
-		screenDrawer.Init(&samplerManager, &shaderManager);
+		screenDrawer.Init(&samplerManager, &shaderManager, samples);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		screenDrawer.SetGpuDraw(taDecoder.Draw());
 		taDecoder.WantSort(true);
-		BaseInit(screenDrawer.GetRenderPass());
+		BaseInit(screenDrawer.GetRenderPass(), screenDrawer.GetOsdSubpass());
 		screenDrawer.SetQuadPipeline(&quadPipeline);
 
 		return true;
@@ -51,8 +53,15 @@ public:
 	{
 		// what is replaced below may be in use by frames still on the GPU
 		texCommandPool.WaitAll();
-		screenDrawer.Init(&samplerManager, &shaderManager);
-		BaseInit(screenDrawer.GetRenderPass());
+		const u32 was = samples;
+		samples = SsaaSamples();
+		if (samples != was)
+		{
+			textureDrawer.Init(&samplerManager, &shaderManager, &textureCache, RttSamples());
+			quadPipeline.Forget();
+		}
+		screenDrawer.Init(&samplerManager, &shaderManager, samples);
+		BaseInit(screenDrawer.GetRenderPass(), screenDrawer.GetOsdSubpass());
 		screenDrawer.SetQuadPipeline(&quadPipeline);
 		// what this size no longer needs is given back once the frames that used it are done
 		GetContext()->GetHeap().TrimSoon();
@@ -77,8 +86,11 @@ public:
 	void Term() override
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");
+		GetContext()->LogVramUsage();
 		GetContext()->WaitIdle();
 		texCommandPool.WaitAll();
+		screenDrawer.Term();
+		textureDrawer.Term();
 		samplerManager.Term();
 		BaseVulkanRenderer::Term();
 	}
@@ -113,6 +125,20 @@ public:
 	}
 
 private:
+	/* SSAA's samples a pixel, for the screen: what the option asks, as far
+	 * as the device and the video memory budget go for its attachments */
+	u32 SsaaSamples() const
+	{
+		const vk::Extent2D size = GetContext()->GetViewPort();
+		return GetContext()->SsaaSamples(settings.rend.Ssaa, ssaa_per_sample_kib(size.width, size.height, 4 + GetContext()->GetDepthBytes()),
+				0, true, "Vulkan per-triangle renderer");
+	}
+	/* ...and for the textures rendered to: the same where their sample
+	 * attachments cost nothing (transient, never stored, in memory that
+	 * is only backed when used); one elsewhere, since they are made as
+	 * large as such a texture can be, which is more video memory than the
+	 * screen's */
+	u32 RttSamples() const { return GetContext()->HasLazyMemory() ? samples : 1; }
 
 	SamplerManager samplerManager;
 	ScreenDrawer screenDrawer;

@@ -497,17 +497,64 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		previous_pass = current_pass;
 	}
 
+	// SSAA: the samples resolved into the picture, in the last subpass
+	if (samples > 1)
+	{
+		cmdBuffer.nextSubpass(vk::SubpassContents::eInline);
+		ssaaResolve.Draw(cmdBuffer, ResolveExtent());
+	}
+
 	return !pvrrc.isRTT;
 }
 
-void TextureDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderManager, TextureCache *textureCache)
+void TextureDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderManager, TextureCache *textureCache, u32 samples)
 {
 	if (!rttPipelineManager)
 		rttPipelineManager = std::unique_ptr<RttPipelineManager>(new RttPipelineManager());
-	rttPipelineManager->Init(shaderManager);
+	rttPipelineManager->Init(shaderManager, samples);
 	Drawer::Init(samplerManager, rttPipelineManager.get());
 
 	this->textureCache = textureCache;
+	if (samples != this->samples)
+	{
+		// (the depth attachment is of the other kind: one of the right kind is made below or when first needed)
+		if (depthAttachment && commandPool != nullptr)
+			commandPool->DeferDelete(std::move(depthAttachment));
+		depthAttachment.reset();
+		if (samplesAttachment && commandPool != nullptr)
+			commandPool->DeferDelete(std::move(samplesAttachment));
+		samplesAttachment.reset();
+		this->samples = samples;
+	}
+	/* SSAA's attachments are made now, as large as a render to a texture
+	 * can be, never while the game runs */
+	if (samples > 1)
+	{
+		if (!samplesAttachment || samplesAttachment->getExtent().width < MaxSide())
+			MakeSsaaAttachments(MaxSide());
+		ssaaResolve.Init(rttPipelineManager->GetRenderPass(), 1, samples, samplesAttachment->GetImageView());
+	}
+	else
+		ssaaResolve.Term();
+}
+
+void TextureDrawer::MakeSsaaAttachments(u32 side)
+{
+	VulkanContext *context = GetContext();
+	if (depthAttachment && commandPool != nullptr)
+		commandPool->DeferDelete(std::move(depthAttachment));
+	if (samplesAttachment && commandPool != nullptr)
+		commandPool->DeferDelete(std::move(samplesAttachment));
+	const vk::SampleCountFlagBits n = (vk::SampleCountFlagBits)samples;
+	depthAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), context->GetDevice()));
+	depthAttachment->Init(side, side, context->GetDepthFormat(),
+			vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransientAttachment, true, n);
+	samplesAttachment = std::unique_ptr<FramebufferAttachment>(new FramebufferAttachment(context->GetPhysicalDevice(), context->GetDevice()));
+	samplesAttachment->Init(side, side, vk::Format::eR8G8B8A8Unorm,
+			vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eTransientAttachment,
+			false, n);
+	if (ssaaResolve.Ready() && commandPool != nullptr)
+		ssaaResolve.SetSamplesView(samplesAttachment->GetImageView(), commandPool);
 }
 
 vk::CommandBuffer TextureDrawer::BeginRenderPass()
@@ -546,7 +593,19 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	vk::CommandBuffer commandBuffer = commandPool->Allocate();
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-	if (!depthAttachment || widthPow2 > depthAttachment->getExtent().width || heightPow2 > depthAttachment->getExtent().height)
+	if (samples > 1)
+	{
+		/* (SSAA's attachments were made as large as a texture rendered to
+		 * can be; a pixel clip beyond the texture's largest size makes one
+		 * larger, which is the only time they are made while a game runs) */
+		const u32 side = std::max(widthPow2, heightPow2);
+		if (side > samplesAttachment->getExtent().width)
+		{
+			WARN_LOG(RENDERER, "Render to a texture of %u x %u: SSAA's attachments made larger", widthPow2, heightPow2);
+			MakeSsaaAttachments(side);
+		}
+	}
+	else if (!depthAttachment || widthPow2 > depthAttachment->getExtent().width || heightPow2 > depthAttachment->getExtent().height)
 	{
 		if (depthAttachment)
 			commandPool->DeferDelete(std::move(depthAttachment));
@@ -618,17 +677,21 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 
 	setImageLayout(commandBuffer, colorImage, vk::Format::eR8G8B8A8Unorm, 1, colorImageCurrentLayout, vk::ImageLayout::eColorAttachmentOptimal);
 
+	// (with SSAA: the texture, then the samples' colour and depth)
 	vk::ImageView imageViews[] = {
 		colorImageView,
+		samples > 1 ? samplesAttachment->GetImageView() : depthAttachment->GetImageView(),
 		depthAttachment->GetImageView(),
 	};
 	framebuffers.resize(GetContext()->GetSwapChainSize());
 	framebuffers[GetCurrentImage()] = device.createFramebufferUnique(vk::FramebufferCreateInfo(vk::FramebufferCreateFlags(),
-			rttPipelineManager->GetRenderPass(), ARRAY_SIZE(imageViews), imageViews, widthPow2, heightPow2, 1));
+			rttPipelineManager->GetRenderPass(), samples > 1 ? 3 : 2, imageViews, widthPow2, heightPow2, 1));
 
 	const vk::ClearValue clear_colors[] = { vk::ClearColorValue(std::array<float, 4> { 0.f, 0.f, 0.f, 1.f }), vk::ClearDepthStencilValue { 0.f, 0 } };
+	const vk::ClearValue ssaa_clear_colors[] = { clear_colors[0], clear_colors[0], clear_colors[1] };
 	commandBuffer.beginRenderPass(vk::RenderPassBeginInfo(rttPipelineManager->GetRenderPass(),	*framebuffers[GetCurrentImage()],
-			vk::Rect2D( { 0, 0 }, { width, height }), 2, clear_colors), vk::SubpassContents::eInline);
+			vk::Rect2D( { 0, 0 }, { width, height }), samples > 1 ? 3 : 2, samples > 1 ? ssaa_clear_colors : clear_colors),
+			vk::SubpassContents::eInline);
 	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, (float)upscaledWidth, (float)upscaledHeight, 1.0f, 0.0f));
 	{
 		// only the pixel clip is written
@@ -658,10 +721,11 @@ void TextureDrawer::EndRenderPass()
 			pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
 }
 
-void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderManager)
+void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderManager, u32 samples)
 {
 	this->shaderManager = shaderManager;
-	if (viewport != GetContext()->GetViewPort())
+	// (a change of SSAA is one of size: everything made for the size is made again)
+	if (viewport != GetContext()->GetViewPort() || samples != this->samples)
 	{
 		/* Not destroyed on the spot: the last picture was handed to the
 		 * frontend, which shows it again for as long as no new one comes -
@@ -691,21 +755,40 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 					commandPool->DeferDelete(std::move(attachment));
 			if (depthAttachment)
 				commandPool->DeferDelete(std::move(depthAttachment));
+			if (samplesAttachment)
+				commandPool->DeferDelete(std::move(samplesAttachment));
 		}
 		framebuffers.clear();
 		colorAttachments.clear();
 		depthAttachment.reset();
+		samplesAttachment.reset();
 		havePicture = false;
+		if (samples != this->samples)
+			// (Resize() waited for the frames on the GPU: nothing uses it)
+			renderPass.reset();
+		this->samples = samples;
 	}
 	viewport = GetContext()->GetViewPort();
+	const vk::SampleCountFlagBits n = (vk::SampleCountFlagBits)samples;
 	if (!depthAttachment)
 	{
 		depthAttachment = std::unique_ptr<FramebufferAttachment>(
 			new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice()));
 		depthAttachment->Init(viewport.width, viewport.height, GetContext()->GetDepthFormat(),
-				vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransientAttachment);
+				vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransientAttachment, true, n);
+	}
+	// SSAA: the samples' colour, which the last subpass resolves into the picture
+	if (samples > 1 && !samplesAttachment)
+	{
+		samplesAttachment = std::unique_ptr<FramebufferAttachment>(
+			new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice()));
+		samplesAttachment->Init(viewport.width, viewport.height, GetContext()->GetColorFormat(),
+				vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment
+					| vk::ImageUsageFlagBits::eTransientAttachment, false, n);
 	}
 
+	if (!renderPass && samples > 1)
+		renderPass = MakeSsaaRenderPass(GetContext()->GetColorFormat(), samples, vk::ImageLayout::eShaderReadOnlyOptimal);
 	if (!renderPass)
 	{
 		vk::AttachmentDescription attachmentDescriptions[] = {
@@ -762,8 +845,10 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 	}
 	else
 	{
+		// (with SSAA: the picture, then the samples' colour and depth)
 		vk::ImageView attachments[] = {
 				nullptr,
+				samples > 1 ? samplesAttachment->GetImageView() : depthAttachment->GetImageView(),
 				depthAttachment->GetImageView(),
 		};
 		while (colorAttachments.size() < size)
@@ -775,15 +860,21 @@ void ScreenDrawer::Init(SamplerManager *samplerManager, ShaderManager *shaderMan
 					vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc, false);
 			attachments[0] = colorAttachments.back()->GetImageView();
 			vk::FramebufferCreateInfo createInfo(vk::FramebufferCreateFlags(), *renderPass,
-					ARRAY_SIZE(attachments), attachments, viewport.width, viewport.height, 1);
+					samples > 1 ? 3 : 2, attachments, viewport.width, viewport.height, 1);
 			framebuffers.push_back(GetContext()->GetDevice().createFramebufferUnique(createInfo));
 		}
 	}
 
 	if (!screenPipelineManager)
 		screenPipelineManager = std::unique_ptr<PipelineManager>(new PipelineManager());
-	screenPipelineManager->Init(shaderManager, *renderPass);
+	screenPipelineManager->Init(shaderManager, *renderPass, samples);
 	Drawer::Init(samplerManager, screenPipelineManager.get());
+	if (samples > 1)
+	{
+		ssaaResolve.Init(*renderPass, 1, samples, samplesAttachment->GetImageView());
+		msQuadPipeline.Init(shaderManager, *renderPass, 0, samples);
+	}
+	timer.Init(GetContext()->GetSwapChainSize(), "per-triangle renderer");
 }
 
 vk::CommandBuffer ScreenDrawer::BeginRenderPass()
@@ -798,9 +889,13 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	const std::array<float, 4> clear_color = pvrrc.clearFramebuffer
 			? std::array<float, 4> { VO_BORDER_COL.Red / 255.f, VO_BORDER_COL.Green / 255.f, VO_BORDER_COL.Blue / 255.f, 1.f }
 			: std::array<float, 4> { 0.f, 0.f, 0.f, 1.f };
+	timer.Begin(commandBuffer, commandPool->GetIndex());
+	// (with SSAA: the picture, all of which the resolve writes, then the samples' colour and depth)
 	const vk::ClearValue clear_colors[] = { vk::ClearColorValue(clear_color), vk::ClearDepthStencilValue { 0.f, 0 } };
+	const vk::ClearValue ssaa_clear_colors[] = { clear_colors[0], clear_colors[0], clear_colors[1] };
 	commandBuffer.beginRenderPass(vk::RenderPassBeginInfo(*renderPass, *framebuffers[GetCurrentImage()],
-			vk::Rect2D( { 0, 0 }, viewport), 2, clear_colors), vk::SubpassContents::eInline);
+			vk::Rect2D( { 0, 0 }, viewport), samples > 1 ? 3 : 2, samples > 1 ? ssaa_clear_colors : clear_colors),
+			vk::SubpassContents::eInline);
 	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, viewport.width, viewport.height, 1.0f, 0.0f));
 
 	matrices.CalcMatrices(&pvrrc);
@@ -820,7 +915,7 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 
 		commandBuffer.setScissor(0, vk::Rect2D( { 0, 0 }, viewport));
 		commandBuffer.setBlendConstants(opaque.data());
-		quadPipeline->BindPipeline(commandBuffer);
+		(samples > 1 ? &msQuadPipeline : quadPipeline)->BindPipeline(commandBuffer);
 		/* (the picture kept from another context can be of another size) */
 		if (havePicture)
 			lastPicture.Draw(commandBuffer, colorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView(), nullptr, true, commandPool);
@@ -851,6 +946,7 @@ void ScreenDrawer::EndRenderPass()
 	if (carriedPicture)
 		commandPool->DeferDelete(std::move(carriedPicture));
 	currentCommandBuffer.endRenderPass();
+	timer.End(currentCommandBuffer, commandPool->GetIndex());
 	currentCommandBuffer.end();
 	currentCommandBuffer = nullptr;
 	commandPool->EndFrame();

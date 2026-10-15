@@ -103,6 +103,7 @@ protected:
 	};
 
 	void MakeBuffers(int width, int height);
+	void MakeSampleAttachments();
 	virtual vk::Format GetColorFormat() const = 0;
 	virtual vk::Framebuffer GetFinalFramebuffer() const = 0;
 	/* In the colour subpass of a frame's first pass, before any polygon:
@@ -114,6 +115,10 @@ protected:
 	std::array<std::unique_ptr<FramebufferAttachment>, 2> colorAttachments;
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
 	vk::CommandBuffer currentCommandBuffer;
+	OITPipelineManager *pipelineManager = nullptr;
+	int maxWidth = 0;
+	int maxHeight = 0;
+	u32 attachmentSamples = 1;	// SSAA's, of the attachments made
 
 private:
    void DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool autosort, Pass pass,
@@ -138,11 +143,8 @@ private:
 
 	std::array<vk::UniqueFramebuffer, 2> tempFramebuffers;
 
-	OITPipelineManager *pipelineManager = nullptr;
 	SamplerManager *samplerManager = nullptr;
 	OITBuffers *oitBuffers = nullptr;
-	int maxWidth = 0;
-	int maxHeight = 0;
 	bool needDepthTransition = false;
 	int imageIndex = 0;
 	std::vector<OITDescriptorSets> descriptorSets;
@@ -152,17 +154,22 @@ private:
 class OITScreenDrawer : public OITDrawer
 {
 public:
-	void Init(SamplerManager *samplerManager, OITShaderManager *shaderManager, OITBuffers *oitBuffers)
+	// @samples: SSAA's (1: off), which the shader manager has been given
+	void Init(SamplerManager *samplerManager, OITShaderManager *shaderManager, OITBuffers *oitBuffers, u32 samples)
 	{
 		if (!screenPipelineManager)
 			screenPipelineManager = std::unique_ptr<OITPipelineManager>(new OITPipelineManager());
-		screenPipelineManager->Init(shaderManager, oitBuffers);
+		screenPipelineManager->Init(shaderManager, oitBuffers, samples);
 		OITDrawer::Init(samplerManager, screenPipelineManager.get(), oitBuffers);
 
 		MakeFramebuffers();
+		timer.Init(GetContext()->GetSwapChainSize(), "per-pixel renderer");
 	}
+	// the subpass the screen's last things are drawn in (the VMUs, the OSD)
+	int GetOsdSubpass() const { return screenPipelineManager->GetFinalSubpass(); }
 	void Term()
 	{
+		timer.Term();
 		screenPipelineManager.reset();
 		framebuffers.clear();
 		finalColorAttachments.clear();
@@ -181,6 +188,7 @@ public:
 		if (carriedPicture)
 			commandPool->DeferDelete(std::move(carriedPicture));
 		currentCommandBuffer.endRenderPass();
+		timer.End(currentCommandBuffer, commandPool->GetIndex());
 		currentCommandBuffer.end();
 		currentCommandBuffer = nullptr;
 		commandPool->EndFrame();
@@ -236,6 +244,7 @@ private:
 	std::unique_ptr<FramebufferAttachment> carriedPicture;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::unique_ptr<OITPipelineManager> screenPipelineManager;
+	GpuFrameTimer timer;
 };
 
 class OITTextureDrawer : public OITDrawer

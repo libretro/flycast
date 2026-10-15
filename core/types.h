@@ -583,6 +583,7 @@ struct settings_t
 		int AnisotropicFiltering;
 		bool PowerVR2Filter;
 		bool GpuTextureDecode;	// textures converted from their bytes in video memory by the GPU, where the renderer can
+		int Ssaa;	// samples a pixel asked for (1: off, 2, 4 or 8); the renderer may take fewer (rend/ssaa_pattern.h)
 	} rend;
 
 	struct

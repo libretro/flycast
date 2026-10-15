@@ -597,7 +597,8 @@ void Texture::GenerateMipmaps()
 	commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr, barrier);
 }
 
-void FramebufferAttachment::Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage, bool readable)
+void FramebufferAttachment::Init(u32 width, u32 height, vk::Format format, const vk::ImageUsageFlags& usage, bool readable,
+		vk::SampleCountFlagBits samples)
 {
 	this->format = format;
 	this->extent = vk::Extent2D { width, height };
@@ -608,7 +609,7 @@ void FramebufferAttachment::Init(u32 width, u32 height, vk::Format format, const
 		stagingBufferData = std::unique_ptr<BufferData>(new BufferData(width * height * 4,
 				vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst));
 	}
-	vk::ImageCreateInfo imageCreateInfo(vk::ImageCreateFlags(), vk::ImageType::e2D, format, vk::Extent3D(extent, 1), 1, 1, vk::SampleCountFlagBits::e1,
+	vk::ImageCreateInfo imageCreateInfo(vk::ImageCreateFlags(), vk::ImageType::e2D, format, vk::Extent3D(extent, 1), 1, 1, samples,
 			vk::ImageTiling::eOptimal, usage,
 			vk::SharingMode::eExclusive, 0, nullptr, vk::ImageLayout::eUndefined);
 	image = device.createImageUnique(imageCreateInfo);

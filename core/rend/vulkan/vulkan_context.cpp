@@ -20,6 +20,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include "vulkan_context.h"
+#include "rend/ssaa_pattern.h"
 #include <streams/file_stream.h>
 #include "hw/pvr/Renderer_if.h"
 #include "compiler.h"
@@ -128,6 +129,8 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 	VulkanContext::Instance()->multiDrawIndirect = supportedFeatures.multiDrawIndirect;
 	VulkanContext::Instance()->drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
 	VulkanContext::Instance()->drawIndirectCount = false;
+	// (SSAA's shading per sample: see VulkanContext::SsaaSamples())
+	VulkanContext::Instance()->sampleRateShading = supportedFeatures.sampleRateShading;
 
 	// Enable VK_KHR_dedicated_allocation if available
 	bool getMemReq2Supported = false;
@@ -173,6 +176,8 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 		features.multiDrawIndirect = true;
 	if (VulkanContext::Instance()->drawIndirectFirstInstance)
 		features.drawIndirectFirstInstance = true;
+	if (VulkanContext::Instance()->sampleRateShading)
+		features.sampleRateShading = true;
 	vk::Device device = physicalDevice.createDevice(vk::DeviceCreateInfo(vk::DeviceCreateFlags(),
 			context->queue_family_index == context->presentation_queue_family_index ? 1 : 2, deviceQueueCreateInfos,
 			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features));
@@ -234,6 +239,16 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	cmdDrawIndexedIndirectCount = drawIndirectCount
 			? (PFN_vkCmdDrawIndexedIndirectCountKHR)device.getProcAddr("vkCmdDrawIndexedIndirectCountKHR") : nullptr;
 	QueryVramBudget();
+	// what SSAA can have: the sample counts colour, depth and stencil attachments can all have, and memory that is only there if used
+	ssaaSampleCounts = (u32)(properties->limits.framebufferColorSampleCounts & properties->limits.framebufferDepthSampleCounts
+			& properties->limits.framebufferStencilSampleCounts);
+	lazyMemory = false;
+	{
+		const vk::PhysicalDeviceMemoryProperties memory = physicalDevice.getMemoryProperties();
+		for (u32 i = 0; i < memory.memoryTypeCount; i++)
+			if (memory.memoryTypes[i].propertyFlags & vk::MemoryPropertyFlagBits::eLazilyAllocated)
+				lazyMemory = true;
+	}
 
 	vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(vk::Format::eR5G5B5A1UnormPack16);
 	if ((formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage)
@@ -359,6 +374,32 @@ void VulkanContext::QueryVramBudget()
 	else
 		vramBudget.budget_kib = vram_kib(memory.memoryHeaps[heap].size / 2);
 	vram_budget_log("Vulkan", vramBudget);
+}
+
+u32 VulkanContext::SsaaSamples(u32 requested, u32 perSampleKib, u32 fixedKib, bool transient, const char *what) const
+{
+	if (requested <= 1)
+		return 1;
+	/* Shaded per sample, or it is not supersampling: a device the frontend
+	 * made has no sample rate shading the core knows of */
+	if (!sampleRateShading)
+	{
+		WARN_LOG(RENDERER, "%s: SSAA off: the device was made without sample rate shading", what);
+		return 1;
+	}
+	const u32 device = ssaa_device_samples(requested, ssaaSampleCounts);
+	/* Attachments that are never stored take no memory where the device
+	 * has memory that is only backed when used (tilers) */
+	const bool free = transient && lazyMemory;
+	const u32 samples = ssaa_clamp_samples(device, vramBudget.available_kib(), fixedKib, free ? 0 : perSampleKib);
+	NOTICE_LOG(RENDERER, "%s: SSAA %u samples a pixel (asked %u, the device can draw %u; %u MB a sample%s, %u MB of the budget left)",
+			what, samples, requested, device, perSampleKib >> 10, free ? " if backed" : "", vramBudget.available_kib() >> 10);
+	return samples;
+}
+
+u32 VulkanContext::GetDepthBytes() const
+{
+	return depthFormat == vk::Format::eD32SfloatS8Uint ? 8 : 4;
 }
 
 vk::Format VulkanContext::FindDepthFormat()

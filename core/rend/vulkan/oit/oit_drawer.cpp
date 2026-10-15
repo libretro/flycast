@@ -329,8 +329,16 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			RenderPasses::DepthInputLayout(depthWrites),
 			pvrrc.gpu ? gpuDraw->trParams : vk::Buffer(), pvrrc.gpu ? gpuDraw->trParamsSize : 0);
 	GetCurrentDescSet().BindPerFrameDescriptorSets(cmdBuffer);
-	GetCurrentDescSet().UpdateColorInputDescSet(0, colorAttachments[0]->GetImageView());
-	GetCurrentDescSet().UpdateColorInputDescSet(1, colorAttachments[1]->GetImageView());
+	/* SSAA: the samples' colour, one image for every render pass, read in
+	 * the general layout; without, the two that take turns */
+	const bool ssaa = pipelineManager->GetSamples() > 1;
+	if (ssaa)
+		GetCurrentDescSet().UpdateColorInputDescSet(0, colorAttachments[0]->GetImageView(), vk::ImageLayout::eGeneral);
+	else
+	{
+		GetCurrentDescSet().UpdateColorInputDescSet(0, colorAttachments[0]->GetImageView());
+		GetCurrentDescSet().UpdateColorInputDescSet(1, colorAttachments[1]->GetImageView());
+	}
 	oitBuffers->BindDescriptorSet(cmdBuffer, pipelineManager->GetPipelineLayout(), 3);
 
 	// Reset per-poly descriptor set pool
@@ -375,7 +383,10 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
     	const bool finalPass = render_pass == pvrrc.render_passes.used() - 1;
 
     	vk::Framebuffer targetFramebuffer;
-    	if (!finalPass)
+    	if (ssaa)
+    		// (the samples carry on to the next render pass; the picture is written by the last)
+    		targetFramebuffer = GetFinalFramebuffer();
+    	else if (!finalPass)
     		targetFramebuffer = *tempFramebuffers[(pvrrc.render_passes.used() - 1 - render_pass) % 2];
     	else
     		targetFramebuffer = GetFinalFramebuffer();
@@ -421,9 +432,9 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		else
 			DrawList(cmdBuffer, ListType_Translucent, false, Pass::Color, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
 
-		// Final subpass
+		// Final subpass (SSAA: the translucent modifier volumes' one)
 		cmdBuffer.nextSubpass(vk::SubpassContents::eInline);
-		GetCurrentDescSet().BindColorInputDescSet(cmdBuffer, (pvrrc.render_passes.used() - 1 - render_pass) % 2);
+		GetCurrentDescSet().BindColorInputDescSet(cmdBuffer, ssaa ? 0 : (pvrrc.render_passes.used() - 1 - render_pass) % 2);
 		SetScissor(cmdBuffer, baseScissor);
 
 		{
@@ -443,12 +454,38 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			 * different one every frame. (Upstream: the loading screen
 			 * before a fight in Soul Calibur blinking.) */
 			SetScissor(cmdBuffer, viewport);
-			vk::Pipeline pipeline = pipelineManager->GetFinalPipeline();
-			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-			quadBuffer->Bind(cmdBuffer);
-			quadBuffer->Draw(cmdBuffer);
+			if (!ssaa)
+			{
+				vk::Pipeline pipeline = pipelineManager->GetFinalPipeline();
+				cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+				quadBuffer->Bind(cmdBuffer);
+				quadBuffer->Draw(cmdBuffer);
+			}
 		}
 		SetScissor(cmdBuffer, viewport);
+		if (ssaa)
+		{
+			if (!finalPass)
+			{
+				// each sample put together, into the samples the next render pass draws over...
+				cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelineManager->GetFinalPipeline(true));
+				quadBuffer->Bind(cmdBuffer);
+				quadBuffer->Draw(cmdBuffer);
+				// ...which sees the translucent depth too
+				BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
+				DrawList(cmdBuffer, ListType_Translucent, current_pass.autosort, Pass::Depth, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
+			}
+			// The picture put together and resolved, by the last render pass, all of it
+			cmdBuffer.nextSubpass(vk::SubpassContents::eInline);
+			SetScissor(cmdBuffer, viewport);
+			quadBuffer->Bind(cmdBuffer);
+			if (finalPass)
+			{
+				cmdBuffer.setViewport(0, vk::Viewport(0.f, 0.f, (float)viewport.extent.width, (float)viewport.extent.height, 1.f, 0.f));
+				cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelineManager->GetFinalPipeline());
+				quadBuffer->Draw(cmdBuffer);
+			}
+		}
 
 		// Clear
 		vk::MemoryBarrier memoryBarrier(vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite);
@@ -458,7 +495,13 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 		quadBuffer->Draw(cmdBuffer);
 
-		if (!finalPass)
+		if (!finalPass && ssaa)
+		{
+			// (the next render pass draws from the frame's geometry, not the quad)
+			BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
+			cmdBuffer.endRenderPass();
+		}
+		else if (!finalPass)
 		{
 	    	// Re-bind vertex and index buffers
 	    	BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
@@ -479,10 +522,23 @@ void OITDrawer::MakeBuffers(int width, int height)
 {
 	oitBuffers->Init(width, height, commandPool);
 
+	// (made again for another count of samples)
+	const u32 samples = pipelineManager->GetSamples();
+	if (samples != attachmentSamples)
+	{
+		maxWidth = maxHeight = 0;
+		attachmentSamples = samples;
+	}
 	if (width <= maxWidth && height <= maxHeight)
 		return;
 	maxWidth = std::max(maxWidth, width);
 	maxHeight = std::max(maxHeight, height);
+
+	if (samples > 1)
+	{
+		MakeSampleAttachments();
+		return;
+	}
 
 	for (auto& attachment : colorAttachments)
 	{
@@ -513,6 +569,33 @@ void OITDrawer::MakeBuffers(int width, int height)
 	attachments[0] = attachments[1];
 	attachments[1] = colorAttachments[1]->GetImageView();
 	tempFramebuffers[1] = GetContext()->GetDevice().createFramebufferUnique(createInfo);
+}
+
+/* SSAA: one image of samples for the colour, one for the depth, for all
+ * the render passes of a frame (RenderPasses::MakeSsaaRenderPass()), of
+ * the largest size asked for. Not transient: a frame of several render
+ * passes stores them for the next one (and a device may drop what is
+ * stored to an attachment made transient). */
+void OITDrawer::MakeSampleAttachments()
+{
+	const vk::SampleCountFlagBits n = (vk::SampleCountFlagBits)pipelineManager->GetSamples();
+	for (auto& attachment : colorAttachments)
+		if (attachment)
+			commandPool->DeferDelete(std::move(attachment));
+	for (auto& framebuffer : tempFramebuffers)
+		if (framebuffer)
+			commandPool->DeferDelete(std::unique_ptr<vk::UniqueFramebuffer>(new vk::UniqueFramebuffer(std::move(framebuffer))));
+	colorAttachments[0] = std::unique_ptr<FramebufferAttachment>(
+			new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice()));
+	colorAttachments[0]->Init(maxWidth, maxHeight, GetColorFormat(),
+			vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment, true, n);
+	if (depthAttachment)
+		commandPool->DeferDelete(std::move(depthAttachment));
+	depthAttachment = std::unique_ptr<FramebufferAttachment>(
+			new FramebufferAttachment(GetContext()->GetPhysicalDevice(), GetContext()->GetDevice()));
+	depthAttachment->Init(maxWidth, maxHeight, GetContext()->GetDepthFormat(),
+			vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eInputAttachment, true, n);
+	needDepthTransition = true;
 }
 
 void OITScreenDrawer::KeepPicture()
@@ -719,6 +802,7 @@ vk::CommandBuffer OITScreenDrawer::NewFrame()
 	NewImage();
 	vk::CommandBuffer commandBuffer = commandPool->Allocate();
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	timer.Begin(commandBuffer, commandPool->GetIndex());
 
 	matrices.CalcMatrices(&pvrrc);
 

@@ -26,6 +26,7 @@
 #include "oit_renderpass.h"
 #include "oit_buffer.h"
 #include "../texture.h"
+#include "../ssaa.h"
 #include "hw/pvr/ta_ctx.h"
 
 class OITDescriptorSets
@@ -137,13 +138,14 @@ public:
 		GetContext()->GetDevice().updateDescriptorSets(writeDescriptorSets, nullptr);
 	}
 
-	void UpdateColorInputDescSet(int index, vk::ImageView colorImageView)
+	// @layout: the colour attachment's where it is read (SSAA's are in the general one)
+	void UpdateColorInputDescSet(int index, vk::ImageView colorImageView, vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal)
 	{
 		if (!colorInputDescSets[index])
 			colorInputDescSets[index] = std::move(GetContext()->GetDevice().allocateDescriptorSetsUnique(
 					vk::DescriptorSetAllocateInfo(GetContext()->GetDescriptorPool(), 1, &colorInputLayout)).front());
 		std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
-		vk::DescriptorImageInfo colorImageInfo(vk::Sampler(), colorImageView, vk::ImageLayout::eShaderReadOnlyOptimal);
+		vk::DescriptorImageInfo colorImageInfo(vk::Sampler(), colorImageView, layout);
 		writeDescriptorSets.push_back(vk::WriteDescriptorSet(*colorInputDescSets[index], 0, 0, 1, vk::DescriptorType::eInputAttachment, &colorImageInfo, nullptr, nullptr));
 
 		GetContext()->GetDevice().updateDescriptorSets(writeDescriptorSets, nullptr);
@@ -227,9 +229,19 @@ public:
 	OITPipelineManager() : renderPasses(&ownRenderPasses) {}
 	virtual ~OITPipelineManager() = default;
 
-	virtual void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers)
+	/* @samples: SSAA's (1: off), which the shader manager has been given too */
+	virtual void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers, u32 samples = 1)
 	{
 		this->shaderManager = shaderManager;
+		if (samples != renderPasses->GetSamples())
+		{
+			// everything was made for the render passes of the other count
+			renderPasses->SetSamples(samples);
+			trModVolPipelines.clear();
+			finalPipeline.reset();
+			finalPerSamplePipeline.reset();
+			clearPipeline.reset();
+		}
 
 		if (!perFrameLayout)
 		{
@@ -267,16 +279,31 @@ public:
 
 		pipelines.clear();
 		modVolPipelines.clear();
+		// (SSAA's are made now, not when first drawn)
+		if (samples > 1)
+		{
+			GetFinalPipeline(false);
+			GetFinalPipeline(true);
+			GetClearPipeline();
+		}
 	}
 
 	vk::Pipeline GetPipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass)
 	{
-		u32 pipehash = hash(listType, autosort, &pp, pass);
+		/* SSAA: shaded at each sample, but for what is drawn at a single
+		 * rate; and a translucent fragment put in the lists once a pixel,
+		 * with the samples it covers, so the lists are no longer for it */
+		const u32 samples = renderPasses->GetSamples();
+		const bool sampleRate = samples > 1 && pass != Pass::OIT && !SsaaSingleRate(pp);
+		const u32 pipehash = hash(listType, autosort, &pp, pass) | ((u32)sampleRate << 30);
 		const auto &pipeline = pipelines.find(pipehash);
 		if (pipeline != pipelines.end())
 			return pipeline->second.get();
 
-		CreatePipeline(listType, autosort, pp, pass);
+		CreatePipeline(listType, autosort, pp, pass, sampleRate);
+		// (the other rate is made with it: see the per-triangle renderer's)
+		if (samples > 1 && pass != Pass::OIT && pipelines.find(pipehash ^ (1u << 30)) == pipelines.end())
+			CreatePipeline(listType, autosort, pp, pass, !sampleRate);
 
 		return *pipelines[pipehash];
 	}
@@ -301,12 +328,16 @@ public:
 
 		return *trModVolPipelines[pipehash];
 	}
-	vk::Pipeline GetFinalPipeline()
+	// @perSample: SSAA's for a render pass that is not the last (OITShaderManager::GetFinalShader())
+	vk::Pipeline GetFinalPipeline(bool perSample = false)
 	{
-		if (!finalPipeline)
-			CreateFinalPipeline();
-		return *finalPipeline;
+		vk::UniquePipeline& pipeline = perSample ? finalPerSamplePipeline : finalPipeline;
+		if (!pipeline)
+			CreateFinalPipeline(perSample);
+		return *pipeline;
 	}
+	int GetFinalSubpass() const { return renderPasses->GetFinalSubpass(); }
+	u32 GetSamples() const { return renderPasses->GetSamples(); }
 	vk::Pipeline GetClearPipeline()
 	{
 		if (!clearPipeline)
@@ -382,14 +413,15 @@ private:
 				full ? vertexInputAttributeDescriptions : vertexInputLightAttributeDescriptions);
 	}
 
-	void CreatePipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass);
-	void CreateFinalPipeline();
+	void CreatePipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass, bool sampleRate);
+	void CreateFinalPipeline(bool perSample);
 	void CreateClearPipeline();
 
 	std::map<u32, vk::UniquePipeline> pipelines;
 	std::map<u32, vk::UniquePipeline> modVolPipelines;
 	std::map<u32, vk::UniquePipeline> trModVolPipelines;
 	vk::UniquePipeline finalPipeline;
+	vk::UniquePipeline finalPerSamplePipeline;
 	vk::UniquePipeline clearPipeline;
 
 	vk::UniquePipelineLayout pipelineLayout;
@@ -409,12 +441,11 @@ class RttOITPipelineManager : public OITPipelineManager
 {
 public:
 	RttOITPipelineManager() { renderPasses = &rttRenderPasses; }
-	void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers) override
+	void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers, u32 samples = 1) override
 	{
 		this->oitBuffers = oitBuffers;
-		OITPipelineManager::Init(shaderManager, oitBuffers);
-
 		rttRenderPasses.Reset();
+		OITPipelineManager::Init(shaderManager, oitBuffers, samples);
 	}
 
 private:

@@ -21,6 +21,8 @@
 */
 #include "oit_shaders.h"
 #include "../compiler.h"
+#include "../ssaa.h"
+#include "rend/ssaa_pattern.h"
 
 static const char OITVertexShaderSource[] = R"(#version 450
 
@@ -196,9 +198,22 @@ bool getShadowEnable(const PolyParam pp)
 	return (pp.tsp_isp_pcw & 1) != 0;
 }
 
+/* SSAA: a fragment covers some of its pixel's samples, the eight bits
+ * above its polygon's number (which is then under 2^22) */
+#ifdef SSAA_SAMPLES
+#define POLY_NUMBER_MASK 0x003FFFFFu
+#define COVERAGE_SHIFT 22
+uint getCoverage(const Pixel pixel)
+{
+	return (pixel.seq_num >> COVERAGE_SHIFT) & 0xFFu;
+}
+#else
+#define POLY_NUMBER_MASK 0x3FFFFFFFu
+#endif
+
 uint getPolyNumber(const Pixel pixel)
 {
-	return pixel.seq_num & 0x3FFFFFFFu;
+	return pixel.seq_num & POLY_NUMBER_MASK;
 }
 
 #define SHADOW_STENCIL 0x40000000u
@@ -240,7 +255,32 @@ static const char OITFragmentShaderSource[] = R"(
 #define ColorClamping %d
 #define pp_Palette %d
 #define PASS %d
+#define pp_SampleRate %d
 #define PI 3.1415926
+
+/* SSAA: shaded at each sample, its inputs taken there (1); or once a
+ * pixel, its inputs taken at the pixel's centre as without SSAA (2) -
+ * where else they are taken when not said is the device's choice */
+#if pp_SampleRate == 1
+#define AT_SAMPLE sample
+#define OWN_SAMPLE gl_SampleID
+#else
+#define AT_SAMPLE
+// (the first sample it covers: a modifier volume's edge is a pixel's, not a sample's, for it)
+#define OWN_SAMPLE findLSB(gl_SampleMaskIn[0])
+#endif
+#if pp_SampleRate == 2
+// (or, where it covers only some of the samples, at a place it covers, as without SSAA it would only be drawn where it covers the centre)
+#define AT_CENTRE(v) (gl_SampleMaskIn[0] == ((1 << SSAA_SAMPLES) - 1) ? interpolateAtOffset(v, vec2(0.0)) : interpolateAtCentroid(v))
+#else
+#define AT_CENTRE(v) (v)
+#endif
+// (a flat input is not interpolated, and is not to be asked for at a place)
+#if pp_Gouraud == 1
+#define AT_CENTRE_SMOOTH(v) AT_CENTRE(v)
+#else
+#define AT_CENTRE_SMOOTH(v) (v)
+#endif
 
 #define PASS_DEPTH 0
 #define PASS_COLOR 1
@@ -260,7 +300,7 @@ layout (location = 0) out vec4 FragColor;
 #if pp_Gouraud == 0
 #define INTERPOLATION flat
 #else
-#define INTERPOLATION smooth
+#define INTERPOLATION smooth AT_SAMPLE
 #endif
 
 layout (push_constant) uniform pushBlock
@@ -293,20 +333,37 @@ layout (set = 1, binding = 1) uniform sampler2D tex1;
 layout (set = 0, binding = 6) uniform sampler2D palette;
 #endif
 
+#ifdef SSAA_SAMPLES
+#if PASS == PASS_COLOR
+layout (input_attachment_index = 0, set = 0, binding = 4) uniform usubpassInputMS shadow_stencil;
+#define STENCIL_LOAD() subpassLoad(shadow_stencil, OWN_SAMPLE)
+#endif
+#if PASS == PASS_OIT
+layout (input_attachment_index = 0, set = 0, binding = 5) uniform subpassInputMS DepthTex;
+#endif
+#else
 #if PASS == PASS_COLOR
 layout (input_attachment_index = 0, set = 0, binding = 4) uniform usubpassInput shadow_stencil;
+#define STENCIL_LOAD() subpassLoad(shadow_stencil)
 #endif
 #if PASS == PASS_OIT
 layout (input_attachment_index = 0, set = 0, binding = 5) uniform subpassInput DepthTex;
 #endif
+#endif
 
 // Vertex input
-layout (location = 0) INTERPOLATION in lowp vec4 vtx_base;
-layout (location = 1) INTERPOLATION in lowp vec4 vtx_offs;
-layout (location = 2)               in vec2 vtx_uv;
-layout (location = 3) INTERPOLATION in lowp vec4 vtx_base1;			// new for OIT. Only if 2 vol
-layout (location = 4) INTERPOLATION in lowp vec4 vtx_offs1;
-layout (location = 5)               in vec2 vtx_uv1;
+layout (location = 0) INTERPOLATION in lowp vec4 in_vtx_base;
+layout (location = 1) INTERPOLATION in lowp vec4 in_vtx_offs;
+layout (location = 2) AT_SAMPLE     in vec2 in_vtx_uv;
+layout (location = 3) INTERPOLATION in lowp vec4 in_vtx_base1;			// new for OIT. Only if 2 vol
+layout (location = 4) INTERPOLATION in lowp vec4 in_vtx_offs1;
+layout (location = 5) AT_SAMPLE     in vec2 in_vtx_uv1;
+#define vtx_base AT_CENTRE_SMOOTH(in_vtx_base)
+#define vtx_offs AT_CENTRE_SMOOTH(in_vtx_offs)
+#define vtx_uv AT_CENTRE(in_vtx_uv)
+#define vtx_base1 AT_CENTRE_SMOOTH(in_vtx_base1)
+#define vtx_offs1 AT_CENTRE_SMOOTH(in_vtx_offs1)
+#define vtx_uv1 AT_CENTRE(in_vtx_uv1)
 layout (location = 6) flat          in uint vtx_pp;
 
 #if pp_FogCtrl != 2 || pp_TwoVolumes == 1
@@ -370,7 +427,17 @@ void main()
 {
 	setFragDepth();
 
-	#if PASS == PASS_OIT
+	#if PASS == PASS_OIT && defined(SSAA_SAMPLES)
+		/* Manual depth testing, at each sample the fragment covers (with its
+		 * depth at the pixel's centre: it is shaded once a pixel), which
+		 * leaves the samples it is seen at */
+		uint coverage = 0u;
+		for (int s = 0; s < SSAA_SAMPLES; s++)
+			if ((gl_SampleMaskIn[0] & (1 << s)) != 0 && gl_FragDepth >= subpassLoad(DepthTex, s).r)
+				coverage |= 1u << s;
+		if (coverage == 0u)
+			discard;
+	#elif PASS == PASS_OIT
 		// Manual depth testing
 		highp float frontDepth = subpassLoad(DepthTex).r;
 		if (gl_FragDepth < frontDepth)
@@ -396,7 +463,7 @@ void main()
 		int cur_shading_instr = pushConstants.shading_instr0;
 		int cur_fog_control = pushConstants.fog_control0;
 		#if PASS == PASS_COLOR
-			uvec4 stencil = subpassLoad(shadow_stencil);
+			uvec4 stencil = STENCIL_LOAD();
 			if (stencil.r == 0x81u) {
 				color = vtx_base1;
 				offset = vtx_offs1;
@@ -417,7 +484,7 @@ void main()
 		// them. Scaling the combined colour instead is the same thing for a
 		// modulated texture, but also darkens a decal texture, which the
 		// hardware leaves alone.
-		uvec4 stencil = subpassLoad(shadow_stencil);
+		uvec4 stencil = STENCIL_LOAD();
 		if (stencil.r == 0x81u) {
 			color.rgb *= uniformBuffer.shade_scale_factor;
 			offset.rgb *= uniformBuffer.shade_scale_factor;
@@ -587,6 +654,9 @@ void main()
 		pixel.color = packColors(clamp(color, vec4(0.0), vec4(1.0)));
 		pixel.depth = gl_FragDepth;
 		pixel.seq_num = uint(pushConstants.pp_Number) + vtx_pp;
+		#ifdef SSAA_SAMPLES
+			pixel.seq_num |= coverage << COVERAGE_SHIFT;
+		#endif
 		pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);
 		PixelBuffer.pixels[idx] = pixel;
 		
@@ -602,12 +672,22 @@ void main()
 }
 )";
 
-#define MAX_PIXELS_PER_FRAGMENT "32"
+/* A pixel's fragments sorted, at most. With SSAA a translucent fragment
+ * is kept once a pixel with the samples it covers, so where a polygon's
+ * triangles share an edge that crosses the pixel, each of them has one
+ * there: small triangles - a character's - give a pixel two or three for
+ * each layer, and the layers kept are three times as many. */
+#define MAX_PIXELS_PER_FRAGMENT_1X "32"
+#define MAX_PIXELS_PER_FRAGMENT_SSAA "96"
 
 static const char OITFinalShaderSource[] =
-"#define MAX_PIXELS_PER_FRAGMENT " MAX_PIXELS_PER_FRAGMENT
+"#ifdef SSAA_SAMPLES\n#define MAX_PIXELS_PER_FRAGMENT " MAX_PIXELS_PER_FRAGMENT_SSAA "\n#else\n#define MAX_PIXELS_PER_FRAGMENT " MAX_PIXELS_PER_FRAGMENT_1X "\n#endif\n"
 R"(
+#ifdef SSAA_SAMPLES
+layout (input_attachment_index = 0, set = 2, binding = 0) uniform subpassInputMS tex;
+#else
 layout (input_attachment_index = 0, set = 2, binding = 0) uniform subpassInput tex;
+#endif
 
 layout (location = 0) out vec4 FragColor;
 
@@ -641,18 +721,19 @@ int fillAndSortFragmentArray(ivec2 coords)
 	return count;
 }
 
-// Blend fragments back-to-front
-vec4 resolveAlphaBlend(ivec2 coords) {
-	
-	// Copy and sort fragments into a local array
-	int num_frag = fillAndSortFragmentArray(coords);
-	
-	vec4 finalColor = subpassLoad(tex);
+/* Blend fragments back-to-front: the @num_frag sorted ones onto @finalColor;
+ * with SSAA, those of a sample, @sampleBit */
+vec4 blendFragments(int num_frag, vec4 finalColor, uint sampleBit)
+{
 	vec4 secondaryBuffer = vec4(0.0); // Secondary accumulation buffer
 	
 	for (int i = 0; i < num_frag; i++)
 	{
 		const Pixel pixel = PixelBuffer.pixels[pixel_list[i]];
+#ifdef SSAA_SAMPLES
+		if ((getCoverage(pixel) & sampleBit) == 0u)
+			continue;
+#endif
 		const PolyParam pp = TrPolyParam.tr_poly_params[getPolyNumber(pixel)];
 		bool area1 = false;
 		bool shadowed = false;
@@ -744,14 +825,42 @@ vec4 resolveAlphaBlend(ivec2 coords) {
 	
 }
 
+#if defined(SSAA_SAMPLES) && !defined(SSAA_PER_SAMPLE)
+/* SSAA's last subpass: the list sorted once, put together at each sample,
+ * and the samples resolved by the shared rule (rend/tile/pvr_resolve.h):
+ * each as the unorm8 the attachment holds, (sum + N/2) / N per channel */
+void main(void)
+{
+	ivec2 coords = ivec2(gl_FragCoord.xy);
+	int num_frag = fillAndSortFragmentArray(coords);
+	uint rb = 0u;
+	uint ga = 0u;
+	for (int s = 0; s < SSAA_SAMPLES; s++)
+	{
+		uint c = packUnorm4x8(blendFragments(num_frag, subpassLoad(tex, s), 1u << s));
+		rb += pvr_resolve_rb(c);
+		ga += pvr_resolve_ga(c);
+	}
+	FragColor = unpackUnorm4x8(pvr_resolve_join(rb, ga, SSAA_LOG2N));
+}
+#elif defined(SSAA_SAMPLES)
+/* ...and of a render pass that is not the last: each sample put together
+ * into the samples the next one draws over */
+void main(void)
+{
+	ivec2 coords = ivec2(gl_FragCoord.xy);
+	FragColor = blendFragments(fillAndSortFragmentArray(coords), subpassLoad(tex, gl_SampleID), 1u << gl_SampleID);
+}
+#else
 void main(void)
 {
 	ivec2 coords = ivec2(gl_FragCoord.xy);
 	// Compute and output final color for the frame buffer
 	// Visualize the number of layers in use
 	//FragColor = vec4(float(fillAndSortFragmentArray(coords)) / MAX_PIXELS_PER_FRAGMENT * 4, 0, 0, 1);
-	FragColor = resolveAlphaBlend(coords);
+	FragColor = blendFragments(fillAndSortFragmentArray(coords), subpassLoad(tex), 1u);
 }
+#endif
 )";
 
 static const char OITClearShaderSource[] = R"(
@@ -765,7 +874,7 @@ void main(void)
 )";
 
 static const char OITTranslucentModvolShaderSource[] =
-"#define MAX_PIXELS_PER_FRAGMENT " MAX_PIXELS_PER_FRAGMENT
+"#ifdef SSAA_SAMPLES\n#define MAX_PIXELS_PER_FRAGMENT " MAX_PIXELS_PER_FRAGMENT_SSAA "\n#else\n#define MAX_PIXELS_PER_FRAGMENT " MAX_PIXELS_PER_FRAGMENT_1X "\n#endif\n"
 R"(
 #define MV_MODE %d
 
@@ -777,6 +886,13 @@ R"(
 
 void main()
 {
+#ifdef SSAA_SAMPLES
+	/* Once a pixel, where the volume covers the pixel's first sample: two
+	 * of its triangles that share an edge cover each sample once between
+	 * them, but may both have a fragment at a pixel the edge crosses */
+	if ((gl_SampleMaskIn[0] & 1) == 0)
+		return;
+#endif
 #if MV_MODE == MV_XOR || MV_MODE == MV_OR
 	setFragDepth();
 #endif
@@ -832,6 +948,21 @@ vk::UniqueShaderModule OITShaderManager::compileShader(const VertexShaderParams&
 	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eVertex, buf);
 }
 
+/* With SSAA, the count of samples defined after the version line (and the
+ * resolve's rule for the last subpass); without it, the text as it is */
+std::string OITShaderManager::WithSsaa(const std::string& source, bool perSample) const
+{
+	if (samples <= 1)
+		return source;
+	const size_t eol = source.find('\n') + 1;
+	std::string defines = "#define SSAA_SAMPLES " + std::to_string(samples) + "\n#define SSAA_LOG2N " + std::to_string(SSAA_LOG2(samples)) + "u\n";
+	if (perSample)
+		defines += "#define SSAA_PER_SAMPLE\n";
+	defines += "#define PVR_SHADER_GLSL\n#define PVR_LANE_NONE\n";
+	defines += PvrResolveText;
+	return source.substr(0, eol) + defines + source.substr(eol);
+}
+
 vk::UniqueShaderModule OITShaderManager::compileShader(const FragmentShaderParams& params)
 {
 	char buf[(sizeof(OITShaderHeader) + sizeof(OITFragmentShaderSource)) * 2];
@@ -840,15 +971,15 @@ vk::UniqueShaderModule OITShaderManager::compileShader(const FragmentShaderParam
 	sprintf(buf + strlen(buf), OITFragmentShaderSource, (int)params.alphaTest, (int)params.insideClipTest, (int)params.useAlpha,
 			(int)params.texture, (int)params.ignoreTexAlpha, params.shaderInstr, (int)params.offset, params.fog,
 			(int)params.twoVolume, (int)params.gouraud, (int)params.bumpmap, (int)params.clamping, (int)params.palette,
-			(int)params.pass);
-	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, buf);
+			(int)params.pass, (int)params.sampleRate);
+	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, WithSsaa(buf));
 }
 
-vk::UniqueShaderModule OITShaderManager::compileFinalShader()
+vk::UniqueShaderModule OITShaderManager::compileFinalShader(bool perSample)
 {
 	std::string source = OITShaderHeader;
 	source += OITFinalShaderSource;
-	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, source);
+	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, WithSsaa(source, perSample));
 }
 vk::UniqueShaderModule OITShaderManager::compileFinalVertexShader()
 {
@@ -858,7 +989,7 @@ vk::UniqueShaderModule OITShaderManager::compileClearShader()
 {
 	std::string source = OITShaderHeader;
 	source += OITClearShaderSource;
-	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, source);
+	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, WithSsaa(source));
 }
 vk::UniqueShaderModule OITShaderManager::compileModVolVertexShader()
 {
@@ -868,7 +999,7 @@ vk::UniqueShaderModule OITShaderManager::compileModVolFragmentShader()
 {
 	std::string source = OITShaderHeader;
 	source += OITModifierVolumeShader;
-	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, source);
+	return ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, WithSsaa(source));
 }
 void OITShaderManager::compileTrModVolFragmentShader(ModVolMode mode)
 {
@@ -878,5 +1009,5 @@ void OITShaderManager::compileTrModVolFragmentShader(ModVolMode mode)
 
 	strcpy(buf, OITShaderHeader);
 	sprintf(buf + strlen(buf), OITTranslucentModvolShaderSource, (int)mode);
-	trModVolShaders[(size_t)mode] = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, buf);
+	trModVolShaders[(size_t)mode] = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eFragment, WithSsaa(buf));
 }

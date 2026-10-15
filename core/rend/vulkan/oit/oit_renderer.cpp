@@ -24,6 +24,7 @@
 #include "oit_drawer.h"
 #include "oit_shaders.h"
 #include "oit_buffer.h"
+#include "rend/ssaa_pattern.h"
 
 class OITVulkanRenderer final : public BaseVulkanRenderer
 {
@@ -33,16 +34,18 @@ public:
 		DEBUG_LOG(RENDERER, "OITVulkanRenderer::Init");
 
 		oitBuffers.Init(0, 0, &texCommandPool);
-		textureDrawer.Init(&samplerManager, &oitShaderManager, &textureCache, &oitBuffers);
+		samples = SsaaSamples();
+		oitShaderManager.SetSamples(samples);
 		textureDrawer.SetCommandPool(&texCommandPool);
+		textureDrawer.Init(&samplerManager, &rttShaderManager, &textureCache, &oitBuffers);
 		textureDrawer.SetGpuDraw(taDecoder.Draw());
 
-		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers);
+		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers, samples);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		screenDrawer.SetGpuDraw(taDecoder.Draw());
-		BaseInit(screenDrawer.GetRenderPass(), 2);
+		BaseInit(screenDrawer.GetRenderPass(), screenDrawer.GetOsdSubpass());
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
-		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1);
+		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1, samples);
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
 
 		return true;
@@ -53,10 +56,19 @@ public:
 		NOTICE_LOG(RENDERER, "OIT Resize %d x %d", w, h);
 		// what is replaced below may be in use by frames still on the GPU
 		texCommandPool.WaitAll();
-		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers);
-		BaseInit(screenDrawer.GetRenderPass(), 2);
+		const u32 was = samples;
+		samples = SsaaSamples();
+		if (samples != was)
+		{
+			// (a change of SSAA: the shaders, render passes and pipelines of the other count go)
+			oitShaderManager.SetSamples(samples);
+			quadPipeline.Forget();
+			lastPicturePipeline.Forget();
+		}
+		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers, samples);
+		BaseInit(screenDrawer.GetRenderPass(), screenDrawer.GetOsdSubpass());
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
-		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1);
+		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1, samples);
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
 		// what this size no longer needs is given back once the frames that used it are done
 		GetContext()->GetHeap().TrimSoon();
@@ -78,9 +90,11 @@ public:
 	void Term() override
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");
+		GetContext()->LogVramUsage();
 		GetContext()->WaitIdle();
 		texCommandPool.WaitAll();
 		oitShaderManager.Term();
+		rttShaderManager.Term();
 		samplerManager.Term();
 		screenDrawer.Term();
 		lastPicturePipeline.Term();
@@ -119,9 +133,23 @@ public:
 	}
 
 private:
+	/* SSAA's samples a pixel, for the screen: as far as the device and
+	 * the video memory budget go for its attachments, after the lists */
+	u32 SsaaSamples() const
+	{
+		const vk::Extent2D size = GetContext()->GetViewPort();
+		return GetContext()->SsaaSamples(settings.rend.Ssaa, ssaa_per_sample_kib(size.width, size.height, 4 + GetContext()->GetDepthBytes()),
+				(u32)(pixel_buffer_size >> 10), false, "Vulkan per-pixel renderer");
+	}
+
 	OITBuffers oitBuffers;
 	SamplerManager samplerManager;
 	OITShaderManager oitShaderManager;
+	/* Textures are rendered to with one sample a pixel, SSAA or not: their
+	 * sample attachments would be made as large as such a texture can be,
+	 * more video memory than SSAA's screen attachments, and these renders'
+	 * attachments are stored between render passes */
+	OITShaderManager rttShaderManager;
 	OITScreenDrawer screenDrawer;
 	QuadPipeline lastPicturePipeline;
 	OITTextureDrawer textureDrawer;

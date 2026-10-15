@@ -827,6 +827,18 @@ static void update_variables(bool first_startup)
       DEBUG_LOG(COMMON, "Got size: %u x %u.\n", screen_width, screen_height);
    }
 
+   var.key = CORE_OPTION_NAME "_ssaa";
+   {
+      /* Samples a pixel: the renderer takes them up when it starts, or
+       * changes size - a change while the game runs is one */
+      int samples = 1;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+         samples = !strcmp(var.value, "8x") ? 8 : !strcmp(var.value, "4x") ? 4 : !strcmp(var.value, "2x") ? 2 : 1;
+      if (!first_startup && samples != settings.rend.Ssaa)
+         resize_pending = true;
+      settings.rend.Ssaa = samples;
+   }
+
 
    var.key = CORE_OPTION_NAME "_boot_to_bios";
 

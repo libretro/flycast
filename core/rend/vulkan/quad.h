@@ -70,13 +70,22 @@ private:
 class QuadPipeline
 {
 public:
-	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass = 0);
+	// @samples: of the subpass's attachments (SSAA)
+	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass = 0, u32 samples = 1);
 	void Term() {
 		pipeline.reset();
 		linearSampler.reset();
 		nearestSampler.reset();
 		pipelineLayout.reset();
 		descSetLayout.reset();
+	}
+	/* Its pipelines dropped, to be made again for whatever render pass the
+	 * next Init() names (one destroyed may have the same handle) */
+	void Forget()
+	{
+		pipeline.reset();
+		alphaPipeline.reset();
+		renderPass = nullptr;
 	}
 	void BindPipeline(vk::CommandBuffer commandBuffer, bool alpha = false) { commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, GetPipeline(alpha)); }
 	vk::DescriptorSetLayout GetDescSetLayout() const { return *descSetLayout; }
@@ -105,6 +114,7 @@ private:
 
 	vk::RenderPass renderPass;
 	int subpass = 0;
+	u32 samples = 1;
 	vk::UniquePipeline pipeline;
 	vk::UniquePipeline alphaPipeline;
 	vk::UniqueSampler linearSampler;

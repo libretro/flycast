@@ -48,11 +48,30 @@ public:
 		for (auto& renderPass : renderPasses)
 			renderPass.reset();
 	}
+	/* SSAA's samples a pixel (1: off): the render passes made for another
+	 * count are dropped. See MakeSsaaRenderPass(). */
+	void SetSamples(u32 samples)
+	{
+		if (samples != this->samples)
+		{
+			Reset();
+			this->samples = samples;
+		}
+	}
+	u32 GetSamples() const { return samples; }
+	/* The subpasses with SSAA: 0 depth and stencil, 1 colour and the
+	 * translucent lists, 2 the translucent modifier volumes (and, in a
+	 * render pass that is not the last, each sample put together, and the
+	 * translucent depth for the next), 3 the picture put together and
+	 * resolved. Without, 2 does all that 2 and 3 do. */
+	static constexpr int SsaaFinalSubpass = 3;
+	int GetFinalSubpass() const { return samples > 1 ? SsaaFinalSubpass : 2; }
 	virtual ~RenderPasses() = default;
 
 protected:
 	VulkanContext *GetContext() const { return VulkanContext::Instance(); }
 	vk::UniqueRenderPass MakeRenderPass(bool initial, bool last, bool depthWrites);
+	vk::UniqueRenderPass MakeSsaaRenderPass(bool initial, bool last, bool depthWrites);
 	virtual vk::AttachmentDescription GetAttachment0Description(bool initial, bool last) const
 	{
 		return vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetContext()->GetColorFormat(), vk::SampleCountFlagBits::e1,
@@ -70,6 +89,7 @@ protected:
 
 private:
 	std::array<vk::UniqueRenderPass, 8> renderPasses;
+	u32 samples = 1;
 };
 
 class RttRenderPasses : public RenderPasses

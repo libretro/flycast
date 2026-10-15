@@ -114,6 +114,17 @@ public:
 	u32 GetMaxDrawIndirectCount() const { return multiDrawIndirect ? maxDrawIndirectCount : 1; }
 	bool SupportsDrawIndirectFirstInstance() const { return drawIndirectFirstInstance; }
 	PFN_vkCmdDrawIndexedIndirectCountKHR GetDrawIndexedIndirectCount() const { return cmdDrawIndexedIndirectCount; }
+	/* SSAA: the samples a pixel gets of the @requested, at most what the
+	 * device can draw with, and what fits in the video memory budget with
+	 * @perSampleKib for each sample after @fixedKib of other pools - none
+	 * where the attachments are @transient and the device has memory that
+	 * is only backed when used; 1 for none. One line in the log, for @what. */
+	u32 SsaaSamples(u32 requested, u32 perSampleKib, u32 fixedKib, bool transient, const char *what) const;
+	// bytes a pixel of the depth and stencil attachments, at most
+	u32 GetDepthBytes() const;
+	bool HasLazyMemory() const { return lazyMemory; }
+	/* The video memory budget read again, and logged: what is in use now */
+	void LogVramUsage() { QueryVramBudget(); }
 
 private:
 	vk::Format FindDepthFormat();
@@ -143,12 +154,15 @@ public:
 	bool multiDrawIndirect = false;
 	bool drawIndirectFirstInstance = false;
 	bool drawIndirectCount = false;		// VK_KHR_draw_indirect_count
+	bool sampleRateShading = false;
 private:
 	u32 maxDrawIndirectCount = 1;
 	PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
 	u32 vendorID = 0;
 	u32 apiVersion = 0;	// the device's
 	VramBudget vramBudget;
+	u32 ssaaSampleCounts = 1;	// VkSampleCountFlags
+	bool lazyMemory = false;
 	vk::Format colorFormat = vk::Format::eR8G8B8A8Unorm;
 
 	vk::UniqueDescriptorPool descriptorPool;
