@@ -43,6 +43,7 @@ char* strdup(const char *str)
 #ifdef HAVE_D3D9
 #include "rend/dx9/dx9context_lr.h"
 #endif
+#include "rend/rend_method.h"
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
 #endif
@@ -873,6 +874,17 @@ static void update_variables(bool first_startup)
    else
       GDROM_TICK      = 1500000;
 
+   /* Rendering Method: the compute renderer is drawn by the Vulkan per-pixel
+    * renderer, which draws what it cannot; it is set up when that is */
+   {
+      const bool compute_before = rend_compute_wanted;
+      var.key = CORE_OPTION_NAME "_rendering_method";
+      rend_compute_wanted = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+            && !strcmp(var.value, "compute");
+      if (!first_startup && compute_before != rend_compute_wanted)
+         renderer_changed = true;
+   }
+
    var.key = CORE_OPTION_NAME "_alpha_sorting";
    int previous_renderer = settings.pvr.rend;
 
@@ -919,6 +931,8 @@ static void update_variables(bool first_startup)
    		settings.pvr.rend = 6;
       settings.pvr.Emulation.AlphaSortMode = 0;
    }
+   if (rend_compute_wanted && settings.pvr.rend == 4)
+      settings.pvr.rend = 5;
    if (!first_startup && previous_renderer != settings.pvr.rend)
 	  renderer_changed = true;
 
@@ -2238,7 +2252,7 @@ static bool set_vulkan_hw_render()
 	environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void *)&negotiation_interface);
 
 	if (settings.pvr.rend == 0)
-		settings.pvr.rend = 4;
+		settings.pvr.rend = rend_compute_wanted ? 5 : 4;	// (Compute is drawn by the per-pixel renderer)
 	else if (settings.pvr.rend == 3)
 		settings.pvr.rend = 5;
 	renderer_changed = true;
