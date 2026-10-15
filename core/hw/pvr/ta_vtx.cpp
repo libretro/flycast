@@ -3597,7 +3597,8 @@ static bool ta_gpu_any_autosort(const TA_context *ctx)
  * bit are read, and a sprite's fourth corner is solved as the parse solves
  * it. Each strip's indices are what make_index() gives it (the translucent
  * lists are never joined), its triangles are GenSorted()'s, with the
- * winding of the Vulkan provoking vertex, and their depths are each the
+ * winding of the renderer's provoking vertex (the first, Vulkan's, with
+ * TA_GPU_PROVOKE; else the last, OpenGL's), and their depths are each the
  * least of its three vertices'. A stable radix sort of those depths as
  * integers that order as the floats do (tag_fkey(); no vertex that makes
  * an index has a depth that is not a number) gives std::stable_sort()'s
@@ -3617,6 +3618,7 @@ static struct TaGpuSortState
 	u32 pass_run[TAG_MAX_PASS], pass_runs[TAG_MAX_PASS];
 	u32 tris;
 	u64 ns;
+	bool first_provoking;		// (TA_GPU_PROVOKE) GenSorted()'s firstProvoking
 	/* Each sorted pass's depth prepass (rend/sorter.h): the triangles of
 	 * its polygons that can hide what is behind them, by polygon and the
 	 * polygons by what they are drawn with (porder: triangle numbers, ptris
@@ -3780,13 +3782,20 @@ struct TaGpuSortStrip
 			else
 			{
 				/* GenSorted(), firstProvoking: every other triangle starts
-				 * with the vertex that holds its colour */
+				 * with the vertex that holds its colour; without it, the
+				 * first two of every other one change places */
 				u32 *d = &g.tri[t * 4];
-				if ((count - 2) & 1)
+				if (((count - 2) & 1) && g.first_provoking)
 				{
 					d[0] = h_place[0];
 					d[1] = place;
 					d[2] = h_place[1];
+				}
+				else if ((count - 2) & 1)
+				{
+					d[0] = h_place[1];
+					d[1] = h_place[0];
+					d[2] = place;
 				}
 				else
 				{
@@ -4347,6 +4356,7 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 		/* The sorted passes' translucent triangles, in the order the
 		 * per-triangle renderer draws them */
 		out->why = TA_GPU_WHY_SORT;
+		gsort.first_provoking = (flags & TA_GPU_PROVOKE) != 0;
 		if ((flags & TA_GPU_SORT) && !ta_gpu_sort_frame(f, ctx->tad.thd_root))
 			return false;
 		if (flat_strips_wanted)

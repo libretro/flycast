@@ -443,7 +443,8 @@ struct TaGpuFrame
  * (firstInstance: the per-pixel renderer's polygon number) */
 #define TA_GPU_INSTANCE 8u
 /* ...by a renderer that sorts translucent triangles as GenSorted() does
- * (rend/sorter.h, its Vulkan provoking vertex): each sorted render pass's
+ * (rend/sorter.h; its firstProvoking with TA_GPU_PROVOKE, for Vulkan, and
+ * without it for OpenGL): each sorted render pass's
  * translucent triangles are sorted here from the depths of the blocks the
  * game sent - nothing else of a vertex is read - in GenSorted()'s order,
  * ties and all, for ta_gpu_sorted() and ta_gpu_sorted_write(). Needs
