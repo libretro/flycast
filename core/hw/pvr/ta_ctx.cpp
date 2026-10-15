@@ -136,10 +136,11 @@ void FinishRender(TA_context* ctx)
  * a single taker. */
 static cSlotCache<TA_context, 3> ctx_pool;
 /* The contexts being written, by the address the game gives each: a
- * handful, looked up a few times a frame. */
-static TA_context **ctx_list;
+ * handful, looked up a few times a frame. An address is a megabyte
+ * (TA_CURRENT_CTX), so there are never more than sixteen. */
+#define TA_CONTEXT_ADDRESSES 16
+static TA_context *ctx_list[TA_CONTEXT_ADDRESSES];
 static unsigned ctx_count;
-static unsigned ctx_room;
 /* Renders started (tactx_Pop()), for the age of a frame: one the game has
  * not selected for more than TA_CONTEXT_MAX_AGE of them is given to the
  * next new address instead of a new one being made. A game that sends
@@ -149,9 +150,125 @@ static unsigned ctx_room;
 static u32 tactx_frames;
 #define TA_CONTEXT_MAX_AGE 60
 
+/* GPU-side TA processing's pool (tactx_gpu_pool_attach()). Each context
+ * of it is free, in use (a frame being written or drawn), or retired: given
+ * back, and free once the GPU work of its gpu_serial is done. Taken by the
+ * emulation thread, given back by either thread, the GPU's progress said
+ * by the thread that renders; one atomic word each, and no lock. */
+#define TA_GPU_POOL_MAX 16
+enum { POOL_FREE, POOL_USED, POOL_RETIRED };
+static TA_context *gpu_pool[TA_GPU_POOL_MAX];
+static retro_atomic_int_t gpu_pool_state[TA_GPU_POOL_MAX];
+static retro_atomic_int_t gpu_pool_count = RETRO_ATOMIC_INT_INITIALIZER(0);
+static retro_atomic_int_t gpu_done_serial = RETRO_ATOMIC_INT_INITIALIZER(0);
+
+static TA_context *gpu_pool_take(void)
+{
+	const int n = retro_atomic_load_acquire_int(&gpu_pool_count);
+	const u32 done = (u32)retro_atomic_load_acquire_int(&gpu_done_serial);
+	for (int i = 0; i < n; i++)
+	{
+		const int st = retro_atomic_load_acquire_int(&gpu_pool_state[i]);
+		TA_context *ctx = gpu_pool[i];
+		if (st == POOL_FREE || (st == POOL_RETIRED && (s32)(done - ctx->gpu_serial) >= 0))
+			if (retro_atomic_cas_int(&gpu_pool_state[i], st, POOL_USED))
+			{
+				ctx->gpu_serial = 0;
+				return ctx;
+			}
+	}
+	return NULL;
+}
+
+void tactx_gpu_done(u32 serial)
+{
+	retro_atomic_store_release_int(&gpu_done_serial, (int)serial);
+}
+
+bool tactx_gpu_pool_attach(u8 *base, u32 slice, u32 count)
+{
+	tactx_gpu_pool_detach();
+	if (count > TA_GPU_POOL_MAX)
+		count = TA_GPU_POOL_MAX;
+	if (slice < ta_data_size())
+		return false;
+	for (u32 i = 0; i < count; i++)
+	{
+		TA_context *ctx = new TA_context();
+		if (!ctx->Alloc(base + (size_t)i * slice, (int)i))
+		{
+			delete ctx;
+			count = i;
+			break;
+		}
+		gpu_pool[i] = ctx;
+		retro_atomic_store_relaxed_int(&gpu_pool_state[i], POOL_FREE);
+	}
+	retro_atomic_store_release_int(&gpu_pool_count, (int)count);
+	return count != 0;
+}
+
+/* @ctx's data moved to memory of its own, @from its old place */
+static void tactx_rebase(TA_context *ctx, u8 *to)
+{
+	tad_context *tads[2] = { &ctx->tad, ctx == ta_ctx ? &ta_tad : NULL };
+	const u8 *from = ctx->tad.thd_root;
+	// (the one being written has its pointers in ta_tad)
+	const tad_context &live = ctx == ta_ctx ? ta_tad : ctx->tad;
+	memcpy(to, from, live.End() - from);
+	for (int t = 0; t < 2; t++)
+	{
+		tad_context *tad = tads[t];
+		if (tad == NULL)
+			continue;
+		tad->thd_data = to + (tad->thd_data - from);
+		tad->thd_old_data = to + (tad->thd_old_data - from);
+		for (u32 p = 0; p < sizeof(tad->render_passes) / sizeof(tad->render_passes[0]); p++)
+			if (tad->render_passes[p] >= from && tad->render_passes[p] <= from + ctx->data_size)
+				tad->render_passes[p] = to + (tad->render_passes[p] - from);
+		tad->thd_root = to;
+	}
+}
+
+void tactx_gpu_pool_detach(void)
+{
+	const int n = retro_atomic_load_acquire_int(&gpu_pool_count);
+	retro_atomic_store_release_int(&gpu_pool_count, 0);
+	for (int i = 0; i < n; i++)
+	{
+		TA_context *ctx = gpu_pool[i];
+		gpu_pool[i] = NULL;
+		if (retro_atomic_load_acquire_int(&gpu_pool_state[i]) == POOL_USED)
+		{
+			/* a frame being written or drawn: it goes on in memory of its
+			 * own (the renderer is changing; this is not while a game runs) */
+			u8 *data = (u8 *)OS_aligned_malloc(32, ctx->data_size);
+			if (data != NULL)
+			{
+				tactx_rebase(ctx, data);
+				ctx->pool = -1;
+				ctx->gpu_serial = 0;
+				continue;
+			}
+			// no memory: what it had is lost, and it is empty
+			WARN_LOG(PVR, "Out of memory for a tile accelerator frame: its lists are dropped");
+			ctx->pool = -1;
+			ctx->tad.Reset((u8 *)OS_aligned_malloc(32, ctx->data_size));
+			if (ctx == ta_ctx)
+				ta_tad = ctx->tad;
+			continue;
+		}
+		ctx->Free();
+		delete ctx;
+	}
+}
+
 TA_context* tactx_Alloc(void)
 {
-	TA_context* rv = ctx_pool.Take();
+	TA_context* rv = gpu_pool_take();
+	if (rv != NULL)
+		return rv;
+	rv = ctx_pool.Take();
 
 	if (rv && rv->data_size != ta_data_size())
 	{
@@ -177,6 +294,12 @@ TA_context* tactx_Alloc(void)
 void tactx_Recycle(TA_context* poped_ctx)
 {
    poped_ctx->Reset();
+   if (poped_ctx->pool >= 0)
+   {
+      retro_atomic_store_release_int(&gpu_pool_state[poped_ctx->pool],
+            poped_ctx->gpu_serial != 0 ? POOL_RETIRED : POOL_FREE);
+      return;
+   }
    if (!ctx_pool.Put(poped_ctx))
    {
       poped_ctx->Free();
@@ -224,15 +347,8 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
          old_ctx->lastFrameUsed = tactx_frames;
          return old_ctx;
       }
-      if (ctx_count == ctx_room)
-      {
-         unsigned room = ctx_room ? ctx_room * 2 : 8;
-         TA_context **list = (TA_context **)realloc(ctx_list, room * sizeof(*list));
-         if (!list)
-            return 0;
-         ctx_list = list;
-         ctx_room = room;
-      }
+      if (ctx_count == TA_CONTEXT_ADDRESSES)
+         return 0;
       rv = tactx_Alloc();
       if (!rv)
          return 0;

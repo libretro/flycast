@@ -225,6 +225,13 @@ struct TA_context
 	u32 walk_count;		// entries it has; TA_WALK_INVALID: it is not to be trusted
 	bool walk_restart;
 
+	/* GPU-side TA processing: which of the renderer's mapped slices the
+	 * data is (tactx_gpu_pool_attach()), -1 for memory of its own; and
+	 * the renderer's serial of the last frame whose GPU work reads it,
+	 * 0 for none. A slice is written again only once that work is done. */
+	int pool;
+	u32 gpu_serial;
+
 	
 	/*
 		Dreamcast games use up to 20k vtx, 30k idx, 1k (in total) parameters.
@@ -252,14 +259,18 @@ struct TA_context
          tad.render_passes[render_pass];
 	}
 	/* false: there was not the memory for it, and it holds nothing (a
-	 * NAOMI 2's frame takes about 60 megabytes). */
-	bool Alloc()
+	 * NAOMI 2's frame takes about 60 megabytes). @data: the data goes
+	 * there, a slice of ta_data_size() bytes of the GPU pool's (@slot),
+	 * and is not the context's to free. */
+	bool Alloc(u8 *data = NULL, int slot = -1)
 	{
       data_size = ta_data_size();
       const unsigned scale = data_size / TA_DATA_SIZE;
       unsigned modtrig_size = 16384 * scale;
       unsigned    vert_size = 4*1024*1024 * scale; //up to 4 mb of vtx data/frame = ~ 96k vtx/frame
-      tad.Reset((u8*)OS_aligned_malloc(32, data_size));
+      pool = data != NULL ? slot : -1;
+      gpu_serial = 0;
+      tad.Reset(data != NULL ? data : (u8*)OS_aligned_malloc(32, data_size));
       regs = (u8*)calloc(1, pvr_RegSize);
 
 		rend.verts.InitBytes(vert_size,&rend.Overrun, "verts"); 
@@ -312,7 +323,9 @@ struct TA_context
 
 	void Free()
 	{
-      OS_aligned_free(tad.thd_root);
+      if (pool < 0)
+         OS_aligned_free(tad.thd_root);
+      pool = -1;
       free(regs);
 		rend.verts.Free();
 		rend.idx.Free();
@@ -411,3 +424,16 @@ bool ta_gpu_wanted(void);
  * only the full parse can do it. (From the thread that renders.) */
 bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out);
 
+/* The GPU pool: @count contexts made now whose data are the slices of
+ * @slice bytes from @base (the renderer's persistently mapped, host-cached
+ * buffer), given to new frames before any other while it is there. One is
+ * written again only once the renderer says the GPU work that last read it
+ * is done (tactx_gpu_done()); if none is free, a frame gets a context of
+ * its own memory as without the pool. Detached, the contexts still in use
+ * have their data copied to memory of their own and go on. Both with the
+ * machine standing still and the GPU idle. */
+bool tactx_gpu_pool_attach(u8 *base, u32 slice, u32 count);
+void tactx_gpu_pool_detach(void);
+/* The GPU work of every frame up to renderer serial @serial is done (from
+ * the thread that renders) */
+void tactx_gpu_done(u32 serial);
