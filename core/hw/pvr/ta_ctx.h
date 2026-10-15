@@ -139,6 +139,15 @@ struct rend_context
 	List<PolyParam>   global_param_tr;
    List<RenderPass>  render_passes;
 
+	/* The region array's table of tiles (rend/tile/pvr_tile.h,
+	 * pvr_region_entry()): a word per entry of the array, in its order,
+	 * for the tiled renderers. Built only while ta_set_region_table(true)
+	 * asks for it; region_tile_count is then how many entries the array
+	 * had, of which the first REGION_TILES_MAX are kept here, and 0 when it
+	 * was not built. */
+	u32 *region_tiles;
+	u32 region_tile_count;
+
 	void Clear()
 	{
 		verts.Clear();
@@ -150,6 +159,7 @@ struct rend_context
 		global_param_mvo.Clear();
       global_param_mvo_tr.Clear();
       render_passes.Clear();
+		region_tile_count = 0;
 
 		Overrun=false;
 		fZ_min= 1000000.0f;
@@ -160,6 +170,10 @@ struct rend_context
 };
 
 #define TA_DATA_SIZE (8 * 1024 * 1024)
+
+/* Entries of the region array a frame's table keeps: 40 x 15 tiles, the
+ * most a frame has, each in up to 10 passes, and some more (32 KB) */
+#define REGION_TILES_MAX 8192
 
 /* A NAOMI 2's geometry processor sends several times what a game can send
  * by itself: everything a frame is kept in is that much bigger there. */
@@ -244,12 +258,14 @@ struct TA_context
 		rend.modtrig.Init(modtrig_size,&rend.Overrun, "modtrig");
 
       rend.render_passes.Init(sizeof(RenderPass) * 10, &rend.Overrun, "render_passes");	// 10 render passes
+		rend.region_tiles = (u32 *)malloc(REGION_TILES_MAX * sizeof(u32));
+		rend.region_tile_count = 0;
 
 		if (!tad.thd_root || !regs || !rend.verts.daty || !rend.idx.daty
 				|| !rend.global_param_op.daty || !rend.global_param_pt.daty
 				|| !rend.global_param_mvo.daty || !rend.global_param_mvo_tr.daty
 				|| !rend.global_param_tr.daty || !rend.modtrig.daty
-				|| !rend.render_passes.daty)
+				|| !rend.render_passes.daty || !rend.region_tiles)
 		{
 			Free();
 			tad.Reset(NULL);
@@ -282,6 +298,8 @@ struct TA_context
 		rend.global_param_mvo.Free();
       rend.global_param_mvo_tr.Free();
       rend.render_passes.Free();
+		free(rend.region_tiles);
+		rend.region_tiles = NULL;
 	}
 };
 

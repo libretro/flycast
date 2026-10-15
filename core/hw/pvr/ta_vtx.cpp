@@ -53,6 +53,15 @@ void ta_set_flat_strips(bool on)
 	flat_strips_wanted = on;
 }
 
+/* Whether the region array's table of tiles is built (rend_context's
+ * region_tiles), from the same thread */
+static bool region_table_wanted;
+
+void ta_set_region_table(bool on)
+{
+	region_table_wanted = on;
+}
+
 /* A colour component given as a float, as the hardware takes it: clamped to
  * 0..1 (anything negative is 0; anything above 1, infinity and NaN are 1).
  *
@@ -2344,7 +2353,9 @@ void FillBGP(TA_context* ctx)
 	cv[3].v = max_v;
 }
 
-static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
+/* @table: the entries are also kept in the frame's table of tiles */
+template <bool table>
+static void walkRegionArray(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
 {
    xmin = 20;
    xmax = 0;
@@ -2370,8 +2381,16 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
     * render thread must not spin on what the guest left in VRAM. */
    RegionArrayTile tile;
    u32 walked = 0;
+   u32 entries = 0, entry = 0;
    do {
       tile.full = vri(addr);
+      if (table)
+      {
+         entry = pvr_region_entry(tile.full, entry, entries == 0);
+         if (entries < REGION_TILES_MAX)
+            vd_rc.region_tiles[entries] = entry;
+         entries++;
+      }
       xmin = ta_min(xmin, tile.X);
       xmax = ta_max(xmax, tile.X);
       ymin = ta_min(ymin, tile.Y);
@@ -2382,11 +2401,23 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
       addr += tile_size;
       walked += tile_size;
    } while (!tile.LastRegion && walked < VRAM_SIZE);
+   if (table)
+      vd_rc.region_tile_count = entries;
 
    xmin *= 32;
    xmax *= 32;
    ymin *= 32;
    ymax *= 32;
+}
+
+/* The tiles the region array lists, as a rectangle of pixels; and the
+ * frame's table of them, when it is wanted */
+static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
+{
+   if (region_table_wanted)
+      walkRegionArray<true>(xmin, xmax, ymin, ymax);
+   else
+      walkRegionArray<false>(xmin, xmax, ymin, ymax);
 }
 
 // Where the region array entry of a render pass is
