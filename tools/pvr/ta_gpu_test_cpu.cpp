@@ -491,6 +491,13 @@ struct SortRef
 	std::vector<SortTrigDrawParam> runs;
 	std::vector<PolyParam> pp;
 	std::vector<u32> idx;
+	/* each sorted pass's depth prepass (GenPrepass()), as the header pass
+	 * lays it out: every pass's sorted indices first, then every pass's
+	 * prepass indices, the prepass draws' first counting from the start */
+	std::vector<SortTrigDrawParam> pruns;
+	std::vector<PolyParam> ppp;
+	std::vector<u32> pidx;
+	std::vector<u32> prun_pass;
 };
 
 static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
@@ -504,7 +511,26 @@ static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
 	ref.runs.clear();
 	ref.pp.clear();
 	ref.idx.clear();
+	ref.pruns.clear();
+	ref.ppp.clear();
+	ref.pidx.clear();
+	ref.prun_pass.clear();
 	*us = 0;
+	/* GenPrepass() leaves out a polygon none of whose vertices has an alpha
+	 * of 255 where its alpha is theirs (PrepassVerticesOpaque()): it can
+	 * have no pixel at alpha 1, and the prepass would keep none of them.
+	 * The header pass has not got the vertices, so it draws such a polygon
+	 * and the prepass's shader discards all of it: the depth is the same.
+	 * GenPrepass() is given every vertex at 255 to draw what it draws. */
+	static std::vector<u8> alpha;
+	Vertex *const vtx = ctx->rend.verts.head();
+	const int nv = ctx->rend.verts.used();
+	alpha.resize(nv);
+	for (int v = 0; v < nv; v++)
+	{
+		alpha[v] = vtx[v].col[3];
+		vtx[v].col[3] = 255;
+	}
 	for (int p = 0; p < rc.render_passes.used(); p++)
 	{
 		const RenderPass &cur = rc.render_passes.head()[p];
@@ -522,14 +548,50 @@ static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
 				ref.pp.push_back(*r.ppid);
 			}
 			ref.idx.insert(ref.idx.end(), idx.begin(), idx.end());
+			/* (the prepass's, kept apart: GenPrepass() adds to idx after the
+			 * sorted indices, its draws' first counting from idx's start) */
+			const size_t sorted = idx.size();
+			polys.clear();
+			GenPrepass(prev.tr_count, cur.tr_count - prev.tr_count,
+					p == rc.render_passes.used() - 1, polys, idx, true);
+			for (const SortTrigDrawParam &r : polys)
+			{
+				SortTrigDrawParam q = r;
+				q.first = q.first - (u32)sorted + (u32)ref.pidx.size();
+				ref.pruns.push_back(q);
+				ref.ppp.push_back(*r.ppid);
+				ref.prun_pass.push_back((u32)p);
+			}
+			ref.pidx.insert(ref.pidx.end(), idx.begin() + sorted, idx.end());
 		}
 		prev = cur;
 	}
+	for (int v = 0; v < nv; v++)
+		vtx[v].col[3] = alpha[v];
+	/* (the prepass's indices go after all the sorted ones) */
+	for (SortTrigDrawParam &q : ref.pruns)
+		q.first += (u32)ref.idx.size();
+	ref.idx.insert(ref.idx.end(), ref.pidx.begin(), ref.pidx.end());
 	_pvrrc = saved;
 }
 
+/* A prepass draw's triangles, each as its three indices (provoking vertex
+ * and winding as they are), in a canonical order: a depth-only draw that
+ * passes on what is nearer writes the same depth whatever the order of its
+ * triangles, and so does a prepass whatever the order of its draws */
+static void prepass_tris(const std::vector<u32> &idx, u32 first, u32 count, std::vector<std::pair<u64, u32>> &tris)
+{
+	tris.clear();
+	for (u32 i = first; i + 3 <= first + count && i + 3 <= idx.size(); i += 3)
+		tris.push_back(std::make_pair(((u64)idx[i] << 32) | idx[i + 1], idx[i + 2]));
+	std::sort(tris.begin(), tris.end());
+}
+
 /* The header pass's sort (TA_GPU_SORT) against GenSorted()'s: the same
- * indices, and the same draws of them, drawn the same way */
+ * indices, and the same draws of them, drawn the same way; then each
+ * pass's depth prepass against GenPrepass()'s: the same draws, drawn the
+ * same way with the same triangles, in any order (GenPrepass() orders its
+ * groups by texture first, which the header pass has not got) */
 static const char *compare_sorted(const SortRef &ref, const TaGpuFrame &gf, char *why, size_t room)
 {
 	static std::vector<u32> idx;
@@ -538,13 +600,14 @@ static const char *compare_sorted(const SortRef &ref, const TaGpuFrame &gf, char
 		ta_gpu_sorted_write(idx.data());
 	if (idx.size() != ref.idx.size())
 	{
-		snprintf(why, room, "sorted indices: %zu, GenSorted() %zu", idx.size(), ref.idx.size());
+		snprintf(why, room, "sorted indices: %zu, GenSorted() and GenPrepass() %zu", idx.size(), ref.idx.size());
 		return why;
 	}
-	for (size_t i = 0; i < idx.size(); i++)
+	const size_t sorted = ref.idx.size() - ref.pidx.size();
+	for (size_t i = 0; i < sorted; i++)
 		if (idx[i] != ref.idx[i])
 		{
-			snprintf(why, room, "sorted index %zu of %zu: %u, GenSorted() %u", i, idx.size(), idx[i], ref.idx[i]);
+			snprintf(why, room, "sorted index %zu of %zu: %u, GenSorted() %u", i, sorted, idx[i], ref.idx[i]);
 			return why;
 		}
 	size_t k = 0;
@@ -564,6 +627,65 @@ static const char *compare_sorted(const SortRef &ref, const TaGpuFrame &gf, char
 	if (k != ref.runs.size())
 	{
 		snprintf(why, room, "sorted draws: %zu, GenSorted() %zu", k, ref.runs.size());
+		return why;
+	}
+	/* the depth prepass: its draws cover the indices after the sorted ones,
+	 * each once, and each pass's draws are GenPrepass()'s */
+	static std::vector<std::pair<u32, u32>> span;
+	static std::vector<std::pair<u64, u32>> a, b;
+	static std::vector<bool> used;
+	span.clear();
+	used.assign(ref.pruns.size(), false);
+	size_t gpu_draws = 0;
+	for (u32 p = 0; p < gf.passes; p++)
+	{
+		u32 n;
+		const SortTrigDrawParam *r = ta_gpu_prepass(p, &n);
+		gpu_draws += n;
+		for (u32 j = 0; j < n; j++)
+		{
+			if (r[j].first < sorted || r[j].count == 0 || r[j].count % 3 != 0 || r[j].first + r[j].count > idx.size())
+			{
+				snprintf(why, room, "prepass draw %u of pass %u: first %u count %u, outside its indices", j, p, r[j].first, r[j].count);
+				return why;
+			}
+			span.push_back(std::make_pair(r[j].first, r[j].count));
+			prepass_tris(idx, r[j].first, r[j].count, a);
+			bool found = false;
+			for (size_t q = 0; q < ref.pruns.size() && !found; q++)
+			{
+				if (used[q] || ref.prun_pass[q] != p || ref.pruns[q].count != r[j].count || !same_draw_state(*r[j].ppid, ref.ppp[q]))
+					continue;
+				prepass_tris(ref.idx, ref.pruns[q].first, ref.pruns[q].count, b);
+				if (a == b)
+					used[q] = found = true;
+			}
+			if (!found)
+			{
+				snprintf(why, room, "prepass draw %u of pass %u (first %u count %u): not one of GenPrepass()'s", j, p, r[j].first, r[j].count);
+				return why;
+			}
+		}
+	}
+	if (gpu_draws != ref.pruns.size())
+	{
+		snprintf(why, room, "prepass draws: %zu, GenPrepass() %zu", gpu_draws, ref.pruns.size());
+		return why;
+	}
+	std::sort(span.begin(), span.end());
+	u32 at = (u32)sorted;
+	for (const std::pair<u32, u32> &s : span)
+	{
+		if (s.first != at)
+		{
+			snprintf(why, room, "prepass draws: index %u drawn %s", at, s.first < at ? "twice" : "by none");
+			return why;
+		}
+		at += s.second;
+	}
+	if (at != idx.size())
+	{
+		snprintf(why, room, "prepass draws: indices %u to %zu drawn by none", at, idx.size());
 		return why;
 	}
 	return NULL;
