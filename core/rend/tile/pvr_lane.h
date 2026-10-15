@@ -20,7 +20,8 @@
  * otherwise exchanges through shared memory with barriers, which needs
  * the kernel to define PVR_LANE_COUNT (the lanes of a group, a power of
  * two up to 32) and PVR_LANE_GROUP_SIZE (its workgroup's size, a multiple
- * of PVR_LANE_COUNT), and to call them all in uniform control flow. The C
+ * of PVR_LANE_COUNT), and to call them all in uniform control flow; a
+ * shader with no use for them defines PVR_LANE_NONE instead. The C
  * side has the same exchanges over an array of lanes (pvr_lane_c_*), for
  * the CPU reference and the tests. */
 #ifndef PVR_LANE_H
@@ -102,6 +103,11 @@ PVR_FN pvr_u32 pvr_f32_bits(pvr_f32 f)
 #define LANE_SHUFFLE(v, i) WaveReadLaneAt(v, i)
 #define LANE_SHUFFLE_XOR(v, m) WaveReadLaneAt(v, WaveGetLaneIndex() ^ (m))
 #define LANE_FIRST(v) WaveReadLaneFirst(v)
+
+#elif (defined(PVR_SHADER_GLSL) || defined(PVR_SHADER_HLSL)) && defined(PVR_LANE_NONE)
+
+/* (a shader that is not a compute kernel - a fragment shader that
+ * resolves - has no lanes to exchange with, and no lane operations) */
 
 #elif defined(PVR_SHADER_GLSL) || defined(PVR_SHADER_HLSL)
 

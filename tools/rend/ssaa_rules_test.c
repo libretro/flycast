@@ -546,6 +546,24 @@ static void test_budget(void)
    check(ssaa_clamp_samples(3, 1000000, 0, 1) == 2, "3 counts as 2", 0, 0);
    check(ssaa_clamp_samples(0, 1000000, 0, 1) == 1, "0 counts as 1", 0, 0);
    check(ssaa_clamp_samples(16, 1000000, 0, 1) == 8, "at most 8", 0, 0);
+   /* what the device can draw with: every request against every set of counts */
+   {
+      pvr_u32 req, counts;
+      for (req = 0; req <= 16; req++)
+         for (counts = 0; counts < 512; counts++)
+         {
+            pvr_u32 n = ssaa_device_samples(req, counts), m;
+            pvr_u32 want = req >= 8 ? 8 : req >= 4 ? 4 : req >= 2 ? 2 : 1;
+            /* the largest of 1, 2, 4, 8 that is no more than asked and that the device has; 1 if none */
+            pvr_u32 ref = 1;
+            for (m = 2; m <= want; m <<= 1)
+               if (counts & m)
+                  ref = m;
+            check(n == ref, "the device's most samples, no more than asked", (long)req, (long)counts);
+         }
+   }
+   check(ssaa_device_samples(8, 0x05) == 4, "lavapipe's 1 and 4: 8x is 4x", 0, 0);
+   check(ssaa_device_samples(2, 0x05) == 1, "lavapipe's 1 and 4: 2x is off", 0, 0);
 }
 
 /* ---- the region array's table ---- */

@@ -76,4 +76,16 @@ PVR_FN pvr_u32 ssaa_clamp_samples(pvr_u32 requested, pvr_u32 avail_kib, pvr_u32 
    return n;
 }
 
+/* The most samples - @requested (1, 2, 4 or 8) or fewer, by halving -
+ * that the device can draw with: @counts has bit n set where it can draw
+ * with n samples (Vulkan's VkSampleCountFlags, D3D's checked counts). 1
+ * when it has none of them. */
+PVR_FN pvr_u32 ssaa_device_samples(pvr_u32 requested, pvr_u32 counts)
+{
+   pvr_u32 n = requested >= 8u ? 8u : requested >= 4u ? 4u : requested >= 2u ? 2u : 1u;
+   while (n > 1u && (counts & n) == 0u)
+      n >>= 1;
+   return n;
+}
+
 #endif
