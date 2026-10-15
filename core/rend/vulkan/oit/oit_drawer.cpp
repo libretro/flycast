@@ -799,7 +799,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	}
 	else if (textureCache->IsInFlight(texture))
 	{
-		texture->readOnlyImageView = *texture->imageView;
+		texture->readOnlyImageView = texture->GetImageView();
 		textureCache->DestroyLater(texture);
 	}
 	textureCache->SetInFlight(texture);
@@ -822,7 +822,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	{
 		colorImageCurrentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 	}
-	colorImage = *texture->image;
+	colorImage = texture->GetImage();
 	colorImageView = texture->GetImageView();
 	viewport.offset.x = 0;
 	viewport.offset.y = 0;

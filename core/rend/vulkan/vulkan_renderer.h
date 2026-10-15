@@ -50,6 +50,9 @@ public:
 		paletteTexture = nullptr;
 		texCommandPool.Term();
 		framebufferTextures.clear();
+		// (what the cache's textures had is back in the pool by now)
+		Texture::SetPool(nullptr);
+		texPool.Term();
 	}
 
 	// (TA processing switched on or off)
@@ -67,6 +70,7 @@ public:
 			tf->Create();
 			tf->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
 			tf->SetDevice(GetContext()->GetDevice());
+			tf->SetCached();
 		}
 
 		//update if needed
@@ -152,6 +156,9 @@ protected:
 		texCommandPool.Init();
 		texDecoder.Init();
 		Texture::SetDecoder(&texDecoder);
+		// the textures' images, all of them now (rend/tex_pool.h)
+		texPool.Init(&texDecoder);
+		Texture::SetPool(&texPool);
 		quadPipeline.Init(&shaderManager, renderPass, subpass);
 		vmus = std::unique_ptr<VulkanOSD>(new VulkanOSD());
 		vmus->Init(&quadPipeline);
@@ -277,6 +284,7 @@ protected:
 	CommandPool texCommandPool;
 	std::vector<std::unique_ptr<Texture>> framebufferTextures;
 	TexDecoder texDecoder;		// (before the cache: textures going away tell it)
+	TexturePool texPool;		// (and they give their images back)
 	TaDecoder taDecoder;
 	TextureCache textureCache;
 	std::unique_ptr<Texture> keptPicture;

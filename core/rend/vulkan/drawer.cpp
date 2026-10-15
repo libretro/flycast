@@ -723,7 +723,7 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	}
 	else if (textureCache->IsInFlight(texture))
 	{
-		texture->readOnlyImageView = *texture->imageView;
+		texture->readOnlyImageView = texture->GetImageView();
 		textureCache->DestroyLater(texture);
 	}
 	textureCache->SetInFlight(texture);
@@ -746,7 +746,7 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	{
 		colorImageCurrentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 	}
-	colorImage = *texture->image;
+	colorImage = texture->GetImage();
 	colorImageView = texture->GetImageView();
 	width = widthPow2;
 	height = heightPow2;

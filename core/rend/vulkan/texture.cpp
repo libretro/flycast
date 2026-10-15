@@ -153,6 +153,203 @@ void setImageLayout(vk::CommandBuffer const& commandBuffer, vk::Image image, vk:
 #include "hw/pvr/pvr_mem.h"
 
 TexDecoder *Texture::decoder;
+TexturePool *Texture::pool;
+
+Texture::~Texture()
+{
+	CancelDecode();
+	/* (a cache's texture goes when nothing has drawn with it for long, or
+	 * when the renderer does: its image is free at once) */
+	ReleasePooled(true);
+}
+
+/* ---- The texture pool ---- */
+
+/* The formats the pool has images of, by its numbers for them: the
+ * converters' five, and the two the decoder copies planar textures into */
+static const vk::Format poolFormats[] = {
+	vk::Format::eR5G5B5A1UnormPack16, vk::Format::eR5G6B5UnormPack16, vk::Format::eR4G4B4A4UnormPack16,
+	vk::Format::eR8G8B8A8Unorm, vk::Format::eR8Unorm,
+	vk::Format::eA1R5G5B5UnormPack16, vk::Format::eB4G4R4A4UnormPack16,
+};
+static const char * const poolFormatNames[] = { "5551", "565", "4444", "8888", "8-bit", "1555", "4444 (planar)" };
+
+int TexturePool::FormatIndex(vk::Format format)
+{
+	for (int i = 0; i < FORMATS; i++)
+		if (poolFormats[i] == format)
+			return i;
+	return -1;
+}
+
+void TexturePool::Init(const TexDecoder *decoder)
+{
+	if (ready)
+		return;
+	VulkanContext *context = VulkanContext::Instance();
+	const vk::PhysicalDevice physicalDevice = context->GetPhysicalDevice();
+	this->decoder = decoder;
+	book.Reset(TexPoolBook::MAX_FRAMES);
+
+	static const u32 texel[FORMATS] = { 2, 2, 2, 4, 1, 2, 2 };
+	// how much games use them, in eighths of what they use 565
+	static const u32 use[FORMATS] = { 4, 8, 4, 4, 2, 1, 1 };
+	u32 have[FORMATS];
+	for (int f = 0; f < FORMATS; f++)
+	{
+		formats[f] = poolFormats[f];
+		const vk::FormatProperties props = physicalDevice.getFormatProperties(formats[f]);
+		const vk::FormatFeatureFlags needed = vk::FormatFeatureFlagBits::eSampledImage | vk::FormatFeatureFlagBits::eTransferDst
+				| vk::FormatFeatureFlagBits::eTransferSrc;
+		usable[f] = (props.optimalTilingFeatures & needed) == needed;
+		// the 16-bit ones the device cannot sample are converted to 32 bits (Force32BitTexture())
+		if (f < 3 && !context->IsFormatSupported((TextureType)(f == 0 ? TextureType::_5551 : f == 1 ? TextureType::_565 : TextureType::_4444)))
+			usable[f] = false;
+		if (f >= 5)
+			usable[f] = usable[f] && decoder != nullptr && decoder->NativeFormat(f == 5 ? TextureType::_5551 : TextureType::_4444) == formats[f];
+		storable[f] = f < 5 && decoder != nullptr && decoder->Ready() && decoder->Takes(formats[f]);
+		have[f] = usable[f] ? texel[f] : 0;
+	}
+	u32 counts[TexPoolBook::CLASSES];
+	const u64 bytes = TexPoolBook::Plan(context->GetVramBudget(), have, use, FORMATS, counts);
+	ready = true;
+	for (int c = 0; c < TexPoolBook::CLASSES; c++)
+		for (u32 i = 0; i < counts[c]; i++)
+		{
+			PooledImage *image = Make(c, false);
+			if (image == nullptr)
+				break;
+			book.Give(image);
+		}
+	NOTICE_LOG(RENDERER, "Vulkan: texture pool of %u images, %u MB (planned %u MB)", book.made, (u32)(book.bytesMade >> 20), (u32)(bytes >> 20));
+}
+
+void TexturePool::Term()
+{
+	if (!ready)
+		return;
+	book.Summary("Vulkan");
+	while (all != nullptr)
+	{
+		PooledImage *next = all->all;
+		delete all;
+		all = next;
+	}
+	book.Reset(TexPoolBook::MAX_FRAMES);
+	ready = false;
+	decoder = nullptr;
+}
+
+PooledImage *TexturePool::Make(int cls, bool late)
+{
+	const vk::Device device = VulkanContext::Instance()->GetDevice();
+	const u32 f = TexPoolBook::Format(cls);
+	const u32 width = TexPoolBook::Width(cls), height = TexPoolBook::Height(cls);
+	const vk::Format format = formats[f];
+	PooledImage *pi = new PooledImage();
+
+	pi->format = format;
+	pi->levels = TexPoolBook::Mips(cls) ? 1 + bitscanrev(std::max(width, height)) : 1;
+	pi->storage = storable[f];
+	pi->usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
+	vk::ImageCreateFlags flags;
+	if (pi->storage)
+	{
+		/* written through views of a format of integers of the same size:
+		 * the 16- and 8-bit formats cannot be storage images themselves */
+		pi->usage |= vk::ImageUsageFlagBits::eStorage;
+		flags = vk::ImageCreateFlagBits::eMutableFormat;
+		if (format != vk::Format::eR8G8B8A8Unorm)
+			flags |= vk::ImageCreateFlagBits::eExtendedUsage;
+	}
+	pi->image = device.createImageUnique(vk::ImageCreateInfo(flags, vk::ImageType::e2D, format, vk::Extent3D(width, height, 1), pi->levels, 1,
+			vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, pi->usage, vk::SharingMode::eExclusive, 0, nullptr, vk::ImageLayout::eUndefined));
+	pi->allocation = VulkanContext::Instance()->GetHeap().AllocateForImage(*pi->image, false, false);
+
+	/* A 4444 texture copied as it is: the PowerVR has alpha, red, green
+	 * and blue from the top, which this format calls blue, green, red and
+	 * alpha */
+	const vk::ComponentMapping components = format == vk::Format::eB4G4R4A4UnormPack16
+			? vk::ComponentMapping(vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eR, vk::ComponentSwizzle::eA, vk::ComponentSwizzle::eB)
+			: vk::ComponentMapping();
+	vk::ImageViewCreateInfo viewInfo(vk::ImageViewCreateFlags(), *pi->image, vk::ImageViewType::e2D, format, components,
+			vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, pi->levels, 0, 1));
+	// (sampled only: the image's other uses are through views of other formats)
+	const vk::ImageViewUsageCreateInfo viewUsage(pi->usage & ~vk::ImageUsageFlagBits::eStorage);
+	if (flags & vk::ImageCreateFlagBits::eExtendedUsage)
+		viewInfo.pNext = &viewUsage;
+	pi->view = device.createImageViewUnique(viewInfo);
+	if (pi->storage)
+	{
+		const vk::Format viewFormat = format == vk::Format::eR8G8B8A8Unorm ? vk::Format::eR32Uint
+				: format == vk::Format::eR8Unorm ? vk::Format::eR8Uint : vk::Format::eR16Uint;
+		const vk::ImageViewUsageCreateInfo storageUsage(vk::ImageUsageFlagBits::eStorage);
+		for (u32 level = 0; level < pi->levels; level++)
+		{
+			vk::ImageViewCreateInfo info(vk::ImageViewCreateFlags(), *pi->image, vk::ImageViewType::e2D, viewFormat, vk::ComponentMapping(),
+					vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, level, 1, 0, 1));
+			info.pNext = &storageUsage;
+			pi->storageViews[level] = device.createImageViewUnique(info);
+		}
+	}
+	book.Made(pi, cls, TexPoolBook::Bytes(cls, f == 3 ? 4 : f == 4 ? 1 : 2), late, poolFormatNames[f]);
+	pi->all = all;
+	all = pi;
+	return pi;
+}
+
+PooledImage *TexturePool::Take(vk::Format format, u32 width, u32 height, bool mips)
+{
+	const int f = FormatIndex(format);
+	if (!ready || f < 0 || !usable[f])
+		return nullptr;
+	const int cls = TexPoolBook::Class((u32)f, width, height, mips);
+	if (cls < 0)
+		return nullptr;
+	TexPoolEntry *e = book.Take(cls);
+	return e != nullptr ? static_cast<PooledImage *>(e) : Make(cls, true);
+}
+
+bool Texture::TakePooled(u32 width, u32 height, bool mipmapped)
+{
+	if (pool == nullptr || !cached)
+		return false;
+	PooledImage *pi = pool->Take(format, width, height, mipmapped);
+	if (pi == nullptr)
+		return false;
+	// what it had goes, as CreateImage() lets it go
+	CancelDecode();
+	ReleasePooled(false);
+	for (auto& view : storageViews)
+		view.reset();
+	imageView.reset();
+	image.reset();
+	allocation = Allocation();
+	pooled = pi;
+	mipmapLevels = pi->levels;
+	imageUsage = pi->usage;
+	storage = pi->storage;
+	needsStaging = true;
+	// nothing in it is kept: whatever was drawn into it is another texture's
+	fresh = true;
+	return true;
+}
+
+void Texture::ReleasePooled(bool now)
+{
+	if (pooled == nullptr)
+		return;
+	CancelDecode();
+	if (pool != nullptr)
+	{
+		if (now)
+			pool->Give(pooled);
+		else
+			pool->Retire(pooled);
+	}
+	pooled = nullptr;
+	storage = false;
+}
 
 /* A texel of this texture's, in bytes */
 static u32 texel_bytes(TextureType type)
@@ -303,14 +500,14 @@ bool Texture::GpuDecode(const texd_plan& plan)
 		memcpy(to + plan.pal, (plan.out == TEXD_OUT16 ? palette16_ram : palette32_ram) + plan.pal_index, plan.pal_entries * 4);
 
 	if (copy)
-		decodeJob = decoder->AddCopy(*image, fresh, offset, plan.level[0].sr & 0xFFFF, plan.width, plan.height);
+		decodeJob = decoder->AddCopy(GetImage(), fresh, offset, plan.level[0].sr & 0xFFFF, plan.width, plan.height);
 	else
 	{
 		TexDecoder::Level levels[TEXD_MAX_LEVELS];
 		for (u32 i = 0; i < plan.levels; i++)
 		{
 			const texd_level& lv = plan.level[i];
-			levels[i].view = *storageViews[lv.mip];
+			levels[i].view = StorageView(lv.mip);
 			levels[i].pc[0] = offset / 4;
 			levels[i].pc[1] = lv.data;
 			levels[i].pc[2] = plan.pal;
@@ -318,7 +515,7 @@ bool Texture::GpuDecode(const texd_plan& plan)
 			levels[i].pc[4] = lv.sr;
 			levels[i].pc[5] = lv.mode;
 		}
-		decodeJob = decoder->AddDecode(*image, fresh, mipmapLevels, plan.out, levels, plan.levels);
+		decodeJob = decoder->AddDecode(GetImage(), fresh, mipmapLevels, plan.out, levels, plan.levels);
 	}
 	decodeSerial = decoder->Serial();
 	fresh = false;
@@ -363,6 +560,9 @@ void Texture::Init(u32 width, u32 height, vk::Format format, u32 dataSize, bool 
 	mipmapLevels = 1;
 	if (mipmapped)
 		mipmapLevels += floor(log2(std::max(width, height)));
+	// an image of the pool's, made before the game: optimal, written through a staging copy or by the GPU
+	if (TakePooled(width, height, mipmapped))
+		return;
 
 	if (maker != CPU)
 	{
@@ -432,6 +632,7 @@ void Texture::CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usa
 {
 	// the old image's storage views go with it
 	CancelDecode();
+	ReleasePooled(false);
 	for (auto& view : storageViews)
 		view.reset();
 	storage = false;
@@ -470,7 +671,7 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
 	if (!isNew && !needsStaging)
-		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eGeneral);
+		setImageLayout(commandBuffer, GetImage(), format, mipmapLevels, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eGeneral);
 
 	if (needsStaging)
 	{
@@ -491,7 +692,7 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 			memcpy(slot, slot + pad, pixel);
 
 		// Since we're going to blit to the texture image, set its layout to eTransferDstOptimal
-		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, isNew ? vk::ImageLayout::eUndefined : vk::ImageLayout::eShaderReadOnlyOptimal,
+		setImageLayout(commandBuffer, GetImage(), format, mipmapLevels, isNew ? vk::ImageLayout::eUndefined : vk::ImageLayout::eShaderReadOnlyOptimal,
 				vk::ImageLayout::eTransferDstOptimal);
 
 		if (levels)
@@ -501,25 +702,25 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 				vk::BufferImageCopy copyRegion(slotOffset + upload_level_at(pixel, i), 1 << i, 1 << i,
 						vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, mipmapLevels - i - 1, 0, 1),
 						vk::Offset3D(0, 0, 0), vk::Extent3D(1 << i, 1 << i, 1));
-				commandBuffer.copyBufferToImage(slotBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
+				commandBuffer.copyBufferToImage(slotBuffer, GetImage(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
 			}
 		}
 		else
 		{
 			vk::BufferImageCopy copyRegion(slotOffset, extent.width, extent.height, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
 					vk::Offset3D(0, 0, 0), vk::Extent3D(extent, 1));
-			commandBuffer.copyBufferToImage(slotBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
+			commandBuffer.copyBufferToImage(slotBuffer, GetImage(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
 			if (mipmapLevels > 1)
 				GenerateMipmaps();
 		}
 		// Set the layout for the texture image from eTransferDstOptimal to SHADER_READ_ONLY
-		setImageLayout(commandBuffer, image.get(), format, mipmapLevels, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+		setImageLayout(commandBuffer, GetImage(), format, mipmapLevels, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
 	}
 	else
 	{
 		void *data = allocation.MapMemory();
 		verify(data != nullptr);
-		vk::SubresourceLayout layout = device.getImageSubresourceLayout(*image, vk::ImageSubresource(vk::ImageAspectFlagBits::eColor, 0, 0));
+		vk::SubresourceLayout layout = device.getImageSubresourceLayout(GetImage(), vk::ImageSubresource(vk::ImageAspectFlagBits::eColor, 0, 0));
 		if (layout.size != srcSize)
 		{
 			u8 *src = (u8 *)srcData;
@@ -539,7 +740,7 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 			GenerateMipmaps();
 		else
 			// If we can use the linear tiled image as a texture, just do it
-			setImageLayout(commandBuffer, image.get(), format, mipmapLevels, isNew ? vk::ImageLayout::ePreinitialized : vk::ImageLayout::eGeneral,
+			setImageLayout(commandBuffer, GetImage(), format, mipmapLevels, isNew ? vk::ImageLayout::ePreinitialized : vk::ImageLayout::eGeneral,
 					vk::ImageLayout::eShaderReadOnlyOptimal);
 	}
 	commandBuffer.end();
@@ -551,7 +752,7 @@ void Texture::GenerateMipmaps()
 	u32 mipHeight = extent.height;
 	vk::ImageMemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
 			vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
-			*image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
+			GetImage(), vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
 
 	for (u32 i = 1; i < mipmapLevels; i++)
 	{
@@ -576,7 +777,7 @@ void Texture::GenerateMipmaps()
 				 { { vk::Offset3D(0, 0, 0), vk::Offset3D(mipWidth, mipHeight, 1) } },
 				 vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i, 0, 1),
 				 { { vk::Offset3D(0, 0, 0), vk::Offset3D(std::max(mipWidth / 2, 1u), std::max(mipHeight / 2, 1u), 1) } });
-		commandBuffer.blitImage(*image, vk::ImageLayout::eTransferSrcOptimal, *image, vk::ImageLayout::eTransferDstOptimal, 1, &blit, vk::Filter::eLinear);
+		commandBuffer.blitImage(GetImage(), vk::ImageLayout::eTransferSrcOptimal, GetImage(), vk::ImageLayout::eTransferDstOptimal, 1, &blit, vk::Filter::eLinear);
 
 		// Transition previous mipmap level from src optimal to shader read-only optimal
 		barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;

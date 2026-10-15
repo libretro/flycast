@@ -23,6 +23,7 @@
 #include "buffer.h"
 #include "rend/TexCache.h"
 #include "rend/texdecode.h"
+#include "rend/tex_pool.h"
 #include "hw/pvr/Renderer_if.h"
 
 #include <algorithm>
@@ -77,22 +78,79 @@ private:
 	u32 current = 0;
 };
 
+/* An image of the texture pool's: optimal, sampled, copied to and from,
+ * and written by the decoding kernel too where the decoder takes its
+ * format, with a storage view of each level for that */
+struct PooledImage : TexPoolEntry
+{
+	vk::UniqueImage image;
+	Allocation allocation;
+	vk::UniqueImageView view;
+	vk::UniqueImageView storageViews[TEXD_MAX_LEVELS];
+	vk::ImageUsageFlags usage;
+	vk::Format format = vk::Format::eUndefined;
+	u32 levels = 1;
+	bool storage = false;
+	PooledImage *all = nullptr;		// every image there is, for Term()
+};
+
+/* The cache's textures' images (rend/tex_pool.h): made when the renderer
+ * starts, in the device memory's large blocks, and handed out to the
+ * textures that need one of their shape */
+class TexturePool
+{
+public:
+	/* (again with the renderer's next start, or a new size: nothing is done
+	 * if it is made already) */
+	void Init(const TexDecoder *decoder);
+	void Term();
+	bool Ready() const { return ready; }
+	/* An image for a texture of @format, @width by @height, with its
+	 * levels or not: a free one of that shape, or one made now if there is
+	 * none. Null if the shape is not one of the pool's. */
+	PooledImage *Take(vk::Format format, u32 width, u32 height, bool mips);
+	/* Free again now; or when the frames that may still use it are done */
+	void Give(PooledImage *image) { book.Give(image); }
+	void Retire(PooledImage *image) { book.Retire(image); }
+	// (the texture command pool's frame index)
+	void Frame(u32 index) { if (ready) book.Frame(index); }
+	const TexPoolBook& Book() const { return book; }
+
+private:
+	enum { FORMATS = 7 };
+	static int FormatIndex(vk::Format format);
+	PooledImage *Make(int cls, bool late);
+
+	TexPoolBook book;
+	bool ready = false;
+	const TexDecoder *decoder = nullptr;
+	vk::Format formats[FORMATS];
+	bool storable[FORMATS] = {};
+	bool usable[FORMATS] = {};
+	PooledImage *all = nullptr;
+};
+
 class Texture : public BaseTextureCacheData
 {
 public:
-	~Texture() { CancelDecode(); }
+	~Texture();
 	void UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded = false) override;
 	void *UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps) override;
 	bool GpuDecode(const texd_plan& plan) override;
 	static UploadRing& Ring();
 	/* The renderer's, while it has one */
 	static void SetDecoder(TexDecoder *decoder) { Texture::decoder = decoder; }
+	static void SetPool(TexturePool *pool) { Texture::pool = pool; }
+	static TexturePool *Pool() { return pool; }
+	/* A texture of the cache's: its images come from the pool. (Not the
+	 * renderer's own pictures, which go when it says.) */
+	void SetCached() { cached = true; }
 	u64 GetIntId() { return (u64)reinterpret_cast<uintptr_t>(this); }
 	std::string GetId() override { char s[20]; sprintf(s, "%p", this); return s; }
-	bool IsNew() const { return !image.get(); }
-	vk::ImageView GetImageView() const { return *imageView; }
-	vk::Image GetImage() const { return *image; }
-	vk::ImageView GetReadOnlyImageView() const { return readOnlyImageView ? readOnlyImageView : *imageView; }
+	bool IsNew() const { return !image.get() && pooled == nullptr; }
+	vk::ImageView GetImageView() const { return pooled != nullptr ? *pooled->view : *imageView; }
+	vk::Image GetImage() const { return pooled != nullptr ? *pooled->image : *image; }
+	vk::ImageView GetReadOnlyImageView() const { return readOnlyImageView ? readOnlyImageView : GetImageView(); }
 	void SetCommandBuffer(vk::CommandBuffer commandBuffer) { this->commandBuffer = commandBuffer; }
 	/* Where a command buffer comes from when an upload needs one: a
 	 * texture made on the GPU records nothing of its own */
@@ -114,6 +172,13 @@ private:
 	/* The job this texture has with the decoder this frame is not done
 	 * after all: it is made another way, or goes */
 	void CancelDecode();
+	/* The image from the pool, for one of this shape; false if the pool
+	 * has no such shape */
+	bool TakePooled(u32 width, u32 height, bool mipmapped);
+	/* The pool's image given back: when the frames that may use it are
+	 * done, or now */
+	void ReleasePooled(bool now);
+	vk::ImageView StorageView(u32 level) const { return pooled != nullptr ? *pooled->storageViews[level] : *storageViews[level]; }
 	/* what the image was made to be used for */
 	vk::ImageUsageFlags imageUsage;
 	void GenerateMipmaps();
@@ -140,6 +205,9 @@ private:
 	int decodeJob = -1;
 	u32 decodeSerial = 0;
 	static TexDecoder *decoder;
+	static TexturePool *pool;
+	PooledImage *pooled = nullptr;
+	bool cached = false;
 
 	Allocation allocation;
 	vk::UniqueImage image;
@@ -230,6 +298,8 @@ public:
 				[](Texture *texture) { texture->readOnlyImageView = vk::ImageView(); });
 		currentIndex = index;
 		Texture::Ring().SetCurrentIndex(index);
+		if (Texture::Pool() != nullptr)
+			Texture::Pool()->Frame(index);
 		EmptyTrash(inFlightTextures);
 		EmptyTrash(trashedImageViews);
 		EmptyTrash(trashedImages);
@@ -251,6 +321,12 @@ public:
 
 	void DestroyLater(Texture *texture)
 	{
+		if (texture->pooled != nullptr)
+		{
+			texture->ReleasePooled(false);
+			texture->format = vk::Format::eUndefined;
+			return;
+		}
 		if (!texture->image)
 			return;
 		texture->CancelDecode();
