@@ -489,7 +489,10 @@ struct SortTrigDrawParam;
  * how many there are; NULL and 0 for a pass that is not sorted. The
  * polygon parameters they point to are the header pass's. */
 const SortTrigDrawParam *ta_gpu_sorted(u32 pass, u32 *count);
-// ...the indices of all of them (GenSorted()'s @vidx_sort, pass after pass)
+/* ...and its depth prepass's draws (GenPrepass()'s; rend/sorter.h), first
+ * counting from the first pass's first sorted index as well */
+const SortTrigDrawParam *ta_gpu_prepass(u32 pass, u32 *count);
+// ...the indices of all of them (GenSorted()'s @vidx_sort, pass after pass, then the prepasses')
 u32 ta_gpu_sorted_indices(void);
 void ta_gpu_sorted_write(u32 *dst);
 // ...and what the last sort took, in nanoseconds (0 for none)

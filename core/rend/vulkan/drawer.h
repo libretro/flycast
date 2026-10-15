@@ -238,6 +238,7 @@ private:
 	void DrawShadowed(const vk::CommandBuffer& cmdBuffer, u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 			const ScreenBounds& area, const vk::Rect2D& scissor);
 	void DrawSorted(const vk::CommandBuffer& cmdBuffer, const SortTrigDrawParam *polys, u32 count, bool multipass);
+	void DrawPrepass(const vk::CommandBuffer& cmdBuffer, const SortTrigDrawParam *polys, u32 count);
    void DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass,
 			int render_pass);
@@ -258,6 +259,11 @@ private:
 	std::vector<std::vector<SortTrigDrawParam>> sortedPolys;
 	std::vector<std::vector<u32>> sortedIndexes;
 	u32 sortedIndexCount = 0;
+	// ...and the depth prepasses of the sorted lists (rend/sorter.h), their indexes after each pass's sorted ones
+	std::vector<std::vector<SortTrigDrawParam>> prepassPolys;
+	/* The push constants last pushed for the colours: the prepass pushes
+	 * its own, and puts these back for the polygons after it that push none */
+	std::array<float, 6> pushed = {};
 	bool alphaSortMode = false;
 };
 

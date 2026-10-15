@@ -60,6 +60,30 @@ struct FragmentShaderParams
 	}
 };
 
+/* The depth prepass's shader (rend/sorter.h): what it is made for, the
+ * rest being the push constants' flags (PREPASS_*) */
+struct PrepassShaderParams
+{
+	bool texture;
+	bool gouraud;
+	int sampleRate;	// as FragmentShaderParams
+	int samples;
+	u32 hash()
+	{
+		return (u32)texture | ((u32)gouraud << 1) | ((u32)sampleRate << 2) | ((u32)samples << 4);
+	}
+};
+// The flags, in the push constant where the colour pass has its trilinear alpha
+#define PREPASS_CLIP_INSIDE   1u
+#define PREPASS_USE_ALPHA     2u
+#define PREPASS_PALETTE       4u
+#define PREPASS_BUMP_MAP      8u
+#define PREPASS_IGNORE_TEX_A  16u
+#define PREPASS_SHAD_INSTR    32u	// two bits: the shading instruction
+#define PREPASS_CLAMP         128u
+#define PREPASS_FOG_ALPHA     256u	// fog mode 3: the fog in the alpha
+#define PREPASS_ALWAYS        512u	// every pixel hides what is behind it
+
 // std140 alignment required
 struct VertexShaderUniforms
 {
@@ -83,6 +107,7 @@ class ShaderManager
 public:
 	vk::ShaderModule GetVertexShader(const VertexShaderParams& params) { return getShader(vertexShaders, params); }
 	vk::ShaderModule GetFragmentShader(const FragmentShaderParams& params) { return getShader(fragmentShaders, params); }
+	vk::ShaderModule GetPrepassShader(const PrepassShaderParams& params) { return getShader(prepassShaders, params); }
 	vk::ShaderModule GetModVolVertexShader()
 	{
 		if (!modVolVertexShader)
@@ -111,6 +136,7 @@ public:
 	{
 		vertexShaders.clear();
 		fragmentShaders.clear();
+		prepassShaders.clear();
 		modVolVertexShader.reset();
 		modVolShader.reset();
 		quadVertexShader.reset();
@@ -129,6 +155,7 @@ private:
 	}
 	vk::UniqueShaderModule compileShader(const VertexShaderParams& params);
 	vk::UniqueShaderModule compileShader(const FragmentShaderParams& params);
+	vk::UniqueShaderModule compileShader(const PrepassShaderParams& params);
 	vk::UniqueShaderModule compileModVolVertexShader();
 	vk::UniqueShaderModule compileModVolFragmentShader();
 	vk::UniqueShaderModule compileQuadVertexShader();
@@ -136,6 +163,7 @@ private:
 
 	std::map<u32, vk::UniqueShaderModule> vertexShaders;
 	std::map<u32, vk::UniqueShaderModule> fragmentShaders;
+	std::map<u32, vk::UniqueShaderModule> prepassShaders;
 	vk::UniqueShaderModule modVolVertexShader;
 	vk::UniqueShaderModule modVolShader;
 	vk::UniqueShaderModule quadVertexShader;

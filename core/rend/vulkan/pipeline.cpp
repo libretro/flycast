@@ -365,6 +365,54 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 			graphicsPipelineCreateInfo);
 }
 
+void PipelineManager::CreatePrepassPipelines()
+{
+	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo();
+	vk::PipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateCreateInfo(vk::PipelineInputAssemblyStateCreateFlags(),
+			vk::PrimitiveTopology::eTriangleList);
+	vk::PipelineViewportStateCreateInfo pipelineViewportStateCreateInfo(vk::PipelineViewportStateCreateFlags(), 1, nullptr, 1, nullptr);
+	// (depth only, written where the depth test passes: the colour pass's test)
+	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo(vk::PipelineDepthStencilStateCreateFlags(),
+			true, true, vk::CompareOp::eGreaterOrEqual, false, false);
+	vk::PipelineColorBlendAttachmentState pipelineColorBlendAttachmentState(false, vk::BlendFactor::eZero, vk::BlendFactor::eZero,
+			vk::BlendOp::eAdd, vk::BlendFactor::eZero, vk::BlendFactor::eZero, vk::BlendOp::eAdd, vk::ColorComponentFlags());
+	vk::PipelineColorBlendStateCreateInfo pipelineColorBlendStateCreateInfo(vk::PipelineColorBlendStateCreateFlags(), false,
+			vk::LogicOp::eNoOp, 1, &pipelineColorBlendAttachmentState, { { 1.0f, 1.0f, 1.0f, 1.0f } });
+	vk::DynamicState dynamicStates[2] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), 2, dynamicStates);
+
+	for (int texture = 0; texture < 2; texture++)
+		for (int gouraud = 0; gouraud < 2; gouraud++)
+			for (int cull = 0; cull < 3; cull++)
+				for (int rate = 0; rate < (samples > 1 ? 2 : 1); rate++)
+				{
+					vk::PipelineRasterizationStateCreateInfo pipelineRasterizationStateCreateInfo(vk::PipelineRasterizationStateCreateFlags(),
+							false, false, vk::PolygonMode::eFill,
+							cull == 2 ? vk::CullModeFlagBits::eBack : cull == 1 ? vk::CullModeFlagBits::eFront : vk::CullModeFlagBits::eNone,
+							vk::FrontFace::eCounterClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
+					vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, rate == 1);
+
+					PrepassShaderParams params = {};
+					params.texture = texture == 1;
+					params.gouraud = gouraud == 1;
+					params.sampleRate = samples > 1 ? (rate == 1 ? 1 : 2) : 0;
+					params.samples = samples;
+					vk::PipelineShaderStageCreateInfo stages[] = {
+							{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex,
+									shaderManager->GetVertexShader(VertexShaderParams{ gouraud == 1 }), "main" },
+							{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
+									shaderManager->GetPrepassShader(params), "main" },
+					};
+					vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo(vk::PipelineCreateFlags(), 2, stages,
+							&pipelineVertexInputStateCreateInfo, &pipelineInputAssemblyStateCreateInfo, nullptr,
+							&pipelineViewportStateCreateInfo, &pipelineRasterizationStateCreateInfo, &pipelineMultisampleStateCreateInfo,
+							&pipelineDepthStencilStateCreateInfo, &pipelineColorBlendStateCreateInfo, &pipelineDynamicStateCreateInfo,
+							*pipelineLayout, renderPass);
+					prepassPipelines[texture][gouraud][cull][rate] = GetContext()->GetDevice().createGraphicsPipelineUnique(
+							GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo);
+				}
+}
+
 vk::UniqueRenderPass MakeSsaaRenderPass(vk::Format colorFormat, u32 samples, vk::ImageLayout pictureLayout)
 {
 	VulkanContext *context = VulkanContext::Instance();

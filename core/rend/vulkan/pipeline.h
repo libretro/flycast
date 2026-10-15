@@ -172,6 +172,8 @@ public:
 			this->renderPass = renderPass;
 			this->samples = samples;
 			Reset();
+			// (made again only for another render pass: they do not change with the way of sorting, as the others do)
+			CreatePrepassPipelines();
 		}
 	}
 
@@ -196,6 +198,16 @@ public:
 			CreatePipeline(listType, sortTriangles, pp, shadowPass, !sampleRate);
 
 		return *pipelines[pipehash];
+	}
+
+	/* The depth prepass of a sorted translucent list (rend/sorter.h): the
+	 * pipeline a polygon is drawn with there. They are all made with the
+	 * render pass, none in the middle of a frame: textured or not, flat or
+	 * Gouraud, each culling, and each SSAA rate. */
+	vk::Pipeline GetPrepassPipeline(const PolyParam& pp) const
+	{
+		const bool sampleRate = samples > 1 && !SsaaSingleRate(pp);
+		return *prepassPipelines[pp.pcw.Texture][pp.pcw.Gouraud][pp.isp.CullMode == 3 ? 2 : pp.isp.CullMode == 2 ? 1 : 0][sampleRate];
 	}
 
 	vk::Pipeline GetModifierVolumePipeline(ModVolMode mode, int cullMode)
@@ -284,8 +296,11 @@ private:
 	}
 
 	void CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass, bool sampleRate);
+	void CreatePrepassPipelines();
 
 	std::map<u32, vk::UniquePipeline> pipelines;
+	// [textured][Gouraud][no culling, front, back][SSAA: shaded at each sample]
+	vk::UniquePipeline prepassPipelines[2][2][3][2];
 	std::map<u32, vk::UniquePipeline> modVolPipelines;
 
 	vk::UniquePipelineLayout pipelineLayout;

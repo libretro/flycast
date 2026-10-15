@@ -136,11 +136,13 @@ bool TaDecoder::Init(CommandPool& pool)
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
 		r->buffers[B_TRP] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4, storage, local));
 		/* The sorted indices: three a triangle, for as many triangles as a
-		 * frame can have indices. In host-visible memory, which the CPU
-		 * writes them to once (they are its sort's) and the GPU reads once. */
+		 * frame can have indices, and as many again for the depth prepass
+		 * (rend/sorter.h), whose triangles are some of those. In
+		 * host-visible memory, which the CPU writes them to once (they are
+		 * its sort's) and the GPU reads once. */
 		if (sortWanted)
 		{
-			const vk::DeviceSize slot = ((vk::DeviceSize)sz.idx * 3 * 4 + 255) & ~(vk::DeviceSize)255;
+			const vk::DeviceSize slot = ((vk::DeviceSize)sz.idx * 2 * 3 * 4 + 255) & ~(vk::DeviceSize)255;
 			r->sorted = std::unique_ptr<BufferData>(new BufferData(slot * frames, vk::BufferUsageFlagBits::eIndexBuffer));
 			r->sortedMap = (u8 *)r->sorted->MapMemory();
 			r->sortSlot = slot;

@@ -29,6 +29,7 @@ void Drawer::SortTriangles()
 {
 	sortedPolys.resize(pvrrc.render_passes.used());
 	sortedIndexes.resize(pvrrc.render_passes.used());
+	prepassPolys.resize(pvrrc.render_passes.used());
 	sortedIndexCount = 0;
 	RenderPass previousPass = {};
 
@@ -36,10 +37,15 @@ void Drawer::SortTriangles()
 	{
 		const RenderPass& current_pass = pvrrc.render_passes.head()[render_pass];
 		sortedIndexes[render_pass].clear();
+		prepassPolys[render_pass].clear();
 		if (current_pass.autosort)
 		{
 			GenSorted(previousPass.tr_count, current_pass.tr_count - previousPass.tr_count, sortedPolys[render_pass], sortedIndexes[render_pass], true);
+			GenPrepass(previousPass.tr_count, current_pass.tr_count - previousPass.tr_count,
+					render_pass == pvrrc.render_passes.used() - 1, prepassPolys[render_pass], sortedIndexes[render_pass], true);
 			for (auto& poly : sortedPolys[render_pass])
+				poly.first += sortedIndexCount;
+			for (auto& poly : prepassPolys[render_pass])
 				poly.first += sortedIndexCount;
 			sortedIndexCount += sortedIndexes[render_pass].size();
 		}
@@ -189,6 +195,7 @@ void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 			palette_index
 		};
 		cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
+		pushed = pushConstants;
 	}
 
 	if (poly.pcw.Texture)
@@ -251,6 +258,69 @@ void Drawer::DrawSorted(const vk::CommandBuffer& cmdBuffer, const SortTrigDrawPa
 			cmdBuffer.drawIndexed(param.count, 1, base + param.first, 0, 0);
 		}
 	}
+	if (pvrrc.gpu)
+	{
+		cmdBuffer.bindIndexBuffer(gpuDraw->indices, 0, vk::IndexType::eUint32);
+		gpuDraws = GpuDraws::Groups;
+	}
+}
+
+// The depth prepass of a sorted list: rend/sorter.h
+void Drawer::DrawPrepass(const vk::CommandBuffer& cmdBuffer, const SortTrigDrawParam *polys, u32 count)
+{
+	if (count == 0)
+		return;
+	// (as DrawSorted(): of a frame decoded on the GPU, the indices are in the decoder's room)
+	const u32 base = pvrrc.gpu ? 0 : pvrrc.idx.used();
+	if (pvrrc.gpu)
+	{
+		cmdBuffer.bindIndexBuffer(gpuDraw->sorted, gpuDraw->sortedOffset, vk::IndexType::eUint32);
+		gpuDraws = GpuDraws::Sorted;
+	}
+	for (u32 i = 0; i < count; i++)
+	{
+		const PolyParam& poly = *polys[i].ppid;
+		vk::Rect2D scissorRect;
+		const TileClipping tileClip = SetTileClip(poly.tileclip, scissorRect);
+		SetScissor(cmdBuffer, tileClip == TileClipping::Outside ? scissorRect : baseScissor);
+
+		// what the colour pass's shader has as macros (see FragmentShaderParams)
+		const bool palette = BaseTextureCacheData::IsGpuHandledPaletted(poly.tsp, poly.tcw);
+		float palette_index = 0.f;
+		if (palette)
+		{
+			if (poly.tcw.PixelFmt == PixelPal4)
+				palette_index = (float(poly.tcw.PalSelect << 4) + 0.5f) / 1024.f;
+			else
+				palette_index = (float((poly.tcw.PalSelect >> 4) << 8) + 0.5f) / 1024.f;
+		}
+		const u32 flags = (tileClip == TileClipping::Inside ? PREPASS_CLIP_INSIDE : 0)
+				| (poly.tsp.UseAlpha ? PREPASS_USE_ALPHA : 0)
+				| (palette ? PREPASS_PALETTE : 0)
+				| (poly.tcw.PixelFmt == PixelBumpMap ? PREPASS_BUMP_MAP : 0)
+				| (poly.tsp.IgnoreTexA || poly.tcw.PixelFmt == Pixel565 ? PREPASS_IGNORE_TEX_A : 0)
+				| (poly.tsp.ShadInstr * PREPASS_SHAD_INSTR)
+				| (poly.tsp.ColorClamp ? PREPASS_CLAMP : 0)
+				| (poly.tsp.FogCtrl == 3 ? PREPASS_FOG_ALPHA : 0)
+				| (PrepassAlwaysHides(&poly) ? PREPASS_ALWAYS : 0);
+		const std::array<float, 6> pushConstants = {
+			(float)scissorRect.offset.x,
+			(float)scissorRect.offset.y,
+			(float)scissorRect.offset.x + (float)scissorRect.extent.width,
+			(float)scissorRect.offset.y + (float)scissorRect.extent.height,
+			(float)flags,
+			palette_index
+		};
+		cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
+
+		if (poly.pcw.Texture)
+			GetCurrentDescSet().SetTexture(poly.texid, poly.tsp);
+		cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelineManager->GetPrepassPipeline(poly));
+		if (poly.pcw.Texture)
+			GetCurrentDescSet().BindPerPolyDescriptorSets(cmdBuffer, poly.texid, poly.tsp);
+		DrawIndices(cmdBuffer, ListType_Translucent, base + polys[i].first, polys[i].count);
+	}
+	cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushed);
 	if (pvrrc.gpu)
 	{
 		cmdBuffer.bindIndexBuffer(gpuDraw->indices, 0, vk::IndexType::eUint32);
@@ -340,6 +410,7 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 	// (all six: the polygon shaders' block is six floats, and what is not pushed is not anything in particular)
 	const std::array<float, 6> pushConstants = { 1 - FPU_SHAD_SCALE.scale_factor / 256.f, 0, 0, 0, 0, 0 };
 	cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
+	pushed = pushConstants;
 
 	pipeline = pipelineManager->GetModifierVolumePipeline(ModVolMode::Final, 0);
 	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
@@ -457,6 +528,7 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	// Make sure to push constants even if not used
 	const std::array<float, 6> pushConstants = { 0, 0, 0, 0, 0, 0 };
 	cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
+	pushed = pushConstants;
 
 	RenderPass previous_pass = {};
 	for (int render_pass = 0; render_pass < pvrrc.render_passes.used(); render_pass++)
@@ -478,16 +550,20 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			if (pvrrc.gpu)
 			{
 				u32 n;
+				const SortTrigDrawParam *prepass = ta_gpu_prepass(render_pass, &n);
+				DrawPrepass(cmdBuffer, prepass, n);
 				const SortTrigDrawParam *sorted = ta_gpu_sorted(render_pass, &n);
 				DrawSorted(cmdBuffer, sorted, n, render_pass < pvrrc.render_passes.used() - 1);
 			}
 			else if (!settings.pvr.Emulation.AlphaSortMode)
 			{
+				DrawPrepass(cmdBuffer, prepassPolys[render_pass].data(), (u32)prepassPolys[render_pass].size());
 				DrawSorted(cmdBuffer, sortedPolys[render_pass].data(), (u32)sortedPolys[render_pass].size(),
 						render_pass < pvrrc.render_passes.used() - 1);
 			}
 			else
 			{
+				DrawPrepass(cmdBuffer, prepassPolys[render_pass].data(), (u32)prepassPolys[render_pass].size());
 				SortPParams(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count);
 				DrawList(cmdBuffer, ListType_Translucent, true, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
 			}

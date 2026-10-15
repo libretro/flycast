@@ -3617,6 +3617,18 @@ static struct TaGpuSortState
 	u32 pass_run[TAG_MAX_PASS], pass_runs[TAG_MAX_PASS];
 	u32 tris;
 	u64 ns;
+	/* Each sorted pass's depth prepass (rend/sorter.h): the triangles of
+	 * its polygons that can hide what is behind them, by polygon and the
+	 * polygons by what they are drawn with (porder: triangle numbers, ptris
+	 * of them; their indices go after the sorted ones), and its draws */
+	u32 *porder;
+	u32 ptris;
+	SortTrigDrawParam *prun;
+	u32 pass_prun[TAG_MAX_PASS], pass_pruns[TAG_MAX_PASS];
+	u32 hroom;			// headers the next three have room for
+	u32 *hcount;			// a header's triangles, then where they go (all 0 between frames)
+	u32 *htouched;
+	std::pair<PrepassKey, u32> *hkey;
 } gsort;
 
 bool ta_gpu_sort_reserve(bool on)
@@ -3633,6 +3645,11 @@ bool ta_gpu_sort_reserve(bool on)
 	free(g.keys[0]);
 	free(g.keys[1]);
 	free(g.run);
+	free(g.porder);
+	free(g.prun);
+	free(g.hcount);
+	free(g.htouched);
+	free(g.hkey);
 	memset(&g, 0, sizeof(g));
 	if (!on)
 		return true;
@@ -3643,7 +3660,14 @@ bool ta_gpu_sort_reserve(bool on)
 	g.keys[0] = (u64 *)malloc((size_t)room * sizeof(u64));
 	g.keys[1] = (u64 *)malloc((size_t)room * sizeof(u64));
 	g.run = (SortTrigDrawParam *)malloc((size_t)room * sizeof(SortTrigDrawParam));
-	if (g.tri == NULL || g.keys[0] == NULL || g.keys[1] == NULL || g.run == NULL)
+	const u32 hroom = sz.headers;
+	g.porder = (u32 *)malloc((size_t)room * sizeof(u32));
+	g.prun = (SortTrigDrawParam *)malloc((size_t)hroom * sizeof(SortTrigDrawParam));
+	g.hcount = (u32 *)calloc(hroom, sizeof(u32));
+	g.htouched = (u32 *)malloc((size_t)hroom * sizeof(u32));
+	g.hkey = (std::pair<PrepassKey, u32> *)malloc((size_t)hroom * sizeof(std::pair<PrepassKey, u32>));
+	if (g.tri == NULL || g.keys[0] == NULL || g.keys[1] == NULL || g.run == NULL
+			|| g.porder == NULL || g.prun == NULL || g.hcount == NULL || g.htouched == NULL || g.hkey == NULL)
 	{
 		ta_gpu_sort_reserve(false);
 		WARN_LOG(PVR, "TA processing: no memory for sorting translucent triangles");
@@ -3654,6 +3678,11 @@ bool ta_gpu_sort_reserve(bool on)
 	memset(g.keys[0], 0, (size_t)room * sizeof(u64));
 	memset(g.keys[1], 0, (size_t)room * sizeof(u64));
 	memset(g.run, 0, (size_t)room * sizeof(SortTrigDrawParam));
+	memset(g.porder, 0, (size_t)room * sizeof(u32));
+	memset(g.prun, 0, (size_t)hroom * sizeof(SortTrigDrawParam));
+	memset(g.htouched, 0, (size_t)hroom * sizeof(u32));
+	memset((void *)g.hkey, 0, (size_t)hroom * sizeof(std::pair<PrepassKey, u32>));
+	g.hroom = hroom;
 	g.room = room;
 	return true;
 }
@@ -3669,9 +3698,20 @@ const SortTrigDrawParam *ta_gpu_sorted(u32 pass, u32 *count)
 	return gsort.run + gsort.pass_run[pass];
 }
 
+const SortTrigDrawParam *ta_gpu_prepass(u32 pass, u32 *count)
+{
+	if (pass >= TAG_MAX_PASS || gsort.pass_pruns[pass] == 0)
+	{
+		*count = 0;
+		return NULL;
+	}
+	*count = gsort.pass_pruns[pass];
+	return gsort.prun + gsort.pass_prun[pass];
+}
+
 u32 ta_gpu_sorted_indices(void)
 {
-	return gsort.tris * 3;
+	return (gsort.tris + gsort.ptris) * 3;
 }
 
 void ta_gpu_sorted_write(u32 *dst)
@@ -3687,6 +3727,13 @@ void ta_gpu_sorted_write(u32 *dst)
 			dst[1] = t[1];
 			dst[2] = t[2];
 		}
+	}
+	for (u32 i = 0; i < g.ptris; i++, dst += 3)
+	{
+		const u32 *t = &g.tri[g.porder[i] * 4];
+		dst[0] = t[0];
+		dst[1] = t[1];
+		dst[2] = t[2];
 	}
 }
 
@@ -3916,6 +3963,88 @@ static u32 ta_gpu_sort_keys(u64 *k[2], u32 first, u32 n)
 	return at;
 }
 
+/* The depth prepass of each sorted pass, as GenPrepass() makes it but for
+ * the vertices, which are the GPU's (no vertex alpha is looked at: a
+ * polygon whose vertices cannot make alpha 1 is drawn, and none of its
+ * pixels is kept). The triangles are the sorted ones, before they were
+ * sorted. */
+static void ta_gpu_prepass_frame(const TaWalkFrame &f)
+{
+	TaGpuSortState &g = gsort;
+	const u32 none = ~0u;
+	u32 npr = 0;
+	g.ptris = 0;
+	memset(g.pass_pruns, 0, sizeof(g.pass_pruns));
+	if (f.headers > g.hroom)
+		return;
+	for (u32 p = 0; p < f.passes && p < TAG_MAX_PASS; p++)
+	{
+		g.pass_prun[p] = npr;
+		const u32 n = g.pass_count[p];
+		const bool last = p == f.passes - 1;
+		if (n == 0 || !PrepassWanted(last))
+			continue;
+		const u32 t0 = g.pass_first[p];
+		// the polygons that can hide, and their triangles' counts
+		u32 nh = 0, nt = 0;
+		for (u32 t = t0; t < t0 + n; t++)
+		{
+			const u32 *d = &g.tri[t * 4];
+			if (d[0] == d[1] || d[1] == d[2] || d[0] == d[2])
+				continue;
+			u32 &c = g.hcount[d[3]];
+			if (c == 0)
+			{
+				g.htouched[nt++] = d[3];
+				const PolyParam *pp = &f.header[d[3]].pp;
+				if (!PrepassCandidate(pp, last))
+				{
+					c = none;
+					continue;
+				}
+				g.hkey[nh++] = std::make_pair(PrepassMakeKey(pp, 0), d[3]);
+			}
+			else if (c == none)
+				continue;
+			c++;
+		}
+		std::sort(g.hkey, g.hkey + nh,
+				[](const std::pair<PrepassKey, u32>& a, const std::pair<PrepassKey, u32>& b) {
+					return a.first < b.first || (a.first == b.first && a.second < b.second);
+				});
+		// where each one's triangles go, and the draws
+		u32 at = g.ptris;
+		for (u32 k = 0; k < nh; k++)
+		{
+			const u32 h = g.hkey[k].second;
+			const u32 c = g.hcount[h];
+			g.hcount[h] = at;
+			if (k == 0 || !(g.hkey[k].first == g.hkey[k - 1].first))
+			{
+				SortTrigDrawParam &r = g.prun[npr++];
+				r.ppid = &f.header[h].pp;
+				r.first = (g.tris + at) * 3;
+				r.count = 0;
+			}
+			g.prun[npr - 1].count += c * 3;
+			at += c;
+		}
+		for (u32 t = t0; t < t0 + n; t++)
+		{
+			const u32 *d = &g.tri[t * 4];
+			if (d[0] == d[1] || d[1] == d[2] || d[0] == d[2])
+				continue;
+			u32 &o = g.hcount[d[3]];
+			if (o != none)
+				g.porder[o++] = t;
+		}
+		for (u32 k = 0; k < nt; k++)
+			g.hcount[g.htouched[k]] = 0;
+		g.ptris = at;
+		g.pass_pruns[p] = npr - g.pass_prun[p];
+	}
+}
+
 /* The sorted passes of the frame the header pass made (before its lists
  * are made into draw groups), with @seg_v each segment's vertices: false
  * if they do not fit (which cannot be) */
@@ -3927,6 +4056,8 @@ static bool ta_gpu_sort_frame(TaWalkFrame &f, const u8 *root)
 	const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 
 	g.tris = 0;
+	g.ptris = 0;
+	memset(g.pass_pruns, 0, sizeof(g.pass_pruns));
 	memset(g.pass_first, 0, sizeof(g.pass_first));
 	memset(g.pass_count, 0, sizeof(g.pass_count));
 	memset(g.pass_buf, 0, sizeof(g.pass_buf));
@@ -3972,6 +4103,7 @@ static bool ta_gpu_sort_frame(TaWalkFrame &f, const u8 *root)
 		}
 		g.pass_runs[p] = nrun - g.pass_run[p];
 	}
+	ta_gpu_prepass_frame(f);
 	g.ns = (u64)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
 	return true;
 }
@@ -4083,9 +4215,11 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	out->shadows = 0;
 	// (nothing sorted, until this frame is)
 	gsort.tris = 0;
+	gsort.ptris = 0;
 	gsort.ns = 0;
 	memset(gsort.pass_count, 0, sizeof(gsort.pass_count));
 	memset(gsort.pass_runs, 0, sizeof(gsort.pass_runs));
+	memset(gsort.pass_pruns, 0, sizeof(gsort.pass_pruns));
 	if (!ta_gpu_on || !ta_walk_table(ctx, &count))
 		return false;
 	if (draw)
