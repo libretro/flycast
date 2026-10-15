@@ -191,8 +191,7 @@ bool Intersect(const IndexTrig &left, const IndexTrig &right)
 //are two poly params the same?
 static bool PP_EQ(const PolyParam *pp0, const PolyParam *pp1)
 {
-	return (pp0->pcw.full & PCW_DRAW_MASK) == (pp1->pcw.full & PCW_DRAW_MASK) && pp0->isp.full == pp1->isp.full
-			&& pp0->tcw.full == pp1->tcw.full && pp0->tsp.full == pp1->tsp.full && pp0->tileclip == pp1->tileclip;
+	return SortSameDraw(pp0, pp1);
 }
 
 static void fill_id(u32 *d, const Vertex *v0, const Vertex *v1, const Vertex *v2,  const Vertex *vb)

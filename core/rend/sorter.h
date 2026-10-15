@@ -18,6 +18,14 @@
 #include "types.h"
 #include "hw/pvr/Renderer_if.h"
 
+/* Whether two polygons are drawn the same way, so that GenSorted() makes
+ * one draw of triangles of both that come one after the other */
+static inline bool SortSameDraw(const PolyParam *pp0, const PolyParam *pp1)
+{
+	return (pp0->pcw.full & PCW_DRAW_MASK) == (pp1->pcw.full & PCW_DRAW_MASK) && pp0->isp.full == pp1->isp.full
+			&& pp0->tcw.full == pp1->tcw.full && pp0->tsp.full == pp1->tsp.full && pp0->tileclip == pp1->tileclip;
+}
+
 //Sort based on min-z of each strip
 void SortPParams(int first, int count);
 
