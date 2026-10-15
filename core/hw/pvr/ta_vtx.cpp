@@ -8,6 +8,7 @@
 #include "ta_ctx.h"
 #include "pvr_mem.h"
 #include "Renderer_if.h"
+#include "rend/tile/pvr_tile.h"
 
 /* The larger and the smaller of two, as std::max() and std::min() have
  * them (which of two equal ones, and what a NaN does, included). */
@@ -33,6 +34,24 @@ extern int screen_height;
 
 //cache state vars
 static u32 tileclip_val = 0;
+
+/* Whether flat strips are looked for (ta_set_flat_strips()), and the AND
+ * and the OR of the bits of the depths of the strip being decoded so far,
+ * for whether it is flat (PVR_FLAT_RATE_BIT()): the strip's end puts the
+ * answer in its control word's single-rate bit. Looked for, the vertices
+ * are decoded by another copy of the decoders, which does that; not, by
+ * the ones that do not, and nothing on the way costs a thing - a
+ * polygon's single-rate bit is then what the game left in that reserved
+ * bit, and only the sprites' and the background's mean anything. */
+static bool flat_strips_wanted;
+static u32 strip_z_and = PVR_FLAT_AND_INIT;
+static u32 strip_z_or = PVR_FLAT_OR_INIT;
+
+/* (from the thread that renders, which is the one that parses) */
+void ta_set_flat_strips(bool on)
+{
+	flat_strips_wanted = on;
+}
 
 /* A colour component given as a float, as the hardware takes it: clamped to
  * 0..1 (anything negative is 0; anything above 1, infinity and NaN are 1).
@@ -177,6 +196,10 @@ static inline void float_argb_to_satu8(u8 *to, const void *argb)
 class FifoSplitter
 {
    static const u32 *ta_type_lut;
+	/* The vertex decoders by vertex type: [1] the ones that look for flat
+	 * strips, and which of the two this frame uses */
+	static TaListFP* const poly_data_luts[2][15];
+	static TaListFP* const* poly_data_lut;
 
 	static void ta_list_start(u32 new_list)
 	{
@@ -330,11 +353,29 @@ case num : {\
 		}
 	}
 
-	template <u32 poly_type,u32 poly_size>
+	/* The bits of the depth (1/w) of the vertex parameter at @data: every
+	 * kind has it at the same place, in its first 32 bytes */
+	static inline u32 ta_vertex_z_bits(const Ta_Dma* data)
+	{
+		u32 z;
+		memcpy(&z, &((const TA_VertexParam*)data)->vtx0.xyz[2], sizeof(z));
+		return z;
+	}
+
+	/* @flat: the strips' flatness is worked out as they go (flat_strips_wanted) */
+	template <u32 poly_type,u32 poly_size,bool flat>
 	static Ta_Dma* TACALL ta_poly_data(Ta_Dma* data,Ta_Dma* data_end)
 	{
 					//If SZ64  && 32 bytes
 #define IS_FIST_HALF ((poly_size!=SZ32) && (data==data_end))
+
+		/* (a strip that starts here starts from nothing: whatever a strip the
+		 * game never ended left is not part of it) */
+		if (flat && CurrentPP != NULL && CurrentPP->first == (u32)vdrc.verts.used())
+		{
+			strip_z_and = PVR_FLAT_AND_INIT;
+			strip_z_or = PVR_FLAT_OR_INIT;
+		}
 
 		/* The formats nearly every vertex comes in - packed colour or
 		 * intensity, with or without a texture - when the vertex list has
@@ -352,6 +393,8 @@ case num : {\
 			Vertex* cv = first;
 			PolyParam* pp = CurrentPP;
 			s32 z_max = (s32&)vdrc.fZ_max;
+			u32 z_and = strip_z_and;
+			u32 z_or = strip_z_or;
 
 			for (;;)
 			{
@@ -362,6 +405,11 @@ case num : {\
 				z = (s32&)cv->z;
 				if (z_max < z && z < 0x49800000)
 					z_max = z;
+				if (flat)
+				{
+					z_and &= (u32)z;
+					z_or |= (u32)z;
+				}
 				cv++;
 				end_of_strip = data->pcw.EndOfStrip;
 				data++;
@@ -373,11 +421,14 @@ case num : {\
 					 * for that narrow store to reach memory. */
 					const u32 used = (u32)(cv - head);
 					const u32 count = used - pp->first;
+					const u32 pcw = flat ? (pp->pcw.full & ~PVR_PCW_SINGLE_RATE) | PVR_FLAT_RATE_BIT(z_and, z_or) : 0;
 					if (count > 0)
 					{
 						const PolyParam copy = *pp;
 						PolyParam* d_pp = CurrentPPlist->Append();
 						pp->count = count;
+						if (flat)
+							pp->pcw.full = pcw;	// (the copy's strip sets its own)
 						*d_pp = copy;
 						d_pp->first = used;
 						d_pp->count = 0;
@@ -385,6 +436,11 @@ case num : {\
 					}
 					else
 						pp->count = count;
+					if (flat)
+					{
+						z_and = PVR_FLAT_AND_INIT;
+						z_or = PVR_FLAT_OR_INIT;
+					}
 					/* The next strip of the same polygon follows at once,
 					 * more often than not: it is gone on with here, where
 					 * ta_main would only come back for it. */
@@ -398,10 +454,20 @@ case num : {\
 			vdrc.verts.avail -= (int)(cv - first);
 			vdrc.verts.daty = cv;
 			(s32&)vdrc.fZ_max = z_max;
+			if (flat)
+			{
+				strip_z_and = z_and;
+				strip_z_or = z_or;
+			}
 			CurrentPP = pp;
 			TaCmd=ta_main;
 			return data;
 		}
+
+		/* (with @flat, the strip's depths kept in registers here, and in
+		 * memory only from one call to the next) */
+		u32 z_and = strip_z_and;
+		u32 z_or = strip_z_or;
 
 		if (IS_FIST_HALF)
 			goto fist_half;
@@ -409,16 +475,31 @@ case num : {\
 		do
       {
          ta_handle_poly<poly_type,0>(data, 0);
+         if (flat)
+         {
+            z_and &= ta_vertex_z_bits(data);
+            z_or |= ta_vertex_z_bits(data);
+         }
          if (data->pcw.EndOfStrip)
             goto strip_end;
          data += poly_size;
       } while (poly_size == SZ32 ? data <= data_end : data < data_end);
+		if (flat)
+		{
+			strip_z_and = z_and;
+			strip_z_or = z_or;
+		}
 			
 		if (IS_FIST_HALF)
 		{
 		fist_half:
 			ta_handle_poly<poly_type,1>(data,0);
-			if (data->pcw.EndOfStrip) EndPolyStrip();
+			if (flat)
+			{
+				strip_z_and &= ta_vertex_z_bits(data);
+				strip_z_or |= ta_vertex_z_bits(data);
+			}
+			if (data->pcw.EndOfStrip) EndPolyStrip<flat>();
 			TaCmd=ta_handle_poly<poly_type,2>;
 					
 			data+=SZ32;
@@ -427,9 +508,14 @@ case num : {\
 		return data;
 
 strip_end:
+		if (flat)
+		{
+			strip_z_and = z_and;
+			strip_z_or = z_or;
+		}
 		TaCmd=ta_main;
 		if (data->pcw.EndOfStrip)
-			EndPolyStrip();
+			EndPolyStrip<flat>();
 		return data+poly_size;
 	}
 
@@ -556,7 +642,7 @@ strip_end:
 							data+=SZ32;
 							continue;
 						}
-						VertexDataFP=ta_poly_data_lut[pdid];
+						VertexDataFP=poly_data_lut[pdid];
 							
 
 						if (data != data_end || psz==1)
@@ -816,6 +902,9 @@ public:
 		lmr = NULL;
 		CurrentPP = NULL;
 		CurrentPPlist = NULL;
+		poly_data_lut = poly_data_luts[flat_strips_wanted ? 1 : 0];
+		strip_z_and = PVR_FLAT_AND_INIT;
+		strip_z_or = PVR_FLAT_OR_INIT;
 		/* Until the game gives a clipping rectangle, it is everything: 40
 		 * by 15 tiles. It was whatever the last frame left, at first the
 		 * one tile at the top left, and a polygon that asked to be clipped
@@ -994,9 +1083,12 @@ private:
 	}
 
 	//Poly Strip handling
+	template <bool flat>
 	__forceinline
 		static void EndPolyStrip()
 	{
+		PolyParam* const pp = CurrentPP;
+
 		CurrentPP->count = vdrc.verts.used() - CurrentPP->first;
 
 		if (CurrentPP->count > 0)
@@ -1006,6 +1098,14 @@ private:
 			CurrentPP = d_pp;
 			d_pp->first = vdrc.verts.used();
 			d_pp->count = 0;
+		}
+		/* (after the copy, whose wide loads would otherwise wait for this
+		 * narrow store to reach memory; the copy's strip sets its own) */
+		if (flat)
+		{
+			pp->pcw.full = (pp->pcw.full & ~PVR_PCW_SINGLE_RATE) | PVR_FLAT_RATE_BIT(strip_z_and, strip_z_or);
+			strip_z_and = PVR_FLAT_AND_INIT;
+			strip_z_or = PVR_FLAT_OR_INIT;
 		}
 	}
 
@@ -1451,6 +1551,7 @@ private:
 		d_pp->tsp=spr->tsp; 
 		d_pp->tcw=spr->tcw; 
 		d_pp->pcw=spr->pcw; 
+		d_pp->pcw.full |= PVR_PCW_SINGLE_RATE;	// a sprite is drawn at a single rate
 		d_pp->tileclip=tileclip_val;
 
 		d_pp->texid = -1;
@@ -1666,6 +1767,16 @@ private:
 
 const u32 *FifoSplitter::ta_type_lut;
 
+#define TA_POLY_DATA_LUT(flat) { \
+	ta_poly_data<0,SZ32,flat>, ta_poly_data<1,SZ32,flat>, ta_poly_data<2,SZ32,flat>, \
+	ta_poly_data<3,SZ32,flat>, ta_poly_data<4,SZ32,flat>, ta_poly_data<5,SZ64,flat>, \
+	ta_poly_data<6,SZ64,flat>, ta_poly_data<7,SZ32,flat>, ta_poly_data<8,SZ32,flat>, \
+	ta_poly_data<9,SZ32,flat>, ta_poly_data<10,SZ32,flat>, ta_poly_data<11,SZ64,flat>, \
+	ta_poly_data<12,SZ64,flat>, ta_poly_data<13,SZ64,flat>, ta_poly_data<14,SZ64,flat> }
+TaListFP* const FifoSplitter::poly_data_luts[2][15] = { TA_POLY_DATA_LUT(false), TA_POLY_DATA_LUT(true) };
+#undef TA_POLY_DATA_LUT
+TaListFP* const* FifoSplitter::poly_data_lut = FifoSplitter::poly_data_luts[0];
+
 TaTypeLut::TaTypeLut()
 {
 	for (int i = 0; i < 256; i++)
@@ -1751,10 +1862,12 @@ typedef char ta_poly_layout[(offsetof(PolyParam, tcw) == offsetof(PolyParam, tsp
  * the same clipping rectangle and mode, and the same second shading and
  * texture words (those of a polygon under two volumes; all ones on any
  * other). Two words are compared at a time and there is one test for all
- * of them. */
+ * of them. The single-rate bit is left out of the control word's
+ * comparison: nothing draws by it yet, and strips are joined as before. */
 static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
 {
-	u64 a_tex, b_tex, a_ctl, b_ctl, a_tex1, b_tex1;
+	static const u32 ctl_mask_words[2] = { ~PVR_PCW_SINGLE_RATE, ~0u };	// (pcw, then isp)
+	u64 a_tex, b_tex, a_ctl, b_ctl, a_tex1, b_tex1, ctl_mask;
 
 	memcpy(&a_tex,  &a->tsp,  sizeof(a_tex));
 	memcpy(&b_tex,  &b->tsp,  sizeof(b_tex));
@@ -1762,8 +1875,9 @@ static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
 	memcpy(&b_ctl,  &b->pcw,  sizeof(b_ctl));
 	memcpy(&a_tex1, &a->tsp1, sizeof(a_tex1));
 	memcpy(&b_tex1, &b->tsp1, sizeof(b_tex1));
+	memcpy(&ctl_mask, ctl_mask_words, sizeof(ctl_mask));
 
-	return ((a_tex ^ b_tex) | (a_ctl ^ b_ctl) | (a_tex1 ^ b_tex1)
+	return ((a_tex ^ b_tex) | ((a_ctl ^ b_ctl) & ctl_mask) | (a_tex1 ^ b_tex1)
 			| (u64)(a->tileclip ^ b->tileclip)) == 0;
 }
 
@@ -2130,6 +2244,7 @@ void FillBGP(TA_context* ctx)
 	bgpp->pcw.Offset=bgpp->isp.Offset;
 	bgpp->pcw.Texture = bgpp->isp.Texture;
    bgpp->pcw.Shadow = ISP_BACKGND_T.shadow;
+	bgpp->pcw.full |= PVR_PCW_SINGLE_RATE;	// so is the background
 
 	float scale_x= (SCALER_CTL.hscale) ? 2.f:1.f;	//if AA hack the hacked pos value hacks
 	for (int i=0;i<3;i++)

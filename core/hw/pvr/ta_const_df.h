@@ -1,22 +1,4 @@
 ///this file is here to make up for C++'s limitations
-static TaListFP* ta_poly_data_lut[15] = 
-{
-	ta_poly_data<0,SZ32>,
-	ta_poly_data<1,SZ32>,
-	ta_poly_data<2,SZ32>,
-	ta_poly_data<3,SZ32>,
-	ta_poly_data<4,SZ32>,
-	ta_poly_data<5,SZ64>,
-	ta_poly_data<6,SZ64>,
-	ta_poly_data<7,SZ32>,
-	ta_poly_data<8,SZ32>,
-	ta_poly_data<9,SZ32>,
-	ta_poly_data<10,SZ32>,
-	ta_poly_data<11,SZ64>,
-	ta_poly_data<12,SZ64>,
-	ta_poly_data<13,SZ64>,
-	ta_poly_data<14,SZ64>,
-};
 //32/64b , full
 static TaPolyParamFP* ta_poly_param_lut[5]=
 {

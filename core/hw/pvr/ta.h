@@ -38,6 +38,10 @@ int ta_vtx_list(void);
 bool ta_vtx_half(void);
 
 bool ta_parse_vdrc(TA_context* ctx);
+/* Whether the frames parsed from here on mark their flat strips (every
+ * vertex at the same depth) as drawn at a single rate, as sprites and the
+ * background always are. Off, the decoder does no more than without it. */
+void ta_set_flat_strips(bool on);
 
 class TaTypeLut
 {
