@@ -23,7 +23,6 @@
 #include "rend/ssaa_pattern.h"
 #include <streams/file_stream.h>
 #include "hw/pvr/Renderer_if.h"
-#include "compiler.h"
 
 VulkanContext *VulkanContext::contextInstance;
 
@@ -384,8 +383,6 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	else
 		NOTICE_LOG(RENDERER, "eR4G4B4A4UnormPack16 not supported for optimal tiling");
 
-	ShaderCompiler::Init();
-
    // Descriptor pool
 	vk::DescriptorPoolSize pool_sizes[] =
 	{
@@ -556,7 +553,6 @@ void VulkanContext::Term()
 		VkPsoWorker::Instance().Stop(pipelineCache);
 		SavePipelineCache();
 	}
-	ShaderCompiler::Term();
 	descriptorPool.reset();
 	heap.Term();
 	if (pipelineCache)

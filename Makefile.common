@@ -105,59 +105,6 @@ SOURCES_CXX := \
 					$(CORE_DIR)/core/reios/descrambl.cpp \
 					\
 
-GLSLANG_INCFLAGS = \
-					-I$(DEPS_DIR)/khronos \
-					-I$(DEPS_DIR)/glslang
-
-GLSLANG_SOURCES_CXX = \
-					$(DEPS_DIR)/glslang/glslang/OSDependent/Web/glslang.js.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/ParseContextBase.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/Versions.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/RemoveTree.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/parseConst.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/Intermediate.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/limits.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/attribute.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/InfoSink.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/Constant.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/SymbolTable.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/Scan.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/IntermTraverse.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/intermOut.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/glslang_tab.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/propagateNoContraction.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/ShaderLang.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/reflection.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/ParseHelper.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/iomapper.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/linkValidate.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/Initialize.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/PoolAlloc.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/preprocessor/Pp.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/preprocessor/PpContext.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/preprocessor/PpScanner.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/preprocessor/PpTokens.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/preprocessor/PpAtom.cpp \
-					$(DEPS_DIR)/glslang/glslang/MachineIndependent/pch.cpp \
-					$(DEPS_DIR)/glslang/glslang/GenericCodeGen/CodeGen.cpp \
-					$(DEPS_DIR)/glslang/glslang/GenericCodeGen/Link.cpp \
-					$(DEPS_DIR)/glslang/OGLCompilersDLL/InitializeDll.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/SpvTools.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/disassemble.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/GlslangToSpv.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/SPVRemapper.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/Logger.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/SpvPostProcess.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/InReadableOrder.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/SpvBuilder.cpp \
-					$(DEPS_DIR)/glslang/SPIRV/doc.cpp
-
-ifeq ($(platform), win)
-	GLSLANG_SOURCES_CXX += $(DEPS_DIR)/glslang/glslang/OSDependent/Windows/ossource.cpp
-else
-	GLSLANG_SOURCES_CXX += $(DEPS_DIR)/glslang/glslang/OSDependent/Unix/ossource.cpp
-endif
-
 # CHD images are read by libretro-common's clean-room rchd reader. Its
 # FLAC and zstd hunk codecs come from the same tree; deflate and LZMA
 # are the archive codecs below, and the version 5 map needs
@@ -290,13 +237,8 @@ ifeq ($(HAVE_GL), 1)
 endif
 
 ifeq ($(HAVE_VULKAN), 1)
-	ifeq ($(SYSTEM_GLSLANG), 1)
-	    CFLAGS += -I/usr/include/glslang
-		LIBS +=
-	else
-		INCFLAGS += $(GLSLANG_INCFLAGS)
-		SOURCES_CXX += $(GLSLANG_SOURCES_CXX)
-	endif
+	# (the shaders are SPIR-V made when the source is: tools/rend/kernels_spv.sh; no GLSL compiler is built in)
+	INCFLAGS += -I$(DEPS_DIR)/khronos
 
 	SOURCES_C += $(LIBRETRO_COMM_DIR)/vulkan/vulkan_symbol_wrapper.c \
 					$(CORE_DIR)/core/rend/vulkan/vk_heap.c
@@ -304,7 +246,6 @@ ifeq ($(HAVE_VULKAN), 1)
 					$(CORE_DIR)/core/rend/vulkan/vulkan_context.cpp \
 					$(CORE_DIR)/core/rend/vulkan/heap.cpp \
 					$(CORE_DIR)/core/rend/vulkan/buffer.cpp \
-					$(CORE_DIR)/core/rend/vulkan/compiler.cpp \
 					$(CORE_DIR)/core/rend/vulkan/drawer.cpp \
 					$(CORE_DIR)/core/rend/vulkan/rtt_read.cpp \
 					$(CORE_DIR)/core/rend/vulkan/pipeline.cpp \
