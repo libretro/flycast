@@ -823,10 +823,12 @@ static void update_variables(bool first_startup)
    var.key = CORE_OPTION_NAME "_ssaa";
    {
       /* Samples a pixel: the renderer takes them up when it starts, or
-       * changes size - a change while the game runs is one */
+       * changes size - a change while the game runs is one. At most 4: 8
+       * shades every pixel 8 times, too slow at a high Internal Resolution
+       * even on the fastest cards (a configuration that still says 8x gets 4) */
       int samples = 1;
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-         samples = !strcmp(var.value, "8x") ? 8 : !strcmp(var.value, "4x") ? 4 : !strcmp(var.value, "2x") ? 2 : 1;
+         samples = (!strcmp(var.value, "8x") || !strcmp(var.value, "4x")) ? 4 : !strcmp(var.value, "2x") ? 2 : 1;
       if (!first_startup && samples != settings.rend.Ssaa)
          resize_pending = true;
       settings.rend.Ssaa = samples;
