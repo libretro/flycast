@@ -130,6 +130,9 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 	VulkanContext::Instance()->drawIndirectCount = false;
 	// (SSAA's shading per sample: see VulkanContext::SsaaSamples())
 	VulkanContext::Instance()->sampleRateShading = supportedFeatures.sampleRateShading;
+	// (the compute renderer's edge arithmetic, and its array of textures: vulkan/compute_drawer.h)
+	VulkanContext::Instance()->shaderInt64 = supportedFeatures.shaderInt64;
+	VulkanContext::Instance()->sampledImageArrayIndexing = supportedFeatures.shaderSampledImageArrayDynamicIndexing;
 
 	// Enable VK_KHR_dedicated_allocation if available
 	bool getMemReq2Supported = false;
@@ -256,6 +259,10 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 		features.drawIndirectFirstInstance = true;
 	if (VulkanContext::Instance()->sampleRateShading)
 		features.sampleRateShading = true;
+	if (VulkanContext::Instance()->shaderInt64)
+		features.shaderInt64 = true;
+	if (VulkanContext::Instance()->sampledImageArrayIndexing)
+		features.shaderSampledImageArrayDynamicIndexing = true;
 	vk::DeviceCreateInfo deviceCreateInfo(vk::DeviceCreateFlags(),
 			context->queue_family_index == context->presentation_queue_family_index ? 1 : 2, deviceQueueCreateInfos,
 			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features);

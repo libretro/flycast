@@ -97,6 +97,8 @@ public:
 	vk::Format GetDepthFormat() const { return depthFormat; }
 	static VulkanContext *Instance() { return contextInstance; }
 	bool SupportsSamplerAnisotropy() const { return samplerAnisotropy; }
+	bool SupportsShaderInt64() const { return shaderInt64; }
+	bool SupportsSampledImageArrayIndexing() const { return sampledImageArrayIndexing; }
 	bool SupportsStorageImageExtendedFormats() const { return storageImageExtendedFormats; }
 	u32 GetApiVersion() const { return apiVersion; }
 	bool SupportsDedicatedAllocation() const { return dedicatedAllocationSupported; }
@@ -164,6 +166,8 @@ public:
 	bool drawIndirectFirstInstance = false;
 	bool drawIndirectCount = false;		// VK_KHR_draw_indirect_count
 	bool sampleRateShading = false;
+	bool shaderInt64 = false;		// enabled on the device when it has it
+	bool sampledImageArrayIndexing = false;	// ...and this, shaderSampledImageArrayDynamicIndexing
 	/* VK_EXT_extended_dynamic_state and _state3 (pso.h), and
 	 * VK_EXT_pipeline_creation_cache_control: caches without a lock */
 	bool extendedDynamicState = false;
