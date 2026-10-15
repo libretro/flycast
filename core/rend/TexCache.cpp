@@ -940,8 +940,11 @@ void BaseTextureCacheData::Update()
 
 	/* Or made from its bytes on the GPU, where the renderer can: with the
 	 * converter, the format and the levels it would have here. Not a
-	 * texture scaled up or dumped, which need its texels on this side. */
-	if (direct && settings.rend.GpuTextureDecode)
+	 * texture scaled up or dumped, which need its texels on this side. A
+	 * planar 16-bit texture whose texels the renderer takes as they are
+	 * (plan.native) is offered whether the GPU makes textures or not: it
+	 * is a copy, which converting it here would only make a slower one. */
+	if (direct)
 	{
 		u32 out = 0xFF;
 		TextureType type = tex_type;
@@ -955,7 +958,7 @@ void BaseTextureCacheData::Update()
 		else if (texconv != NULL)
 			out = TEXD_OUT16;
 		texd_plan plan;
-		if (out != 0xFF && PlanDecode(plan, stride, rows, out, mipmapped))
+		if (out != 0xFF && PlanDecode(plan, stride, rows, out, mipmapped) && (settings.rend.GpuTextureDecode || plan.native))
 		{
 			const TextureType before = tex_type;
 			tex_type = type;

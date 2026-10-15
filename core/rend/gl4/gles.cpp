@@ -969,6 +969,8 @@ struct gl4rend : Renderer
 #endif
 		palette_updated = true;
 		TexCache.Clear();
+		// the textures' pool and the decoder, all of them now (gles/gl_texdecoder.h)
+		gl_tex_init(false);
 
 		if (settings.rend.PowerVR2Filter)
 			postProcessor.Init();
@@ -1039,6 +1041,7 @@ struct gl4rend : Renderer
 		}
 		TexCache.Clear();
 		rtt_watch_term();
+		gl_tex_term();
 
 		gl_term();
 	}

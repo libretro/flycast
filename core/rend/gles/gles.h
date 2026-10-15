@@ -8,6 +8,7 @@
 #include "rend/transform_matrix.h"
 #include "rend/sorter.h"
 #include "rend/tileclip.h"
+#include "rend/tex_pool.h"
 #include "postprocess.h"
 #include "glcache.h"
 
@@ -106,6 +107,11 @@ struct gl_ctx
 		GLuint depthb;
 		GLuint tex;
 		GLuint fbo;
+		struct GLPooledTexture *pooled;	// what tex is of the pool's (rend/tex_pool.h)
+		/* the framebuffer and the depth renderbuffer kept from one render
+		 * to the next (with the pool), and how large that is */
+		bool kept;
+		u32 depthWidth, depthHeight;
 	} rtt;
 
 	const char *gl_version;
@@ -229,13 +235,82 @@ extern struct ShaderUniforms_t
 
 } ShaderUniforms;
 
+/* A texture of the texture pool's (rend/tex_pool.h) */
+struct GLPooledTexture : TexPoolEntry
+{
+	GLuint name = 0;
+	u32 levels = 1;
+	GLPooledTexture *all = nullptr;		// every one there is, for Term()
+};
+
+/* The cache's textures on desktop OpenGL 3 and later (not OpenGL ES, nor
+ * OpenGL 2, which make theirs as before): made when the renderer starts,
+ * with their storage (glTexStorage2D() where there is one), and handed out
+ * to the textures that need one of their shape. The formats are the texture
+ * types, by their numbers, and the pictures rendered to: RGBA8 and RGB8.
+ * A texture given back can be handed out again at once: OpenGL sees to it
+ * that what the GPU still has to do with it is done first. */
+class GLTexturePool
+{
+public:
+	void Init();
+	void Term();
+	bool Ready() const { return ready; }
+	/* A texture of @type, @width by @height, with its levels or not: a
+	 * free one of that shape, or one made now if there is none. Null if the
+	 * shape is not one of the pool's. */
+	GLPooledTexture *Take(TextureType type, u32 width, u32 height, bool mips);
+	/* A picture to render to, RGB8 or RGBA8 */
+	GLPooledTexture *TakeTarget(bool rgb, u32 width, u32 height);
+	void Give(GLPooledTexture *texture) { book.Give(texture); }
+	/* The pool's texture of that name, or null */
+	GLPooledTexture *Find(GLuint name) const;
+	const TexPoolBook& Book() const { return book; }
+	enum { FORMATS = 7, TARGET_RGBA = 5, TARGET_RGB = 6 };
+
+private:
+	GLPooledTexture *Make(int cls, bool late);
+	GLPooledTexture *TakeClass(int cls);
+
+	TexPoolBook book;
+	bool ready = false;
+	bool storage = false;		// glTexStorage2D()
+	GLPooledTexture *all = nullptr;
+};
+extern GLTexturePool glTexPool;
+
+/* The textures' pool and the decoder (gl_texdecoder.h): made when a renderer
+ * starts (@depth: with the depth buffer renders to textures are made with),
+ * and what a frame's textures asked of the decoder, recorded before its
+ * draws */
+void gl_tex_init(bool depth);
+void gl_tex_term();
+void gl_tex_flush();
+
 class TextureCacheData : public BaseTextureCacheData
 {
 public:
-	GLuint texID;   //gl texture
+	GLuint texID;   //gl texture: its own, or the pool's
 	virtual std::string GetId() override { return std::to_string(texID); }
 	virtual void UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) override;
+	virtual bool GpuDecode(const texd_plan& plan) override;
 	virtual bool Delete() override;
+	/* The picture rendered to is the texture now: @tex, the pool's @pooled
+	 * or one of its own */
+	void SetRendered(GLuint tex, GLPooledTexture *pooled);
+	/* A texture of its own to be made anew: a custom texture's */
+	void Renew();
+
+private:
+	/* The pool's texture for this shape, the one it has if it is that;
+	 * false if the pool has none of this shape */
+	bool TakePooled(u32 width, u32 height, bool mips);
+	void ReleasePooled();
+	void CancelDecode();
+
+	GLPooledTexture *pooled = nullptr;
+	GLuint ownID = 0;		// its own texture, kept while it has the pool's
+	u32 decodeJob = 0, decodeSerial = 0;
 };
 
 class GlTextureCache : public BaseTextureCache<TextureCacheData>

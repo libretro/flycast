@@ -1273,6 +1273,8 @@ bool ProcessFrame(TA_context* ctx, u32 taFlags)
 			glTaDecoder.Record(ctx);
 		if (!rv)
 			return false;
+		// the textures the frame's polygons asked for that are made on the GPU, before the draws
+		gl_tex_flush();
 	}
    TexCache.CollectCleanup();
 
@@ -1308,6 +1310,8 @@ struct glesrend : Renderer
 #endif
       palette_updated = true;
       TexCache.Clear();
+      // the textures' pool and the decoder, all of them now (gl_texdecoder.h)
+      gl_tex_init(true);
 
       if (settings.rend.PowerVR2Filter)
       	postProcessor.Init();
@@ -1341,6 +1345,7 @@ struct glesrend : Renderer
 		postProcessor.Term();
 	   TexCache.Clear();
 		rtt_watch_term();
+		gl_tex_term();
 
 	   gl_term();
    }

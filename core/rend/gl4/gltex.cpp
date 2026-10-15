@@ -5,10 +5,15 @@
 
 GLuint gl4BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 {
-	if (gl.rtt.fbo)
+	/* (with the pool, the framebuffer is kept, and the texture is the pool's) */
+	if (gl.rtt.fbo && !gl.rtt.kept)
 		glDeleteFramebuffers(1,&gl.rtt.fbo);
-	if (gl.rtt.tex)
+	if (gl.rtt.pooled != nullptr)
+		glTexPool.Give(gl.rtt.pooled);
+	else if (gl.rtt.tex)
 		glcache.DeleteTextures(1,&gl.rtt.tex);
+	gl.rtt.pooled = nullptr;
+	gl.rtt.tex = 0;
 
 	gl.rtt.TexAddr=addy>>3;
 
@@ -28,14 +33,22 @@ GLuint gl4BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 		fbh2 *= settings.rend.RenderToTextureUpscale;
 	}
 
-	// Create a texture for rendering to
-	gl.rtt.tex = glcache.GenTexture();
-	glcache.BindTexture(GL_TEXTURE_2D, gl.rtt.tex);
+	// A texture for rendering to: the pool's, made at the start, if it has one of that shape
+	if (fmt == GL_UNSIGNED_BYTE)
+		gl.rtt.pooled = glTexPool.TakeTarget(channels == GL_RGB, fbw2, fbh2);
+	if (gl.rtt.pooled != nullptr)
+		gl.rtt.tex = gl.rtt.pooled->name;
+	else
+	{
+		gl.rtt.tex = glcache.GenTexture();
+		glcache.BindTexture(GL_TEXTURE_2D, gl.rtt.tex);
 
-	glTexImage2D(GL_TEXTURE_2D, 0, channels, fbw2, fbh2, 0, channels, fmt, 0);
+		glTexImage2D(GL_TEXTURE_2D, 0, channels, fbw2, fbh2, 0, channels, fmt, 0);
+	}
 
 	// Create the object that will allow us to render to the aforementioned texture
-	glGenFramebuffers(1, &gl.rtt.fbo);
+	if (!gl.rtt.kept)
+		glGenFramebuffers(1, &gl.rtt.fbo);
 	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, gl.rtt.fbo);
 
 	// Attach the texture to the FBO
