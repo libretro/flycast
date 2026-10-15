@@ -711,7 +711,13 @@ void DX9Context::DrawQuad(IDirect3DTexture9 *texture, bool linear, bool swapRB,
 	SetScissor(all);
 	SetTexture(0, texture);
 	SetSampler(0, linear ? LinearSampler() : PointSampler());
-	SetBools(swapRB ? (bound.bools | (1u << DX9B_SwapRB)) : (bound.bools & ~(1u << DX9B_SwapRB)));
+	/* From the flags that are set, not from Forget()'s "nothing known"
+	 * (all ones): with the swap that is all ones still, and the flags
+	 * were never set - the quad read whatever the frontend left there,
+	 * and a frame the game wrote itself came out with red and blue
+	 * swapped. */
+	const u32 known = bound.bools & ((1u << DX9B_Count) - 1);
+	SetBools(swapRB ? (known | (1u << DX9B_SwapRB)) : (known & ~(1u << DX9B_SwapRB)));
 	const float color[4] = { 1.f, 1.f, 1.f, alpha };
 	device->SetPixelShaderConstantF(DX9PC_Quad, color, 1);
 	device->DrawPrimitive(D3DPT_TRIANGLESTRIP, quadNext * 4, 2);
