@@ -46,19 +46,22 @@ public:
 		constants.reset();
 		size = pixel_buffer_size;
 
+		/* (the most a resource can be is a quarter of the card's memory, but
+		 * at least 128 MB and at most 2 GB: it is asked for no larger than
+		 * that, and halved until the card makes it, a whole number of
+		 * pixels each time) */
+		const UINT largest = D3D11_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_C_TERM * 1024u * 1024u;
+		const UINT smallest = D3D11_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_A_TERM * 1024u * 1024u;
 		D3D11_BUFFER_DESC desc{};
-		desc.ByteWidth = (UINT)std::min<u64>(size, 0xfffffff0u) & ~15u;
+		desc.ByteWidth = (UINT)std::min<u64>(size, largest) & ~15u;
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
 		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
 		desc.StructureByteStride = 16;	// sizeof(struct Pixel)
 		HRESULT hr = device->CreateBuffer(&desc, nullptr, pixels.put());
-		/* (the most a resource can be is a quarter of the card's memory,
-		 * and at least 128 MB) */
-		const UINT smallest = D3D11_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_C_TERM * 1024u * 1024u;
 		while (FAILED(hr) && desc.ByteWidth > smallest)
 		{
-			desc.ByteWidth = std::max(desc.ByteWidth / 2, smallest);
+			desc.ByteWidth = std::max((desc.ByteWidth / 2) & ~15u, smallest);
 			hr = device->CreateBuffer(&desc, nullptr, pixels.put());
 		}
 		if (FAILED(hr))
