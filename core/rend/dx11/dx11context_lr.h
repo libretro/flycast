@@ -32,6 +32,7 @@
 #include "dx11_texture.h"
 #include "dx11_renderstate.h"
 #include "dx11_quad.h"
+#include "rend/vram_budget.h"
 
 /* The frontend's Direct3D 11 device, from RETRO_HW_CONTEXT_D3D11's
  * interface, and what the renderers share of it.
@@ -55,6 +56,8 @@ public:
 	ID3D11Device *GetDevice() const { return device; }
 	ID3D11DeviceContext *GetDeviceContext() const { return deviceContext; }
 	D3D_FEATURE_LEVEL GetFeatureLevel() const { return featureLevel; }
+	// what video memory there was to use when the context was set up
+	const VramBudget& GetVramBudget() const { return vramBudget; }
 	/* Unordered access views in pixel shaders, and a context that can be read back from */
 	bool HasPerPixel() const { return device && featureLevel >= D3D_FEATURE_LEVEL_11_0 && immediate; }
 	/* A deferred context (version 1, a frontend that draws on a thread of
@@ -328,6 +331,7 @@ private:
 	ComPtr<ID3D11Device> device;
 	ComPtr<ID3D11DeviceContext> deviceContext;
 	D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_9_1;
+	VramBudget vramBudget;
 	bool immediate = false;
 	pD3DCompile compile = nullptr;
 	HMODULE compilerModule = nullptr;

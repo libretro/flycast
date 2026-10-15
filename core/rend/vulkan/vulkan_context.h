@@ -23,6 +23,7 @@
 #include "heap.h"
 #include "quad.h"
 #include "rend/TexCache.h"
+#include "rend/vram_budget.h"
 #include "libretro_vulkan.h"
 
 extern int screen_width, screen_height;
@@ -101,9 +102,12 @@ public:
 	u32 GetMaxStorageBufferRange() const { return maxStorageBufferRange; }
 	f32 GetMaxSamplerAnisotropy() const { return samplerAnisotropy ? maxSamplerAnisotropy : 1.f; }
 	u32 GetVendorID() const { return vendorID; }
+	// what video memory there was to use when the context was set up
+	const VramBudget& GetVramBudget() const { return vramBudget; }
 
 private:
 	vk::Format FindDepthFormat();
+	void QueryVramBudget();
 
 	VulkanHeap heap;
 	int swapChainSize = 1;
@@ -123,6 +127,7 @@ public:
 	bool dedicatedAllocationSupported = false;
 private:
 	u32 vendorID = 0;
+	VramBudget vramBudget;
 	vk::Format colorFormat = vk::Format::eR8G8B8A8Unorm;
 
 	vk::UniqueDescriptorPool descriptorPool;

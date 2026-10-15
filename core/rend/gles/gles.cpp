@@ -464,6 +464,45 @@ PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 	return shader;
 }
 
+/* What video memory there is to use (rend/vram_budget.h): what
+ * GL_NVX_gpu_memory_info says is available (all of it counts as the
+ * budget, none as used), or GL_ATI_meminfo's free texture memory; and
+ * without either, a fixed figure small enough for any device that runs the
+ * renderer. */
+static void gl_query_vram_budget(bool nvx_meminfo, bool ati_meminfo)
+{
+	const GLenum nvx_total_available = 0x9048;	// GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX
+	const GLenum nvx_current_available = 0x9049;	// GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+	const GLenum ati_texture_free = 0x87FC;		// GL_TEXTURE_FREE_MEMORY_ATI
+	GLint kib[4] = { 0, 0, 0, 0 };
+
+	gl.vram_budget = VramBudget();
+	if (nvx_meminfo)
+	{
+		GLint total = 0;
+		glGetIntegerv(nvx_total_available, &total);
+		glGetIntegerv(nvx_current_available, &kib[0]);
+		if (glGetError() == GL_NO_ERROR && total > 0 && kib[0] > 0)
+		{
+			gl.vram_budget.budget_kib = (u32)total;
+			gl.vram_budget.usage_kib = total > kib[0] ? (u32)(total - kib[0]) : 0;
+			gl.vram_budget.exact = true;
+		}
+	}
+	if (!gl.vram_budget.exact && ati_meminfo)
+	{
+		glGetIntegerv(ati_texture_free, kib);
+		if (glGetError() == GL_NO_ERROR && kib[0] > 0)
+		{
+			gl.vram_budget.budget_kib = (u32)kib[0];
+			gl.vram_budget.exact = true;
+		}
+	}
+	if (!gl.vram_budget.exact)
+		gl.vram_budget.budget_kib = (gl.is_gles ? 256u : 512u) << 10;
+	vram_budget_log("OpenGL", gl.vram_budget);
+}
+
 void findGLVersion()
 {
 	gl.stencil_present = true;
@@ -518,6 +557,7 @@ void findGLVersion()
 		}
 	}
 	gl.max_anisotropy = 1.f;
+	bool nvx_meminfo = false, ati_meminfo = false;
 #ifndef HAVE_OPENGLES2
 	if (gl.gl_major >= 3)
 	{
@@ -527,13 +567,26 @@ void findGLVersion()
 			if (extension == nullptr)
 				break;
 			if (!strcmp(extension, "GL_EXT_texture_filter_anisotropic"))
-			{
 				glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &gl.max_anisotropy);
-				break;
-			}
+			else if (!strcmp(extension, "GL_NVX_gpu_memory_info"))
+				nvx_meminfo = true;
+			else if (!strcmp(extension, "GL_ATI_meminfo"))
+				ati_meminfo = true;
 		}
 	}
+	else
 #endif
+	{
+		const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+		if (extensions != nullptr)
+		{
+			nvx_meminfo = strstr(extensions, "GL_NVX_gpu_memory_info") != nullptr;
+			ati_meminfo = strstr(extensions, "GL_ATI_meminfo") != nullptr;
+		}
+	}
+	while (glGetError() != GL_NO_ERROR)
+		;
+	gl_query_vram_budget(nvx_meminfo, ati_meminfo);
 }
 
 GLuint gl_CompileShader(const char* shader,GLuint type)

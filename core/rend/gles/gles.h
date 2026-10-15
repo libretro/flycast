@@ -76,6 +76,8 @@ struct PipelineShader
 
 
 
+#include "rend/vram_budget.h"
+
 struct gl_ctx
 {
 	struct
@@ -112,6 +114,7 @@ struct gl_ctx
 	GLenum index_type;
 	bool stencil_present;
 	f32 max_anisotropy;
+	VramBudget vram_budget;	// what video memory there was to use, at findGLVersion()
 
 	size_t get_index_size() { return index_type == GL_UNSIGNED_INT ? sizeof(u32) : sizeof(u16); }
 };

@@ -213,6 +213,7 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	maxStorageBufferRange = properties->limits.maxStorageBufferRange;
 	maxSamplerAnisotropy =  properties->limits.maxSamplerAnisotropy;
 	vendorID = properties->vendorID;
+	QueryVramBudget();
 
 	vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(vk::Format::eR5G5B5A1UnormPack16);
 	if ((formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage)
@@ -291,6 +292,53 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	retro_image.create_info.flags = 0;
 
 	return true;
+}
+
+/* The budget of the largest device-local heap, by VK_EXT_memory_budget
+ * when the device has it (a physical device query: the extension does not
+ * have to be enabled on the device the frontend made), and half that heap
+ * when it has not */
+void VulkanContext::QueryVramBudget()
+{
+	bool haveBudget = false;
+	if (::vkGetPhysicalDeviceMemoryProperties2 != nullptr)
+		for (const auto& property : physicalDevice.enumerateDeviceExtensionProperties())
+			if (!strcmp(property.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
+			{
+				haveBudget = true;
+				break;
+			}
+
+	vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget;
+	vk::PhysicalDeviceMemoryProperties memory;
+	if (haveBudget)
+	{
+		vk::PhysicalDeviceMemoryProperties2 memory2;
+		memory2.pNext = &budget;
+		physicalDevice.getMemoryProperties2(&memory2);
+		memory = memory2.memoryProperties;
+	}
+	else
+		memory = physicalDevice.getMemoryProperties();
+
+	u32 heap = VK_MAX_MEMORY_HEAPS;
+	for (u32 i = 0; i < memory.memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; i++)
+		if ((memory.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal)
+				&& (heap == VK_MAX_MEMORY_HEAPS || memory.memoryHeaps[i].size > memory.memoryHeaps[heap].size))
+			heap = i;
+	if (heap == VK_MAX_MEMORY_HEAPS)
+		heap = 0;	// (there is always a heap, and one at least is device-local)
+
+	vramBudget = VramBudget();
+	if (haveBudget && budget.heapBudget[heap] != 0)
+	{
+		vramBudget.budget_kib = vram_kib(budget.heapBudget[heap]);
+		vramBudget.usage_kib = vram_kib(budget.heapUsage[heap]);
+		vramBudget.exact = true;
+	}
+	else
+		vramBudget.budget_kib = vram_kib(memory.memoryHeaps[heap].size / 2);
+	vram_budget_log("Vulkan", vramBudget);
 }
 
 vk::Format VulkanContext::FindDepthFormat()
