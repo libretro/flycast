@@ -134,6 +134,12 @@ void rend_create_renderer()
 		fallback_renderer = rend_D3D11();
 		break;
 #endif
+#ifdef HAVE_D3D9
+	case 8:
+		NOTICE_LOG(PVR, "Creating Direct3D 9 per-triangle/strip renderer");
+		renderer = rend_D3D9();
+		break;
+#endif
 	}
 }
 

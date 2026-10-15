@@ -40,6 +40,9 @@ char* strdup(const char *str)
 // (before anything that has hw/pvr/pvr_regs.h's macros)
 #include "rend/dx11/dx11context_lr.h"
 #endif
+#ifdef HAVE_D3D9
+#include "rend/dx9/dx9context_lr.h"
+#endif
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
 #endif
@@ -1516,7 +1519,7 @@ void retro_run (void)
       const bool was_changed = renderer_changed;
 
       update_variables(false);
-#if defined(HAVE_VULKAN) || defined(HAVE_D3D11)
+#if defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9)
       /* An option that has the renderer set up again - another renderer,
        * another size of buffer. The Vulkan renderers' pictures are their
        * own and go with them: the one on the screen is kept for the new
@@ -1525,7 +1528,7 @@ void retro_run (void)
        * is in the frontend's buffer, which stays.) So are the Direct3D
        * renderers'. */
       if (renderer_changed && !was_changed && (settings.pvr.rend == 4 || settings.pvr.rend == 5
-            || settings.pvr.rend == 6 || settings.pvr.rend == 7))
+            || settings.pvr.rend == 6 || settings.pvr.rend == 7 || settings.pvr.rend == 8))
          rend_keep_picture();
 #endif
 #ifdef HAVE_VULKAN
@@ -1641,7 +1644,13 @@ void retro_run (void)
    if (!is_dupe && (settings.pvr.rend == 6 || settings.pvr.rend == 7))
       DX11Context::Instance()->Present();
 #endif
-#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11)
+#ifdef HAVE_D3D9
+   /* the frame handed over to the frontend, as the Direct3D 9 interface
+    * has it; with none (no render to the screen) the last one is shown */
+   if (!is_dupe && settings.pvr.rend == 8 && !DX9Context::Instance()->Present())
+      is_dupe = true;
+#endif
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
 #endif
    is_dupe = true;
@@ -2297,6 +2306,68 @@ static bool set_dx11_hw_render(void)
 }
 #endif
 
+#ifdef HAVE_D3D9
+/* Direct3D 9: the frontend's device, through its interface */
+static void dx9_context_reset(void)
+{
+	retro_hw_render_interface_d3d9 *iface = NULL;
+	if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&iface) || iface == NULL
+			|| iface->interface_type != RETRO_HW_RENDER_INTERFACE_D3D9)
+	{
+		ERROR_LOG(RENDERER, "Get DX9 HW interface failed");
+		return;
+	}
+	/* (any version from the first on: a later one only adds to it) */
+	if (iface->interface_version < RETRO_HW_RENDER_INTERFACE_D3D9_VERSION)
+	{
+		ERROR_LOG(RENDERER, "Unsupported DX9 interface version %d", iface->interface_version);
+		return;
+	}
+	context_resets++;
+	take_pending_size();
+	if (!DX9Context::Instance()->Init(iface))
+		ERROR_LOG(RENDERER, "DX9 context initialization failed");
+	renderer_changed = true;
+}
+
+/* The device is about to be reset, or released: everything of this core's
+ * in its default pool goes, and comes again with context_reset */
+static void dx9_context_destroy(void)
+{
+	/* what was rendered to textures and video memory has not got yet, while it can still be fetched */
+	rtt_watch_flush();
+	rend_keep_picture();
+	rend_term_renderer();
+	renderer_changed = true;
+	DX9Context::Instance()->Term();
+}
+
+static bool set_dx9_hw_render(void)
+{
+	retro_hw_render_callback hw_render;
+	memset(&hw_render, 0, sizeof(hw_render));
+	hw_render.context_type = RETRO_HW_CONTEXT_D3D9;
+	hw_render.version_major = 9;
+	hw_render.version_minor = 0;
+	hw_render.context_reset = dx9_context_reset;
+	hw_render.context_destroy = dx9_context_destroy;
+
+	if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render))
+		return false;
+
+	/* (no per-pixel sorting: per triangle, or per strip) */
+	if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
+		settings.pvr.rend = 8;
+	renderer_changed = true;
+	return true;
+}
+#else
+static bool set_dx9_hw_render(void)
+{
+	return false;
+}
+#endif
+
 static bool set_opengl_hw_render(u32 preferred)
 {
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
@@ -2697,6 +2768,10 @@ bool retro_load_game(const struct retro_game_info *game)
    {
       foundRenderApi = true;
    }
+   else if (preferred == RETRO_HW_CONTEXT_D3D9 && set_dx9_hw_render())
+   {
+      foundRenderApi = true;
+   }
    else
    {
       // fallback when not supported (or auto-switching disabled), let's try all supported drivers
@@ -2714,6 +2789,8 @@ bool retro_load_game(const struct retro_game_info *game)
 #endif
       if (!foundRenderApi)
          foundRenderApi = set_dx11_hw_render();
+      if (!foundRenderApi)
+         foundRenderApi = set_dx9_hw_render();
    }
 
    if (!foundRenderApi)

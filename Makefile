@@ -901,6 +901,7 @@ endif
 	HAVE_VULKAN = 1
 ifeq ($(platform), win)
 	HAVE_D3D11 ?= 1
+	HAVE_D3D9 ?= 1
 endif
 
 endif
@@ -1117,6 +1118,10 @@ endif
 
 ifeq ($(HAVE_D3D11), 1)
 	CORE_DEFINES += -DHAVE_D3D11
+endif
+
+ifeq ($(HAVE_D3D9), 1)
+	CORE_DEFINES += -DHAVE_D3D9
 endif
 
 ifeq ($(DEBUG), 1)
