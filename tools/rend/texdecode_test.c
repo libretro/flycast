@@ -26,11 +26,18 @@
  * default of texdecode_test.sh when it is installed), anything it says is
  * a failure too.
  *
+ * Run with "dump", it does 1. only, and writes every texture - what the
+ * GPU is handed, and what the CPU made - to its standard output, for
+ * texdecode_d3d11.c to make the same on a Direct3D 11 device (its own
+ * messages go to the standard error then).
+ *
  * Built by texdecode_test.sh, which compiles the kernels with
  * glslangValidator from the same header the core does. */
+#define _POSIX_C_SOURCE 200112L	/* (fdopen) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 #include "texdecode.h"
@@ -705,6 +712,19 @@ static unsigned cases, planned, unplanned, natives, gpu_cases;
 static unsigned by_out[3], by_scan[4], mipmapped, levels_made;
 static unsigned long long raw_bytes, converted_bytes;
 static int use_gpu = 1;
+static FILE *dump;
+
+/* for texdecode_d3d11.c: a texture */
+static void dump_case(const struct texd_case *c, const struct texd_plan *plan, int type, const unsigned char *raw, unsigned nbytes, size_t bytes)
+{
+   const unsigned head[4] = { 0x43445854u, (unsigned)type, nbytes, (unsigned)bytes };	/* 'TXDC' */
+   if (fwrite(head, sizeof(head), 1, dump) != 1 || fwrite(c, sizeof(*c), 1, dump) != 1 || fwrite(plan, sizeof(*plan), 1, dump) != 1
+         || fwrite(raw, 1, nbytes, dump) != nbytes || fwrite(cpu_out, 1, bytes, dump) != bytes)
+   {
+      printf("FAIL: the dump could not be written\n");
+      exit(1);
+   }
+}
 
 static void run_case(struct texd_case *c)
 {
@@ -743,6 +763,8 @@ static void run_case(struct texd_case *c)
    }
    raw_bytes += nbytes;
    converted_bytes += bytes;
+   if (dump)
+      dump_case(c, &plan, type, raw, nbytes, bytes);
 
    /* 1. the C text */
    for (i = 0; i < plan.levels; i++)
@@ -789,6 +811,14 @@ int main(int argc, char **argv)
 
    if (argc > 2 && !strcmp(argv[2], "cpu"))
       use_gpu = 0;
+   if (argc > 2 && !strcmp(argv[2], "dump"))
+   {
+      /* the textures to the standard output, the messages to the error */
+      const int out = dup(1);
+      dup2(2, 1);
+      dump = fdopen(out, "wb");
+      use_gpu = 0;
+   }
    vram_mem = (unsigned char *)malloc(VRAM_BYTES);
    cpu_out = (unsigned char *)malloc(MAX_TEXELS * 4);
    ref_out = (unsigned char *)malloc(MAX_TEXELS * 4);
@@ -871,6 +901,8 @@ int main(int argc, char **argv)
          raw_bytes, converted_bytes, converted_bytes ? 100.0 * raw_bytes / converted_bytes : 0.0);
    if (validation_errors)
       printf("FAIL: %d messages from the validation layer\n", validation_errors);
+   if (dump)
+      fclose(dump);
    if (failures || validation_errors)
    {
       printf("FAIL: %d textures differ\n", failures);

@@ -11,6 +11,13 @@
 # glslangValidator, and a Vulkan device: Mesa's software one (lavapipe,
 # mesa-vulkan-drivers) is used when it is installed. The validation layer
 # is on when it is installed; TEXD_VALIDATE=0 turns it off.
+#
+# Then the same textures on a Direct3D 11 device, with the Direct3D 11
+# renderers' kernels (core/rend/texdecode_dxbc.inc, checked to be the
+# header's by tools/rend/kernels_dxbc.sh): texdecode_d3d11.c, built with
+# mingw-w64 and run under wine (wined3d) and xvfb-run, fed what the test
+# writes with "dump". When x86_64-w64-mingw32-gcc or wine is not there it
+# is left out; TEXD_D3D11=0 leaves it out too.
 set -e
 cd "$(dirname "$0")/../.."
 if [ "$1" = update ]; then
@@ -19,8 +26,9 @@ fi
 WORK=${TMPDIR:-/tmp}/texdecode_test.$$
 mkdir -p "$WORK"
 [ -n "$KEEP" ] || trap 'rm -rf "$WORK"' EXIT
-# the SPIR-V the renderer has of the kernels is theirs (and the TA decode's)
+# the SPIR-V the renderer has of the kernels is theirs (and the TA decode's), and so is the DXBC
 sh tools/rend/kernels_spv.sh check
+sh tools/rend/kernels_dxbc.sh check
 [ -f core/rend/TexCache.o ] || { echo "build the core first: core/rend/TexCache.o is not there" >&2; exit 1; }
 
 # the header as C89 and as C++
@@ -52,3 +60,14 @@ if [ -z "$TEXD_VALIDATE" ] && [ -f /usr/share/vulkan/explicit_layer.d/VkLayer_kh
    export TEXD_VALIDATE=1
 fi
 "$WORK/texdecode_test" "$WORK"
+
+if [ "${TEXD_D3D11:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null && command -v wine > /dev/null; then
+   x86_64-w64-mingw32-gcc -std=c99 -O2 -Wall -Icore/rend -Icore/libretro-common/include -Itools/rend \
+      -o "$WORK/texdecode_d3d11.exe" tools/rend/texdecode_d3d11.c -ld3d11
+   # (wine wants the TMPDIR it was set up with)
+   "$WORK/texdecode_test" "$WORK" dump 2> "$WORK/dump.log" \
+      | env -u TMPDIR WINEDEBUG=-all xvfb-run -a wine "$WORK/texdecode_d3d11.exe" | tr -d '\r' > "$WORK/d3d11.log" || true
+   cat "$WORK/d3d11.log"
+   grep -q "^texdecode: all the same" "$WORK/dump.log" || { cat "$WORK/dump.log"; exit 1; }
+   grep -q "^texdecode_d3d11: all the same" "$WORK/d3d11.log" || exit 1
+fi
