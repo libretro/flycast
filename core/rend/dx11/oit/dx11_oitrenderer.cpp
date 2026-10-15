@@ -81,7 +81,7 @@ public:
 		desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		success = success && SUCCEEDED(device->CreateBuffer(&desc, nullptr, oitConstants.put()));
 
-		success = success && buffers.Init(device);
+		success = success && buffers.Init(device, DX11OITBuffers::PlannedSize(screen_width, screen_height));
 		lastConstantsValid = false;
 		if (!success)
 		{
@@ -188,7 +188,10 @@ private:
 
 bool DX11OITRenderer::MakePictures(u32 width, u32 height)
 {
-	if (pixel_buffer_size != buffers.GetSize() && !buffers.Init(device))
+	/* (made again for another size of screen; a render to a texture is not
+	 * one, and a frame that wants more drops what finds no room) */
+	const u64 wanted = DX11OITBuffers::PlannedSize(screen_width, screen_height);
+	if (wanted != buffers.GetSize() && !buffers.Init(device, wanted))
 		return false;
 	if (!buffers.Resize(width, height))
 		return false;

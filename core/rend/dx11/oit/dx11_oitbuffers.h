@@ -28,16 +28,24 @@
 #include "../comptr.h"
 #include "../dx11context_lr.h"
 
-extern u64 pixel_buffer_size;
+#include "rend/oit_size.h"
 
 /* The per-pixel lists: every translucent pixel drawn, in one large buffer
- * (as large as the "Accumulation pixel buffer size" option says, or as
- * large as the card will make it), and for each screen pixel the first of
- * its list. */
+ * (PlannedSize(), or as large as the card will make it), and for each
+ * screen pixel the first of its list. */
 class DX11OITBuffers
 {
 public:
-	bool Init(ID3D11Device *device)
+	/* For a screen of @width x @height: rend/oit_size.h, and no more than
+	 * a resource can be (2 GB) */
+	static u64 PlannedSize(int width, int height)
+	{
+		return oit_buffer_bytes((u32)std::max(width, 0), (u32)std::max(height, 0),
+				DX11Context::Instance()->GetVramBudget().available_kib(),
+				(u64)D3D11_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_C_TERM * 1024u * 1024u);
+	}
+
+	bool Init(ID3D11Device *device, u64 wanted)
 	{
 		this->device = device;
 		pixelsView.reset();
@@ -45,7 +53,7 @@ public:
 		counterView.reset();
 		counter.reset();
 		constants.reset();
-		size = pixel_buffer_size;
+		size = wanted;
 
 		/* (the most a resource can be is a quarter of the card's memory, but
 		 * at least 128 MB and at most 2 GB: it is asked for no larger than

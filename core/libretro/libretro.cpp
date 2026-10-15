@@ -334,8 +334,6 @@ static std::vector<std::string> disk_paths;
 static std::vector<std::string> disk_labels;
 static bool disc_tray_open = false;
 
-u64 pixel_buffer_size = 512 * 1024 * 1024;	// Initial size 512 MB
-
 #if !defined(TARGET_NO_THREADS)
 /* Threaded rendering: the machine runs here, one frame for each retro_run.
  * dc_run() comes back at vblank (os_DoEvents) exactly as it does in
@@ -627,11 +625,6 @@ static void set_variable_visibility(void)
    option_display.visible = ((settings.System == DC_PLATFORM_DREAMCAST) &&
                              (!categoriesSupported));
    option_display.key = CORE_OPTION_NAME "_show_vmu_screen_settings";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-
-   // Only for per-pixel renderers
-   option_display.visible = settings.pvr.rend == 3 || settings.pvr.rend == 5 || settings.pvr.rend == 7;
-   option_display.key = CORE_OPTION_NAME "_oit_abuffer_size";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
    // Only if texture upscaling is enabled
@@ -968,35 +961,6 @@ static void update_variables(bool first_startup)
       	settings.bios.UseReios = true;
 
    }
-
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN) || defined(HAVE_D3D11)
-   {
-      const u64 previous_size = pixel_buffer_size;
-
-      var.key = CORE_OPTION_NAME "_oit_abuffer_size";
-
-      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      {
-         if (!strcmp(var.value, "512MB"))
-            pixel_buffer_size = 0x20000000u;
-         else if (!strcmp(var.value, "1GB"))
-            pixel_buffer_size = 0x40000000u;
-         else if (!strcmp(var.value, "2GB"))
-            pixel_buffer_size = 0x7ff00000u;
-         else if (!strcmp(var.value, "4GB"))
-            pixel_buffer_size = 0xFFFFFFFFu;
-         else
-            pixel_buffer_size = 0x20000000u;
-      }
-      else
-         pixel_buffer_size = 0x20000000u;
-      /* The per-pixel renderers make the buffer when they are set up: the
-       * one in use is set up again, as for a change of renderer. */
-      if (!first_startup && pixel_buffer_size != previous_size
-            && (settings.pvr.rend == 3 || settings.pvr.rend == 5 || settings.pvr.rend == 7))
-         renderer_changed = true;
-   }
-#endif
 
    var.key = CORE_OPTION_NAME "_cable_type";
 

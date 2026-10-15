@@ -119,24 +119,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "enabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      "Accumulation Pixel Buffer Size",
-      NULL,
-      "Higher values might be required for higher resolutions to output correctly.",
-      NULL,
-      "video",
-      {
-         { "512MB", NULL },
-         { "1GB",   NULL },
-         { "2GB",   NULL },
-         { "4GB",   NULL },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       "Internal Resolution",

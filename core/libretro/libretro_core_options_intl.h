@@ -328,24 +328,6 @@ struct retro_core_option_v2_definition option_defs_ar[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_AR,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_AR,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_AR },
-         { "1GB",   OPTION_VAL_1GB_AR },
-         { "2GB",   OPTION_VAL_2GB_AR },
-         { "4GB",   OPTION_VAL_4GB_AR },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_AR,
@@ -1899,24 +1881,6 @@ struct retro_core_option_v2_definition option_defs_ast[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_AST,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_AST,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_AST },
-         { "1GB",   OPTION_VAL_1GB_AST },
-         { "2GB",   OPTION_VAL_2GB_AST },
-         { "4GB",   OPTION_VAL_4GB_AST },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_AST,
@@ -3470,24 +3434,6 @@ struct retro_core_option_v2_definition option_defs_ca[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_CA,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_CA,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_CA },
-         { "1GB",   OPTION_VAL_1GB_CA },
-         { "2GB",   OPTION_VAL_2GB_CA },
-         { "4GB",   OPTION_VAL_4GB_CA },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_CA,
@@ -5041,24 +4987,6 @@ struct retro_core_option_v2_definition option_defs_chs[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_CHS,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_CHS,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_CHS },
-         { "1GB",   OPTION_VAL_1GB_CHS },
-         { "2GB",   OPTION_VAL_2GB_CHS },
-         { "4GB",   OPTION_VAL_4GB_CHS },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_CHS,
@@ -6612,24 +6540,6 @@ struct retro_core_option_v2_definition option_defs_cht[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_CHT,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_CHT,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_CHT },
-         { "1GB",   OPTION_VAL_1GB_CHT },
-         { "2GB",   OPTION_VAL_2GB_CHT },
-         { "4GB",   OPTION_VAL_4GB_CHT },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_CHT,
@@ -8183,24 +8093,6 @@ struct retro_core_option_v2_definition option_defs_cs[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_CS,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_CS,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_CS },
-         { "1GB",   OPTION_VAL_1GB_CS },
-         { "2GB",   OPTION_VAL_2GB_CS },
-         { "4GB",   OPTION_VAL_4GB_CS },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_CS,
@@ -9754,24 +9646,6 @@ struct retro_core_option_v2_definition option_defs_cy[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_CY,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_CY,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_CY },
-         { "1GB",   OPTION_VAL_1GB_CY },
-         { "2GB",   OPTION_VAL_2GB_CY },
-         { "4GB",   OPTION_VAL_4GB_CY },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_CY,
@@ -11325,24 +11199,6 @@ struct retro_core_option_v2_definition option_defs_da[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_DA,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_DA,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_DA },
-         { "1GB",   OPTION_VAL_1GB_DA },
-         { "2GB",   OPTION_VAL_2GB_DA },
-         { "4GB",   OPTION_VAL_4GB_DA },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_DA,
@@ -12896,24 +12752,6 @@ struct retro_core_option_v2_definition option_defs_de[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_DE,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_DE,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_DE },
-         { "1GB",   OPTION_VAL_1GB_DE },
-         { "2GB",   OPTION_VAL_2GB_DE },
-         { "4GB",   OPTION_VAL_4GB_DE },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_DE,
@@ -14467,24 +14305,6 @@ struct retro_core_option_v2_definition option_defs_el[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_EL,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_EL,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_EL },
-         { "1GB",   OPTION_VAL_1GB_EL },
-         { "2GB",   OPTION_VAL_2GB_EL },
-         { "4GB",   OPTION_VAL_4GB_EL },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_EL,
@@ -16038,24 +15858,6 @@ struct retro_core_option_v2_definition option_defs_eo[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_EO,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_EO,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_EO },
-         { "1GB",   OPTION_VAL_1GB_EO },
-         { "2GB",   OPTION_VAL_2GB_EO },
-         { "4GB",   OPTION_VAL_4GB_EO },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_EO,
@@ -17609,24 +17411,6 @@ struct retro_core_option_v2_definition option_defs_es[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_ES,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_ES,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_ES },
-         { "1GB",   OPTION_VAL_1GB_ES },
-         { "2GB",   OPTION_VAL_2GB_ES },
-         { "4GB",   OPTION_VAL_4GB_ES },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_ES,
@@ -19180,24 +18964,6 @@ struct retro_core_option_v2_definition option_defs_fa[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_FA,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_FA,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_FA },
-         { "1GB",   OPTION_VAL_1GB_FA },
-         { "2GB",   OPTION_VAL_2GB_FA },
-         { "4GB",   OPTION_VAL_4GB_FA },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FA,
@@ -20751,24 +20517,6 @@ struct retro_core_option_v2_definition option_defs_fi[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_FI,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_FI,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_FI },
-         { "1GB",   OPTION_VAL_1GB_FI },
-         { "2GB",   OPTION_VAL_2GB_FI },
-         { "4GB",   OPTION_VAL_4GB_FI },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FI,
@@ -22322,24 +22070,6 @@ struct retro_core_option_v2_definition option_defs_fr[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_FR,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_FR,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_FR },
-         { "1GB",   OPTION_VAL_1GB_FR },
-         { "2GB",   OPTION_VAL_2GB_FR },
-         { "4GB",   OPTION_VAL_4GB_FR },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_FR,
@@ -23893,24 +23623,6 @@ struct retro_core_option_v2_definition option_defs_gl[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_GL,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_GL,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_GL },
-         { "1GB",   OPTION_VAL_1GB_GL },
-         { "2GB",   OPTION_VAL_2GB_GL },
-         { "4GB",   OPTION_VAL_4GB_GL },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_GL,
@@ -25464,24 +25176,6 @@ struct retro_core_option_v2_definition option_defs_he[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_HE,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_HE,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_HE },
-         { "1GB",   OPTION_VAL_1GB_HE },
-         { "2GB",   OPTION_VAL_2GB_HE },
-         { "4GB",   OPTION_VAL_4GB_HE },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_HE,
@@ -27035,24 +26729,6 @@ struct retro_core_option_v2_definition option_defs_hu[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_HU,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_HU,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_HU },
-         { "1GB",   OPTION_VAL_1GB_HU },
-         { "2GB",   OPTION_VAL_2GB_HU },
-         { "4GB",   OPTION_VAL_4GB_HU },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_HU,
@@ -28606,24 +28282,6 @@ struct retro_core_option_v2_definition option_defs_id[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_ID,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_ID,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_ID },
-         { "1GB",   OPTION_VAL_1GB_ID },
-         { "2GB",   OPTION_VAL_2GB_ID },
-         { "4GB",   OPTION_VAL_4GB_ID },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_ID,
@@ -30177,24 +29835,6 @@ struct retro_core_option_v2_definition option_defs_it[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_IT,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_IT,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_IT },
-         { "1GB",   OPTION_VAL_1GB_IT },
-         { "2GB",   OPTION_VAL_2GB_IT },
-         { "4GB",   OPTION_VAL_4GB_IT },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_IT,
@@ -31748,24 +31388,6 @@ struct retro_core_option_v2_definition option_defs_ja[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_JA,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_JA,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_JA },
-         { "1GB",   OPTION_VAL_1GB_JA },
-         { "2GB",   OPTION_VAL_2GB_JA },
-         { "4GB",   OPTION_VAL_4GB_JA },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_JA,
@@ -33319,24 +32941,6 @@ struct retro_core_option_v2_definition option_defs_ko[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_KO,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_KO,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_KO },
-         { "1GB",   OPTION_VAL_1GB_KO },
-         { "2GB",   OPTION_VAL_2GB_KO },
-         { "4GB",   OPTION_VAL_4GB_KO },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_KO,
@@ -34890,24 +34494,6 @@ struct retro_core_option_v2_definition option_defs_mt[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_MT,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_MT,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_MT },
-         { "1GB",   OPTION_VAL_1GB_MT },
-         { "2GB",   OPTION_VAL_2GB_MT },
-         { "4GB",   OPTION_VAL_4GB_MT },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_MT,
@@ -36461,24 +36047,6 @@ struct retro_core_option_v2_definition option_defs_nl[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_NL,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_NL,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_NL },
-         { "1GB",   OPTION_VAL_1GB_NL },
-         { "2GB",   OPTION_VAL_2GB_NL },
-         { "4GB",   OPTION_VAL_4GB_NL },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_NL,
@@ -38032,24 +37600,6 @@ struct retro_core_option_v2_definition option_defs_no[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_NO,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_NO,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_NO },
-         { "1GB",   OPTION_VAL_1GB_NO },
-         { "2GB",   OPTION_VAL_2GB_NO },
-         { "4GB",   OPTION_VAL_4GB_NO },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_NO,
@@ -39603,24 +39153,6 @@ struct retro_core_option_v2_definition option_defs_oc[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_OC,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_OC,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_OC },
-         { "1GB",   OPTION_VAL_1GB_OC },
-         { "2GB",   OPTION_VAL_2GB_OC },
-         { "4GB",   OPTION_VAL_4GB_OC },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_OC,
@@ -41174,24 +40706,6 @@ struct retro_core_option_v2_definition option_defs_pl[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_PL,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_PL,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_PL },
-         { "1GB",   OPTION_VAL_1GB_PL },
-         { "2GB",   OPTION_VAL_2GB_PL },
-         { "4GB",   OPTION_VAL_4GB_PL },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_PL,
@@ -42745,24 +42259,6 @@ struct retro_core_option_v2_definition option_defs_pt_br[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_PT_BR,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_PT_BR,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_PT_BR },
-         { "1GB",   OPTION_VAL_1GB_PT_BR },
-         { "2GB",   OPTION_VAL_2GB_PT_BR },
-         { "4GB",   OPTION_VAL_4GB_PT_BR },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_PT_BR,
@@ -44316,24 +43812,6 @@ struct retro_core_option_v2_definition option_defs_pt_pt[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_PT_PT,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_PT_PT,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_PT_PT },
-         { "1GB",   OPTION_VAL_1GB_PT_PT },
-         { "2GB",   OPTION_VAL_2GB_PT_PT },
-         { "4GB",   OPTION_VAL_4GB_PT_PT },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_PT_PT,
@@ -45887,24 +45365,6 @@ struct retro_core_option_v2_definition option_defs_ro[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_RO,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_RO,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_RO },
-         { "1GB",   OPTION_VAL_1GB_RO },
-         { "2GB",   OPTION_VAL_2GB_RO },
-         { "4GB",   OPTION_VAL_4GB_RO },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_RO,
@@ -47458,24 +46918,6 @@ struct retro_core_option_v2_definition option_defs_ru[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_RU,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_RU,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_RU },
-         { "1GB",   OPTION_VAL_1GB_RU },
-         { "2GB",   OPTION_VAL_2GB_RU },
-         { "4GB",   OPTION_VAL_4GB_RU },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_RU,
@@ -49029,24 +48471,6 @@ struct retro_core_option_v2_definition option_defs_si[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_SI,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_SI,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_SI },
-         { "1GB",   OPTION_VAL_1GB_SI },
-         { "2GB",   OPTION_VAL_2GB_SI },
-         { "4GB",   OPTION_VAL_4GB_SI },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_SI,
@@ -50600,24 +50024,6 @@ struct retro_core_option_v2_definition option_defs_sk[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_SK,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_SK,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_SK },
-         { "1GB",   OPTION_VAL_1GB_SK },
-         { "2GB",   OPTION_VAL_2GB_SK },
-         { "4GB",   OPTION_VAL_4GB_SK },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_SK,
@@ -52171,24 +51577,6 @@ struct retro_core_option_v2_definition option_defs_sr[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_SR,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_SR,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_SR },
-         { "1GB",   OPTION_VAL_1GB_SR },
-         { "2GB",   OPTION_VAL_2GB_SR },
-         { "4GB",   OPTION_VAL_4GB_SR },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_SR,
@@ -53742,24 +53130,6 @@ struct retro_core_option_v2_definition option_defs_sv[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_SV,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_SV,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_SV },
-         { "1GB",   OPTION_VAL_1GB_SV },
-         { "2GB",   OPTION_VAL_2GB_SV },
-         { "4GB",   OPTION_VAL_4GB_SV },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_SV,
@@ -55313,24 +54683,6 @@ struct retro_core_option_v2_definition option_defs_tr[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_TR,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_TR,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_TR },
-         { "1GB",   OPTION_VAL_1GB_TR },
-         { "2GB",   OPTION_VAL_2GB_TR },
-         { "4GB",   OPTION_VAL_4GB_TR },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_TR,
@@ -56884,24 +56236,6 @@ struct retro_core_option_v2_definition option_defs_uk[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_UK,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_UK,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_UK },
-         { "1GB",   OPTION_VAL_1GB_UK },
-         { "2GB",   OPTION_VAL_2GB_UK },
-         { "4GB",   OPTION_VAL_4GB_UK },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_UK,
@@ -58455,24 +57789,6 @@ struct retro_core_option_v2_definition option_defs_val[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_VAL,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_VAL,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_VAL },
-         { "1GB",   OPTION_VAL_1GB_VAL },
-         { "2GB",   OPTION_VAL_2GB_VAL },
-         { "4GB",   OPTION_VAL_4GB_VAL },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_VAL,
@@ -60026,24 +59342,6 @@ struct retro_core_option_v2_definition option_defs_vn[] = {
       },
       "disabled",
    },
-#if defined(HAVE_GL4) || defined(HAVE_VULKAN)
-   {
-      CORE_OPTION_NAME "_oit_abuffer_size",
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_LABEL_VN,
-      NULL,
-      CORE_OPTION_NAME_OIT_ABUFFER_SIZE_INFO_0_VN,
-      NULL,
-      "video",
-      {
-         { "512MB", OPTION_VAL_512MB_VN },
-         { "1GB",   OPTION_VAL_1GB_VN },
-         { "2GB",   OPTION_VAL_2GB_VN },
-         { "4GB",   OPTION_VAL_4GB_VN },
-         { NULL, NULL },
-      },
-      "512MB",
-   },
-#endif
    {
       CORE_OPTION_NAME "_internal_resolution",
       CORE_OPTION_NAME_INTERNAL_RESOLUTION_LABEL_VN,

@@ -8,6 +8,7 @@
 #include "gl4.h"
 
 GLuint pixels_buffer;
+static GLint64 pixels_buffer_size;	// (bytes)
 GLuint pixels_pointers;
 GLuint atomic_buffer;
 gl4PipelineShader g_abuffer_final_shader;
@@ -16,7 +17,7 @@ gl4PipelineShader g_abuffer_tr_modvol_shaders[ModeCount];
 static GLuint g_quadBuffer = 0;
 static GLuint g_quadVertexArray = 0;
 
-extern u64 pixel_buffer_size;
+#include "rend/oit_size.h"
 
 #define MAX_PIXELS_PER_FRAGMENT "32"
 
@@ -261,13 +262,19 @@ void initABuffer()
 		glCheck();
 	}
 
+	/* The fragments, for the screen's size (rend/oit_size.h): made again
+	 * when that changes it, which a render to a texture does not */
+	GLint64 most;
+	glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &most);
+	const GLint64 size = (GLint64)oit_buffer_bytes(screen_width, screen_height, gl.vram_budget.available_kib(), (u64)std::max(most, (GLint64)0));
+	if (pixels_buffer != 0 && size != pixels_buffer_size)
+	{
+		glDeleteBuffers(1, &pixels_buffer);
+		pixels_buffer = 0;
+	}
 	if (pixels_buffer == 0 )
 	{
-		// get the max buffer size
-		GLint64 size;
-		glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &size);
-		size = (GLuint)std::min((GLint64)pixel_buffer_size, size);
-
+		pixels_buffer_size = size;
 		// Create the buffer
 		glGenBuffers(1, &pixels_buffer);
 		// Bind it
