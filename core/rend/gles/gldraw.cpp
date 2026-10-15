@@ -139,7 +139,7 @@ __forceinline
 								  palette,
 								  shadowed);
 
-	glcache.UseProgram(CurrentShader->program);
+	UsePipelineShader(CurrentShader);
 	if (CurrentShader->trilinear_alpha != -1)
 		glUniform1f(CurrentShader->trilinear_alpha, ShaderUniforms.trilinear_alpha);
 	if (palette)
@@ -884,7 +884,7 @@ static void DrawQuad(GLuint texId, float x, float y, float w, float h, float u0,
 	ShaderUniforms.trilinear_alpha = 1.0;
 
 	PipelineShader *shader = GetProgram(false, false, true, false, true, 0, false, 2, false, false, false, false, false);
-	glcache.UseProgram(shader->program);
+	UsePipelineShader(shader);
 
 	glActiveTexture(GL_TEXTURE0);
 	glcache.BindTexture(GL_TEXTURE_2D, texId);
@@ -1017,7 +1017,7 @@ void DrawVmuTexture(u8 vmu_screen_number)
 
 	SetupMainVBO();
 	PipelineShader *shader = GetProgram(0, false, 1, 1, 0, 0, 0, 2, false, false, false, false, false);
-	glcache.UseProgram(shader->program);
+	UsePipelineShader(shader);
 
 	{
 		struct Vertex vertices[] = {
@@ -1111,7 +1111,7 @@ void DrawGunCrosshair(u8 port)
 
 	SetupMainVBO();
 	PipelineShader *shader = GetProgram(0, false, 1, 1, 0, 0, 0, 2, false, false, false, false, false);
-	glcache.UseProgram(shader->program);
+	UsePipelineShader(shader);
 
 	{
 		struct Vertex vertices[] = {

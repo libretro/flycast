@@ -1,6 +1,7 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "gl4.h"
 #include "rend/gles/ta_decoder_gl.h"
+#include "rend/gles/glprogram_cache.h"
 
 /*
 
@@ -17,6 +18,105 @@ GLuint depthTexId;
 GLuint texSamplers[2];
 GLuint depth_fbo;
 GLuint depthSaveTexId;
+
+/* (tests: every polygon drawn with the general programs, to see they draw
+ * what the polygons' own ones do) */
+#ifdef GL_PROGRAM_TEST_GENERAL
+static const bool PipelineTestGeneral = true;
+#else
+static const bool PipelineTestGeneral = false;
+#endif
+
+static void pipeline_from_key(gl4PipelineShader *s, u32 key)
+{
+	s->key = key;
+	s->pp_InsideClipping = (key >> 16) & 1;
+	s->cp_AlphaTest = (key >> 15) & 1;
+	s->pp_Texture = (key >> 14) & 1;
+	s->pp_UseAlpha = (key >> 13) & 1;
+	s->pp_IgnoreTexA = (key >> 12) & 1;
+	s->pp_ShadInstr = (key >> 10) & 3;
+	s->pp_Offset = (key >> 9) & 1;
+	s->pp_FogCtrl = (key >> 7) & 3;
+	s->pp_TwoVolumes = (key >> 6) & 1;
+	s->pp_Gouraud = (key >> 5) & 1;
+	s->pp_BumpMap = (key >> 4) & 1;
+	s->fog_clamping = (key >> 3) & 1;
+	s->palette = (key >> 2) & 1;
+	s->pass = (Pass)(key & 3);
+}
+
+// A polygon drawn with the general program @g until its own is there
+static void use_general(gl4PipelineShader *s, gl4PipelineShader *g)
+{
+	const u32 key = s->key;
+	const GLuint pending = s->pending;
+	gl4PipelineShader bits = *s;
+	*s = *g;
+	// (its own bits, the general one's program and uniforms)
+	s->cp_AlphaTest = bits.cp_AlphaTest;
+	s->pp_InsideClipping = bits.pp_InsideClipping;
+	s->pp_Texture = bits.pp_Texture;
+	s->pp_UseAlpha = bits.pp_UseAlpha;
+	s->pp_IgnoreTexA = bits.pp_IgnoreTexA;
+	s->pp_ShadInstr = bits.pp_ShadInstr;
+	s->pp_Offset = bits.pp_Offset;
+	s->pp_FogCtrl = bits.pp_FogCtrl;
+	s->pass = bits.pass;
+	s->pp_TwoVolumes = bits.pp_TwoVolumes;
+	s->pp_Gouraud = bits.pp_Gouraud;
+	s->pp_BumpMap = bits.pp_BumpMap;
+	s->fog_clamping = bits.fog_clamping;
+	s->palette = bits.palette;
+	s->key = key;
+	s->pending = pending;
+	s->general = g;
+}
+
+/* A key first drawn (in a frame): drawn with the general program, its own
+ * asked for in the background where the driver does that (else that is it
+ * for this run: the key is kept, and its program made at the start of the
+ * next); without a general program, made now as ever */
+static void pipeline_first(gl4PipelineShader *s, u32 key)
+{
+	pipeline_from_key(s, key);
+	glprog_note(GLPROG_GL4, key);
+	gl4PipelineShader *g = &gl4.general[(int)s->pass][s->pp_Gouraud];
+	if (g->program == 0)
+	{
+		gl4CompilePipelineShader(s);
+		return;
+	}
+	use_general(s, g);
+	glprog_general_used();
+	if (glprog_background() && !PipelineTestGeneral)
+	{
+		s->pending = gl4MakePipelineProgram(s, false, true);
+		s->polled = gl4.frame;
+	}
+}
+
+// (once a frame) whether its own program is there now
+static void pipeline_poll(gl4PipelineShader *s)
+{
+	s->polled = gl4.frame;
+	switch (glprog_poll(s->pending))
+	{
+	case GLPROG_PENDING:
+		break;
+	case GLPROG_READY:
+		s->program = s->pending;
+		s->pending = 0;
+		s->general = nullptr;
+		gl4PipelineLocations(s, false);
+		break;
+	default:
+		WARN_LOG(RENDERER, "OpenGL: the program of key %x did not link; the general one draws it", s->key);
+		glDeleteProgram(s->pending);
+		s->pending = 0;
+		break;
+	}
+}
 
 static gl4PipelineShader *gl4GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 							bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr, bool pp_Offset,
@@ -42,25 +142,86 @@ static gl4PipelineShader *gl4GetProgram(bool cp_AlphaTest, bool pp_InsideClippin
 
 	gl4PipelineShader *shader = &gl4.shaders[rv];
 	if (shader->program == 0)
-	{
-		shader->cp_AlphaTest = cp_AlphaTest;
-		shader->pp_InsideClipping = pp_InsideClipping;
-		shader->pp_Texture = pp_Texture;
-		shader->pp_UseAlpha = pp_UseAlpha;
-		shader->pp_IgnoreTexA = pp_IgnoreTexA;
-		shader->pp_ShadInstr = pp_ShadInstr;
-		shader->pp_Offset = pp_Offset;
-		shader->pp_FogCtrl = pp_FogCtrl;
-		shader->pp_TwoVolumes = pp_TwoVolumes;
-		shader->pp_Gouraud = pp_Gouraud;
-		shader->pp_BumpMap = pp_BumpMap;
-		shader->fog_clamping = fog_clamping;
-		shader->palette = palette;
-		shader->pass = pass;
-		gl4CompilePipelineShader(shader);
-	}
+		pipeline_first(shader, rv);
+	else if (shader->pending != 0 && shader->polled != gl4.frame)
+		pipeline_poll(shader);
 
 	return shader;
+}
+
+/* The keys most games draw with (glprogram_cache.h): made at the start
+ * with those of earlier runs */
+static const u32 CommonKeys[] = {
+	0
+};
+
+void gl4MakePrograms()
+{
+	for (int p = 0; p < 3; p++)
+		for (int g = 0; g < 2; g++)
+		{
+			gl4PipelineShader *s = &gl4.general[p][g];
+			memset(s, 0, sizeof(*s));
+			s->pp_Gouraud = g;
+			s->pass = (Pass)p;
+			s->program = gl4MakePipelineProgram(s, true, true);
+		}
+	u32 count = 0;
+	const u32 *known = glprog_known(GLPROG_GL4, &count);
+	std::vector<u32> keys;
+	keys.reserve(count + ARRAY_SIZE(CommonKeys) + 2);
+	for (u32 i = 0; i < count; i++)
+		if (known[i] <= 0x1FFFF && (known[i] & 3) != 3)
+			keys.push_back(known[i]);
+	for (u32 k : CommonKeys)
+		keys.push_back(k);
+	if (keys.size() > 1024)
+		keys.resize(1024);
+	if (!PipelineTestGeneral)
+		for (u32 key : keys)
+		{
+			gl4PipelineShader *s = &gl4.shaders[key];
+			if (s->program != 0 || s->pending != 0)
+				continue;
+			pipeline_from_key(s, key);
+			s->pending = gl4MakePipelineProgram(s, false, true);
+		}
+	// now waited for
+	for (int p = 0; p < 3; p++)
+		for (int g = 0; g < 2; g++)
+		{
+			gl4PipelineShader *s = &gl4.general[p][g];
+			if (glprog_wait(s->program))
+				gl4PipelineLocations(s, true);
+			else
+			{
+				WARN_LOG(RENDERER, "OpenGL: no general program (pass %d, pp_Gouraud %d)", p, g);
+				glDeleteProgram(s->program);
+				s->program = 0;
+			}
+		}
+	for (auto it = gl4.shaders.begin(); it != gl4.shaders.end(); )
+	{
+		gl4PipelineShader *s = &it->second;
+		if (s->pending != 0 && s->program == 0)
+		{
+			const GLuint p = s->pending;
+			s->pending = 0;
+			if (glprog_wait(p))
+			{
+				s->program = p;
+				gl4PipelineLocations(s, false);
+			}
+			else
+			{
+				WARN_LOG(RENDERER, "OpenGL: the program of key %x did not link", s->key);
+				glDeleteProgram(p);
+				it = gl4.shaders.erase(it);
+				continue;
+			}
+		}
+		++it;
+	}
 }
 
 static void SetTextureRepeatMode(int index, GLuint dir, u32 clamp, u32 mirror)

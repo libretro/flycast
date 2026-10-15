@@ -49,6 +49,7 @@ char* strdup(const char *str)
 #endif
 #include "rend/rtt_watch.h"
 #include "rend/gles/ta_decoder_gl.h"
+#include "rend/gles/glprogram_cache.h"
 #include "rend/last_picture.h"
 #include <retro_atomic.h>
 #include <retro_timers.h>
@@ -1726,6 +1727,9 @@ static void context_destroy(void)
    rtt_watch_flush();
    /* ...and the screen's last picture is kept for the context that comes after */
    rend_keep_picture();
+   /* ...and the programs made since the file was last written are kept in
+    * it (rend/gles/glprogram_cache.h): they go with the context */
+   glprog_save(true);
 #ifdef HAVE_GL4
    /* The renderer goes with its context, while it is there: what it made
     * is the context's (GPU-side TA processing's contexts' data is in a

@@ -42,6 +42,17 @@ struct gl4PipelineShader
 	bool pp_BumpMap;
 	bool fog_clamping;
 	bool palette;
+
+	/* (rend/gles/glprogram_cache.h) The polygon's key (gl4GetProgram());
+	 * for one drawn with a general program, that program's record, whose
+	 * program and uniforms these are, and the program of its own being
+	 * made in the background (0: none); the frame it was last polled in;
+	 * the uniform a general program reads the key from (-1: none) */
+	u32 key;
+	gl4PipelineShader *general;
+	GLuint pending;
+	u32 polled;
+	GLint key_bits;
 };
 
 
@@ -55,6 +66,10 @@ struct gl4_ctx
 	} modvol_shader;
 
 	std::unordered_map<u32, gl4PipelineShader> shaders;
+	/* The general programs (rend/gles/glprogram_cache.h), by pass and
+	 * pp_Gouraud; and the frame, for polling the programs being made */
+	gl4PipelineShader general[3][2];
+	u32 frame;
 
 	struct
 	{
@@ -84,6 +99,13 @@ void abufferDrawQuad();
 
 extern const char *gl4PixelPipelineShader;
 bool gl4CompilePipelineShader(gl4PipelineShader* s, const char *pixel_source = gl4PixelPipelineShader, const char *vertex_source = NULL);
+/* A polygon's program (glprogram_cache.h) asked of the driver: its own, or
+ * (@general) the general one of its pass and pp_Gouraud; and its uniforms
+ * found, once it is there (the program bound) */
+GLuint gl4MakePipelineProgram(const gl4PipelineShader* s, bool general, bool background);
+void gl4PipelineLocations(gl4PipelineShader* s, bool general);
+// At the renderer's start: the general programs and those of the keys of earlier runs
+void gl4MakePrograms();
 
 extern GLuint stencilTexId;
 extern GLuint depthTexId;
@@ -335,6 +357,10 @@ extern struct gl4ShaderUniforms_t
 
 		if (s->palette_index != -1)
 			glUniform1f(s->palette_index, palette_index);
+
+		// (a polygon drawn with a general program: its key)
+		if (s->key_bits != -1)
+			glUniform1i(s->key_bits, (GLint)s->key);
 	}
 
 } gl4ShaderUniforms;

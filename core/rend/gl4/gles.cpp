@@ -5,6 +5,7 @@
 #include "gl4.h"
 #include "rend/gles/ta_decoder_gl.h"
 #include "rend/ta_gpu.h"
+#include "rend/gles/glprogram_cache.h"
 
 gl4_ctx gl4;
 
@@ -78,7 +79,40 @@ R"(
 #define FogClamping %d
 #define pp_Palette %d
 #define PASS %d
+#define GENERAL_PROGRAM %d
 #define PI 3.1415926
+
+/* The general programs (rend/gles/glprogram_cache.h): one for each PASS and
+ * pp_Gouraud, the other bits of a polygon's key (gl4GetProgram()) read
+ * from a uniform. The code below is the same for both, so what one draws
+ * the other draws. */
+#if GENERAL_PROGRAM == 1
+uniform int key_bits;
+#undef cp_AlphaTest
+#undef pp_ClipInside
+#undef pp_UseAlpha
+#undef pp_Texture
+#undef pp_IgnoreTexA
+#undef pp_ShadInstr
+#undef pp_Offset
+#undef pp_FogCtrl
+#undef pp_TwoVolumes
+#undef pp_BumpMap
+#undef FogClamping
+#undef pp_Palette
+#define pp_ClipInside ((key_bits >> 16) & 1)
+#define cp_AlphaTest ((key_bits >> 15) & 1)
+#define pp_Texture ((key_bits >> 14) & 1)
+#define pp_UseAlpha ((key_bits >> 13) & 1)
+#define pp_IgnoreTexA ((key_bits >> 12) & 1)
+#define pp_ShadInstr ((key_bits >> 10) & 3)
+#define pp_Offset ((key_bits >> 9) & 1)
+#define pp_FogCtrl ((key_bits >> 7) & 3)
+#define pp_TwoVolumes ((key_bits >> 6) & 1)
+#define pp_BumpMap ((key_bits >> 4) & 1)
+#define FogClamping ((key_bits >> 3) & 1)
+#define pp_Palette ((key_bits >> 2) & 1)
+#endif
 
 #define PASS_DEPTH 0
 #define PASS_COLOR 1
@@ -86,12 +120,6 @@ R"(
 
 #if PASS == PASS_DEPTH || PASS == PASS_COLOR
 	out vec4 FragColor;
-#endif
-
-#if pp_TwoVolumes == 1
-#define IF(x) if (x)
-#else
-#define IF(x)
 #endif
 
 #if pp_Gouraud == 0
@@ -118,12 +146,10 @@ uniform sampler2D palette;
 uniform float palette_index;
 
 uniform ivec2 blend_mode[2];
-#if pp_TwoVolumes == 1
 uniform bool use_alpha[2];
 uniform bool ignore_tex_alpha[2];
 uniform int shading_instr[2];
 uniform int fog_control[2];
-#endif
 
 /* Vertex input*/
 INTERPOLATION in vec4 vtx_base;
@@ -168,14 +194,10 @@ float fog_mode2(float w)
 
 vec4 fog_clamp(vec4 col)
 {
-#if FogClamping == 1
-	return clamp(col, fog_clamp_min, fog_clamp_max);
-#else
+	if (FogClamping == 1)
+		return clamp(col, fog_clamp_min, fog_clamp_max);
 	return col;
-#endif
 }
-
-#if pp_Palette == 1
 
 vec4 palettePixel(sampler2D tex, vec2 coords)
 {
@@ -183,8 +205,6 @@ vec4 palettePixel(sampler2D tex, vec2 coords)
 	vec4 c = vec4(texture(tex, coords).r * (255.0 / 1024.0) + palette_index, 0.5, 0.0, 0.0);
 	return texture(palette, c.xy);
 }
-
-#endif
 
 void main()
 {
@@ -198,23 +218,30 @@ void main()
    #endif
   
 	// Clip inside the box
-	#if pp_ClipInside == 1
+	if (pp_ClipInside == 1)
+	{
 		if (gl_FragCoord.x >= pp_ClipTest.x && gl_FragCoord.x <= pp_ClipTest.z
 				&& gl_FragCoord.y >= pp_ClipTest.y && gl_FragCoord.y <= pp_ClipTest.w)
 			discard;
-	#endif
+	}
 	
    vec4 color = vtx_base;
    vec4 offset = vtx_offs;
    vec2 uv = vtx_uv;
    bool area1 = false;
    ivec2 cur_blend_mode = blend_mode[0];
+   // (with one volume, the polygon's own; with two, the first's unless the pixel is in the second)
+   bool cur_use_alpha = pp_UseAlpha == 1;
+   bool cur_ignore_tex_alpha = pp_IgnoreTexA == 1;
+   int cur_shading_instr = pp_ShadInstr;
+   int cur_fog_control = pp_FogCtrl;
 	
-	#if pp_TwoVolumes == 1
-      bool cur_use_alpha = use_alpha[0];
-      bool cur_ignore_tex_alpha = ignore_tex_alpha[0];
-      int cur_shading_instr = shading_instr[0];
-      int cur_fog_control = fog_control[0];
+	if (pp_TwoVolumes == 1)
+	{
+      cur_use_alpha = use_alpha[0];
+      cur_ignore_tex_alpha = ignore_tex_alpha[0];
+      cur_shading_instr = shading_instr[0];
+      cur_fog_control = fog_control[0];
       #if PASS == PASS_COLOR
 			uvec4 stencil = texture(shadow_stencil, gl_FragCoord.xy / textureSize(shadow_stencil, 0));
 			if (stencil.r == 0x81u) {
@@ -229,9 +256,11 @@ void main()
             cur_fog_control = fog_control[1];
 			}
       #endif
-	#endif
+	}
 	
-	#if PASS == PASS_COLOR && pp_TwoVolumes == 0
+	#if PASS == PASS_COLOR
+	else
+	{
 		// Inside a modifier volume the PowerVR2 scales what the polygon is shaded
 		// with, its base and offset colours, before the texture is combined with
 		// them. Scaling the combined colour instead is the same thing for a
@@ -242,71 +271,61 @@ void main()
 			color.rgb *= shade_scale_factor;
 			offset.rgb *= shade_scale_factor;
 		}
+	}
 	#endif
-	#if pp_UseAlpha==0 || pp_TwoVolumes == 1
-      IF(!cur_use_alpha)
-			color.a=1.0;
-	#endif
-	#if pp_Texture==1
+	if (!cur_use_alpha)
+		color.a=1.0;
+	if (pp_Texture==1)
 	{
       vec4 texcol;
-      #if pp_Palette == 0
+      if (pp_Palette == 0)
+      {
          if (area1)
             texcol = texture(tex1, uv);
          else
             texcol = texture(tex0, uv);
-      #else
+      }
+      else
+      {
          // only the first volume's texture is ever one of palette indices
          if (area1)
             texcol = texture(tex1, uv);
          else
             texcol = palettePixel(tex0, uv);
-      #endif
+      }
 
-      #if pp_BumpMap == 1
+      if (pp_BumpMap == 1)
+      {
 			float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
 			float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
 			texcol.a = clamp(vtx_offs.a + vtx_offs.r * sin(s) + vtx_offs.g * cos(s) * cos(r - 2.0 * PI * vtx_offs.b), 0.0, 1.0);
 			texcol.rgb = vec3(1.0, 1.0, 1.0);	
-		#else
-			#if pp_IgnoreTexA==1 || pp_TwoVolumes == 1
-				IF(cur_ignore_tex_alpha)
-					texcol.a=1.0;	
-			#endif
-		#endif
-      #if pp_ShadInstr==0 || pp_TwoVolumes == 1 // DECAL
-      IF(cur_shading_instr == 0)
+      }
+      else if (cur_ignore_tex_alpha)
+			texcol.a=1.0;	
+      if (cur_shading_instr == 0) // DECAL
 		{
          color=texcol;
 		}
-		#endif
-      #if pp_ShadInstr==1 || pp_TwoVolumes == 1 // MODULATE
-      IF(cur_shading_instr == 1)
+      if (cur_shading_instr == 1) // MODULATE
 		{
 			color.rgb*=texcol.rgb;
 			color.a=texcol.a;
 		}
-		#endif
-      #if pp_ShadInstr==2 || pp_TwoVolumes == 1 // DECAL ALPHA
-      IF(cur_shading_instr == 2)
+      if (cur_shading_instr == 2) // DECAL ALPHA
 		{
 			color.rgb=mix(color.rgb,texcol.rgb,texcol.a);
 		}
-		#endif
-      #if  pp_ShadInstr==3 || pp_TwoVolumes == 1 // MODULATE ALPHA
-      IF(cur_shading_instr == 3)
+      if (cur_shading_instr == 3) // MODULATE ALPHA
 		{
 			color*=texcol;
 		}
-		#endif
 		
-		#if pp_Offset==1 && pp_BumpMap == 0
+		if (pp_Offset==1 && pp_BumpMap == 0)
 		{
          color.rgb += offset.rgb;
 		}
-		#endif
 	}
-	#endif
    
 	color = fog_clamp(color);
 	
@@ -316,34 +335,29 @@ void main()
 	// so it is the combined colour that is replaced: a textured polygon
 	// comes out in plain fog colour. It used to be done to the base colour,
 	// before texturing, and the texture was then applied on top.
-	#if pp_FogCtrl == 3 || pp_TwoVolumes == 1 // LUT Mode 2
-		IF(cur_fog_control == 3)
-			color = vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
-	#endif
-   #if pp_FogCtrl==0 || pp_TwoVolumes == 1 // LUT
-   	IF(cur_fog_control == 0)
-		{
-			float fog = fog_mode2(gl_FragCoord.w);
-			color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
-		}
-	#endif
-	#if pp_Offset==1 && pp_BumpMap == 0 && (pp_FogCtrl == 1 || pp_TwoVolumes == 1)  // Per vertex
-		IF(cur_fog_control == 1)
-		{
-			float fog = offset.a * (255.0 / 256.0);
-			color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_VERT.rgb * fog;
-		}
-	#endif
+	if (cur_fog_control == 3) // LUT Mode 2
+		color = vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
+	if (cur_fog_control == 0) // LUT
+	{
+		float fog = fog_mode2(gl_FragCoord.w);
+		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
+	}
+	if (pp_Offset==1 && pp_BumpMap == 0 && cur_fog_control == 1)  // Per vertex
+	{
+		float fog = offset.a * (255.0 / 256.0);
+		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_VERT.rgb * fog;
+	}
    
    color *= trilinear_alpha;
 	
 	// Punch-through polygons are tested on the alpha of the finished colour,
 	// after the texture and the vertex colours are combined and clamped.
-	#if cp_AlphaTest == 1
+	if (cp_AlphaTest == 1)
+	{
       if (cp_AlphaTestValue > color.a)
          discard;
       color.a=1.0;
-	#endif 
+	}
   
    //color.rgb=vec3(gl_FragCoord.w * sp_FOG_DENSITY / 128.0);
 	
@@ -431,29 +445,43 @@ int max_image_height;
 extern GLuint fogTextureId;
 extern GLuint paletteTextureId;
 
-bool gl4CompilePipelineShader(	gl4PipelineShader* s, const char *pixel_source /* = PixelPipelineShader */, const char *vertex_source /* = NULL */)
+/* A program of @pixel_source (the polygons' by default) for @s: compiled
+ * now (@background: asked of the driver, not waited for; @general: the
+ * general one of its pass and pp_Gouraud) */
+static GLuint make_program(const gl4PipelineShader* s, const char *pixel_source, const char *vertex_source, bool general, bool background)
 {
 	char vshader[16384];
 
-	sprintf(vshader, vertex_source == NULL ? VertexShaderSource : vertex_source, s->pp_Gouraud);
+	snprintf(vshader, sizeof(vshader), vertex_source == NULL ? VertexShaderSource : vertex_source, s->pp_Gouraud);
 
 	char pshader[16384];
 
-	sprintf(pshader, pixel_source,
+	// (the other shaders made with this have no GENERAL_PROGRAM: the last number is not used)
+	snprintf(pshader, sizeof(pshader), pixel_source,
                 s->cp_AlphaTest, s->pp_InsideClipping, s->pp_UseAlpha,
                 s->pp_Texture, s->pp_IgnoreTexA, s->pp_ShadInstr, s->pp_Offset, s->pp_FogCtrl,
 				s->pp_TwoVolumes, s->pp_Gouraud, s->pp_BumpMap, s->fog_clamping, s->palette,
-				(int)s->pass);
+				(int)s->pass, general ? 1 : 0);
 
-	s->program = gl_CompileAndLink(vshader, pshader);
+	return glprog_make(vshader, pshader, background);
+}
+
+GLuint gl4MakePipelineProgram(const gl4PipelineShader* s, bool general, bool background)
+{
+	return make_program(s, gl4PixelPipelineShader, NULL, general, background);
+}
+
+void gl4PipelineLocations(gl4PipelineShader* s, bool general)
+{
+	glcache.UseProgram(s->program);
 
 	//setup texture 0 as the input for the shader
 	GLint gu = glGetUniformLocation(s->program, "tex0");
-	if (s->pp_Texture == 1 && gu != -1)
+	if ((s->pp_Texture == 1 || general) && gu != -1)
 		glUniform1i(gu, 0);
 	// Setup texture 1 as the input for area 1 in two volume mode
 	gu = glGetUniformLocation(s->program, "tex1");
-	if (s->pp_Texture == 1 && gu != -1)
+	if ((s->pp_Texture == 1 || general) && gu != -1)
 		glUniform1i(gu, 1);
 
 	//get the uniform locations
@@ -464,11 +492,11 @@ bool gl4CompilePipelineShader(	gl4PipelineShader* s, const char *pixel_source /*
 	s->cp_AlphaTestValue= glGetUniformLocation(s->program, "cp_AlphaTestValue");
 
 	//FOG_COL_RAM,FOG_COL_VERT,FOG_DENSITY;
-	if (s->pp_FogCtrl==1 && s->pp_Texture==1)
+	if ((s->pp_FogCtrl==1 && s->pp_Texture==1) || general)
 		s->sp_FOG_COL_VERT = glGetUniformLocation(s->program, "sp_FOG_COL_VERT");
 	else
 		s->sp_FOG_COL_VERT = -1;
-	if (s->pp_FogCtrl==0 || s->pp_FogCtrl==3)
+	if (s->pp_FogCtrl==0 || s->pp_FogCtrl==3 || general)
 	{
 		s->sp_FOG_COL_RAM=glGetUniformLocation(s->program, "sp_FOG_COL_RAM");
 	}
@@ -485,7 +513,7 @@ bool gl4CompilePipelineShader(	gl4PipelineShader* s, const char *pixel_source /*
 
 	s->trilinear_alpha = glGetUniformLocation(s->program, "trilinear_alpha");
 	
-	if (s->fog_clamping)
+	if (s->fog_clamping || general)
 	{
 		s->fog_clamp_min = glGetUniformLocation(s->program, "fog_clamp_min");
 		s->fog_clamp_max = glGetUniformLocation(s->program, "fog_clamp_max");
@@ -515,6 +543,16 @@ bool gl4CompilePipelineShader(	gl4PipelineShader* s, const char *pixel_source /*
 		glUniform1i(gu, 6);		// GL_TEXTURE6
 	s->palette_index = glGetUniformLocation(s->program, "palette_index");
 
+	s->key_bits = general ? glGetUniformLocation(s->program, "key_bits") : -1;
+}
+
+bool gl4CompilePipelineShader(	gl4PipelineShader* s, const char *pixel_source /* = PixelPipelineShader */, const char *vertex_source /* = NULL */)
+{
+	s->program = make_program(s, pixel_source, vertex_source, false, false);
+	if (glprog_failed())
+		die("shader compile fail\n");
+	gl4PipelineLocations(s, false);
+
 	return glIsProgram(s->program)==GL_TRUE;
 }
 
@@ -530,10 +568,20 @@ static void gl_term(void)
 	glDeleteBuffers(1, &gl4.vbo.tr_poly_params);
 	for (auto it = gl4.shaders.begin(); it != gl4.shaders.end(); it++)
 	{
-		if (it->second.program != 0)
+		// (one drawn with a general program has none of its own, but may have one coming)
+		if (it->second.program != 0 && it->second.general == nullptr)
 			glDeleteProgram(it->second.program);
+		if (it->second.pending != 0)
+			glDeleteProgram(it->second.pending);
 	}
 	gl4.shaders.clear();
+	for (auto& pass : gl4.general)
+		for (gl4PipelineShader& g : pass)
+		{
+			if (g.program != 0)
+				glDeleteProgram(g.program);
+			g.program = 0;
+		}
 	glDeleteTextures(1, &fbTextureId);
 	fbTextureId = 0;
 	glDeleteTextures(1, &fogTextureId);
@@ -706,6 +754,9 @@ static bool RenderFrame()
 		UpdatePaletteTexture(GL_TEXTURE6);
 		palette_updated = false;
 	}
+
+	// (the programs being made in the background polled once a frame: gl4GetProgram())
+	gl4.frame++;
 
 	glcache.UseProgram(gl4.modvol_shader.program);
 
@@ -938,6 +989,7 @@ struct gl4rend : Renderer
 			WARN_LOG(RENDERER, "Warning: OpenGL %d.%d doesn't support per-pixel sorting. 4.3 required", gl.gl_major, gl.gl_minor);
 			return false;
 		}
+		glprog_open();
 
 		if (!gl_create_resources())
 			return false;
@@ -975,6 +1027,11 @@ struct gl4rend : Renderer
 		if (settings.rend.PowerVR2Filter)
 			postProcessor.Init();
 
+		// the polygons' programs, so that none is made in a frame (glprogram_cache.h)
+		gl4MakePrograms();
+		glprog_save();
+		glprog_started();
+
 		return true;
 	}
 	void Resize(int w, int h) override
@@ -996,6 +1053,9 @@ struct gl4rend : Renderer
 
 	void Term() override
 	{
+		// (what is new kept, while the programs are there: glprogram_cache.h)
+		glprog_log("per pixel");
+		glprog_close();
 		postProcessor.Term();
 		glcache.DeleteTextures(ARRAY_SIZE(vmuTextureId), vmuTextureId);
 		memset(vmuTextureId, 0, sizeof(vmuTextureId));

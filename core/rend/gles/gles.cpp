@@ -7,6 +7,7 @@
 
 #include "gles.h"
 #include "ta_decoder_gl.h"
+#include "glprogram_cache.h"
 
 #ifndef GL_RED
 #define GL_RED                            0x1903
@@ -120,6 +121,39 @@ R"(%s
 
 #define PI 3.1415926
 
+/* The general program (glprogram_cache.h): one for each pp_Gouraud, the
+ * other bits of a polygon's key (GetProgram()) read from a uniform. The
+ * code below is the same for both, so what one draws the other draws. */
+#ifdef GENERAL_PROGRAM
+uniform highp int key_bits;
+#undef cp_AlphaTest
+#undef pp_ClipInside
+#undef pp_UseAlpha
+#undef pp_Texture
+#undef pp_IgnoreTexA
+#undef pp_ShadInstr
+#undef pp_Offset
+#undef pp_FogCtrl
+#undef pp_BumpMap
+#undef FogClamping
+#undef pp_TriLinear
+#undef pp_Palette
+#undef pp_Shadowed
+#define pp_ClipInside ((key_bits >> 15) & 1)
+#define cp_AlphaTest ((key_bits >> 14) & 1)
+#define pp_Texture ((key_bits >> 13) & 1)
+#define pp_UseAlpha ((key_bits >> 12) & 1)
+#define pp_IgnoreTexA ((key_bits >> 11) & 1)
+#define pp_ShadInstr ((key_bits >> 9) & 3)
+#define pp_Offset ((key_bits >> 8) & 1)
+#define pp_FogCtrl ((key_bits >> 6) & 3)
+#define pp_BumpMap ((key_bits >> 4) & 1)
+#define FogClamping ((key_bits >> 3) & 1)
+#define pp_TriLinear ((key_bits >> 2) & 1)
+#define pp_Palette ((key_bits >> 1) & 1)
+#define pp_Shadowed (key_bits & 1)
+#endif
+
 #define GLES2 0
 #define GLES3 1
 #define GL2 2
@@ -170,9 +204,7 @@ uniform mediump int palette_index;
 // The depth prepass of sorted translucent polygons (rend/sorter.h): its least alpha, 0 for the colours
 uniform highp float prepass_alpha;
 #endif
-#if pp_Shadowed == 1
 uniform lowp float shade_scale_factor;
-#endif
 
 /* Precision. The colours that come in are eight bits each, so many 255ths.
  * lowp need not hold those: it may be a number of 256ths and nothing finer,
@@ -235,14 +267,10 @@ highp float fog_mode2(highp float w)
 
 highp vec4 fog_clamp(highp vec4 col)
 {
-#if FogClamping == 1
-	return clamp(col, fog_clamp_min, fog_clamp_max);
-#else
+	if (FogClamping == 1)
+		return clamp(col, fog_clamp_min, fog_clamp_max);
 	return col;
-#endif
 }
-
-#if pp_Palette == 1
 
 // The palette is a row of 1024 colours, and a colour is read at the middle
 // of its texel. (It used to be read at index/1023: the first few a
@@ -255,77 +283,68 @@ mediump vec4 palettePixel(highp vec2 coords)
 	return texture(palette, c);
 }
 
-#endif
-
 void main()
 {
 	// Clip inside the box
-	#if pp_ClipInside==-1
+	if (pp_ClipInside==-1)
+	{
 		if (gl_FragCoord.x >= pp_ClipTest.x && gl_FragCoord.x <= pp_ClipTest.z
 				&& gl_FragCoord.y >= pp_ClipTest.y && gl_FragCoord.y <= pp_ClipTest.w)
 			discard;
-	#endif
+	}
 	
 	mediump vec4 color=vtx_base;
-	#if pp_UseAlpha==0
+	if (pp_UseAlpha==0)
 		color.a=1.0;
-	#endif
-	#if pp_Shadowed == 1
+	mediump vec4 offset = vtx_offs;
+	if (pp_Shadowed == 1)
+	{
 		// A pixel inside a modifier volume: what the polygon is shaded with,
 		// its base and offset colours, is scaled before the texture is
 		// combined with them. The texture itself is not.
 		color.rgb *= shade_scale_factor;
-		mediump vec4 offset = vec4(vtx_offs.rgb * shade_scale_factor, vtx_offs.a);
-	#else
-		#define offset vtx_offs
-	#endif
-	#if pp_Texture==1
+		offset = vec4(vtx_offs.rgb * shade_scale_factor, vtx_offs.a);
+	}
+	if (pp_Texture==1)
 	{
-		#if pp_Palette == 0
-			mediump vec4 texcol = texture(tex, vtx_uv);
-		#else
-			mediump vec4 texcol = palettePixel(vtx_uv);
-		#endif
+		mediump vec4 texcol;
+		if (pp_Palette == 0)
+			texcol = texture(tex, vtx_uv);
+		else
+			texcol = palettePixel(vtx_uv);
 		
-		#if pp_BumpMap == 1
+		if (pp_BumpMap == 1)
+		{
 			highp float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
 			highp float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
 			texcol.a = clamp(offset.a + offset.r * sin(s) + offset.g * cos(s) * cos(r - 2.0 * PI * offset.b), 0.0, 1.0);
 			texcol.rgb = vec3(1.0, 1.0, 1.0);	
-		#else
-			#if pp_IgnoreTexA==1
-				texcol.a=1.0;	
-			#endif
-		#endif
-		#if pp_ShadInstr==0
+		}
+		else if (pp_IgnoreTexA==1)
+			texcol.a=1.0;	
+		if (pp_ShadInstr==0)
 		{
 			color=texcol;
 		}
-		#endif
-		#if pp_ShadInstr==1
+		if (pp_ShadInstr==1)
 		{
 			color.rgb*=texcol.rgb;
 			color.a=texcol.a;
 		}
-		#endif
-		#if pp_ShadInstr==2
+		if (pp_ShadInstr==2)
 		{
 			color.rgb=mix(color.rgb,texcol.rgb,texcol.a);
 		}
-		#endif
-		#if  pp_ShadInstr==3
+		if (pp_ShadInstr==3)
 		{
 			color*=texcol;
 		}
-		#endif
 		
-		#if pp_Offset==1 && pp_BumpMap == 0
+		if (pp_Offset==1 && pp_BumpMap == 0)
 		{
 			color.rgb+=offset.rgb;
 		}
-		#endif
 	}
-	#endif
 	
 	color = fog_clamp(color);
 	
@@ -335,33 +354,30 @@ void main()
 	// so it is the combined colour that is replaced: a textured polygon
 	// comes out in plain fog colour. It used to be done to the base colour,
 	// before texturing, and the texture was then applied on top.
-	#if pp_FogCtrl == 3
+	if (pp_FogCtrl == 3)
 		color = vec4(sp_FOG_COL_RAM.rgb, fog_mode2(gl_FragCoord.w) * (256.0 / 255.0));
-	#endif
-	#if pp_FogCtrl == 0
+	if (pp_FogCtrl == 0)
 	{
 		highp float fog = fog_mode2(gl_FragCoord.w);
 		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
 	}
-	#endif
-	#if pp_FogCtrl == 1 && pp_Offset==1 && pp_BumpMap == 0
+	if (pp_FogCtrl == 1 && pp_Offset==1 && pp_BumpMap == 0)
 	{
 		highp float fog = offset.a * (255.0 / 256.0);
 		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_VERT.rgb * fog;
 	}
-	#endif
 	
-	#if pp_TriLinear == 1
-	color *= trilinear_alpha;
-	#endif
+	if (pp_TriLinear == 1)
+		color *= trilinear_alpha;
 	
 	// Punch-through polygons are tested on the alpha of the finished colour,
 	// after the texture and the vertex colours are combined and clamped.
-	#if cp_AlphaTest == 1
+	if (cp_AlphaTest == 1)
+	{
 		if (cp_AlphaTestValue > color.a)
 			discard;
 		color.a=1.0;
-	#endif 
+	}
 	//color.rgb=vec3(gl_FragCoord.w * sp_FOG_DENSITY / 128.0);
 #if TARGET_GL != GLES2
 	// (only where the shader writes the depth anyway: a discard there costs nothing more)
@@ -413,7 +429,17 @@ GLuint paletteTextureId;
 
 xform ViewportMatrix = { 1.f, 1.f, 1.f, 0.f, 0.f, 0.f };
 
-PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
+/* (tests: every polygon drawn with the general programs, to see they draw
+ * what the polygons' own ones do) */
+#ifdef GL_PROGRAM_TEST_GENERAL
+static const bool PipelineTestGeneral = true;
+#else
+static const bool PipelineTestGeneral = false;
+#endif
+
+/* A polygon's key: what its program is made for. (Bit 5 is pp_Gouraud,
+ * the one the general programs do not read from it.) */
+static u32 pipeline_key(bool cp_AlphaTest, bool pp_InsideClipping,
 		bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr, bool pp_Offset,
 		u32 pp_FogCtrl, bool pp_Gouraud, bool pp_BumpMap, bool fog_clamping, bool trilinear,
 		bool palette, bool shadowed)
@@ -434,31 +460,312 @@ PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
 	rv<<=1; rv|=trilinear;
 	rv<<=1; rv|=palette;
 	rv<<=1; rv|=shadowed;
+	return rv;
+}
+
+static void pipeline_from_key(PipelineShader *s, u32 key)
+{
+	s->key = key;
+	s->pp_InsideClipping = (key >> 15) & 1;
+	s->cp_AlphaTest = (key >> 14) & 1;
+	s->pp_Texture = (key >> 13) & 1;
+	s->pp_UseAlpha = (key >> 12) & 1;
+	s->pp_IgnoreTexA = (key >> 11) & 1;
+	s->pp_ShadInstr = (key >> 9) & 3;
+	s->pp_Offset = (key >> 8) & 1;
+	s->pp_FogCtrl = (key >> 6) & 3;
+	s->pp_Gouraud = (key >> 5) & 1;
+	s->pp_BumpMap = (key >> 4) & 1;
+	s->fog_clamping = (key >> 3) & 1;
+	s->trilinear = (key >> 2) & 1;
+	s->palette = (key >> 1) & 1;
+	s->shadowed = key & 1;
+}
+
+/* A polygon's program asked of the driver (glprogram_cache.h): its own, or
+ * (@general) the general one of its pp_Gouraud */
+static GLuint make_pipeline_program(const PipelineShader *s, bool general, bool background)
+{
+	char vshader[8192];
+	int rc = snprintf(vshader, sizeof(vshader), VertexShaderSource, gl.glsl_version_header, gl.gl_version, s->pp_Gouraud);
+	verify(rc + 1 <= (int)sizeof(vshader));
+
+	char header[128];
+	snprintf(header, sizeof(header), "%s\n#define GENERAL_PROGRAM", gl.glsl_version_header);
+	char pshader[16384];
+	rc = snprintf(pshader, sizeof(pshader), PixelPipelineShader, general ? header : gl.glsl_version_header, gl.gl_version,
+                s->cp_AlphaTest,s->pp_InsideClipping,s->pp_UseAlpha,
+                s->pp_Texture,s->pp_IgnoreTexA,s->pp_ShadInstr,s->pp_Offset,s->pp_FogCtrl, s->pp_Gouraud, s->pp_BumpMap,
+				s->fog_clamping, s->trilinear, s->palette, s->shadowed);
+	verify(rc + 1 <= (int)sizeof(pshader));
+
+	return glprog_make(vshader, pshader, background);
+}
+
+/* Its uniforms found, the samplers and this frame's uniforms given (the
+ * program bound). A general program has all of them. */
+static void pipeline_locations(PipelineShader *s, bool general)
+{
+	glcache.UseProgram(s->program);
+
+	//setup texture 0 as the input for the shader
+	GLint gu = glGetUniformLocation(s->program, "tex");
+	if (s->pp_Texture==1 || general)
+		glUniform1i(gu,0);
+
+	//get the uniform locations
+	s->depth_scale      = glGetUniformLocation(s->program, "depth_scale");
+
+	s->pp_ClipTest      = glGetUniformLocation(s->program, "pp_ClipTest");
+
+	s->sp_FOG_DENSITY   = glGetUniformLocation(s->program, "sp_FOG_DENSITY");
+
+	s->cp_AlphaTestValue= glGetUniformLocation(s->program, "cp_AlphaTestValue");
+
+	//FOG_COL_RAM,FOG_COL_VERT,FOG_DENSITY;
+	if ((s->pp_FogCtrl==1 && s->pp_Texture==1) || general)
+		s->sp_FOG_COL_VERT=glGetUniformLocation(s->program, "sp_FOG_COL_VERT");
+	else
+		s->sp_FOG_COL_VERT=-1;
+	if (s->pp_FogCtrl==0 || s->pp_FogCtrl==3 || general)
+	{
+		s->sp_FOG_COL_RAM=glGetUniformLocation(s->program, "sp_FOG_COL_RAM");
+	}
+	else
+	{
+		s->sp_FOG_COL_RAM=-1;
+	}
+	// Setup texture 1 as the fog table
+	gu = glGetUniformLocation(s->program, "fog_table");
+	if (gu != -1)
+		glUniform1i(gu, 1);
+	// And texture 2 as palette
+	gu = glGetUniformLocation(s->program, "palette");
+	if (gu != -1)
+		glUniform1i(gu, 2);
+	s->palette_index = glGetUniformLocation(s->program, "palette_index");
+
+	s->trilinear_alpha = glGetUniformLocation(s->program, "trilinear_alpha");
+	
+	if (s->fog_clamping || general)
+	{
+		s->fog_clamp_min = glGetUniformLocation(s->program, "fog_clamp_min");
+		s->fog_clamp_max = glGetUniformLocation(s->program, "fog_clamp_max");
+	}
+	else
+	{
+		s->fog_clamp_min = -1;
+		s->fog_clamp_max = -1;
+	}
+	s->normal_matrix = glGetUniformLocation(s->program, "normal_matrix");
+	s->shade_scale_factor = glGetUniformLocation(s->program, "shade_scale_factor");
+	s->prepass_alpha = glGetUniformLocation(s->program, "prepass_alpha");
+	s->key_bits = general ? glGetUniformLocation(s->program, "key_bits") : -1;
+	s->key_now = ~0u;
+
+	ShaderUniforms.Set(s);
+	s->uniforms_set = gl.uniforms_frame;
+}
+
+bool CompilePipelineShader(	PipelineShader* s)
+{
+	s->program = make_pipeline_program(s, false, false);
+	if (glprog_failed())
+		die("shader compile fail\n");
+	pipeline_locations(s, false);
+
+	return glIsProgram(s->program)==GL_TRUE;
+}
+
+// A polygon drawn with the general program @g until its own is there
+static void use_general(PipelineShader *s, PipelineShader *g)
+{
+	s->program = g->program;
+	s->depth_scale = g->depth_scale;
+	s->pp_ClipTest = g->pp_ClipTest;
+	s->cp_AlphaTestValue = g->cp_AlphaTestValue;
+	s->sp_FOG_COL_RAM = g->sp_FOG_COL_RAM;
+	s->sp_FOG_COL_VERT = g->sp_FOG_COL_VERT;
+	s->sp_FOG_DENSITY = g->sp_FOG_DENSITY;
+	s->trilinear_alpha = g->trilinear_alpha;
+	s->fog_clamp_min = g->fog_clamp_min;
+	s->fog_clamp_max = g->fog_clamp_max;
+	s->normal_matrix = g->normal_matrix;
+	s->palette_index = g->palette_index;
+	s->shade_scale_factor = g->shade_scale_factor;
+	s->prepass_alpha = g->prepass_alpha;
+	s->key_bits = g->key_bits;
+	s->general = g;
+}
+
+/* A key first drawn (in a frame): drawn with the general program, its own
+ * asked for in the background where the driver does that (else that is it
+ * for this run: the key is kept, and its program made at the start of the
+ * next); without a general program, made now as ever */
+static void pipeline_first(PipelineShader *s, u32 key)
+{
+	pipeline_from_key(s, key);
+	glprog_note(GLPROG_GLES, key);
+	PipelineShader *g = &gl.general[s->pp_Gouraud];
+	if (g->program == 0)
+	{
+		CompilePipelineShader(s);
+		return;
+	}
+	use_general(s, g);
+	glprog_general_used();
+	if (glprog_background() && !PipelineTestGeneral)
+	{
+		s->pending = make_pipeline_program(s, false, true);
+		s->polled = gl.uniforms_frame;
+	}
+}
+
+// (once a frame) whether its own program is there now
+static void pipeline_poll(PipelineShader *s)
+{
+	s->polled = gl.uniforms_frame;
+	switch (glprog_poll(s->pending))
+	{
+	case GLPROG_PENDING:
+		break;
+	case GLPROG_READY:
+		s->program = s->pending;
+		s->pending = 0;
+		s->general = nullptr;
+		pipeline_locations(s, false);
+		break;
+	default:
+		WARN_LOG(RENDERER, "OpenGL: the program of key %x did not link; the general one draws it", s->key);
+		glDeleteProgram(s->pending);
+		s->pending = 0;
+		break;
+	}
+}
+
+void UsePipelineShader(PipelineShader *s)
+{
+	glcache.UseProgram(s->program);
+	PipelineShader *owner = s->general != nullptr ? s->general : s;
+	if (owner->uniforms_set != gl.uniforms_frame)
+	{
+		owner->uniforms_set = gl.uniforms_frame;
+		ShaderUniforms.Set(owner);
+	}
+	if (s->general != nullptr && owner->key_now != s->key)
+	{
+		owner->key_now = s->key;
+		glUniform1i(owner->key_bits, (GLint)s->key);
+	}
+}
+
+/* The keys most games draw with (glprogram_cache.h): made at the start
+ * with those of earlier runs */
+static const u16 CommonKeys[] = {
+	0
+};
+
+/* At the renderer's start: the general programs, and the programs of the
+ * keys of earlier runs and the common ones, all asked of the driver before
+ * any is waited for */
+static void gl_make_programs()
+{
+	for (int g = 0; g < 2; g++)
+	{
+		PipelineShader *s = &gl.general[g];
+		memset(s, 0, sizeof(*s));
+		s->pp_Gouraud = g;
+		// (OpenGL ES 2 and OpenGL 2: none; the shaders' integers are 3's)
+		if (gl.gl_major >= 3)
+			s->program = make_pipeline_program(s, true, true);
+	}
+	u32 count = 0;
+	const u32 *known = glprog_known(GLPROG_GLES, &count);
+	const u32 most = count + (u32)ARRAY_SIZE(CommonKeys) + 3;
+	std::vector<u32> keys;
+	keys.reserve(most);
+	for (u32 i = 0; i < count; i++)
+		if (known[i] <= 0xFFFF)
+			keys.push_back(known[i]);
+	for (u16 k : CommonKeys)
+		keys.push_back(k);
+	// (the framebuffer's, the VMU screens' and the crosshairs': drawn with DrawQuad())
+	keys.push_back(pipeline_key(false, false, true, false, true, 0, false, 2, false, false, false, false, false, false));
+	keys.push_back(pipeline_key(false, false, true, true, false, 0, false, 2, false, false, false, false, false, false));
+	if (keys.size() > 1024)
+		keys.resize(1024);
+	if (!PipelineTestGeneral)
+		for (u32 key : keys)
+		{
+			PipelineShader *s = &gl.shaders[key];
+			if (s->program != 0 || s->pending != 0)
+				continue;
+			pipeline_from_key(s, key);
+			s->pending = make_pipeline_program(s, false, true);
+		}
+	// now waited for
+	for (int g = 0; g < 2; g++)
+	{
+		PipelineShader *s = &gl.general[g];
+		if (s->program == 0)
+			continue;
+		if (glprog_wait(s->program))
+			pipeline_locations(s, true);
+		else
+		{
+			WARN_LOG(RENDERER, "OpenGL: no general program (pp_Gouraud %d)", g);
+			glDeleteProgram(s->program);
+			s->program = 0;
+		}
+	}
+	for (auto it = gl.shaders.begin(); it != gl.shaders.end(); )
+	{
+		PipelineShader *s = &it->second;
+		if (s->pending != 0 && s->program == 0)
+		{
+			const GLuint p = s->pending;
+			s->pending = 0;
+			if (glprog_wait(p))
+			{
+				s->program = p;
+				pipeline_locations(s, false);
+			}
+			else
+			{
+				WARN_LOG(RENDERER, "OpenGL: the program of key %x did not link", s->key);
+				glDeleteProgram(p);
+				it = gl.shaders.erase(it);
+				continue;
+			}
+		}
+		++it;
+	}
+}
+
+PipelineShader *GetProgram(bool cp_AlphaTest, bool pp_InsideClipping,
+		bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr, bool pp_Offset,
+		u32 pp_FogCtrl, bool pp_Gouraud, bool pp_BumpMap, bool fog_clamping, bool trilinear,
+		bool palette, bool shadowed)
+{
+	const u32 rv = pipeline_key(cp_AlphaTest, pp_InsideClipping, pp_Texture, pp_UseAlpha, pp_IgnoreTexA,
+			pp_ShadInstr, pp_Offset, pp_FogCtrl, pp_Gouraud, pp_BumpMap, fog_clamping, trilinear, palette, shadowed);
 
 	PipelineShader *shader = &gl.shaders[rv];
 	if (shader->program == 0)
-	{
-		shader->cp_AlphaTest = cp_AlphaTest;
-		shader->pp_InsideClipping = pp_InsideClipping;
-		shader->pp_Texture = pp_Texture;
-		shader->pp_UseAlpha = pp_UseAlpha;
-		shader->pp_IgnoreTexA = pp_IgnoreTexA;
-		shader->pp_ShadInstr = pp_ShadInstr;
-		shader->pp_Offset = pp_Offset;
-		shader->pp_FogCtrl = pp_FogCtrl;
-		shader->pp_Gouraud = pp_Gouraud;
-		shader->pp_BumpMap = pp_BumpMap;
-		shader->fog_clamping = fog_clamping;
-		shader->trilinear = trilinear;
-		shader->palette = palette;
-		shader->shadowed = shadowed;
-		CompilePipelineShader(shader);
-	}
+		pipeline_first(shader, rv);
+	else if (shader->pending != 0 && shader->polled != gl.uniforms_frame)
+		pipeline_poll(shader);
 
 #ifdef RPI4_SET_UNIFORM_ATTRIBUTES_BUG
 	// rpi 4 has a bug where it does not save uniform and attribute state with
 	// the program, so they have to be reinit each time you reuse the program
 	glcache.UseProgram(shader->program);
+	if (shader->general != nullptr)
+	{
+		// (and the key, and this frame's uniforms, given again: UsePipelineShader())
+		shader->general->key_now = ~0u;
+		shader->general->uniforms_set = gl.uniforms_frame - 1;
+	}
 	//setup texture 0 as the input for the shader
 	GLuint gu=glGetUniformLocation(shader->program, "tex");
 	if (shader->pp_Texture==1)
@@ -626,138 +933,18 @@ GLuint gl_CompileShader(const char* shader,GLuint type)
 	return rv;
 }
 
+// (through the programs kept: glprogram_cache.h)
 GLuint gl_CompileAndLink(const char* VertexShader, const char* FragmentShader)
 {
-	GLint compile_log_len;
-	GLint result;
-	/* Create vertex/fragment shaders */
-	GLuint vs      = gl_CompileShader(VertexShader ,GL_VERTEX_SHADER);
-	GLuint ps      = gl_CompileShader(FragmentShader ,GL_FRAGMENT_SHADER);
-	GLuint program = glCreateProgram();
-
-	glAttachShader(program, vs);
-	glAttachShader(program, ps);
-
-	/* Bind vertex attribute to VBO inputs */
-	glBindAttribLocation(program, VERTEX_POS_ARRAY,      "in_pos");
-	glBindAttribLocation(program, VERTEX_COL_BASE_ARRAY, "in_base");
-	glBindAttribLocation(program, VERTEX_COL_OFFS_ARRAY, "in_offs");
-	glBindAttribLocation(program, VERTEX_UV_ARRAY,       "in_uv");
-	glBindAttribLocation(program, VERTEX_COL_BASE1_ARRAY, "in_base1");
-	glBindAttribLocation(program, VERTEX_COL_OFFS1_ARRAY, "in_offs1");
-	glBindAttribLocation(program, VERTEX_UV1_ARRAY,       "in_uv1");
-	glBindAttribLocation(program, VERTEX_PP_ARRAY,        "in_pp");
-
-#ifndef HAVE_OPENGLES
-	glBindFragDataLocation(program, 0, "FragColor");
-#endif
-
-	glLinkProgram(program);
-	glGetProgramiv(program, GL_LINK_STATUS, &result);
-	glGetProgramiv(program, GL_INFO_LOG_LENGTH, &compile_log_len);
-
-	if (!result && compile_log_len>0)
-	{
-      char *compile_log = NULL;
-
-		if (compile_log_len==0)
-			compile_log_len = 1;
-		compile_log_len   += 1024;
-		compile_log        = (char*)malloc(compile_log_len);
-		*compile_log       = 0;
-
-		glGetProgramInfoLog(program, compile_log_len, &compile_log_len, compile_log);
-		WARN_LOG(RENDERER, "Shader linking: %s \n (%d bytes), - %s -\n", result ? "linked" : "failed to link", compile_log_len, compile_log);
-		WARN_LOG(RENDERER, "VERTEX:\n%s\nFRAGMENT:\n%s\n", VertexShader, FragmentShader);
-
-		free(compile_log);
+	const GLuint program = glprog_make(VertexShader, FragmentShader);
+	if (glprog_failed())
 		die("shader compile fail\n");
-	}
-
-	glDeleteShader(vs);
-	glDeleteShader(ps);
 
 	glcache.UseProgram(program);
 
 	verify(glIsProgram(program));
 
 	return program;
-}
-
-bool CompilePipelineShader(	PipelineShader* s)
-{
-	char vshader[8192];
-
-	int rc = sprintf(vshader, VertexShaderSource, gl.glsl_version_header, gl.gl_version, s->pp_Gouraud);
-	verify(rc + 1 <= (int)sizeof(vshader));
-
-	char pshader[16384];
-
-	rc = sprintf(pshader,PixelPipelineShader, gl.glsl_version_header, gl.gl_version,
-                s->cp_AlphaTest,s->pp_InsideClipping,s->pp_UseAlpha,
-                s->pp_Texture,s->pp_IgnoreTexA,s->pp_ShadInstr,s->pp_Offset,s->pp_FogCtrl, s->pp_Gouraud, s->pp_BumpMap,
-				s->fog_clamping, s->trilinear, s->palette, s->shadowed);
-	verify(rc + 1 <= (int)sizeof(pshader));
-
-	s->program=gl_CompileAndLink(vshader, pshader);
-
-
-	//setup texture 0 as the input for the shader
-	GLint gu = glGetUniformLocation(s->program, "tex");
-	if (s->pp_Texture==1)
-		glUniform1i(gu,0);
-
-	//get the uniform locations
-	s->depth_scale      = glGetUniformLocation(s->program, "depth_scale");
-
-	s->pp_ClipTest      = glGetUniformLocation(s->program, "pp_ClipTest");
-
-	s->sp_FOG_DENSITY   = glGetUniformLocation(s->program, "sp_FOG_DENSITY");
-
-	s->cp_AlphaTestValue= glGetUniformLocation(s->program, "cp_AlphaTestValue");
-
-	//FOG_COL_RAM,FOG_COL_VERT,FOG_DENSITY;
-	if (s->pp_FogCtrl==1 && s->pp_Texture==1)
-		s->sp_FOG_COL_VERT=glGetUniformLocation(s->program, "sp_FOG_COL_VERT");
-	else
-		s->sp_FOG_COL_VERT=-1;
-	if (s->pp_FogCtrl==0 || s->pp_FogCtrl==3)
-	{
-		s->sp_FOG_COL_RAM=glGetUniformLocation(s->program, "sp_FOG_COL_RAM");
-	}
-	else
-	{
-		s->sp_FOG_COL_RAM=-1;
-	}
-	// Setup texture 1 as the fog table
-	gu = glGetUniformLocation(s->program, "fog_table");
-	if (gu != -1)
-		glUniform1i(gu, 1);
-	// And texture 2 as palette
-	gu = glGetUniformLocation(s->program, "palette");
-	if (gu != -1)
-		glUniform1i(gu, 2);
-	s->palette_index = glGetUniformLocation(s->program, "palette_index");
-
-	s->trilinear_alpha = glGetUniformLocation(s->program, "trilinear_alpha");
-	
-	if (s->fog_clamping)
-	{
-		s->fog_clamp_min = glGetUniformLocation(s->program, "fog_clamp_min");
-		s->fog_clamp_max = glGetUniformLocation(s->program, "fog_clamp_max");
-	}
-	else
-	{
-		s->fog_clamp_min = -1;
-		s->fog_clamp_max = -1;
-	}
-	s->normal_matrix = glGetUniformLocation(s->program, "normal_matrix");
-	s->shade_scale_factor = glGetUniformLocation(s->program, "shade_scale_factor");
-	s->prepass_alpha = glGetUniformLocation(s->program, "prepass_alpha");
-
-	ShaderUniforms.Set(s);
-
-	return glIsProgram(s->program)==GL_TRUE;
 }
 
 /*
@@ -796,10 +983,19 @@ static void gl_delete_shaders()
 {
 	for (const auto& it : gl.shaders)
 	{
-		if (it.second.program != 0)
+		// (one drawn with a general program has none of its own, but may have one coming)
+		if (it.second.program != 0 && it.second.general == nullptr)
 			glDeleteProgram(it.second.program);
+		if (it.second.pending != 0)
+			glDeleteProgram(it.second.pending);
 	}
 	gl.shaders.clear();
+	for (PipelineShader& g : gl.general)
+	{
+		if (g.program != 0)
+			glDeleteProgram(g.program);
+		g.program = 0;
+	}
 	glDeleteProgram(gl.modvol_shader.program);
 	gl.modvol_shader.program = 0;
 }
@@ -834,6 +1030,7 @@ static bool gl_create_resources(void)
 	glGenBuffers(1, &gl.vbo.idxs2);
 
    findGLVersion();
+   glprog_open();
 
    char vshader[8192];
    sprintf(vshader, VertexShaderSource, gl.glsl_version_header, gl.gl_version, 1);
@@ -1029,11 +1226,8 @@ static bool RenderFrame(void)
 	ShaderUniforms.PT_ALPHA = ((PT_ALPHA_REF & 0xFF) - 0.5f) / 255.0f;
 	ShaderUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
 
-	for (const auto& it : gl.shaders)
-	{
-		glcache.UseProgram(it.second.program);
-		ShaderUniforms.Set(&it.second);
-	}
+	// (given to each program the first time it is bound in the frame: UsePipelineShader())
+	gl.uniforms_frame++;
 
 	//setup render target first
 	if (is_rtt)
@@ -1321,6 +1515,11 @@ struct glesrend : Renderer
       glTaDecoder.WantSort(true);
       glTaDecoder.Setup(ta_gpu_wanted());
 
+      // the polygons' programs, so that none is made in a frame (glprogram_cache.h)
+      gl_make_programs();
+      glprog_save();
+      glprog_started();
+
       return true;
    }
 	void Resize(int w, int h) override
@@ -1341,6 +1540,9 @@ struct glesrend : Renderer
 
 	void Term() override
    {
+		// (what is new kept, while the programs are there: glprogram_cache.h)
+		glprog_log("per triangle");
+		glprog_close();
 		glTaDecoder.Term();
 		postProcessor.Term();
 	   TexCache.Clear();

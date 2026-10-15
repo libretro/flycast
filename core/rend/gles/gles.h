@@ -76,9 +76,25 @@ struct PipelineShader
 	bool trilinear;
 	bool palette;
 	bool shadowed;
+
+	/* (glprogram_cache.h) The polygon's key (GetProgram()); for one drawn
+	 * with a general program, that program's record, whose program and
+	 * uniforms these are, and the program of its own being made in the
+	 * background (0: none); the frame it was last polled in */
+	u32 key;
+	PipelineShader *general;
+	GLuint pending;
+	u32 polled;
+	// (a general program's record) the uniform it reads the key from, and the key it has
+	GLint key_bits;
+	u32 key_now;
+	// the frame the frame's uniforms were last given to the program in (ShaderUniforms.Set())
+	u32 uniforms_set;
 };
 
-
+/* A polygon's program bound (from GetProgram()), with this frame's uniforms
+ * and, for a general one, the polygon's key */
+void UsePipelineShader(PipelineShader *s);
 
 #include "rend/vram_budget.h"
 
@@ -95,6 +111,11 @@ struct gl_ctx
 	} modvol_shader;
 
 	std::unordered_map<u32, PipelineShader> shaders;
+	/* The general programs (glprogram_cache.h), by pp_Gouraud: no program
+	 * where there are none (OpenGL ES 2, OpenGL 2) */
+	PipelineShader general[2];
+	// the frame, for the uniforms given once a frame (UsePipelineShader())
+	u32 uniforms_frame;
 
 	struct
 	{
