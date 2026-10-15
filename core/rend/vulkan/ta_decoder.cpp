@@ -66,7 +66,13 @@ bool TaDecoder::Init(CommandPool& pool)
 	/* The contexts: every frame in flight, one being drawn, and the few the
 	 * game writes to at a time and renders to textures with */
 	r->slice = ta_data_size();
-	r->slices = std::min(frames + 4, 16);
+	/* ...and spares, for a game that writes to more at once, as many as a
+	 * thirty-second of the memory budget left allows, up to four more: a
+	 * frame that finds them all taken is drawn from the CPU's parse, in a
+	 * context of its own memory (tactx_gpu_pool_attach() makes one) */
+	const u64 budget = (u64)context->GetVramBudget().available_kib() * 1024 / 32;
+	const u32 spares = (u32)std::min<u64>(budget / r->slice, 4);
+	r->slices = std::min(frames + 4 + (int)spares, 16);
 	r->tableWords = (sz.table_words + 63) & ~63u;
 
 	const u64 most = std::min<u64>(context->GetMaxStorageBufferRange(), context->GetMaxMemoryAllocationSize());

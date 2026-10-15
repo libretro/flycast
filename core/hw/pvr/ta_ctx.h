@@ -429,11 +429,16 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
  * buffer), given to new frames before any other while it is there. One is
  * written again only once the renderer says the GPU work that last read it
  * is done (tactx_gpu_done()); if none is free, a frame gets a context of
- * its own memory as without the pool. Detached, the contexts still in use
+ * its own memory: the spare made with the pool, and past that one made then
+ * as without the pool. Detached, the contexts still in use
  * have their data copied to memory of their own and go on. Both with the
  * machine standing still and the GPU idle. */
 bool tactx_gpu_pool_attach(u8 *base, u32 slice, u32 count);
 void tactx_gpu_pool_detach(void);
+/* Since the pool was attached: frames that found it all taken (and went to
+ * a spare context of their own memory, drawn from the CPU's parse), and of
+ * them those that found no spare either and had one allocated */
+void tactx_gpu_pool_stats(u32 *short_frames, u32 *allocated);
 /* The GPU work of every frame up to renderer serial @serial is done (from
  * the thread that renders) */
 void tactx_gpu_done(u32 serial);

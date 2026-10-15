@@ -161,6 +161,10 @@ static TA_context *gpu_pool[TA_GPU_POOL_MAX];
 static retro_atomic_int_t gpu_pool_state[TA_GPU_POOL_MAX];
 static retro_atomic_int_t gpu_pool_count = RETRO_ATOMIC_INT_INITIALIZER(0);
 static retro_atomic_int_t gpu_done_serial = RETRO_ATOMIC_INT_INITIALIZER(0);
+/* Frames that found the pool all taken, and of them those that found no
+ * spare context either and had one allocated (tactx_gpu_pool_stats()) */
+static retro_atomic_int_t gpu_pool_short = RETRO_ATOMIC_INT_INITIALIZER(0);
+static retro_atomic_int_t gpu_pool_allocated = RETRO_ATOMIC_INT_INITIALIZER(0);
 
 static TA_context *gpu_pool_take(void)
 {
@@ -204,8 +208,43 @@ bool tactx_gpu_pool_attach(u8 *base, u32 slice, u32 count)
 		gpu_pool[i] = ctx;
 		retro_atomic_store_relaxed_int(&gpu_pool_state[i], POOL_FREE);
 	}
+	/* A frame that finds every slice taken is given a context of its own
+	 * memory, and drawn from the CPU's parse: one is made now, for the
+	 * spares, so that it is not made while a game runs */
+	if (count != 0)
+	{
+		TA_context *spare = ctx_pool.Take();
+		if (spare != NULL && spare->data_size != ta_data_size())
+		{
+			spare->Free();
+			delete spare;
+			spare = NULL;
+		}
+		if (spare == NULL)
+		{
+			spare = new TA_context();
+			if (!spare->Alloc())
+			{
+				delete spare;
+				spare = NULL;
+			}
+		}
+		if (spare != NULL && !ctx_pool.Put(spare))
+		{
+			spare->Free();
+			delete spare;
+		}
+	}
+	retro_atomic_store_relaxed_int(&gpu_pool_short, 0);
+	retro_atomic_store_relaxed_int(&gpu_pool_allocated, 0);
 	retro_atomic_store_release_int(&gpu_pool_count, (int)count);
 	return count != 0;
+}
+
+void tactx_gpu_pool_stats(u32 *short_frames, u32 *allocated)
+{
+	*short_frames = (u32)retro_atomic_load_acquire_int(&gpu_pool_short);
+	*allocated = (u32)retro_atomic_load_acquire_int(&gpu_pool_allocated);
 }
 
 /* @ctx's data moved to memory of its own, @from its old place */
@@ -268,6 +307,9 @@ TA_context* tactx_Alloc(void)
 	TA_context* rv = gpu_pool_take();
 	if (rv != NULL)
 		return rv;
+	const bool pooled = retro_atomic_load_acquire_int(&gpu_pool_count) != 0;
+	if (pooled)
+		retro_atomic_inc_int(&gpu_pool_short);
 	rv = ctx_pool.Take();
 
 	if (rv && rv->data_size != ta_data_size())
@@ -279,6 +321,11 @@ TA_context* tactx_Alloc(void)
 	}
 	if (!rv)
    {
+      /* (with the pool: more frames at once than its slices and the spare
+       * made with it, which only a game writing to many addresses at once
+       * comes to; counted, and said once) */
+      if (pooled && retro_atomic_fetch_add_int(&gpu_pool_allocated, 1) == 0)
+         WARN_LOG(PVR, "TA processing: every frame of the GPU pool and the spare are in use: one is allocated");
       rv = new TA_context();
       if (!rv->Alloc())
       {
