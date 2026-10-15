@@ -38,14 +38,20 @@ cbuffer VertexConstants : register(b0)
 // where they are and everything in between is interpolated with the
 // perspective. What the pixel shaders take for the depth (gl_FragCoord.w in
 // the other renderers) is 1/w, which goes across the screen in a straight
-// line: it is passed on as it is and interpolated without the perspective.
-float4 transformVertex(float3 pos, out float depthW)
+// line. It is not handed down as it is, without the perspective: where a
+// triangle is clipped (a vertex far off the screen, as a floor's or a
+// train's near the camera has), what the rasterizer then makes of such a
+// value is not always right: the polygon got next to no depth and was
+// hidden behind the background.
+// The clip space w is handed down instead, with the perspective, which
+// clipping keeps right; one over it at a pixel is that 1/w.
+float4 transformVertex(float3 pos, out float clipW)
 {
 	float4 vpos = float4(pos * normalScale.xyz + normalOffset.xyz, 1.0);
-	depthW = vpos.z;
 	vpos.w = 1.0 / vpos.z;
 	vpos.z = vpos.w;
 	vpos.xy *= vpos.w;
+	clipW = vpos.w;
 	return vpos;
 }
 )";
@@ -71,13 +77,13 @@ struct VertexOut
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 };
 
 VertexOut main(in VertexIn vin)
 {
 	VertexOut vo;
-	vo.pos = transformVertex(vin.pos, vo.w);
+	vo.pos = transformVertex(vin.pos, vo.clipW);
 	vo.col = vin.col;
 	vo.spec = vin.spec;
 	vo.uv = vin.uv;
@@ -89,7 +95,7 @@ const char * const DX11ModVolVertexShader = R"(
 struct VertexOut
 {
 	float4 pos : SV_POSITION;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 };
 
 VertexOut main(in float3 pos : POSITION)
@@ -99,10 +105,10 @@ VertexOut main(in float3 pos : POSITION)
 	if (pos.z < 0.0 || pos.z > 3.4e37)
 	{
 		vo.pos = float4(0.0, 0.0, 1.0, 1.0 / pos.z);
-		vo.w = pos.z;
+		vo.clipW = vo.pos.w;
 		return vo;
 	}
-	vo.pos = transformVertex(pos, vo.w);
+	vo.pos = transformVertex(pos, vo.clipW);
 	return vo;
 }
 )";
@@ -202,7 +208,7 @@ struct Pixel
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 };
 
 struct PSO
@@ -213,6 +219,7 @@ struct PSO
 
 PSO main(in Pixel inpix)
 {
+	const float w = 1.0 / inpix.clipW;
 	// Clip inside the box
 #if pp_ClipInside == 1
 	if (inpix.pos.x >= clipTest.x && inpix.pos.x <= clipTest.z
@@ -275,11 +282,11 @@ PSO main(in Pixel inpix)
 	// colour and the fog coefficient the place of its alpha, after the
 	// texture has been combined in.
 #if pp_FogCtrl == 3
-	color = float4(sp_FOG_COL_RAM.rgb, fog_mode2(inpix.w) * (256.0 / 255.0));
+	color = float4(sp_FOG_COL_RAM.rgb, fog_mode2(w) * (256.0 / 255.0));
 #endif
 #if pp_FogCtrl == 0
 	{
-		float fog = fog_mode2(inpix.w);
+		float fog = fog_mode2(w);
 		color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
 	}
 #endif
@@ -303,7 +310,7 @@ PSO main(in Pixel inpix)
 #endif
 
 	PSO pso;
-	pso.depth = fragDepth(inpix.w);
+	pso.depth = fragDepth(w);
 	pso.col = color;
 	return pso;
 }
@@ -313,7 +320,7 @@ static const char ModVolPixelShaderSource[] = R"(
 struct Pixel
 {
 	float4 pos : SV_POSITION;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 };
 
 struct PSO
@@ -327,7 +334,7 @@ struct PSO
 PSO main(in Pixel inpix)
 {
 	PSO pso;
-	pso.depth = fragDepth(inpix.w);
+	pso.depth = fragDepth(1.0 / inpix.clipW);
 	pso.col = float4(0.0, 0.0, 0.0, 1.0 - shade_scale_factor);
 	return pso;
 }

@@ -53,7 +53,7 @@ struct VertexOut
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 	INTERPOLATION float4 col1 : COLOR2;		// the second volume's, for opaque and punch-through polygons
 	INTERPOLATION float4 spec1 : COLOR3;
 	float2 uv1 : TEXCOORD2;
@@ -63,7 +63,7 @@ struct VertexOut
 VertexOut main(in VertexIn vin)
 {
 	VertexOut vo;
-	vo.pos = transformVertex(vin.pos, vo.w);
+	vo.pos = transformVertex(vin.pos, vo.clipW);
 	vo.col = vin.col;
 	vo.spec = vin.spec;
 	vo.uv = vin.uv;
@@ -269,7 +269,7 @@ struct VertexOut
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 	INTERPOLATION float4 col1 : COLOR2;
 	INTERPOLATION float4 spec1 : COLOR3;
 	float2 uv1 : TEXCOORD2;
@@ -284,8 +284,9 @@ struct PSO
 
 PSO main(in VertexOut inpix)
 {
+	const float w = 1.0 / inpix.clipW;
 	PSO pso;
-	pso.depth = fragDepth(inpix.w);
+	pso.depth = fragDepth(w);
 
 	#if PASS == PASS_OIT
 		// Manual depth testing
@@ -408,12 +409,12 @@ PSO main(in VertexOut inpix)
 	// texture has been combined in.
 	#if pp_FogCtrl == 3 || pp_TwoVolumes == 1 // LUT Mode 2
 		IF (cur_fog_control == 3)
-			color = float4(sp_FOG_COL_RAM.rgb, fog_mode2(inpix.w) * (256.0 / 255.0));
+			color = float4(sp_FOG_COL_RAM.rgb, fog_mode2(w) * (256.0 / 255.0));
 	#endif
 	#if pp_FogCtrl == 0 || pp_TwoVolumes == 1 // LUT
 		IF(cur_fog_control == 0)
 		{
-			float fog = fog_mode2(inpix.w);
+			float fog = fog_mode2(w);
 			color.rgb = color.rgb * (255.0 / 256.0 - fog) + sp_FOG_COL_RAM.rgb * fog;
 		}
 	#endif
@@ -512,12 +513,12 @@ static const char OITModVolPixelShaderSource[] = R"(
 struct ModVolPixel
 {
 	float4 pos : SV_POSITION;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 };
 
 float main(in ModVolPixel inpix) : SV_Depth
 {
-	return fragDepth(inpix.w);
+	return fragDepth(1.0 / inpix.clipW);
 }
 )";
 
@@ -682,13 +683,13 @@ static const char OITTranslucentModvolShaderSource[] = R"(
 struct ModVolPixel
 {
 	float4 pos : SV_POSITION;
-	noperspective float w : TEXCOORD1;
+	float clipW : TEXCOORD1;
 };
 
 void main(in ModVolPixel inpix)
 {
 #if MV_MODE == MV_XOR || MV_MODE == MV_OR
-	float depth = fragDepth(inpix.w);
+	float depth = fragDepth(1.0 / inpix.clipW);
 #endif
 	uint2 coords = uint2(inpix.pos.xy);
 
