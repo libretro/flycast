@@ -2028,7 +2028,7 @@ static void fix_texture_bleeding(const List<PolyParam> *list)
 	}
 }
 
-bool ta_parse_vdrc(TA_context* ctx)
+static bool ta_parse_vdrc_full(TA_context* ctx)
 {
 	bool rv=false;
 	vd_ctx = ctx;
@@ -2136,6 +2136,73 @@ bool ta_parse_vdrc(TA_context* ctx)
    ctx->rend.Overrun = overrun;
 
 	return rv && !overrun;
+}
+
+/* The header pass check (at the end of the file) */
+static bool ta_walk_check_frame(TA_context *ctx);
+static bool ta_walk_checking;
+
+bool ta_parse_vdrc(TA_context* ctx)
+{
+	if (ta_walk_checking)
+		return ta_walk_check_frame(ctx);
+	return ta_parse_vdrc_full(ctx);
+}
+
+/* For the check: the lists of the frame strip by strip, as the parse above
+ * makes them and gives each render pass's make_index() - which then turns
+ * them into ranges of indices, and joins some - kept in the order of the
+ * passes (ta_walk_snap_full()). The parse's own steps, but for the indices,
+ * the texture bleeding fix and the clipping rectangle; it leaves the frame
+ * for the parse to make again (from the same data, the same). */
+static void ta_walk_snap_full(u32 op_from, u32 pt_from, u32 tr_from);
+
+static void ta_walk_full_strips(TA_context* ctx)
+{
+	const bool overrun = ctx->rend.Overrun;
+	vd_ctx = ctx;
+	vd_rc = vd_ctx->rend;
+
+	TAFifo0.vdec_init();
+	u32 op_poly_count = 0, pt_poly_count = 0, tr_poly_count = 0;
+
+	PolyParam *bgpp = vd_rc.global_param_op.head();
+	if (bgpp->pcw.Texture)
+		bgpp->texid = renderer->GetTexture(bgpp->tsp, bgpp->tcw);
+
+	for (u32 pass = 0; pass <= ctx->tad.render_pass_count; pass++)
+	{
+		ctx->MarkRend(pass);
+		Ta_Dma* ta_data     = (Ta_Dma*)ctx->rend.proc_start;
+		Ta_Dma* ta_data_end = (Ta_Dma*)ctx->rend.proc_end - 1;
+
+		while (ta_data <= ta_data_end)
+			ta_data = TaCmd(ta_data, ta_data_end);
+		if (ctx->rend.Overrun)
+			break;
+		if (pass == 0)
+		{
+			PolyParam *pp = vd_rc.global_param_op.head();
+			for (int i = vd_rc.global_param_op.used(); i > 0; i--, pp++)
+			{
+				pp->tsp.SrcInstr = 1;
+				pp->tsp.DstInstr = 0;
+			}
+		}
+		bool empty_pass = vd_rc.global_param_op.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->op_count)
+				&& vd_rc.global_param_pt.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->pt_count)
+				&& vd_rc.global_param_tr.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->tr_count);
+		if (pass == 0 || !empty_pass)
+		{
+			RenderPass *render_pass = vd_rc.render_passes.Append();
+			ta_walk_snap_full(op_poly_count, pt_poly_count, tr_poly_count);
+			render_pass->op_count = op_poly_count = vd_rc.global_param_op.used();
+			render_pass->pt_count = pt_poly_count = vd_rc.global_param_pt.used();
+			render_pass->tr_count = tr_poly_count = vd_rc.global_param_tr.used();
+		}
+	}
+	vd_ctx = 0;
+	ctx->rend.Overrun = overrun;
 }
 
 //decode a vertex in the native pvr format
@@ -2355,6 +2422,7 @@ void FillBGP(TA_context* ctx)
 
 /* @table: the entries are also kept in the frame's table of tiles */
 template <bool table>
+__forceinline
 static void walkRegionArray(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
 {
    xmin = 20;
@@ -2421,6 +2489,7 @@ static void getRegionTileClipping(u32& xmin, u32& xmax, u32& ymin, u32& ymax)
 }
 
 // Where the region array entry of a render pass is
+__forceinline
 static u32 getRegionTileAddr(int pass_number)
 {
 	u32 addr = REGION_BASE;
@@ -2445,6 +2514,7 @@ static u32 getRegionTileAddr(int pass_number)
 	return addr + pass_number * tile_size;
 }
 
+__forceinline
 static void getRegionSettings(int pass_number, RenderPass *pass)
 {
 	const u32 addr = getRegionTileAddr(pass_number);
@@ -2463,4 +2533,1158 @@ static void getRegionSettings(int pass_number, RenderPass *pass)
 	 * Taxi, Daytona USA). Two empty ones are not that. */
 	const u32 op_mv = vri(addr + 8);
 	pass->mv_op_tr_shared = op_mv == vri(addr + 16) && (op_mv & 0x80000000) == 0;
+}
+
+/* ---- The header pass: a frame from its control words alone ----
+ *
+ * The CPU side of GPU-side TA processing. As the blocks come in, the
+ * control-word walk (ta.cpp, ta_set_walk()) notes where each block that is
+ * not a vertex is (TA_context::walk). From that table and the parameters
+ * themselves, this pass makes what the full parse above makes of the
+ * frame but for the vertices: the polygon parameters with their texture
+ * lookups, the modifier volumes, the render passes and their region
+ * settings, the clipping rectangle, and the draw groups (the polygons
+ * make_index() may join). Each parameter is a header here, with the
+ * blocks of its vertices, how big they are and in which format, and the
+ * place its first vertex goes. A vertex is never read: the vertices
+ * between two entries are counted from where the entries are.
+ *
+ * What it cannot know without the vertices is where strips end - the
+ * full parse makes a polygon parameter of each strip - and what
+ * make_index() keeps of them. ta_walk_check_frame() reads the vertices'
+ * end-of-strip bits to cut its headers into strips the full parse's way,
+ * and compares the two. */
+#include <chrono>
+
+#define TA_WALK_SPRITE   15		// a header's format: a sprite
+#define TA_WALK_NO_GROUP 0xFFFFFFFFu	// a header's group: it has no vertices
+#define TA_WALK_BG       0xFFFFFFFFu	// the header of a strip: the background's
+#define TA_WALK_MODVOL   0x80000000u	// a run's header: a modifier volume's
+#define TA_WALK_UNENDED  0xFFFFFFFFu	// a modifier volume's count: its end did not come
+
+struct TaWalkHeader
+{
+	PolyParam pp;	// first: its first vertex; count: its vertices, all strips together
+	u32 block;	// where it is in the frame's data, in 32-byte blocks
+	u32 group;	// its draw group
+	u8 list;	// ListType_Opaque, _Punch_Through or _Translucent
+	u8 format;	// its vertices' format, 0-14, or TA_WALK_SPRITE
+	u8 vblocks;	// blocks a vertex takes, 1 or 2
+	u8 pass;	// its render pass
+};
+
+// Vertex blocks one after the other, all of one header
+struct TaWalkRun
+{
+	u32 block;	// the first
+	u32 blocks;
+	u32 vertex;	// the first vertex they make (a modifier volume's: triangle)
+	u32 header;	// whose: a header, or TA_WALK_MODVOL | a modifier volume
+};
+
+/* Polygon parameters as each render pass gives them to make_index(), in
+ * the order of the passes: opaque, punch-through, translucent */
+struct TaWalkStrips
+{
+	PolyParam *pp[3];
+	u32 *header[3];	// (the header pass's) the header each is a strip of
+	u32 count[3];
+	u32 room[3];
+};
+
+struct TaWalkFrame
+{
+	// in: what the frame had before it was parsed
+	PolyParam bg_in;
+	FB_X_CLIP_type x_clip_in;
+	FB_Y_CLIP_type y_clip_in;
+
+	TaWalkHeader *header;
+	u32 headers, header_room;
+	TaWalkRun *run;
+	u32 runs, run_room;
+	ModifierVolumeParam *mvo[2];	// opaque, translucent
+	u32 mvos[2], mvo_room;
+	RenderPass pass[10];
+	u32 passes;
+	PolyParam bg;
+	u32 verts, modtrig;
+	FB_X_CLIP_type x_clip;
+	FB_Y_CLIP_type y_clip;
+	bool rv;
+
+	// the check's: the lists strip by strip, as the full parse has them
+	PolyParam *list[3];
+	u32 *list_header[3];
+	u32 list_room[3];
+	TaWalkStrips snap;
+};
+
+/* @strips: the vertices' end-of-strip bits are read, and the lists made
+ * strip by strip as the full parse makes them (for the check); otherwise
+ * a vertex is never looked at. The code is the full parse's, ta_main()
+ * and its helpers, with each vertex counted where it would be decoded. */
+template <bool strips>
+struct TaWalker
+{
+	enum { NONE, POLY, SPRITE, MODVOL };	// what vertices are, as VertexDataFP has it
+	enum { WHOLE, HALF_PARAM, HALF_VERTEX };	// the next block is the second half of...
+
+	TaWalkFrame &f;
+	const u8 *root;
+	const u32 *entry;
+	u32 entries, ei;
+	const u32 *type_lut;
+
+	u32 list;	// the list that is open (CurrentList), ListType_None for none
+	int pplist;	// where polygon parameters go (CurrentPPlist): 0-2, -1 nowhere
+	bool has_pp;	// there is one being filled (CurrentPP)
+	bool counted;	// ...and its count is set: a sprite between its halves
+	u32 pp;		// (strips) its place in its list
+	u32 hdr;	// its header
+	u32 kind, vblocks, half;
+	u32 tileclip;
+	u32 used[3];	// polygon parameters in each list: strips (strips), or headers
+	u32 indexed[3];	// how many of them earlier render passes took
+	u32 pass_header;	// the first header since the last render pass
+	bool pass_made;	// (headers) this pass made or dropped a polygon parameter, or made vertices
+	u32 next_group;
+	bool fail;
+	PolyParam spare;
+
+	TaWalker(TaWalkFrame &frame) : f(frame) {}
+
+	static int pp_list(u32 l)
+	{
+		return l == ListType_Opaque ? 0 : l == ListType_Punch_Through ? 1 : l == ListType_Translucent ? 2 : -1;
+	}
+
+	bool eos(u32 block) const
+	{
+		return ((const PCW *)(root + (size_t)block * 32))->EndOfStrip != 0;
+	}
+
+	// (strips) CurrentPPlist->Append()
+	PolyParam *append()
+	{
+		const u32 l = (u32)pplist;
+		if (used[l] == f.list_room[l])
+		{
+			fail = true;
+			return &spare;
+		}
+		pp = used[l]++;
+		f.list_header[l][pp] = hdr;
+		return &f.list[l][pp];
+	}
+
+	TaWalkHeader *new_header(u32 block, u32 format, u32 vb)
+	{
+		if (f.headers == f.header_room)
+		{
+			fail = true;
+			return NULL;
+		}
+		hdr = f.headers++;
+		TaWalkHeader *h = &f.header[hdr];
+		memset(h, 0, sizeof(*h));
+		h->block = block;
+		h->group = TA_WALK_NO_GROUP;
+		h->list = (u8)(pplist == 0 ? ListType_Opaque : pplist == 1 ? ListType_Punch_Through : ListType_Translucent);
+		h->format = (u8)format;
+		h->vblocks = (u8)vb;
+		h->pp.first = f.verts;
+		return h;
+	}
+
+	// glob_param_bdc() and AppendSpriteParam(): which polygon parameter it is
+	void start_pp(const PolyParam &p)
+	{
+		if (strips)
+		{
+			PolyParam *d = (!has_pp || counted) ? append() : &f.list[pplist][pp];
+			*d = p;
+			f.list_header[pplist][pp] = hdr;
+		}
+		else
+			used[pplist]++;
+		pass_made = true;
+		has_pp = true;
+		counted = false;
+	}
+
+	void poly_param(const Ta_Dma *d, u32 block, u32 ppid, u32 format, u32 vb)
+	{
+		if (pplist < 0)
+		{
+			// (there is always a list here: see ta_main())
+			fail = true;
+			return;
+		}
+		TaWalkHeader *h = new_header(block, format, vb);
+		if (h == NULL)
+			return;
+		const TA_PolyParam0 *pp0 = (const TA_PolyParam0 *)d;
+		PolyParam &p = h->pp;
+		p.isp = pp0->isp;
+		p.tsp = pp0->tsp;
+		p.tcw = pp0->tcw;
+		p.pcw = pp0->pcw;
+		p.tileclip = tileclip;
+		p.texid = -1;
+		if (p.pcw.Texture)
+			p.texid = renderer->GetTexture(p.tsp, p.tcw);
+		p.tsp1.full = -1;
+		p.tcw1.full = -1;
+		p.texid1 = -1;
+		if (ppid == 3 || ppid == 4)
+		{
+			// (TA_PolyParam4A has them in the same place)
+			const TA_PolyParam3 *pp3 = (const TA_PolyParam3 *)d;
+			p.tsp1.full = pp3->tsp1.full;
+			p.tcw1.full = pp3->tcw1.full;
+			if (pp3->pcw.Texture)
+				p.texid1 = renderer->GetTexture(pp3->tsp1, pp3->tcw1, 1);
+		}
+		start_pp(p);
+	}
+
+	void sprite_param(const Ta_Dma *d, u32 block)
+	{
+		if ((!has_pp || counted) && pplist < 0)
+			return;	// (wldkickspw: dropped, and its vertices with it)
+		TaWalkHeader *h = new_header(block, TA_WALK_SPRITE, 2);
+		if (h == NULL)
+			return;
+		const TA_SpriteParam *spr = (const TA_SpriteParam *)d;
+		PolyParam &p = h->pp;
+		p.isp = spr->isp;
+		p.tsp = spr->tsp;
+		p.tcw = spr->tcw;
+		p.pcw = spr->pcw;
+		p.pcw.full |= PVR_PCW_SINGLE_RATE;
+		p.tileclip = tileclip;
+		p.texid = -1;
+		if (p.pcw.Texture)
+			p.texid = renderer->GetTexture(p.tsp, p.tcw);
+		p.tcw1.full = -1;
+		p.tsp1.full = -1;
+		p.texid1 = -1;
+		p.isp.CullMode ^= 1;
+		start_pp(p);
+	}
+
+	// (strips) EndPolyStrip()
+	void strip_end()
+	{
+		PolyParam &c = f.list[pplist][pp];
+		c.count = f.verts - c.first;
+		if (c.count > 0)
+		{
+			const PolyParam copy = c;
+			PolyParam *d = append();
+			*d = copy;
+			d->first = f.verts;
+			d->count = 0;
+		}
+	}
+
+	// AppendSpriteVertexB()'s new polygon parameter
+	void sprite_b()
+	{
+		if (strips)
+		{
+			const PolyParam copy = f.list[pplist][pp];
+			PolyParam *d = append();
+			*d = copy;
+			d->first = f.verts;
+			d->count = 0;
+		}
+		counted = false;
+	}
+
+	void end_modvol()
+	{
+		const int m = list == ListType_Opaque_Modifier_Volume ? 0 : list == ListType_Translucent_Modifier_Volume ? 1 : -1;
+		if (m < 0 || f.mvos[m] == 0)
+			return;
+		ModifierVolumeParam *p = &f.mvo[m][f.mvos[m] - 1];
+		p->count = f.modtrig - p->first;
+		if (p->count == 0)
+			f.mvos[m]--;
+	}
+
+	void start_modvol(const Ta_Dma *d)
+	{
+		end_modvol();
+		const int m = list == ListType_Opaque_Modifier_Volume ? 0 : list == ListType_Translucent_Modifier_Volume ? 1 : -1;
+		if (m < 0)
+			return;
+		if (f.mvos[m] == f.mvo_room)
+		{
+			fail = true;
+			return;
+		}
+		const TA_ModVolParam *param = (const TA_ModVolParam *)d;
+		ModifierVolumeParam *p = &f.mvo[m][f.mvos[m]++];
+		p->isp.full = param->isp.full;
+		p->isp.VolumeLast = param->pcw.Volume != 0;
+		p->first = f.modtrig;
+		p->count = TA_WALK_UNENDED;
+		p->tileclip = tileclip;
+	}
+
+	void end_list()
+	{
+		if (has_pp && !counted)
+		{
+			// (PopLast())
+			if (strips)
+				used[pplist]--;
+			pass_made = true;
+		}
+		has_pp = false;
+		pplist = -1;
+		if (list == ListType_Opaque_Modifier_Volume || list == ListType_Translucent_Modifier_Volume)
+			end_modvol();
+	}
+
+	void list_start(u32 l)
+	{
+		list = l;
+		if (pp_list(l) >= 0)
+			pplist = pp_list(l);
+		has_pp = false;
+	}
+
+	void add_run(u32 block, u32 blocks, u32 vertex, u32 header)
+	{
+		if (f.runs == f.run_room)
+		{
+			fail = true;
+			return;
+		}
+		TaWalkRun *r = &f.run[f.runs++];
+		r->block = block;
+		r->blocks = blocks;
+		r->vertex = vertex;
+		r->header = header;
+	}
+
+	/* The vertex blocks from @pos up to the next entry @nb, in a render
+	 * pass that ends at @end. A vertex of 64 bytes that the entry cuts in
+	 * two takes the entry for its second half, as ta_main() does. */
+	u32 vertices(u32 pos, u32 nb, u32 end)
+	{
+		const u32 n = nb - pos;
+		u32 next = nb, a, blocks = n;
+
+		if (kind == NONE)
+			return nb;	// NullVertexData()
+		if (kind == POLY && vblocks == 1)
+		{
+			add_run(pos, n, f.verts, hdr);
+			if (strips)
+				for (u32 b = pos; b < nb; b++)
+				{
+					f.verts++;
+					if (eos(b))
+						strip_end();
+				}
+			else
+				f.verts += n;
+			f.header[hdr].pp.count += n;
+			pass_made = true;
+			return nb;
+		}
+		const u32 halves = (n + 1) / 2;	// first halves
+		const bool cut = (n & 1) != 0;	// the last of them has its second half at nb
+		if (cut)
+		{
+			if (nb < end)
+			{
+				if (ei < entries && entry[ei] == nb)
+					ei++;
+				next = nb + 1;
+				blocks++;
+			}
+			else
+				half = HALF_VERTEX;
+		}
+		if (kind == MODVOL)
+		{
+			const int m = list == ListType_Opaque_Modifier_Volume ? 0 : 1;
+			add_run(pos, blocks, f.modtrig, TA_WALK_MODVOL | (f.mvos[m] ? f.mvos[m] - 1 : 0));
+			f.modtrig += halves;
+			return next;
+		}
+		if (kind == SPRITE)
+		{
+			if (!has_pp)
+				return next;	// AppendSpriteVertexA() and B(): nothing
+			add_run(pos, blocks, f.verts, hdr);
+			for (a = 0; a < halves; a++)
+			{
+				if (strips)
+					f.list[pplist][pp].count = 4;
+				counted = true;
+				f.verts += 4;
+				f.header[hdr].pp.count += 4;
+				if (a + 1 < halves || half != HALF_VERTEX)
+					sprite_b();
+			}
+			pass_made = true;
+			return next;
+		}
+		// 64-byte polygon vertices
+		add_run(pos, blocks, f.verts, hdr);
+		if (strips)
+			for (a = 0; a < halves; a++)
+			{
+				f.verts++;
+				if (eos(pos + a * 2))
+					strip_end();
+			}
+		else
+			f.verts += halves;
+		f.header[hdr].pp.count += halves;
+		pass_made = true;
+		return next;
+	}
+
+	void set_tile_clip(u32 xmin, u32 ymin, u32 xmax, u32 ymax)
+	{
+		tileclip = (tileclip & 0xF0000000) | xmin | (xmax << 6) | (ymin << 12) | (ymax << 17);
+	}
+
+	void tile_clip_mode(u32 mode)
+	{
+		tileclip = (tileclip & ~0xF0000000) | (mode << 28);
+	}
+
+	// The parameter at @pos, an entry
+	u32 param(u32 pos, u32 end)
+	{
+		const Ta_Dma *d = (const Ta_Dma *)(root + (size_t)pos * 32);
+		u32 uid, format, vb;
+
+		ei++;
+		switch (d->pcw.ParaType)
+		{
+		case ParamType_End_Of_List:
+			if (list == ListType_None)
+				list = d->pcw.ListType;
+			else
+				end_list();
+			list = ListType_None;
+			kind = NONE;
+			return pos + 1;
+		case ParamType_User_Tile_Clip:
+			set_tile_clip(d->data_32[3] & 63, d->data_32[4] & 31, d->data_32[5] & 63, d->data_32[6] & 31);
+			return pos + 1;
+		case ParamType_Polygon_or_Modifier_Volume:
+			tile_clip_mode(d->pcw.User_Clip);
+			if (list == ListType_None && d->pcw.ListType > ListType_Punch_Through)
+				return pos + 1;
+			if (list == ListType_None)
+				list_start(d->pcw.ListType);
+			if (IsModVolList(list))
+			{
+				start_modvol(d);
+				kind = MODVOL;
+				vblocks = 2;
+				return pos + 1;
+			}
+			uid = type_lut[d->pcw.obj_ctrl];
+			if (uid == 0xFFFFFFFF)
+				return pos + 1;
+			format = (u8)uid;
+			vb = format == 5 || format == 6 || (format >= 11 && format <= 14) ? 2 : 1;
+			kind = POLY;
+			vblocks = vb;
+			poly_param(d, pos, (u8)(uid >> 8), format, vb);
+			if ((uid >> 30) == SZ32)
+				return pos + 1;
+			if (pos + 1 < end)
+			{
+				if (ei < entries && entry[ei] == pos + 1)
+					ei++;
+				return pos + 2;
+			}
+			half = HALF_PARAM;
+			return pos + 1;
+		case ParamType_Sprite:
+			tile_clip_mode(d->pcw.User_Clip);
+			if (list == ListType_None && d->pcw.ListType > ListType_Punch_Through)
+				return pos + 1;
+			if (list == ListType_None)
+				list_start(d->pcw.ListType);
+			kind = SPRITE;
+			vblocks = 2;
+			sprite_param(d, pos);
+			return pos + 1;
+		case ParamType_Vertex_Parameter:
+			// (the walk never notes one: the table is not this data's)
+			fail = true;
+			return end;
+		default:
+			// Object_List_Set, and the two there are none of
+			return pos + 1;
+		}
+	}
+
+	// ta_parse_vdrc()'s work for a render pass that ends here
+	void pass_end(u32 pass, bool &empty_context)
+	{
+		u32 i, l;
+
+		if (pass == 0)
+		{
+			// the first pass's opaque polygons are not blended
+			f.bg.tsp.SrcInstr = 1;
+			f.bg.tsp.DstInstr = 0;
+			for (i = 0; i < f.headers; i++)
+				if (f.header[i].list == ListType_Opaque)
+				{
+					f.header[i].pp.tsp.SrcInstr = 1;
+					f.header[i].pp.tsp.DstInstr = 0;
+				}
+			if (strips)
+				for (i = 0; i < used[0]; i++)
+				{
+					f.list[0][i].tsp.SrcInstr = 1;
+					f.list[0][i].tsp.DstInstr = 0;
+				}
+		}
+		bool empty_pass;
+		if (pass == 0)
+			empty_pass = used[0] == 0 && used[1] == 0 && used[2] == 0;
+		else if (strips)
+		{
+			const RenderPass &last = f.pass[f.passes - 1];
+			empty_pass = used[0] == last.op_count && used[1] == last.pt_count && used[2] == last.tr_count;
+		}
+		else
+			empty_pass = !pass_made;
+		pass_made = false;
+		empty_context = empty_context && empty_pass;
+		if (pass != 0 && empty_pass)
+			return;
+
+		RenderPass &r = f.pass[f.passes++];
+		r.op_count = used[0];
+		r.mvo_count = f.mvos[0];
+		r.pt_count = used[1];
+		r.tr_count = used[2];
+		r.mvo_tr_count = f.mvos[1];
+		getRegionSettings(pass, &r);
+
+		if (strips)
+			for (l = 0; l < 3; l++)
+			{
+				TaWalkStrips &s = f.snap;
+				for (i = indexed[l]; i < used[l] && s.count[l] < s.room[l]; i++, s.count[l]++)
+				{
+					s.pp[l][s.count[l]] = f.list[l][i];
+					s.header[l][s.count[l]] = f.list_header[l][i];
+				}
+				indexed[l] = used[l];
+			}
+
+		/* The draw groups: polygons one after another in a list, drawn the
+		 * same way (poly_same_state()), are what make_index() joins; within
+		 * a pass, and the translucent ones never. The background is the
+		 * first opaque polygon of the first. */
+		const PolyParam *last[2] = { f.passes == 1 ? &f.bg : NULL, NULL };
+		u32 last_group[2] = { 0, 0 };
+		for (i = pass_header; i < f.headers; i++)
+		{
+			TaWalkHeader &h = f.header[i];
+			h.pass = (u8)(f.passes - 1);
+			if (h.pp.count == 0)
+				continue;
+			l = (u32)pp_list(h.list);
+			if (l == 2)
+				h.group = next_group++;
+			else
+			{
+				if (last[l] != NULL && poly_same_state(last[l], &h.pp))
+					h.group = last_group[l];
+				else
+					h.group = next_group++;
+				last[l] = &h.pp;
+				last_group[l] = h.group;
+			}
+		}
+		pass_header = f.headers;
+	}
+
+	bool run(const TA_context *ctx, u32 count)
+	{
+		const tad_context &tad = ctx->tad;
+		bool empty_context = true;
+
+		root = tad.thd_root;
+		entry = ctx->walk;
+		entries = count;
+		type_lut = TaTypeLut::instance().table;
+		list = ListType_None;
+		pplist = -1;
+		has_pp = counted = false;
+		pp = hdr = 0;
+		kind = NONE;
+		vblocks = 1;
+		half = WHOLE;
+		tileclip = 0;
+		set_tile_clip(0, 0, 39, 14);
+		tile_clip_mode(0);
+		indexed[0] = indexed[1] = indexed[2] = 0;
+		pass_header = 0;
+		pass_made = false;
+		next_group = 1;
+		fail = false;
+
+		f.headers = f.runs = 0;
+		f.mvos[0] = f.mvos[1] = 0;
+		f.passes = 0;
+		f.verts = 4;
+		f.modtrig = 0;
+		f.bg = f.bg_in;
+		if (f.bg.pcw.Texture)
+		{
+			f.bg.texid = renderer->GetTexture(f.bg.tsp, f.bg.tcw);
+			empty_context = false;
+		}
+		used[0] = 1;
+		used[1] = used[2] = 0;
+		if (strips)
+		{
+			f.list[0][0] = f.bg;
+			f.list_header[0][0] = TA_WALK_BG;
+			f.snap.count[0] = f.snap.count[1] = f.snap.count[2] = 0;
+		}
+
+		for (u32 pass = 0; pass <= tad.render_pass_count && !fail; pass++)
+		{
+			const u8 *from = pass == 0 ? tad.thd_root : tad.render_passes[pass - 1];
+			const u8 *to = pass == tad.render_pass_count ? tad.End() : tad.render_passes[pass];
+			const u32 start = (u32)(from - root) / 32;
+			const u32 end = to > from ? (u32)(to - root) / 32 : start;
+			u32 pos = start;
+			u32 lo = 0, hi = entries;
+
+			// the first entry from here on
+			while (lo < hi)
+			{
+				const u32 mid = (lo + hi) / 2;
+				if (entry[mid] < start)
+					lo = mid + 1;
+				else
+					hi = mid;
+			}
+			ei = lo;
+			if (half != WHOLE && pos < end)
+			{
+				// the second half of what the last pass ended in
+				if (half == HALF_VERTEX && kind == SPRITE && has_pp)
+					sprite_b();
+				if (ei < entries && entry[ei] == pos)
+					ei++;
+				pos++;
+				half = WHOLE;
+			}
+			while (pos < end && !fail)
+			{
+				const u32 nb = ei < entries && entry[ei] < end ? entry[ei] : end;
+				pos = nb > pos ? vertices(pos, nb, end) : param(pos, end);
+			}
+			if (!fail)
+				pass_end(pass, empty_context);
+		}
+		if (fail)
+			return false;
+
+		f.rv = !empty_context;
+		f.x_clip = f.x_clip_in;
+		f.y_clip = f.y_clip_in;
+		if (f.rv)
+		{
+			u32 xmin, xmax, ymin, ymax;
+			walkRegionArray<false>(xmin, xmax, ymin, ymax);
+			f.x_clip.min = ta_max(f.x_clip.min, xmin);
+			f.x_clip.max = ta_min(f.x_clip.max, xmax + 31);
+			f.y_clip.min = ta_max(f.y_clip.min, ymin);
+			f.y_clip.max = ta_min(f.y_clip.max, ymax + 31);
+		}
+		return true;
+	}
+};
+
+/* [0] the header pass's, [1] the check's, strip by strip; what the full
+ * parse gave make_index(). Made by ta_walk_init() (when the check is turned
+ * on), for frames of up to walk_data_size, and never grown. */
+static TaWalkFrame walk_frame[2];
+static TaWalkStrips walk_full;
+static u32 walk_data_size;
+
+void ta_walk_term(void)
+{
+	for (int i = 0; i < 2; i++)
+	{
+		TaWalkFrame &f = walk_frame[i];
+		free(f.header);
+		free(f.run);
+		free(f.mvo[0]);
+		free(f.mvo[1]);
+		for (int l = 0; l < 3; l++)
+		{
+			free(f.list[l]);
+			free(f.list_header[l]);
+			free(f.snap.pp[l]);
+			free(f.snap.header[l]);
+		}
+		memset(&f, 0, sizeof(f));
+	}
+	for (int l = 0; l < 3; l++)
+		free(walk_full.pp[l]);
+	memset(&walk_full, 0, sizeof(walk_full));
+	walk_data_size = 0;
+}
+
+bool ta_walk_init(void)
+{
+	const u32 size = ta_data_size();
+	const u32 scale = size / TA_DATA_SIZE;
+	/* (the room of the lists in TA_context::Alloc()) */
+	const u32 list_room[3] = { 16384 * scale, 5120 * scale, (STRIPS_AS_PPARAMS ? 10240 : 8192) * scale };
+	bool ok = true;
+
+	if (walk_data_size >= size)
+		return true;
+	ta_walk_term();
+	for (int i = 0; i < 2; i++)
+	{
+		TaWalkFrame &f = walk_frame[i];
+		f.header_room = TA_WALK_MAX * scale;
+		f.run_room = TA_WALK_MAX * scale + 16;
+		f.mvo_room = 4096 * scale;
+		f.header = (TaWalkHeader *)malloc(f.header_room * sizeof(TaWalkHeader));
+		f.run = (TaWalkRun *)malloc(f.run_room * sizeof(TaWalkRun));
+		f.mvo[0] = (ModifierVolumeParam *)malloc(f.mvo_room * sizeof(ModifierVolumeParam));
+		f.mvo[1] = (ModifierVolumeParam *)malloc(f.mvo_room * sizeof(ModifierVolumeParam));
+		ok = ok && f.header && f.run && f.mvo[0] && f.mvo[1];
+		if (i == 1)
+			for (int l = 0; l < 3; l++)
+			{
+				f.list_room[l] = f.snap.room[l] = list_room[l];
+				f.list[l] = (PolyParam *)malloc(list_room[l] * sizeof(PolyParam));
+				f.list_header[l] = (u32 *)malloc(list_room[l] * sizeof(u32));
+				f.snap.pp[l] = (PolyParam *)malloc(list_room[l] * sizeof(PolyParam));
+				f.snap.header[l] = (u32 *)malloc(list_room[l] * sizeof(u32));
+				ok = ok && f.list[l] && f.list_header[l] && f.snap.pp[l] && f.snap.header[l];
+			}
+	}
+	for (int l = 0; l < 3; l++)
+	{
+		walk_full.room[l] = list_room[l];
+		walk_full.pp[l] = (PolyParam *)malloc(list_room[l] * sizeof(PolyParam));
+		ok = ok && walk_full.pp[l];
+	}
+	if (!ok)
+	{
+		ta_walk_term();
+		WARN_LOG(PVR, "TA header pass: no memory for it");
+		return false;
+	}
+	/* (touched now, so that no frame takes the page faults of their first
+	 * use) */
+	for (int i = 0; i < 2; i++)
+	{
+		TaWalkFrame &f = walk_frame[i];
+		memset(f.header, 0, f.header_room * sizeof(TaWalkHeader));
+		memset(f.run, 0, f.run_room * sizeof(TaWalkRun));
+		memset(f.mvo[0], 0, f.mvo_room * sizeof(ModifierVolumeParam));
+		memset(f.mvo[1], 0, f.mvo_room * sizeof(ModifierVolumeParam));
+		for (int l = 0; i == 1 && l < 3; l++)
+		{
+			memset(f.list[l], 0, f.list_room[l] * sizeof(PolyParam));
+			memset(f.list_header[l], 0, f.list_room[l] * sizeof(u32));
+			memset(f.snap.pp[l], 0, f.snap.room[l] * sizeof(PolyParam));
+			memset(f.snap.header[l], 0, f.snap.room[l] * sizeof(u32));
+		}
+	}
+	for (int l = 0; l < 3; l++)
+		memset(walk_full.pp[l], 0, walk_full.room[l] * sizeof(PolyParam));
+	walk_data_size = size;
+	return true;
+}
+
+/* The frame's table, if it is to be trusted: how many entries */
+static bool ta_walk_table(const TA_context *ctx, u32 *count)
+{
+	const tad_context &tad = ctx->tad;
+	u32 n = ctx->walk_count;
+
+	if (ctx->data_size > walk_data_size)
+		return false;
+	// (a frame with no data has nothing in its table, walked or not)
+	if (tad.End() == tad.thd_root)
+	{
+		*count = 0;
+		return true;
+	}
+	if (n == TA_WALK_INVALID || ctx->walk == NULL)
+		return false;
+	/* The lists were started again and the new data has nothing but
+	 * vertices so far (all the rest would have been noted): the table is
+	 * still the old data's. */
+	if (ctx->walk_restart && tad.thd_data != tad.thd_root)
+		n = 0;
+	if (n != 0 && ctx->walk[n - 1] >= (u32)(tad.End() - tad.thd_root) / 32)
+		return false;
+	*count = n;
+	return true;
+}
+
+template <bool strips>
+static bool ta_walk_run(TA_context *ctx, TaWalkFrame &f, u32 count)
+{
+	TaWalker<strips> w(f);
+	return w.run(ctx, count);
+}
+
+bool ta_walk_parse(TA_context *ctx)
+{
+	TaWalkFrame &f = walk_frame[0];
+	u32 count;
+
+	if (!ta_walk_table(ctx, &count))
+		return false;
+	f.bg_in = *ctx->rend.global_param_op.head();
+	f.x_clip_in = ctx->rend.fb_X_CLIP;
+	f.y_clip_in = ctx->rend.fb_Y_CLIP;
+	return ta_walk_run<false>(ctx, f, count);
+}
+
+/* ---- The check: the header pass beside the full parse, every frame ---- */
+
+typedef std::chrono::steady_clock walk_clock;
+
+static u64 walk_ns(walk_clock::time_point a, walk_clock::time_point b)
+{
+	return (u64)std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count();
+}
+
+// Times, with a histogram of 256 ns steps (up to 16.7 ms) for the 99th percentile
+#define WALK_HIST 65536
+struct TaWalkTimes
+{
+	u64 sum;
+	u64 max;
+	u32 n;
+	u32 hist[WALK_HIST];
+
+	void add(u64 ns)
+	{
+		u64 b = ns / 256;
+		sum += ns;
+		if (ns > max)
+			max = ns;
+		hist[b < WALK_HIST ? b : WALK_HIST - 1]++;
+		n++;
+	}
+	double p99_us() const
+	{
+		u32 over = 0, b = WALK_HIST;
+		while (b > 0 && over * 100 < n)
+			over += hist[--b];
+		return b * 0.256;
+	}
+};
+
+static struct TaWalkStats
+{
+	u32 checked, same, differ, no_table, full_overrun, no_room, skipped;
+	u64 headers, entries, verts;
+	TaWalkTimes full, pass;
+} *walk_stats;
+
+// (ta_walk_full_strips(): where make_index() of a render pass would be)
+static void ta_walk_snap_full(u32 op_from, u32 pt_from, u32 tr_from)
+{
+	const List<PolyParam> *lists[3] = { &vd_rc.global_param_op, &vd_rc.global_param_pt, &vd_rc.global_param_tr };
+	const u32 from[3] = { op_from, pt_from, tr_from };
+
+	for (int l = 0; l < 3; l++)
+	{
+		const u32 used = (u32)lists[l]->used();
+		for (u32 i = from[l]; i < used && walk_full.count[l] < walk_full.room[l]; i++)
+			walk_full.pp[l][walk_full.count[l]++] = lists[l]->head()[i];
+	}
+}
+
+/* Whether two polygon parameters are the same, but for the depth the
+ * renderer works out (zvZ), and the single-rate bit of strips where flat
+ * strips are looked for (the full parse sets it from the vertices) */
+static bool walk_pp_same(const PolyParam &a, const PolyParam &b)
+{
+	const u32 pcw_mask = flat_strips_wanted ? ~PVR_PCW_SINGLE_RATE : ~0u;
+	return a.first == b.first && a.count == b.count && a.texid == b.texid
+			&& a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full
+			&& ((a.pcw.full ^ b.pcw.full) & pcw_mask) == 0 && a.isp.full == b.isp.full
+			&& a.tileclip == b.tileclip && a.tsp1.full == b.tsp1.full
+			&& a.tcw1.full == b.tcw1.full && a.texid1 == b.texid1;
+}
+
+/* What differs between the full parse (vd_rc as it left it, walk_full)
+ * and the check's frame @s and the header pass's @h: NULL for nothing */
+static const char *ta_walk_compare(const TaWalkFrame &s, const TaWalkFrame &h, bool rv, char *why, size_t room)
+{
+	static const char *const names[3] = { "opaque", "punch-through", "translucent" };
+	u32 l, i;
+
+	if (rv != s.rv)
+		return "whether there is anything to draw";
+	if ((u32)vd_rc.verts.used() != s.verts)
+	{
+		snprintf(why, room, "vertices: %d, %u", vd_rc.verts.used(), s.verts);
+		return why;
+	}
+	if ((u32)vd_rc.modtrig.used() != s.modtrig)
+	{
+		snprintf(why, room, "modifier volume triangles: %d, %u", vd_rc.modtrig.used(), s.modtrig);
+		return why;
+	}
+	if ((u32)vd_rc.render_passes.used() != s.passes)
+	{
+		snprintf(why, room, "render passes: %d, %u", vd_rc.render_passes.used(), s.passes);
+		return why;
+	}
+	for (i = 0; i < s.passes; i++)
+	{
+		const RenderPass &a = vd_rc.render_passes.head()[i];
+		const RenderPass &b = s.pass[i];
+		if (a.autosort != b.autosort || a.z_clear != b.z_clear || a.mv_op_tr_shared != b.mv_op_tr_shared
+				|| a.op_count != b.op_count || a.mvo_count != b.mvo_count || a.pt_count != b.pt_count
+				|| a.tr_count != b.tr_count || a.mvo_tr_count != b.mvo_tr_count)
+		{
+			snprintf(why, room, "render pass %u: op %u/%u pt %u/%u tr %u/%u mvo %u/%u mvo_tr %u/%u",
+					i, a.op_count, b.op_count, a.pt_count, b.pt_count, a.tr_count, b.tr_count,
+					a.mvo_count, b.mvo_count, a.mvo_tr_count, b.mvo_tr_count);
+			return why;
+		}
+	}
+	for (l = 0; l < 3; l++)
+	{
+		if (walk_full.count[l] != s.snap.count[l])
+		{
+			snprintf(why, room, "%s polygons: %u, %u", names[l], walk_full.count[l], s.snap.count[l]);
+			return why;
+		}
+		for (i = 0; i < s.snap.count[l]; i++)
+			if (!walk_pp_same(walk_full.pp[l][i], s.snap.pp[l][i]))
+			{
+				const PolyParam &a = walk_full.pp[l][i], &b = s.snap.pp[l][i];
+				snprintf(why, room, "%s polygon %u (header %d): first %u/%u count %u/%u pcw %08x/%08x isp %08x/%08x tsp %08x/%08x tcw %08x/%08x clip %08x/%08x",
+						names[l], i, (int)s.snap.header[l][i], a.first, b.first, a.count, b.count,
+						a.pcw.full, b.pcw.full, a.isp.full, b.isp.full, a.tsp.full, b.tsp.full,
+						a.tcw.full, b.tcw.full, a.tileclip, b.tileclip);
+				return why;
+			}
+	}
+	/* Each strip is drawn as its header says (the header pass's own
+	 * polygon parameters, which have no strips) */
+	for (l = 0; l < 3; l++)
+		for (i = 0; i < s.snap.count[l]; i++)
+		{
+			const u32 hi = s.snap.header[l][i];
+			PolyParam a = s.snap.pp[l][i];
+			PolyParam b = hi == TA_WALK_BG ? s.bg : s.header[hi].pp;
+			a.first = b.first = 0;
+			a.count = b.count = 0;
+			if (!walk_pp_same(a, b))
+			{
+				snprintf(why, room, "%s polygon %u and its header %d", names[l], i, (int)hi);
+				return why;
+			}
+		}
+	const List<ModifierVolumeParam> *mv[2] = { &vd_rc.global_param_mvo, &vd_rc.global_param_mvo_tr };
+	for (l = 0; l < 2; l++)
+	{
+		if ((u32)mv[l]->used() != s.mvos[l])
+		{
+			snprintf(why, room, "modifier volumes (%u): %d, %u", l, mv[l]->used(), s.mvos[l]);
+			return why;
+		}
+		for (i = 0; i < s.mvos[l]; i++)
+		{
+			const ModifierVolumeParam &a = mv[l]->head()[i], &b = s.mvo[l][i];
+			if (a.first != b.first || (b.count != TA_WALK_UNENDED && a.count != b.count)
+					|| a.isp.full != b.isp.full || a.tileclip != b.tileclip)
+			{
+				snprintf(why, room, "modifier volume %u (%u)", i, l);
+				return why;
+			}
+		}
+	}
+	if (rv && (vd_rc.fb_X_CLIP.full != s.x_clip.full || vd_rc.fb_Y_CLIP.full != s.y_clip.full))
+		return "clipping rectangle";
+
+	/* The draw groups: each strip with the one before in the same pass
+	 * and list is joined by make_index()'s rule exactly when their headers
+	 * are of a group (the translucent ones are never joined) */
+	for (l = 0; l < 2; l++)
+	{
+		u32 at = 0;
+		for (u32 p = 0; p < s.passes; p++)
+		{
+			const int to = (int)(l == 0 ? s.pass[p].op_count : s.pass[p].pt_count);
+			const int from = p == 0 ? 0 : (int)(l == 0 ? s.pass[p - 1].op_count : s.pass[p - 1].pt_count);
+			const u32 n = to > from ? (u32)(to - from) : 0;
+			for (i = 1; i < n && at + i < s.snap.count[l]; i++)
+			{
+				const u32 ha = s.snap.header[l][at + i - 1], hb = s.snap.header[l][at + i];
+				const u32 ga = ha == TA_WALK_BG ? 0 : s.header[ha].group;
+				const u32 gb = hb == TA_WALK_BG ? 0 : s.header[hb].group;
+				const bool joined = poly_same_state(&s.snap.pp[l][at + i - 1], &s.snap.pp[l][at + i]);
+				if (s.snap.pp[l][at + i - 1].count == 0 || s.snap.pp[l][at + i].count == 0)
+					continue;	// (no vertices: in no group)
+				if (joined != (ga == gb))
+				{
+					snprintf(why, room, "draw groups, %s polygon %u", names[l], at + i);
+					return why;
+				}
+			}
+			at += n;
+		}
+	}
+
+	/* And the header pass by itself, which never saw a vertex, made the
+	 * same headers, runs, volumes and passes as the check's */
+	if (h.headers != s.headers || memcmp(h.header, s.header, h.headers * sizeof(TaWalkHeader)) != 0)
+		return "the header pass's headers";
+	if (h.runs != s.runs || memcmp(h.run, s.run, h.runs * sizeof(TaWalkRun)) != 0)
+		return "the header pass's vertex runs";
+	if (h.passes != s.passes || h.verts != s.verts || h.modtrig != s.modtrig || h.rv != s.rv
+			|| h.mvos[0] != s.mvos[0] || h.mvos[1] != s.mvos[1])
+		return "the header pass's totals";
+	for (i = 0; i < h.passes; i++)
+		if (h.pass[i].autosort != s.pass[i].autosort || h.pass[i].z_clear != s.pass[i].z_clear
+				|| h.pass[i].mv_op_tr_shared != s.pass[i].mv_op_tr_shared
+				|| h.pass[i].mvo_count != s.pass[i].mvo_count || h.pass[i].mvo_tr_count != s.pass[i].mvo_tr_count)
+			return "the header pass's render passes";
+	if (h.rv && (h.x_clip.full != s.x_clip.full || h.y_clip.full != s.y_clip.full))
+		return "the header pass's clipping rectangle";
+	return NULL;
+}
+
+static void ta_walk_log(void)
+{
+	const TaWalkStats &st = *walk_stats;
+	const double nf = st.full.n ? (double)st.full.n : 1.0;
+	const double np = st.pass.n ? (double)st.pass.n : 1.0;
+	NOTICE_LOG(PVR, "TA header pass check: %u frames compared, %u the same, %u different; not compared: %u without a table, %u overrun, %u out of room, %u skipped",
+			st.checked, st.same, st.differ, st.no_table, st.full_overrun, st.no_room, st.skipped);
+	NOTICE_LOG(PVR, "TA header pass check: full parse mean %.1f us, p99 %.1f us, max %.1f us; header pass mean %.1f us, p99 %.1f us, max %.1f us; per frame %.0f headers, %.0f entries, %.0f vertices",
+			st.full.sum / nf / 1000.0, st.full.p99_us(), st.full.max / 1000.0,
+			st.pass.sum / np / 1000.0, st.pass.p99_us(), st.pass.max / 1000.0,
+			st.headers / np, st.entries / np, st.verts / np);
+}
+
+// (a frame has been through the check, compared or not)
+static void ta_walk_tick(void)
+{
+	const TaWalkStats &st = *walk_stats;
+	const u32 frames = st.checked + st.no_table + st.full_overrun + st.no_room + st.skipped;
+	if (frames == 30 || frames % 300 == 0)
+		ta_walk_log();
+}
+
+static bool ta_walk_check_frame(TA_context *ctx)
+{
+	TaWalkStats &st = *walk_stats;
+	TaWalkFrame &h = walk_frame[0], &s = walk_frame[1];
+	u32 count;
+
+	/* Frames the full parse passes over (frame skipping) and frames with no
+	 * table to trust are parsed as ever */
+	if (!(ctx->rend.isRTT || 0 == ((ta_parse_cnt + 1) % (settings.pvr.ta_skip + 1))))
+	{
+		st.skipped++;
+		ta_walk_tick();
+		return ta_parse_vdrc_full(ctx);
+	}
+	if (!ta_walk_table(ctx, &count))
+	{
+		st.no_table++;
+		ta_walk_tick();
+		return ta_parse_vdrc_full(ctx);
+	}
+	h.bg_in = s.bg_in = *ctx->rend.global_param_op.head();
+	h.x_clip_in = s.x_clip_in = ctx->rend.fb_X_CLIP;
+	h.y_clip_in = s.y_clip_in = ctx->rend.fb_Y_CLIP;
+
+	/* The lists strip by strip first: what textures there are to convert
+	 * are then converted, and neither of the two timed finds any */
+	walk_full.count[0] = walk_full.count[1] = walk_full.count[2] = 0;
+	ta_walk_full_strips(ctx);
+
+	walk_clock::time_point t0 = walk_clock::now();
+	const bool hp_ok = ta_walk_run<false>(ctx, h, count);
+	walk_clock::time_point t1 = walk_clock::now();
+	const bool rv = ta_parse_vdrc_full(ctx);
+	walk_clock::time_point t2 = walk_clock::now();
+
+	if (ctx->rend.Overrun)
+	{
+		st.full_overrun++;
+		ta_walk_tick();
+		return rv;
+	}
+	if (!hp_ok || !ta_walk_run<true>(ctx, s, count))
+	{
+		st.no_room++;
+		ta_walk_tick();
+		return rv;
+	}
+	st.full.add(walk_ns(t1, t2));
+	st.pass.add(walk_ns(t0, t1));
+	st.headers += h.headers;
+	st.entries += count;
+	st.verts += h.verts;
+	st.checked++;
+
+	char why[256];
+	const char *differ = ta_walk_compare(s, h, rv, why, sizeof(why));
+	if (differ == NULL)
+		st.same++;
+	else if (st.differ++ < 20)
+		WARN_LOG(PVR, "TA header pass check: frame %u differs from the full parse: %s", st.checked, differ);
+	ta_walk_tick();
+	return rv;
+}
+
+void ta_set_walk_check(bool on)
+{
+	if (on == ta_walk_checking && (!on || walk_data_size >= ta_data_size()))
+		return;
+	if (on)
+	{
+		if (!ta_walk_init())
+			return;
+		if (walk_stats == NULL)
+			walk_stats = (TaWalkStats *)calloc(1, sizeof(TaWalkStats));
+		if (walk_stats == NULL)
+			return;
+	}
+	else
+	{
+		if (walk_stats != NULL && walk_stats->checked != 0)
+			ta_walk_log();
+		ta_walk_term();
+		free(walk_stats);
+		walk_stats = NULL;
+	}
+	ta_walk_checking = on;
+	ta_set_walk(on);
 }

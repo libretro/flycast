@@ -55,6 +55,22 @@ void ta_set_region_table(bool on);
 void ta_set_walk(bool on);
 /* A frame's data came back from a state: its table made again from it */
 void ta_walk_rebuild(TA_context *ctx);
+/* The header pass: the frame's polygon parameters, texture lookups, render
+ * passes, region settings and draw groups, from the walk's table and the
+ * parameters alone, never a vertex. false: the frame has no table to be
+ * trusted (or more than there is room for), and only the full parse can
+ * do it. Its results are for the GPU decode to come; they do not change
+ * the frame. (From the thread that renders.) */
+bool ta_walk_parse(TA_context *ctx);
+/* What it works in, made once for frames of the machine's size (before
+ * the frames that use it: when the check is turned on), and given back;
+ * false: no memory */
+bool ta_walk_init(void);
+void ta_walk_term(void);
+/* Whether every frame is also put through the header pass and the two
+ * compared, and both timed (logged). Turns the walk on and off with it.
+ * (From the thread that renders, between frames.) */
+void ta_set_walk_check(bool on);
 
 class TaTypeLut
 {
