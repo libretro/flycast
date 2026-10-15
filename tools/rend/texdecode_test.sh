@@ -18,6 +18,16 @@
 # mingw-w64 and run under wine (wined3d) and xvfb-run, fed what the test
 # writes with "dump". When x86_64-w64-mingw32-gcc or wine is not there it
 # is left out; TEXD_D3D11=0 leaves it out too.
+#
+# Then on a Direct3D 9 device, the same way: the Direct3D 9 renderer's
+# shader model 3 shaders (core/rend/texdecode_dx9.inc, checked by
+# kernels_dxbc.sh), texdecode_d3d9.c (TEXD_D3D9=0 leaves it out).
+#
+# And on OpenGL, with no display (EGL, Mesa's llvmpipe): every way the
+# OpenGL renderers make them - the SPIR-V (OpenGL 4.6, or 4.5 with
+# ARB_gl_spirv), the text compiled for OpenGL 4.3, 3.3 and 3.0, and for
+# OpenGL ES 3.0 - texdecode_gl.c (TEXD_GL=0 leaves it out, TEXD_GL_MODES
+# says which: "gl46 gl43 gl33 gl30 es30").
 set -e
 cd "$(dirname "$0")/../.."
 if [ "$1" = update ]; then
@@ -70,4 +80,27 @@ if [ "${TEXD_D3D11:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null 
    cat "$WORK/d3d11.log"
    grep -q "^texdecode: all the same" "$WORK/dump.log" || { cat "$WORK/dump.log"; exit 1; }
    grep -q "^texdecode_d3d11: all the same" "$WORK/d3d11.log" || exit 1
+fi
+
+if [ "${TEXD_D3D9:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null && command -v wine > /dev/null; then
+   x86_64-w64-mingw32-gcc -std=c99 -O2 -Wall -Icore/rend -Icore/libretro-common/include -Itools/rend \
+      -o "$WORK/texdecode_d3d9.exe" tools/rend/texdecode_d3d9.c -ld3d9
+   "$WORK/texdecode_test" "$WORK" dump 2> "$WORK/dump9.log" \
+      | env -u TMPDIR WINEDEBUG=-all xvfb-run -a wine "$WORK/texdecode_d3d9.exe" | tr -d '\r' > "$WORK/d3d9.log" || true
+   cat "$WORK/d3d9.log"
+   grep -q "^texdecode: all the same" "$WORK/dump9.log" || { cat "$WORK/dump9.log"; exit 1; }
+   grep -q "^texdecode_d3d9: all the same" "$WORK/d3d9.log" || exit 1
+fi
+
+if [ "${TEXD_GL:-1}" != 0 ]; then
+   # (the kernels' text as C: rend/texdecode_gl.inc has it as raw strings)
+   ${CC:-cc} -std=gnu11 -O2 -Wall -Icore/rend -Icore/libretro-common/include -Itools/rend \
+      -o "$WORK/texdecode_gl" tools/rend/texdecode_gl.c -lEGL -lGL
+   # (the dump made again for each: it is a gigabyte and more)
+   for m in ${TEXD_GL_MODES:-gl46 gl43 gl33 gl30 es30}; do
+      "$WORK/texdecode_test" "$WORK" dump 2> "$WORK/dumpgl.log" | "$WORK/texdecode_gl" $m > "$WORK/gl_$m.log" 2>&1 || true
+      grep -q "^texdecode: all the same" "$WORK/dumpgl.log" || { cat "$WORK/dumpgl.log"; exit 1; }
+      cat "$WORK/gl_$m.log"
+      grep -q "^texdecode_gl: $m: all the same" "$WORK/gl_$m.log" || exit 1
+   done
 fi
