@@ -51,11 +51,22 @@ static u32 tileclip_val = 0;
 static bool flat_strips_wanted;
 static u32 strip_z_and = PVR_FLAT_AND_INIT;
 static u32 strip_z_or = PVR_FLAT_OR_INIT;
+/* What poly_same_state() compares of the control and depth words: the
+ * single-rate bit only where flat strips are looked for - a flat strip and
+ * one that is not are drawn at different rates then, and are not joined;
+ * otherwise the bit is whatever the game left there, and is left out */
+static u32 poly_ctl_mask_words[2] = { ~PVR_PCW_SINGLE_RATE, ~0u };	// (pcw, then isp)
 
 /* (from the thread that renders, which is the one that parses) */
 void ta_set_flat_strips(bool on)
 {
 	flat_strips_wanted = on;
+	poly_ctl_mask_words[0] = on ? ~0u : ~PVR_PCW_SINGLE_RATE;
+}
+
+bool ta_flat_strips(void)
+{
+	return flat_strips_wanted;
 }
 
 /* Whether the region array's table of tiles is built (rend_context's
@@ -1879,11 +1890,10 @@ typedef char ta_poly_layout[(offsetof(PolyParam, tcw) == offsetof(PolyParam, tsp
  * the same clipping rectangle and mode, and the same second shading and
  * texture words (those of a polygon under two volumes; all ones on any
  * other). Two words are compared at a time and there is one test for all
- * of them. The single-rate bit is left out of the control word's
- * comparison: nothing draws by it yet, and strips are joined as before. */
+ * of them. The single-rate bit is compared only while flat strips are
+ * looked for (poly_ctl_mask_words). */
 static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
 {
-	static const u32 ctl_mask_words[2] = { ~PVR_PCW_SINGLE_RATE, ~0u };	// (pcw, then isp)
 	u64 a_tex, b_tex, a_ctl, b_ctl, a_tex1, b_tex1, ctl_mask;
 
 	memcpy(&a_tex,  &a->tsp,  sizeof(a_tex));
@@ -1892,7 +1902,7 @@ static INLINE bool poly_same_state(const PolyParam *a, const PolyParam *b)
 	memcpy(&b_ctl,  &b->pcw,  sizeof(b_ctl));
 	memcpy(&a_tex1, &a->tsp1, sizeof(a_tex1));
 	memcpy(&b_tex1, &b->tsp1, sizeof(b_tex1));
-	memcpy(&ctl_mask, ctl_mask_words, sizeof(ctl_mask));
+	memcpy(&ctl_mask, poly_ctl_mask_words, sizeof(ctl_mask));
 
 	return ((a_tex ^ b_tex) | ((a_ctl ^ b_ctl) & ctl_mask) | (a_tex1 ^ b_tex1)
 			| (u64)(a->tileclip ^ b->tileclip)) == 0;

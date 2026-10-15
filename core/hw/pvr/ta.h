@@ -42,6 +42,8 @@ bool ta_parse_vdrc(TA_context* ctx);
  * vertex at the same depth) as drawn at a single rate, as sprites and the
  * background always are. Off, the decoder does no more than without it. */
 void ta_set_flat_strips(bool on);
+// ...and whether they are looked for now: a strip's single-rate bit means something only then
+bool ta_flat_strips(void);
 /* Whether the frames parsed from here on keep the region array's table of
  * tiles (rend_context's region_tiles). Off, the array is walked as it was
  * without it. */
