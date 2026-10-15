@@ -15,9 +15,11 @@
  *   submitted with the frame before its draws, which are indirect: their
  *   counts are the GPU's (TaGpuDraw). A frame the header pass does not do
  *   (ta_gpu_prepare()'s TA_GPU_WHY_*) is parsed and drawn as ever.
- * - The kernels, every buffer (sized for the largest frame the machine
- *   has), the descriptor sets and the timestamp queries are made in
- *   Init(); nothing is allocated or compiled while a game runs.
+ * - The kernels (SPIR-V made when the core is built: rend/ta_gpu_spv.inc),
+ *   every buffer (sized for the largest frame the machine has), the
+ *   descriptor sets and the timestamp queries are made in Init(), and the
+ *   pipelines go through the context's pipeline cache; nothing is
+ *   allocated or compiled while a game runs.
  * - The outputs are on the device, one copy: frames are decoded one after
  *   the other on the one queue, and each decode waits for whatever the one
  *   before is read by.

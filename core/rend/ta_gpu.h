@@ -10,8 +10,9 @@
  * - by a C89 or C++ compiler (nothing defined), for the tests, which run
  *   the same steps one after the other (tools/pvr/ta_gpu_test);
  * - by a GLSL compiler, with TAG_SHADER_GLSL defined, and TAG_KERNEL the
- *   number of the kernel wanted (TAG_K_*): the core has the text in
- *   ta_gpu_text.inc, which tools/pvr/ta_gpu_test.sh makes and checks.
+ *   number of the kernel wanted (TAG_K_*): the core has the kernels as
+ *   SPIR-V in ta_gpu_spv.inc, which tools/rend/kernels_spv.sh makes and
+ *   checks (tools/pvr/ta_gpu_test.sh runs the check).
  * So it is written in what the two have in common: functions of unsigned
  * and signed 32-bit integers by value, and small structures. Where words
  * are read and written is the reader's business: TAG_TA(i) is the i-th

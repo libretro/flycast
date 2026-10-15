@@ -1,20 +1,18 @@
 /* GPU-side TA processing on Vulkan: see ta_decoder.h */
 #include "ta_decoder.h"
 #include "commandpool.h"
-#include "compiler.h"
 #include "vulkan_context.h"
 #include "rend/ta_gpu.h"
 
 #include <algorithm>
-#include <string>
 
 extern int screen_height;
 
-/* rend/ta_gpu.h as text, for the kernels: made from it by
- * tools/pvr/ta_gpu_test.sh, which checks that it still is */
-static const char ta_gpu_text[] =
-#include "rend/ta_gpu_text.inc"
-;
+/* The kernels, by TAG_K_*, as SPIR-V made from rend/ta_gpu.h when the core
+ * was built: tools/rend/kernels_spv.sh, which checks that they still are
+ * its. Nothing is compiled when the core runs. */
+#include "rend/ta_gpu_spv.inc"
+static_assert(sizeof(ta_gpu_spv) / sizeof(ta_gpu_spv[0]) == TAG_KERNELS + 1, "a kernel for each TAG_K_*");
 
 // (the drawers draw from the records and commands: BaseDrawer::DrawIndices())
 static_assert(TAG_C_WORDS * 4 == sizeof(VkDrawIndexedIndirectCommand), "a record is an indexed indirect draw");
@@ -50,11 +48,6 @@ struct TaDecoder::Resources
 
 TaDecoder::TaDecoder() {}
 TaDecoder::~TaDecoder() {}
-
-static std::string KernelSource(int kernel)
-{
-	return "#version 450\n#define TAG_SHADER_GLSL\n#define TAG_KERNEL " + std::to_string(kernel) + "\n" + ta_gpu_text;
-}
 
 bool TaDecoder::Init(CommandPool& pool)
 {
@@ -175,13 +168,8 @@ bool TaDecoder::Init(CommandPool& pool)
 	// every kernel, now: none is made while a game runs
 	for (int k = 1; k <= TAG_KERNELS; k++)
 	{
-		vk::UniqueShaderModule module = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eCompute, KernelSource(k));
-		if (!module)
-		{
-			ERROR_LOG(RENDERER, "Vulkan: TA processing kernel %d did not compile", k);
-			failed = true;
-			return false;
-		}
+		vk::UniqueShaderModule module = device.createShaderModuleUnique(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(),
+				ta_gpu_spv_size[k], ta_gpu_spv[k]));
 		const vk::PipelineShaderStageCreateInfo stage(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute, *module, "main");
 		r->pipelines[k] = device.createComputePipelineUnique(context->GetPipelineCache(),
 				vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *r->pipelineLayout));

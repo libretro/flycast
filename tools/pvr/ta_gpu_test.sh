@@ -3,7 +3,8 @@
 # byte, on the frames a game draws. See ta_gpu_test_cpu.cpp.
 #
 #   sh tools/pvr/ta_gpu_test.sh update
-#        core/rend/ta_gpu_text.inc made again from core/rend/ta_gpu.h
+#        the kernels' SPIR-V (core/rend/ta_gpu_spv.inc) made again from
+#        core/rend/ta_gpu.h: tools/rend/kernels_spv.sh update
 #   sh tools/pvr/ta_gpu_test.sh CONTENT FRAMES [key=value ...]
 #        CONTENT run for FRAMES frames with the core options given, every
 #        frame it draws decoded on the device and by the model and compared
@@ -21,16 +22,8 @@
 # kept with KEEP=1 or when $WORK is given.
 set -e
 cd "$(dirname "$0")/../.."
-INC=core/rend/ta_gpu_text.inc
-make_text() {
-   echo '/* rend/ta_gpu.h as text, for the kernels: made by tools/pvr/ta_gpu_test.sh update from it. Not to be edited. */'
-   # (in pieces under 16 KB: the most one string literal can be for some compilers)
-   awk 'BEGIN { print "R\"TAG_TEXT(" } { n += length($0) + 1; if (n > 12000) { print ")TAG_TEXT\" R\"TAG_TEXT("; n = length($0) + 1 } print } END { print ")TAG_TEXT\"" }' core/rend/ta_gpu.h
-}
 if [ "$1" = update ]; then
-   make_text > $INC
-   echo "made $INC"
-   exit 0
+   exec sh tools/rend/kernels_spv.sh update
 fi
 if [ $# -lt 2 ]; then
    echo "usage: $0 update | CONTENT FRAMES [key=value ...]" >&2
@@ -41,8 +34,8 @@ if [ -z "$WORK" ]; then
    [ -n "$KEEP" ] || trap 'rm -rf "$WORK"' EXIT
 fi
 mkdir -p "$WORK"
-make_text > "$WORK/text.inc"
-cmp -s "$WORK/text.inc" $INC || { echo "FAIL: $INC is not core/rend/ta_gpu.h: run '$0 update'" >&2; exit 1; }
+# the SPIR-V the renderer has of the kernels is theirs (and texdecode's)
+sh tools/rend/kernels_spv.sh check
 [ -f core/hw/pvr/ta_vtx.o ] || { echo "build the core first: core/hw/pvr/ta_vtx.o is not there" >&2; exit 1; }
 
 # the header as C89 and as C++
@@ -50,11 +43,11 @@ printf '#define TAG_IDX_PUT(at, v) ((void)(at), (void)(v))\n#include "ta_gpu.h"\
 ${CC:-cc} -std=c89 -pedantic -Wall -Wextra -Werror -Wno-unused-function -Icore/rend -Icore/libretro-common/include -c -o "$WORK/c89.o" "$WORK/c89.c"
 ${CXX:-c++} -x c++ -std=c++11 -Wall -Wextra -Werror -Wno-unused-function -Icore/rend -Icore/libretro-common/include -c -o "$WORK/cxx.o" "$WORK/c89.c"
 
-# the kernels, as the renderer makes them (vulkan/ta_decoder.cpp)
+# the kernels, as the renderer has them (tools/rend/kernels_spv.sh's way: rend/ta_gpu_spv.inc)
 k=1
 while [ $k -le 14 ]; do
    { echo "#version 450"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_KERNEL $k"; cat core/rend/ta_gpu.h; } > "$WORK/k$k.comp"
-   glslangValidator -V --target-env vulkan1.1 -o "$WORK/k$k.spv" "$WORK/k$k.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
+   glslangValidator -V -g0 --target-env vulkan1.0 -o "$WORK/k$k.spv" "$WORK/k$k.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
    k=$((k + 1))
 done
 echo "ta_gpu: the C89 and C++ header and the 14 kernels compile"

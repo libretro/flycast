@@ -2,26 +2,14 @@
  * tex_decoder.h */
 #include "tex_decoder.h"
 #include "commandpool.h"
-#include "compiler.h"
 #include "vulkan_context.h"
 
 #include <algorithm>
 
-/* rend/texdecode.h as text, for the kernel: made from it by
- * tools/rend/texdecode_test.sh, which checks that it still is */
-static const char texdecode_text[] =
-#include "rend/texdecode_text.inc"
-;
-
-static const char * const imageFormats[3] = { "r8ui", "r16ui", "r32ui" };
-
-static std::string KernelSource(u32 out)
-{
-	std::string src = "#version 450\n#define TEXD_SHADER_GLSL\n#define TEXD_KERNEL_FORMAT ";
-	src += imageFormats[out];
-	src += "\n";
-	return src + texdecode_text;
-}
+/* The kernels, by TEXD_OUT8, 16, 32, as SPIR-V made from rend/texdecode.h
+ * when the core was built: tools/rend/kernels_spv.sh, which checks that
+ * they still are its. Nothing is compiled when the core runs. */
+#include "rend/texdecode_spv.inc"
 
 /* An image of @format the kernel writes to through a @view view: optimal,
  * sampled, written and copied to and from */
@@ -112,7 +100,8 @@ void TexDecoder::Init()
 	{
 		if (!wanted[out])
 			continue;
-		vk::UniqueShaderModule module = ShaderCompiler::Compile(vk::ShaderStageFlagBits::eCompute, KernelSource(out));
+		vk::UniqueShaderModule module = device.createShaderModuleUnique(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(),
+				texdecode_spv_size[out], texdecode_spv[out]));
 		const vk::PipelineShaderStageCreateInfo stage(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute, *module, "main");
 		pipelines[out] = device.createComputePipelineUnique(context->GetPipelineCache(),
 				vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *pipelineLayout));

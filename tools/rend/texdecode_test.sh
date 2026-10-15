@@ -2,8 +2,10 @@
 # Textures made on the GPU against the CPU's converters. See texdecode_test.c.
 #
 #   sh tools/rend/texdecode_test.sh          the test
-#   sh tools/rend/texdecode_test.sh update   core/rend/texdecode_text.inc made
-#                                            again from core/rend/texdecode.h
+#   sh tools/rend/texdecode_test.sh update   the kernels' SPIR-V
+#                                            (core/rend/texdecode_spv.inc) made
+#                                            again from core/rend/texdecode.h:
+#                                            tools/rend/kernels_spv.sh update
 #
 # Needs the core built for this machine first (it links core/rend/TexCache.o),
 # glslangValidator, and a Vulkan device: Mesa's software one (lavapipe,
@@ -11,23 +13,14 @@
 # is on when it is installed; TEXD_VALIDATE=0 turns it off.
 set -e
 cd "$(dirname "$0")/../.."
-INC=core/rend/texdecode_text.inc
-make_text() {
-   echo '/* rend/texdecode.h as text, for the kernels: made by tools/rend/texdecode_test.sh update from it. Not to be edited. */'
-   echo 'R"TEXD_TEXT('
-   cat core/rend/texdecode.h
-   echo ')TEXD_TEXT"'
-}
 if [ "$1" = update ]; then
-   make_text > $INC
-   echo "made $INC"
-   exit 0
+   exec sh tools/rend/kernels_spv.sh update
 fi
 WORK=${TMPDIR:-/tmp}/texdecode_test.$$
 mkdir -p "$WORK"
 [ -n "$KEEP" ] || trap 'rm -rf "$WORK"' EXIT
-make_text > "$WORK/text.inc"
-cmp -s "$WORK/text.inc" $INC || { echo "FAIL: $INC is not core/rend/texdecode.h: run '$0 update'" >&2; exit 1; }
+# the SPIR-V the renderer has of the kernels is theirs (and the TA decode's)
+sh tools/rend/kernels_spv.sh check
 [ -f core/rend/TexCache.o ] || { echo "build the core first: core/rend/TexCache.o is not there" >&2; exit 1; }
 
 # the header as C89 and as C++
@@ -35,10 +28,10 @@ printf '#include "texdecode.h"\nint main(void) { struct texd_plan p; (void)p; re
 ${CC:-cc} -std=c89 -pedantic -Wall -Wextra -Werror -Wno-unused-function -Icore/rend -Icore/libretro-common/include -c -o "$WORK/c89.o" "$WORK/c89.c"
 ${CXX:-c++} -x c++ -std=c++11 -Wall -Wextra -Werror -Wno-unused-function -Icore/rend -Icore/libretro-common/include -c -o "$WORK/cxx.o" "$WORK/c89.c"
 
-# the kernels, as the renderer makes them (vulkan/tex_decoder.cpp), and the Direct3D one
+# the kernels, as the renderer has them (tools/rend/kernels_spv.sh's way: rend/texdecode_spv.inc), and the Direct3D one
 for f in r8ui r16ui r32ui; do
    { echo "#version 450"; echo "#define TEXD_SHADER_GLSL"; echo "#define TEXD_KERNEL_FORMAT $f"; cat core/rend/texdecode.h; } > "$WORK/k_$f.comp"
-   glslangValidator -V --target-env vulkan1.1 -o "$WORK/k_$f.spv" "$WORK/k_$f.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
+   glslangValidator -V -g0 --target-env vulkan1.0 -o "$WORK/k_$f.spv" "$WORK/k_$f.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
 done
 { echo "#version 450"; cat tools/rend/texdecode_sample.comp; } > "$WORK/sample.comp"
 glslangValidator -V --target-env vulkan1.1 -o "$WORK/sample.spv" "$WORK/sample.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }

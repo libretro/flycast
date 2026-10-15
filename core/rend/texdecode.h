@@ -15,9 +15,9 @@
  * TEXD_WORD(i) is the i-th 32-bit word of the texture's bytes as they were
  * copied, little-endian - from the ring's buffer in the GLSL kernel below
  * (TEXD_KERNEL_FORMAT defined), from what a Direct3D kernel defines it as,
- * and on the C side from texd_c_bytes (texd_c_set()). The core has this
- * header's text for the kernel in texdecode_text.inc, which
- * tools/rend/texdecode_test.sh makes and checks.
+ * and on the C side from texd_c_bytes (texd_c_set()). The core has the
+ * kernels as SPIR-V in texdecode_spv.inc, which tools/rend/kernels_spv.sh
+ * makes and checks (tools/rend/texdecode_test.sh runs the check).
  *
  * The bytes of a texture, as copied, start at its first byte in video
  * memory (the codebook, for a compressed one) and run to its last, every
