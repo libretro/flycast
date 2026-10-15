@@ -17,7 +17,9 @@
  * (TEXD_KERNEL_FORMAT defined), from what a Direct3D kernel defines it as,
  * and on the C side from texd_c_bytes (texd_c_set()). The core has the
  * kernels as SPIR-V in texdecode_spv.inc, which tools/rend/kernels_spv.sh
- * makes and checks (tools/rend/texdecode_test.sh runs the check).
+ * makes and checks (tools/rend/texdecode_test.sh runs the check); and the
+ * Direct3D 11 ones (TEXD_KERNEL_D3D defined) as DXBC in
+ * texdecode_dxbc.inc, which tools/rend/kernels_dxbc.sh makes and checks.
  *
  * The bytes of a texture, as copied, start at its first byte in video
  * memory (the codebook, for a compressed one) and run to its last, every
@@ -33,6 +35,8 @@
  *   sr     a planar texture's row length (stride) | rows there are << 16
  *   mode   TEXD_MODE(): pixel format, layout, texel size, the corner rule,
  *          and the log2 of the width and height the layout is laid out by
+ *          (and, for the Direct3D kernel that draws 16-bit texels, the
+ *          format it draws them into: TEXD_D3D16())
  *   (base) where the bytes are in the shader's buffer, for TEXD_WORD()
  * all but base in bytes from the texture's first one. */
 #ifndef REND_TEXDECODE_H
@@ -88,6 +92,34 @@ layout(set = 1, binding = 0, TEXD_KERNEL_FORMAT) uniform writeonly uimage2D dst;
 layout(push_constant) uniform Level { uint base, data, pal, wh, sr, mode; } lv;
 #define TEXD_WORD(i) ring.words[lv.base + (i)]
 #endif
+
+/* The kernels in HLSL, for the Direct3D 11 renderers (dx11/dx11_texdecoder.h).
+ * TEXD_KERNEL_D3D is which:
+ *   1  cs_5_0, a level of 32-bit texels, into an R8G8B8A8_UINT view of it
+ *   2  cs_5_0, a level of palette indices, into an R8_UINT view
+ *   3  vs_5_0, the triangle that covers a level, for 4
+ *   4  ps_5_0, a level of 16-bit texels drawn into it, through a render
+ *      target view: Direct3D 11 has no integer view of the 16-bit formats,
+ *      and few devices write them through an unordered access view. The
+ *      colour is each field over its largest value, which the target
+ *      turns back into the field, exactly. */
+#if defined(TEXD_SHADER_HLSL) && defined(TEXD_KERNEL_D3D)
+ByteAddressBuffer texd_ring : register(t0);
+cbuffer TexdLevel : register(b0) { uint lv_base, lv_data, lv_pal, lv_wh, lv_sr, lv_mode, lv_pad0, lv_pad1; };
+#define TEXD_WORD(i) texd_ring.Load((lv_base + (i)) * 4u)
+#if TEXD_KERNEL_D3D == 1
+RWTexture2D<uint4> texd_dst : register(u0);
+#elif TEXD_KERNEL_D3D == 2
+RWTexture2D<uint> texd_dst : register(u0);
+#endif
+#endif
+
+/* What kernel 4 draws: the 16-bit texels' format, in the mode's bits 20
+ * and 21 */
+#define TEXD_D3D_565   0
+#define TEXD_D3D_5551  1
+#define TEXD_D3D_4444  2
+#define TEXD_D3D16(f)  (TEXD_U32(f) << 20)
 
 /* The pixel formats, as the texture control word has them */
 #define TEXD_1555    0
@@ -252,8 +284,11 @@ TEXD_FN texd_u32 texd_texel(texd_u32 data, texd_u32 pal, texd_u32 sr, texd_u32 m
       k = x & 3u;
       if (fmt == TEXD_YUV)
       {
+         /* (the same bytes as the planar texture's, read as halves: the
+          * Direct3D compiler, fxc, makes the Y of an odd texel the even
+          * one's of texd_byte(e + 1u + 2u * (k & 1u)) here) */
          e += 4u * (k >> 1);
-         return texd_yuv(texd_byte(e + 1u + 2u * (k & 1u)), texd_byte(e), texd_byte(e + 2u));
+         return texd_yuv(texd_half(e + 2u * (k & 1u)) >> 8, texd_half(e) & 0xFFu, texd_half(e + 2u) & 0xFFu);
       }
       return texd_rgb(fmt, otype, texd_half(e + 2u * k));
    }
@@ -298,6 +333,43 @@ void main()
       return;
    imageStore(dst, ivec2(x, y), uvec4(texd_texel(lv.data, lv.pal, lv.sr, lv.mode, x, y), 0u, 0u, 0u));
 }
+#endif
+
+#if defined(TEXD_SHADER_HLSL) && defined(TEXD_KERNEL_D3D)
+#if TEXD_KERNEL_D3D <= 2
+/* a texel of the level for each invocation, in groups of 8x8 */
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+   uint v;
+   if (id.x >= (lv_wh & 0xFFFFu) || id.y >= (lv_wh >> 16))
+      return;
+   v = texd_texel(lv_data, lv_pal, lv_sr, lv_mode, id.x, id.y);
+#if TEXD_KERNEL_D3D == 1
+   texd_dst[id.xy] = uint4(v & 0xFFu, (v >> 8) & 0xFFu, (v >> 16) & 0xFFu, v >> 24);
+#else
+   texd_dst[id.xy] = v;
+#endif
+}
+#elif TEXD_KERNEL_D3D == 3
+float4 main(uint id : SV_VertexID) : SV_Position
+{
+   return float4(float(id & 1u) * 4.0 - 1.0, float(id >> 1) * 4.0 - 1.0, 0.0, 1.0);
+}
+#else
+/* the texel at the pixel's centre, from the 16 bits the converters make
+ * (red at the top, alpha at the bottom) */
+float4 main(float4 pos : SV_Position) : SV_Target
+{
+   uint v = texd_texel(lv_data, lv_pal, lv_sr, lv_mode, uint(pos.x), uint(pos.y));
+   uint f = (lv_mode >> 20) & 3u;
+   if (f == TEXD_D3D_565)
+      return float4(float(v >> 11) / 31.0, float((v >> 5) & 63u) / 63.0, float(v & 31u) / 31.0, 1.0);
+   if (f == TEXD_D3D_5551)
+      return float4(float(v >> 11) / 31.0, float((v >> 6) & 31u) / 31.0, float((v >> 1) & 31u) / 31.0, float(v & 1u));
+   return float4(float(v >> 12) / 15.0, float((v >> 8) & 15u) / 15.0, float((v >> 4) & 15u) / 15.0, float(v & 15u) / 15.0);
+}
+#endif
 #endif
 
 #if !defined(TEXD_SHADER_GLSL) && !defined(TEXD_SHADER_HLSL)
