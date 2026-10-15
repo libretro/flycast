@@ -6,6 +6,7 @@
 #include <libretro.h>
 
 #include "gles.h"
+#include "ta_decoder_gl.h"
 
 #ifndef GL_RED
 #define GL_RED                            0x1903
@@ -19,6 +20,7 @@
 
 GLCache glcache;
 gl_ctx gl;
+GlTaDecoder glTaDecoder;
 
 struct ShaderUniforms_t ShaderUniforms;
 
@@ -644,6 +646,7 @@ GLuint gl_CompileAndLink(const char* VertexShader, const char* FragmentShader)
 	glBindAttribLocation(program, VERTEX_COL_BASE1_ARRAY, "in_base1");
 	glBindAttribLocation(program, VERTEX_COL_OFFS1_ARRAY, "in_offs1");
 	glBindAttribLocation(program, VERTEX_UV1_ARRAY,       "in_uv1");
+	glBindAttribLocation(program, VERTEX_PP_ARRAY,        "in_pp");
 
 #ifndef HAVE_OPENGLES
 	glBindFragDataLocation(program, 0, "FragColor");
@@ -1124,19 +1127,23 @@ static bool RenderFrame(void)
 
 	if (!pvrrc.isRenderFramebuffer)
 	{
-		//Main VBO
-		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.geometry); glCheck();
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs); glCheck();
-
-		glBufferData(GL_ARRAY_BUFFER,pvrrc.verts.bytes(),pvrrc.verts.head(),GL_STREAM_DRAW); glCheck();
-
-		upload_vertex_indices();
-
-		//Modvol VBO
-		if (pvrrc.modtrig.used())
+		// (a frame decoded on the GPU is there already: DrawStrips() draws from the decode's buffers)
+		if (!pvrrc.gpu)
 		{
-			glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.modvols); glCheck();
-			glBufferData(GL_ARRAY_BUFFER,pvrrc.modtrig.bytes(),pvrrc.modtrig.head(),GL_STREAM_DRAW); glCheck();
+			//Main VBO
+			glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.geometry); glCheck();
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs); glCheck();
+
+			glBufferData(GL_ARRAY_BUFFER,pvrrc.verts.bytes(),pvrrc.verts.head(),GL_STREAM_DRAW); glCheck();
+
+			upload_vertex_indices();
+
+			//Modvol VBO
+			if (pvrrc.modtrig.used())
+			{
+				glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.modvols); glCheck();
+				glBufferData(GL_ARRAY_BUFFER,pvrrc.modtrig.bytes(),pvrrc.modtrig.head(),GL_STREAM_DRAW); glCheck();
+			}
 		}
 
 		if (!wide_screen_on)
@@ -1243,7 +1250,7 @@ void rend_set_fb_scale(float x, float y)
 	fb_scale_y = y;
 }
 
-bool ProcessFrame(TA_context* ctx)
+bool ProcessFrame(TA_context* ctx, u32 taFlags)
 {
    if (KillTex)
    {
@@ -1251,11 +1258,20 @@ bool ProcessFrame(TA_context* ctx)
       INFO_LOG(RENDERER, "Texture cache cleared");
    }
 
+   glTaDecoder.BeginFrame();
    if (ctx->rend.isRenderFramebuffer)
 		RenderFramebuffer();
 	else
 	{
-		if (!ta_parse_vdrc(ctx))
+		/* GPU-side TA processing: the header pass makes the frame ready to
+		 * be drawn from the GPU's decode, in the full parse's place, and the
+		 * decode is dispatched; or it is parsed as ever */
+		bool rv;
+		if (taFlags == 0 || !glTaDecoder.Ready() || !glTaDecoder.Prepare(ctx, taFlags, &rv))
+			rv = ta_parse_vdrc(ctx);
+		else if (rv)
+			glTaDecoder.Record(ctx);
+		if (!rv)
 			return false;
 	}
    TexCache.CollectCleanup();
@@ -1296,6 +1312,11 @@ struct glesrend : Renderer
       if (settings.rend.PowerVR2Filter)
       	postProcessor.Init();
 
+      /* GPU-side TA processing, if it is on and the context has OpenGL 4.3:
+       * here, when the renderer is set up, not in a frame */
+      glTaDecoder.WantSort(true);
+      glTaDecoder.Setup(ta_gpu_wanted());
+
       return true;
    }
 	void Resize(int w, int h) override
@@ -1316,6 +1337,7 @@ struct glesrend : Renderer
 
 	void Term() override
    {
+		glTaDecoder.Term();
 		postProcessor.Term();
 	   TexCache.Clear();
 		rtt_watch_term();
@@ -1329,11 +1351,18 @@ struct glesrend : Renderer
       if (!settings.rend.ThreadedRendering)
 #endif
          glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
-      return ProcessFrame(ctx);
+      /* GPU-side TA processing: a sorted pass's translucent triangles
+       * sorted from the frame's depths (TA_GPU_SORT); sorted by strip, the
+       * polygons are sorted from the CPU's vertices, and a frame that may
+       * have a sorted pass is parsed. The polygons drawn again for shadows
+       * are those the GPU says reach into the volumes. */
+      return ProcessFrame(ctx, TA_GPU_DRAW | TA_GPU_SHADOWS
+            | (!settings.pvr.Emulation.AlphaSortMode && glTaDecoder.CanSort() ? TA_GPU_SORT : TA_GPU_NO_SORT));
    }
 	bool Render() override
    {
       bool ret = RenderFrame();
+      glTaDecoder.EndFrame();
 #if !defined(TARGET_NO_THREADS)
       if (!settings.rend.ThreadedRendering)
 #endif
@@ -1343,6 +1372,12 @@ struct glesrend : Renderer
 
 	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override {
 		return gl_GetTexture(tsp, tcw, area);
+	}
+
+	// (TA processing switched on or off: between frames, the state bound)
+	void OptionsChanged() override
+	{
+		glTaDecoder.Setup(ta_gpu_wanted());
 	}
 };
 

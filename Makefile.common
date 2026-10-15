@@ -225,7 +225,8 @@ ifeq ($(HAVE_GL), 1)
 		SOURCES_CXX += $(CORE_DIR)/core/rend/gl4/gles.cpp \
 							$(CORE_DIR)/core/rend/gl4/gldraw.cpp \
 							$(CORE_DIR)/core/rend/gl4/gltex.cpp \
-							$(CORE_DIR)/core/rend/gl4/abuffer.cpp
+							$(CORE_DIR)/core/rend/gl4/abuffer.cpp \
+							$(CORE_DIR)/core/rend/gles/ta_decoder_gl.cpp
 	endif
 	SOURCES_C += $(LIBRETRO_COMM_DIR)/glsym/rglgen.c \
 						$(LIBRETRO_COMM_DIR)/glsm/glsm.c

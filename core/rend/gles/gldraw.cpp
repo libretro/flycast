@@ -1,5 +1,6 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "gles.h"
+#include "ta_decoder_gl.h"
 #include "rend/shadows.h"
 #include <cstring>
 
@@ -291,8 +292,12 @@ static void DrawList(const List<PolyParam>& gply, int first, int count)
 		if (params->count>2) /* this actually happens for some games. No idea why .. */
 		{
 			SetGPState<Type,SortingEnabled>(params);
-			glDrawElements(GL_TRIANGLE_STRIP, params->count, gl.index_type,
-						(GLvoid*)(gl.get_index_size() * params->first));
+			// (of a frame decoded on the GPU, a draw group: see TA_GPU_DRAW)
+			if (pvrrc.gpu)
+				glTaDecoder.DrawGroup(Type, params->first, params->count);
+			else
+				glDrawElements(GL_TRIANGLE_STRIP, params->count, gl.index_type,
+							(GLvoid*)(gl.get_index_size() * params->first));
 		}
 
 		params++;
@@ -345,23 +350,25 @@ static void SortTriangles(int first, int count, bool sortTriangles, bool lastPas
 	}
 }
 
-// The depth prepass of a sorted list: rend/sorter.h (with the sorted indices bound)
-static void DrawPrepass()
+/* The depth prepass of a sorted list: rend/sorter.h (with the sorted
+ * indices bound, @base bytes in: @d's first counts from there) */
+static void DrawPrepass(const SortTrigDrawParam *draws, u32 count, uintptr_t base)
 {
-	if (pidx_prepass.empty())
+	if (count == 0)
 		return;
 	glcache.Enable(GL_STENCIL_TEST);
 	glcache.StencilFunc(GL_ALWAYS, 0, 0);
 	glcache.StencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 	glcache.StencilMask(0);
 	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-	for (const SortTrigDrawParam& d : pidx_prepass)
+	for (u32 i = 0; i < count; i++)
 	{
+		const SortTrigDrawParam& d = draws[i];
 		SetGPState<ListType_Translucent, true>(d.ppid);
 		glcache.DepthMask(GL_TRUE);
 		glcache.Disable(GL_BLEND);
 		glUniform1f(CurrentShader->prepass_alpha, PrepassAlwaysHides(d.ppid) ? -1.f : PREPASS_ALPHA_MIN);
-		glDrawElements(GL_TRIANGLES, d.count, gl.index_type, (GLvoid*)(gl.get_index_size() * d.first));
+		glDrawElements(GL_TRIANGLES, d.count, gl.index_type, (GLvoid*)(base + gl.get_index_size() * d.first));
 		// (the colour pass draws with the same program)
 		glUniform1f(CurrentShader->prepass_alpha, 0.f);
 	}
@@ -369,12 +376,13 @@ static void DrawPrepass()
 	glcache.StencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 }
 
-void DrawSorted(bool multipass)
+/* The sorted triangles of a list, @count draws of them (with the sorted
+ * indices bound, @base bytes in: as DrawPrepass()) */
+static void DrawSorted(const SortTrigDrawParam *pidx_sort, u32 count, bool multipass, uintptr_t base)
 {
 	//if any drawing commands, draw them
-	if (!pidx_sort.empty())
+	if (count != 0)
 	{
-		u32 count=pidx_sort.size();
 
 		{
 			//set some 'global' modes for all primitives
@@ -392,9 +400,8 @@ void DrawSorted(bool multipass)
 				{
 					SetGPState<ListType_Translucent, true>(params);
 					glDrawElements(GL_TRIANGLES, pidx_sort[p].count, gl.index_type,
-						(GLvoid*)(gl.get_index_size() * pidx_sort[p].first));
+						(GLvoid*)(base + gl.get_index_size() * pidx_sort[p].first));
 				}
-				params++;
 			}
 
 			if (multipass && settings.rend.TranslucentPolygonDepthMask)
@@ -422,7 +429,7 @@ void DrawSorted(bool multipass)
 						SetCull(params->isp.CullMode ^ gcflip);
 
 						glDrawElements(GL_TRIANGLES, pidx_sort[p].count, gl.index_type,
-							(GLvoid*)(gl.get_index_size() * pidx_sort[p].first));
+							(GLvoid*)(base + gl.get_index_size() * pidx_sort[p].first));
 					}
 				}
 				glcache.StencilMask(0xFF);
@@ -430,8 +437,6 @@ void DrawSorted(bool multipass)
 			}
 
 		}
-		// Re-bind the previous index buffer for subsequent render passes
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
 	}
 }
 
@@ -532,10 +537,17 @@ void SetMVS_Mode(ModifierVolumeMode mv_mode, ISP_Modvol ispc)
 	}
 }
 
-static void SetupMainVBO(void)
+/* The frame's vertices and indices: the renderer's own, or (@gpu) those of
+ * GPU-side TA processing's decode */
+static void SetupMainVBO(bool gpu = false)
 {
-	glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.geometry);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
+	if (gpu)
+		glTaDecoder.BindGeometry();
+	else
+	{
+		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.geometry);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
+	}
 
 	//setup vertex buffers attrib pointers
 	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
@@ -551,9 +563,12 @@ static void SetupMainVBO(void)
 	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex,u));
 }
 
-static void SetupModvolVBO(void)
+static void SetupModvolVBO(bool gpu)
 {
-	glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.modvols);
+	if (gpu)
+		glTaDecoder.BindModVols();
+	else
+		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.modvols);
 
 	//setup vertex buffers attrib pointers
 	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
@@ -606,7 +621,9 @@ static void DrawShadowed(const List<PolyParam>& gply, int first, int count, cons
 
 	for (; count > 0; count--, gp++)
 	{
-		if (!CanDrawShadowed(Type, gp) || !PolyOverlaps(gp, area))
+		/* (of a frame decoded on the GPU, the GPU has said which groups
+		 * reach into the volumes: the others' second commands draw nothing) */
+		if (!CanDrawShadowed(Type, gp) || (!pvrrc.gpu && !PolyOverlaps(gp, area)))
 			continue;
 
 		SetGPState<Type, false>(gp, 0, true);
@@ -627,12 +644,15 @@ static void DrawShadowed(const List<PolyParam>& gply, int first, int count, cons
 			glcache.StencilFunc(GL_EQUAL, 0x81, 0xC1);
 			glcache.StencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
 		}
-		glDrawElements(GL_TRIANGLE_STRIP, gp->count, gl.index_type,
-				(GLvoid*)(gl.get_index_size() * gp->first));
+		if (pvrrc.gpu)
+			glTaDecoder.DrawGroup(Type, gp->first, gp->count, true);
+		else
+			glDrawElements(GL_TRIANGLE_STRIP, gp->count, gl.index_type,
+					(GLvoid*)(gl.get_index_size() * gp->first));
 	}
 }
 
-static void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
+static void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass, int render_pass)
 {
 	/* A bit of explanation:
 	 * In theory it works like this: generate a 1-bit stencil for each polygon
@@ -642,7 +662,7 @@ static void DrawModVols(int first, int count, const RenderPass& previous_pass, c
 	if (count == 0)
 		return;
 
-	SetupModvolVBO();
+	SetupModvolVBO(pvrrc.gpu);
 
 	glcache.Disable(GL_BLEND);
 	SetBaseClipping();
@@ -708,10 +728,13 @@ static void DrawModVols(int first, int count, const RenderPass& previous_pass, c
 	SetCull(0);
 	//enable color writes
 	glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
-	SetupMainVBO();
+	SetupMainVBO(pvrrc.gpu);
 
-	// The polygons that take shadows, again, where they are in a volume
-	const ScreenBounds area = ModVolBounds(first, count);
+	/* The polygons that take shadows, again, where they are in a volume.
+	 * Of a frame decoded on the GPU, the volumes' bounds are the header
+	 * pass's, from their blocks (TA_GPU_SHADOWS) */
+	const f32 *ga = pvrrc.gpu_shadow_area[render_pass < 10 ? render_pass : 0];
+	const ScreenBounds area = pvrrc.gpu ? ScreenBounds{ ga[0], ga[1], ga[2], ga[3] } : ModVolBounds(first, count);
 	if (!area.empty())
 	{
 		int scissor[4];
@@ -751,7 +774,12 @@ static void DrawModVols(int first, int count, const RenderPass& previous_pass, c
 
 void DrawStrips()
 {
-	SetupMainVBO();
+	SetupMainVBO(pvrrc.gpu);
+	/* (a frame decoded on the GPU has its sorted passes sorted already, and
+	 * their indices go straight to the decoder's room for them: see
+	 * TA_GPU_SORT) */
+	if (pvrrc.gpu)
+		glTaDecoder.WriteSorted();
 	//Draw the strips !
 
 	//We use sampler 0
@@ -783,20 +811,36 @@ void DrawStrips()
 		// Modifier volumes
 		if (gl.stencil_present)
 			DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count,
-					previous_pass, current_pass);
+					previous_pass, current_pass, render_pass);
 
 		//Alpha blended
 		{
 			if (current_pass.autosort)
 			{
 				const bool lastPass = render_pass == pvrrc.render_passes.used() - 1;
-				if (settings.pvr.Emulation.AlphaSortMode == 0)
+				if (pvrrc.gpu)
+				{
+					// (a frame decoded on the GPU with a sorted pass was sorted by triangle: TA_GPU_SORT)
+					u32 nprepass = 0, nsorted = 0;
+					const SortTrigDrawParam *prepass = ta_gpu_prepass(render_pass, &nprepass);
+					const SortTrigDrawParam *sorted = ta_gpu_sorted(render_pass, &nsorted);
+					if (!PrepassSupported())
+						nprepass = 0;
+					if (nprepass != 0 || nsorted != 0)
+					{
+						const uintptr_t base = (uintptr_t)glTaDecoder.BindSorted();
+						DrawPrepass(prepass, nprepass, base);
+						DrawSorted(sorted, nsorted, !lastPass, base);
+						glTaDecoder.BindGeometry();
+					}
+				}
+				else if (settings.pvr.Emulation.AlphaSortMode == 0)
 				{
 					SortTriangles(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count, true, lastPass);
-					DrawPrepass();
-					DrawSorted(!lastPass);
-					// (DrawSorted() binds the main indices again only after sorted triangles)
-					if (pidx_sort.empty() && !pidx_prepass.empty())
+					DrawPrepass(pidx_prepass.data(), (u32)pidx_prepass.size(), 0);
+					DrawSorted(pidx_sort.data(), (u32)pidx_sort.size(), !lastPass, 0);
+					// (the main indices again, after sorted triangles or a prepass)
+					if (!pidx_sort.empty() || !pidx_prepass.empty())
 						glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
 				}
 				else
@@ -804,7 +848,7 @@ void DrawStrips()
 					SortTriangles(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count, false, lastPass);
 					if (!pidx_prepass.empty())
 					{
-						DrawPrepass();
+						DrawPrepass(pidx_prepass.data(), (u32)pidx_prepass.size(), 0);
 						glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
 					}
 					SortPParams(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count);

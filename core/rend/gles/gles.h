@@ -33,6 +33,8 @@
 #define VERTEX_COL_BASE1_ARRAY 4
 #define VERTEX_COL_OFFS1_ARRAY 5
 #define VERTEX_UV1_ARRAY 6
+// (OIT only) a translucent strip's number: GPU-side TA processing's draws give it
+#define VERTEX_PP_ARRAY 7
 
 #define glCheck()
 
@@ -134,7 +136,9 @@ struct text_info {
 
 enum ModifierVolumeMode { Xor, Or, Inclusion, Exclusion, ModeCount };
 
-bool ProcessFrame(TA_context* ctx);
+/* @taFlags: how the renderer draws a frame GPU-side TA processing decodes
+ * (ta_gpu_prepare()'s TA_GPU_*; gles/ta_decoder_gl.h); 0, never */
+bool ProcessFrame(TA_context* ctx, u32 taFlags = 0);
 void UpdateFogTexture(u8 *fog_table, GLenum texture_slot, GLint fog_image_format);
 void GetFramebufferScaling(float& scale_x, float& scale_y, float& scissoring_scale_x, float& scissoring_scale_y);
 void GetFramebufferSize(float& dc_width, float& dc_height);
