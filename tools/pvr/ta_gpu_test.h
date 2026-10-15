@@ -21,7 +21,7 @@ struct tgt_out
    const unsigned *vtx, *mod, *idx, *rec, *cmd, *frm, *work, *trd, *trp;
 };
 
-/* The device and its kernels from @spv_dir (k1.spv to k14.spv), buffers
+/* The device and its kernels from @spv_dir (k1.spv to the last, TAG_KERNELS), buffers
  * for @sz; @layout[13] gets the places, as TaGpuLayout has them */
 void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, unsigned *layout);
 int tgt_validation_errors(void);
@@ -30,6 +30,11 @@ int tgt_validation_errors(void);
 void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned table_words, unsigned trd, struct tgt_out *o, double *ms);
 /* ...and by the model; 0 if its scan's elements and its states differ */
 int tgt_model(const void *ta, const unsigned *table, unsigned trd, struct tgt_out *o);
+/* The next tgt_gpu() and the next tgt_model() also make the depth
+ * prepass's @checks (TAG_K_PREPASS) of @srt, the frame's sorted indices
+ * and the checks after them, @words of them, as the renderers do it: after
+ * the unpacking; what comes out is written back to @srt */
+void tgt_sorted(unsigned *srt, unsigned words, unsigned checks);
 /* 1 if the header's single precision is this CPU's */
 int tgt_softfloat_test(void);
 

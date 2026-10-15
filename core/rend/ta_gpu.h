@@ -58,6 +58,14 @@
  *               volumes cover, which the CPU gives; its draw command again
  *               for its second drawing for shadows, with no indices if
  *               they do not meet (PolyOverlaps() in rend/shadows.h).
+ *  15 prepass   (TAG_T_PREP) one workgroup a translucent strip of the
+ *               sorted depth prepass (rend/sorter.h) whose alpha is its
+ *               vertices': if none of the vertices it draws has an alpha
+ *               of 255, no pixel of it can hide what is behind it, and its
+ *               triangles in the prepass's indices, which the CPU wrote
+ *               (TA_GPU_SORT), are made into points that draw nothing - as
+ *               GenPrepass() leaves such a polygon out
+ *               (PrepassVerticesOpaque()). The draws stay the CPU's.
  * Nothing is read back: the counts are indirect dispatch and draw
  * arguments, and the farthest depth (fZ_max) is a word of the frame
  * buffer for the GPU to read.
@@ -92,7 +100,8 @@
 #define TAG_K_TRDRAW   12
 #define TAG_K_PROVOKE  13
 #define TAG_K_SHADOW   14
-#define TAG_KERNELS    14
+#define TAG_K_PREPASS  15
+#define TAG_KERNELS    15
 
 /* OpenGL's binding of the first of the kernels' buffers (TAG_SHADER_GL):
  * the others follow it in order */
@@ -117,6 +126,9 @@ layout(std430, binding = 9) buffer Commands { uint w[]; } cmd;
 layout(std430, binding = 10) buffer Frame { uint w[]; } frm;
 layout(std430, binding = 11) buffer TrDraws { uint w[]; } trd;
 layout(std430, binding = 12) buffer TrParams { uint w[]; } trp;
+#if TAG_KERNEL == TAG_K_PREPASS
+layout(std430, binding = 13) buffer Sorted { uint w[]; } srt;
+#endif
 #else
 layout(std430, set = 0, binding = 0) readonly buffer TaData { uint w[]; } ta;
 layout(std430, set = 1, binding = 0) readonly buffer Tables { uint w[]; } tab;
@@ -129,6 +141,11 @@ layout(std430, set = 1, binding = 6) buffer Commands { uint w[]; } cmd;
 layout(std430, set = 1, binding = 7) buffer Frame { uint w[]; } frm;
 layout(std430, set = 1, binding = 8) buffer TrDraws { uint w[]; } trd;
 layout(std430, set = 1, binding = 9) buffer TrParams { uint w[]; } trp;
+/* (the sorted translucent indices of the frame, which the CPU writes: only
+ * the prepass's kernel has them) */
+#if TAG_KERNEL == TAG_K_PREPASS
+layout(std430, set = 1, binding = 10) buffer Sorted { uint w[]; } srt;
+#endif
 #endif
 
 #define TAG_TA(i) ta.w[i]
@@ -222,6 +239,7 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_T_OFF_SHD  32  /* the shadow table (TAG_SH_*) */
 #define TAG_T_NSHD     33  /* ...its entries */
 #define TAG_T_SHD_CMD  34  /* where the second commands go in the command buffer (a slot's: this plus the slot) */
+#define TAG_T_PREP     35  /* where the prepass's checks are in the sorted indices' buffer (TAG_PC_*), TAG_NONE for none */
 #define TAG_T_WORDS    36
 
 #define TAG_FLAG_BLEED 1u  /* the texture bleeding fix (above 480 lines) */
@@ -234,6 +252,17 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_R_COUNT  2     /* vertices */
 #define TAG_R_HDR    3     /* whose (in index order) */
 #define TAG_R_WORDS  4
+
+/* The depth prepass's checks (TAG_K_PREPASS): from TAG_T_PREP on in the
+ * sorted indices' buffer, after the indices, how many there are, then for
+ * each its strip's first vertex and how many vertices it has (infinite
+ * ones too, which are not drawn), and its triangles in the prepass: the
+ * first one's number, counting from the start of the buffer, and how many */
+#define TAG_PC_V     0
+#define TAG_PC_NV    1
+#define TAG_PC_T     2
+#define TAG_PC_NT    3
+#define TAG_PC_WORDS 4
 
 /* A modifier volume run */
 #define TAG_M_BLOCK  0
@@ -821,6 +850,13 @@ TAG_FN tag_u32 tag_inf(tag_u32 x, tag_u32 y, tag_u32 z)
    const tag_u32 huge_z = 0x7DCCA14Bu;    /* 3.4e37f */
    return ((x & 0x7FFFFFFFu) > huge_xy || (y & 0x7FFFFFFFu) > huge_xy
          || (z & 0x7FFFFFFFu) > 0x7F800000u || (z < 0x80000000u && z > huge_z)) ? 1u : 0u;
+}
+
+/* (the prepass's checks) whether a vertex is one of its strip's indices,
+ * which an infinite one is not, with an alpha of 255: from its words */
+TAG_FN tag_u32 tag_prepass_vertex(tag_u32 x, tag_u32 y, tag_u32 z, tag_u32 col)
+{
+   return (tag_inf(x, y, z) == 0u && (col >> 24) == 255u) ? 1u : 0u;
 }
 
 /* update_fz(): whether a depth counts for fZ_max (it is above 1.0, the
@@ -2022,6 +2058,52 @@ void main()
          cmd.w[o + 3u] = 0u;
          cmd.w[o + 4u] = 0u;
       }
+      barrier();
+   }
+}
+#endif
+
+#if TAG_KERNEL == TAG_K_PREPASS
+/* A workgroup for each check (as many as there are, up to the most a
+ * dispatch has, each then taking every so many): its strip's vertices
+ * looked at by its 64 threads, and if none is drawn with an alpha of 255,
+ * each of its triangles (a, b, c) made (a, a, a). The vertices are this
+ * frame's, before anything moves their colours (TAG_K_PROVOKE). */
+layout(local_size_x = 64) in;
+shared uint s_any;
+void main()
+{
+   uint t = gl_LocalInvocationID.x, base = tab.w[TAG_T_PREP], nverts = tab.w[TAG_T_NVERTS], c, i;
+   uint n = srt.w[base];
+   for (c = gl_WorkGroupID.x; c < n; c += gl_NumWorkGroups.x)
+   {
+      uint at = base + 1u + c * TAG_PC_WORDS;
+      uint v0 = srt.w[at + TAG_PC_V], nv = srt.w[at + TAG_PC_NV];
+      uint t0 = srt.w[at + TAG_PC_T], nt = srt.w[at + TAG_PC_NT];
+      if (t == 0u)
+         s_any = 0u;
+      barrier();
+      uint any = 0u;
+      for (i = t; i < nv; i += 64u)
+         if (v0 + i < nverts)
+         {
+            uint o = (v0 + i) * TAG_V_WORDS;
+            any |= tag_prepass_vertex(vtx.w[o + TAG_V_X], vtx.w[o + TAG_V_Y], vtx.w[o + TAG_V_Z], vtx.w[o + TAG_V_COL]);
+         }
+      if (any != 0u)
+         atomicOr(s_any, 1u);
+      barrier();
+      if (s_any == 0u)
+         for (i = t; i < nt; i += 64u)
+         {
+            uint o = (t0 + i) * 3u;
+            if (o + 2u < base)
+            {
+               uint a = srt.w[o];
+               srt.w[o + 1u] = a;
+               srt.w[o + 2u] = a;
+            }
+         }
       barrier();
    }
 }

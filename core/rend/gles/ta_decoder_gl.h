@@ -106,8 +106,9 @@ public:
 	/* The decode's vertices bound as GL_ARRAY_BUFFER and its indices as
 	 * GL_ELEMENT_ARRAY_BUFFER; its modifier volume triangles as
 	 * GL_ARRAY_BUFFER; and (TA_GPU_SORT) this frame's sorted indices written
-	 * (ta_gpu_sorted_write()), and bound as GL_ELEMENT_ARRAY_BUFFER, from the
-	 * byte offset it returns */
+	 * (ta_gpu_sorted_write(): by Record(), before the prepass's kernel reads
+	 * them), and bound as GL_ELEMENT_ARRAY_BUFFER, from the byte offset it
+	 * returns */
 	void BindGeometry();
 	void BindModVols();
 	void WriteSorted();

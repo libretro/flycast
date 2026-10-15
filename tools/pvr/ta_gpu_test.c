@@ -167,6 +167,17 @@ static unsigned char *read_file(const char *path, size_t *size)
    return p;
 }
 
+/* (tgt_sorted(): for the device's next decode, and the model's) */
+static unsigned *srt_gpu, *srt_model;
+static unsigned srt_gpu_words, srt_gpu_checks, srt_model_checks;
+
+void tgt_sorted(unsigned *srt, unsigned words, unsigned checks)
+{
+   srt_gpu = srt_model = srt;
+   srt_gpu_words = words;
+   srt_gpu_checks = srt_model_checks = checks;
+}
+
 #ifdef TGT_GL
 #include "ta_gpu_test_gl.c"
 #else
@@ -225,7 +236,7 @@ static VkPipeline make_pipeline(const char *path)
 
 static VkDescriptorSetLayout make_layout(unsigned n)
 {
-   VkDescriptorSetLayoutBinding b[10];
+   VkDescriptorSetLayoutBinding b[16];   /* (set 1: B_COUNT - 1 of them) */
    VkDescriptorSetLayoutCreateInfo ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
    VkDescriptorSetLayout layout;
    unsigned i;
@@ -275,7 +286,7 @@ static struct buffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage)
 }
 
 /* the buffers, in the kernels' bindings' order: the data, then set 1's */
-enum { B_TA, B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_COUNT };
+enum { B_TA, B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_SRT, B_COUNT };
 static struct buffer bufs[B_COUNT];
 
 int tgt_validation_errors(void)
@@ -297,7 +308,7 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
    VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
    VkPhysicalDeviceProperties props;
-   VkDescriptorPoolSize psize = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16 };
+   VkDescriptorPoolSize psize = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, B_COUNT + 4 };
    VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
    VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
    VkDescriptorSetAllocateInfo dai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -374,6 +385,8 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    bufs[B_FRM] = make_buffer(TAG_O_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_TRD] = make_buffer((VkDeviceSize)(sz->verts + sz->headers) * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_TRP] = make_buffer((VkDeviceSize)sz->list[2] * TAG_P_WORDS * 4, 0);
+   /* (the sorted indices' room, as the renderers have it: six words a triangle a frame can have) */
+   bufs[B_SRT] = make_buffer((VkDeviceSize)sz->idx * 6 * 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
    dpi.maxSets = 2;
    dpi.poolSizeCount = 1;
@@ -440,8 +453,12 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    const unsigned scan_groups = (nv + TAG_SCAN_N - 1u) / TAG_SCAN_N;
    double t0;
 
+   const unsigned checks = srt_gpu != NULL ? srt_gpu_checks : 0;
+
    memcpy(bufs[B_TA].mapped, ta, ta_bytes);
    memcpy(bufs[B_TAB].mapped, table, (size_t)table_words * 4);
+   if (checks != 0)
+      memcpy(bufs[B_SRT].mapped, srt_gpu, (size_t)srt_gpu_words * 4);
    /* what is not written this frame is left from the one before, as it
     * would be in the renderer */
    CHECK(vkResetCommandBuffer(cmd, 0));
@@ -457,6 +474,8 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 2, sets, 0, NULL);
    dispatch(TAG_K_UNPACK, (nv + nmod + 63u) / 64u);
+   if (checks != 0)
+      dispatch(TAG_K_PREPASS, checks < 65535u ? checks : 65535u);
    dispatch(TAG_K_COUNT, scan_groups);
    dispatch(TAG_K_COUNTSUM, 1);
    dispatch(TAG_K_ENDS, scan_groups);
@@ -483,6 +502,9 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
    *ms = now_ms() - t0;
    CHECK(vkResetFences(device, 1, &fence));
+   if (checks != 0)
+      memcpy(srt_gpu, bufs[B_SRT].mapped, (size_t)srt_gpu_words * 4);
+   srt_gpu = NULL;
 
    o->vtx = (const unsigned *)bufs[B_VTX].mapped;
    o->mod = (const unsigned *)bufs[B_MOD].mapped;
@@ -551,6 +573,26 @@ int tgt_model(const void *ta, const unsigned *table, unsigned trd, struct tgt_ou
    for (t = 0; t < nmod; t++)
       for (i = 0; i < 9; i++)
          m_mod[t * 9 + i] = tag_modtrig_word(t, i);
+
+   /* the prepass's checks (TAG_K_PREPASS), of the vertices as unpacked */
+   if (srt_model != NULL && srt_model_checks != 0 && table[TAG_T_PREP] != TAG_NONE)
+   {
+      const unsigned base = table[TAG_T_PREP];
+      for (k = 0; k < srt_model[base]; k++)
+      {
+         const unsigned *c = &srt_model[base + 1 + k * TAG_PC_WORDS];
+         unsigned any = 0;
+         for (v = c[TAG_PC_V]; v < c[TAG_PC_V] + c[TAG_PC_NV] && v < nv; v++)
+         {
+            const unsigned *w = &m_vtx[v * TAG_V_WORDS];
+            any |= tag_prepass_vertex(w[TAG_V_X], w[TAG_V_Y], w[TAG_V_Z], w[TAG_V_COL]);
+         }
+         if (any == 0)
+            for (t = c[TAG_PC_T]; t < c[TAG_PC_T] + c[TAG_PC_NT] && t * 3 + 2 < base; t++)
+               srt_model[t * 3 + 1] = srt_model[t * 3 + 2] = srt_model[t * 3];
+      }
+   }
+   srt_model = NULL;
 
    for (p = 0; p < nv; p++)
       if (vflag[p] & TAG_VF_EOS)

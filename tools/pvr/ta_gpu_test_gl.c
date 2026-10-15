@@ -55,7 +55,7 @@ static PFNGLDEBUGMESSAGECALLBACKPROC p_glDebugMessageCallback;
 static PFNGLENABLEPROC p_glEnable;
 
 static GLuint programs[TAG_KERNELS + 1];
-enum { G_TA, G_TAB, G_VTX, G_MOD, G_IDX, G_WORK, G_REC, G_CMD, G_FRM, G_TRD, G_TRP, G_COUNT };
+enum { G_TA, G_TAB, G_VTX, G_MOD, G_IDX, G_WORK, G_REC, G_CMD, G_FRM, G_TRD, G_TRP, G_SRT, G_COUNT };
 static GLuint gbuf[G_COUNT];
 static void *gmap[G_COUNT];
 
@@ -254,6 +254,8 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    gl_buffer(G_FRM, TAG_O_WORDS * 4);
    gl_buffer(G_TRD, (size_t)(sz->verts + sz->headers) * TAG_C_WORDS * 4);
    gl_buffer(G_TRP, (size_t)sz->list[2] * TAG_P_WORDS * 4);
+   /* (the sorted indices' room, as the renderers have it: six words a triangle a frame can have) */
+   gl_buffer(G_SRT, (size_t)sz->idx * 6 * 4);
    for (k = 0; k < G_COUNT; k++)
       p_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, TAG_GL_BINDING + k, gbuf[k]);
    p_glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, gbuf[G_FRM]);
@@ -289,9 +291,13 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    const unsigned scan_groups = (nv + TAG_SCAN_N - 1u) / TAG_SCAN_N;
    double t0;
 
+   const unsigned checks = srt_gpu != NULL ? srt_gpu_checks : 0;
+
    eglMakeCurrent(gl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, gl_ctx);
    memcpy(gmap[G_TA], ta, ta_bytes);
    memcpy(gmap[G_TAB], table, (size_t)table_words * 4);
+   if (checks != 0)
+      memcpy(gmap[G_SRT], srt_gpu, (size_t)srt_gpu_words * 4);
    t0 = now_ms();
    /* what is not written this frame is left from the one before, as it
     * would be in the renderer */
@@ -302,6 +308,8 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    if (trd != 0)
       gl_clear(G_TRD, 0, (size_t)trd * TAG_C_WORDS * 4, 0);
    gl_dispatch(TAG_K_UNPACK, (nv + nmod + 63u) / 64u);
+   if (checks != 0)
+      gl_dispatch(TAG_K_PREPASS, checks < 65535u ? checks : 65535u);
    gl_dispatch(TAG_K_COUNT, scan_groups);
    gl_dispatch(TAG_K_COUNTSUM, 1);
    gl_dispatch(TAG_K_ENDS, scan_groups);
@@ -324,6 +332,9 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    p_glFinish();
    *ms = now_ms() - t0;
    eglMakeCurrent(gl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+   if (checks != 0)
+      memcpy(srt_gpu, gmap[G_SRT], (size_t)srt_gpu_words * 4);
+   srt_gpu = NULL;
 
    o->vtx = (const unsigned *)gmap[G_VTX];
    o->mod = (const unsigned *)gmap[G_MOD];

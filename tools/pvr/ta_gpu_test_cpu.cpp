@@ -53,6 +53,11 @@ static struct
 	// the translucent triangles sorted from the frame's depths (TA_GPU_SORT), against GenSorted()
 	u32 sort_frames, sort_same, sort_differ;
 	u64 sort_tris, sort_runs;
+	/* ...the depth prepass's checks (TAG_K_PREPASS): checks, the prepass's
+	 * triangles and those the GPU left out, and their areas in pixels of
+	 * the 640 x 480 screen */
+	u64 prep_checks, prep_tris, prep_out;
+	double prep_area, prep_area_out;
 	std::vector<double> sort_us, gensorted_us;
 	// the draw groups drawn again for shadows (TA_GPU_SHADOWS), against PolyOverlaps()
 	u32 shadow_frames, shadow_same, shadow_differ;
@@ -118,6 +123,10 @@ static void report(void)
 			st.sort_frames, st.sort_same, st.sort_differ, st.sort_frames ? (double)st.sort_tris / st.sort_frames : 0.0,
 			st.sort_frames ? (double)st.sort_runs / st.sort_frames : 0.0,
 			mean(st.sort_us), pct(st.sort_us, 0.99), pct(st.sort_us, 1.0), mean(st.gensorted_us), pct(st.gensorted_us, 0.99), pct(st.gensorted_us, 1.0));
+	printf("ta_gpu_test: the depth prepass: %llu checks, %llu triangles (%.0f pixels), %llu of them left out by the GPU (%.0f pixels), "
+			"per sorted frame %.0f pixels of %.0f\n",
+			(unsigned long long)st.prep_checks, (unsigned long long)st.prep_tris, st.prep_area, (unsigned long long)st.prep_out, st.prep_area_out,
+			st.sort_frames ? st.prep_area_out / st.sort_frames : 0.0, st.sort_frames ? st.prep_area / st.sort_frames : 0.0);
 	printf("ta_gpu_test: shadows the GPU decides: %u frames, %u the same as the parse's, %u different; %llu groups named, %llu drawn again\n",
 			st.shadow_frames, st.shadow_same, st.shadow_differ, (unsigned long long)st.shadow_groups, (unsigned long long)st.shadow_drawn);
 	printf("ta_gpu_test: validation errors: %d\n", tgt_validation_errors());
@@ -524,21 +533,10 @@ static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
 	ref.pidx.clear();
 	ref.prun_pass.clear();
 	*us = 0;
-	/* GenPrepass() leaves out a polygon none of whose vertices has an alpha
-	 * of 255 where its alpha is theirs (PrepassVerticesOpaque()): it can
-	 * have no pixel at alpha 1, and the prepass would keep none of them.
-	 * The header pass has not got the vertices, so it draws such a polygon
-	 * and the prepass's shader discards all of it: the depth is the same.
-	 * GenPrepass() is given every vertex at 255 to draw what it draws. */
-	static std::vector<u8> alpha;
-	Vertex *const vtx = ctx->rend.verts.head();
-	const int nv = ctx->rend.verts.used();
-	alpha.resize(nv);
-	for (int v = 0; v < nv; v++)
-	{
-		alpha[v] = vtx[v].col[3];
-		vtx[v].col[3] = 255;
-	}
+	/* (GenPrepass() leaves out a polygon none of whose vertices has an
+	 * alpha of 255 where its alpha is theirs: PrepassVerticesOpaque(). The
+	 * header pass has not got the vertices; the GPU leaves such a strip
+	 * out, TAG_K_PREPASS) */
 	for (int p = 0; p < rc.render_passes.used(); p++)
 	{
 		const RenderPass &cur = rc.render_passes.head()[p];
@@ -574,8 +572,6 @@ static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
 		}
 		prev = cur;
 	}
-	for (int v = 0; v < nv; v++)
-		vtx[v].col[3] = alpha[v];
 	/* (the prepass's indices go after all the sorted ones) */
 	for (SortTrigDrawParam &q : ref.pruns)
 		q.first += (u32)ref.idx.size();
@@ -591,8 +587,25 @@ static void prepass_tris(const std::vector<u32> &idx, u32 first, u32 count, std:
 {
 	tris.clear();
 	for (u32 i = first; i + 3 <= first + count && i + 3 <= idx.size(); i += 3)
-		tris.push_back(std::make_pair(((u64)idx[i] << 32) | idx[i + 1], idx[i + 2]));
+		// (one the GPU left out, TAG_K_PREPASS, is a point: it draws nothing)
+		if (idx[i] != idx[i + 1] || idx[i] != idx[i + 2])
+			tris.push_back(std::make_pair(((u64)idx[i] << 32) | idx[i + 1], idx[i + 2]));
 	std::sort(tris.begin(), tris.end());
+}
+
+// a triangle's area in pixels of the 640 x 480 screen, from the device's vertices
+static double tri_area(const unsigned *vtx, u32 a, u32 b, u32 c)
+{
+	// (what is off the screen does not count)
+	auto f = [vtx](u32 v, u32 w) {
+		float x;
+		memcpy(&x, &vtx[v * TAG_V_WORDS + w], 4);
+		const double most = w == TAG_V_X ? 640.0 : 480.0;
+		return std::isfinite(x) ? std::min(std::max((double)x, 0.0), most) : 0.0;
+	};
+	const double ax = f(a, TAG_V_X), ay = f(a, TAG_V_Y);
+	const double s = (f(b, TAG_V_X) - ax) * (f(c, TAG_V_Y) - ay) - (f(c, TAG_V_X) - ax) * (f(b, TAG_V_Y) - ay);
+	return std::isfinite(s) ? std::fabs(s) / 2 : 0.0;
 }
 
 /* The header pass's sort (TA_GPU_SORT) against GenSorted()'s: the same
@@ -600,18 +613,71 @@ static void prepass_tris(const std::vector<u32> &idx, u32 first, u32 count, std:
  * pass's depth prepass against GenPrepass()'s: the same draws, drawn the
  * same way with the same triangles, in any order (GenPrepass() orders its
  * groups by texture first, which the header pass has not got) */
-static const char *compare_sorted(const SortRef &ref, const TaGpuFrame &gf, char *why, size_t room)
+static const char *compare_sorted(TA_context *ctx, const SortRef &ref, const TaGpuFrame &gf, char *why, size_t room)
 {
-	static std::vector<u32> idx;
-	idx.assign(ta_gpu_sorted_indices(), 0);
+	static std::vector<u32> idx, cpu, model;
+	idx.assign(ta_gpu_sorted_words(), 0);
 	if (!idx.empty())
 		ta_gpu_sorted_write(idx.data());
-	if (idx.size() != ref.idx.size())
+	/* the prepass's checks (TAG_K_PREPASS), on the device and by the model,
+	 * the same; the device's indices from here on */
+	const u32 checks = ta_gpu_prepass_checks();
+	if (checks != 0)
 	{
-		snprintf(why, room, "sorted indices: %zu, GenSorted() and GenPrepass() %zu", idx.size(), ref.idx.size());
-		return why;
+		if (table[TAG_T_PREP] != ta_gpu_sorted_indices())
+		{
+			snprintf(why, room, "the prepass's checks at %u, the sorted indices end at %u", table[TAG_T_PREP], ta_gpu_sorted_indices());
+			return why;
+		}
+		cpu = idx;
+		model = idx;
+		tgt_out g, m;
+		double ms;
+		tgt_sorted(model.data(), (unsigned)model.size(), checks);
+		tgt_model(ctx->tad.thd_root, table, gf.trd, &m);
+		tgt_sorted(idx.data(), (unsigned)idx.size(), checks);
+		tgt_gpu(ctx->tad.thd_root, (u32)(ctx->tad.End() - ctx->tad.thd_root), table, gf.table_words, gf.trd, &g, &ms);
+		if (idx != model)
+		{
+			snprintf(why, room, "the prepass's checks: the GPU and the model differ");
+			return why;
+		}
+		st.prep_checks += checks;
+		// (the prepass's triangles: its draws')
+		for (u32 p = 0; p < gf.passes; p++)
+		{
+			u32 n;
+			const SortTrigDrawParam *r = ta_gpu_prepass(p, &n);
+			for (u32 j = 0; j < n; j++)
+				for (u32 i = r[j].first; i + 3 <= r[j].first + r[j].count && i + 3 <= ta_gpu_sorted_indices(); i += 3)
+				{
+					const double a = tri_area(g.vtx, cpu[i], cpu[i + 1], cpu[i + 2]);
+					st.prep_tris++;
+					st.prep_area += a;
+					if (idx[i] == idx[i + 1] && idx[i] == idx[i + 2])
+					{
+						st.prep_out++;
+						st.prep_area_out += a;
+					}
+				}
+		}
+	}
+	idx.resize(ta_gpu_sorted_indices());
+	// (the sorted ones; the prepass's, which the GPU makes fewer of, are compared by their draws below)
+	size_t gpu_pre = 0;
+	for (u32 p = 0; p < gf.passes; p++)
+	{
+		u32 n;
+		const SortTrigDrawParam *r = ta_gpu_prepass(p, &n);
+		for (u32 j = 0; j < n; j++)
+			gpu_pre += r[j].count;
 	}
 	const size_t sorted = ref.idx.size() - ref.pidx.size();
+	if (gpu_pre > idx.size() || idx.size() - gpu_pre != sorted)
+	{
+		snprintf(why, room, "sorted indices: %zu, GenSorted() %zu", idx.size() - std::min(gpu_pre, idx.size()), sorted);
+		return why;
+	}
 	for (size_t i = 0; i < sorted; i++)
 		if (idx[i] != ref.idx[i])
 		{
@@ -659,10 +725,16 @@ static const char *compare_sorted(const SortRef &ref, const TaGpuFrame &gf, char
 			}
 			span.push_back(std::make_pair(r[j].first, r[j].count));
 			prepass_tris(idx, r[j].first, r[j].count, a);
+			// (a draw all of whose triangles the GPU left out is one GenPrepass() has not got)
+			if (a.empty())
+			{
+				gpu_draws--;
+				continue;
+			}
 			bool found = false;
 			for (size_t q = 0; q < ref.pruns.size() && !found; q++)
 			{
-				if (used[q] || ref.prun_pass[q] != p || ref.pruns[q].count != r[j].count || !same_draw_state(*r[j].ppid, ref.ppp[q]))
+				if (used[q] || ref.prun_pass[q] != p || ref.pruns[q].count != a.size() * 3 || !same_draw_state(*r[j].ppid, ref.ppp[q]))
 					continue;
 				prepass_tris(ref.idx, ref.pruns[q].first, ref.pruns[q].count, b);
 				if (a == b)
@@ -915,7 +987,7 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 			st.sort_runs += ref.runs.size();
 			st.sort_us.push_back(ta_gpu_sorted_ns() / 1e3);
 			st.gensorted_us.push_back(gensorted_us);
-			d = compare_sorted(ref, gf, why, room);
+			d = compare_sorted(ctx, ref, gf, why, room);
 			if (d == NULL)
 				st.sort_same++;
 			else

@@ -51,17 +51,18 @@ ${CC:-cc} -std=c89 -pedantic -Wall -Wextra -Werror -Wno-unused-function -Icore/r
 ${CXX:-c++} -x c++ -std=c++11 -Wall -Wextra -Werror -Wno-unused-function -Icore/rend -Icore/libretro-common/include -c -o "$WORK/cxx.o" "$WORK/c89.c"
 
 # the kernels, as the renderer has them (tools/rend/kernels_spv.sh's way: rend/ta_gpu_spv.inc)
+KERNELS=$(awk '$1 == "#define" && $2 == "TAG_KERNELS" { print $3 }' core/rend/ta_gpu.h)
 k=1
-while [ $k -le 14 ]; do
+while [ $k -le $KERNELS ]; do
    { echo "#version 450"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_KERNEL $k"; cat core/rend/ta_gpu.h; } > "$WORK/k$k.comp"
    glslangValidator -V -g0 --target-env vulkan1.0 -o "$WORK/k$k.spv" "$WORK/k$k.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
    k=$((k + 1))
 done
-echo "ta_gpu: the C89 and C++ header and the 14 kernels compile"
+echo "ta_gpu: the C89 and C++ header and the $KERNELS kernels compile"
 if [ -n "$TAG_GL" ] && [ "$TAG_GL" != 0 ]; then
    # ...for OpenGL as well, as SPIR-V and as the text the renderers compile (tools/rend/kernels_spv.sh's)
    k=1
-   while [ $k -le 14 ]; do
+   while [ $k -le $KERNELS ]; do
       { echo "#version 430"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_SHADER_GL"; echo "#define TAG_KERNEL $k"; cat core/rend/ta_gpu.h; } > "$WORK/k$k.gl.comp"
       glslangValidator -G -g0 --target-env opengl -S comp -o "$WORK/k$k.gl.spv" "$WORK/k$k.gl.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
       k=$((k + 1))

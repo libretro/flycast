@@ -495,6 +495,12 @@ const SortTrigDrawParam *ta_gpu_sorted(u32 pass, u32 *count);
 const SortTrigDrawParam *ta_gpu_prepass(u32 pass, u32 *count);
 // ...the indices of all of them (GenSorted()'s @vidx_sort, pass after pass, then the prepasses')
 u32 ta_gpu_sorted_indices(void);
+/* ...and the prepass's checks after them (TAG_K_PREPASS, at TAG_T_PREP):
+ * how many, for a dispatch of a workgroup each, which the renderer makes
+ * after the decode's TAG_K_UNPACK where there are any; all of it written
+ * to @dst, ta_gpu_sorted_words() words, before that dispatch is made */
+u32 ta_gpu_prepass_checks(void);
+u32 ta_gpu_sorted_words(void);
 void ta_gpu_sorted_write(u32 *dst);
 // ...and what the last sort took, in nanoseconds (0 for none)
 u64 ta_gpu_sorted_ns(void);

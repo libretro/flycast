@@ -121,6 +121,16 @@ static inline bool PrepassCandidate(const PolyParam *pp, bool lastPass)
 	return true;
 }
 
+/* Whether a polygon's alpha is its vertices' (or theirs times the
+ * texture's): then it can reach 1 only where a vertex has 255. Not with
+ * fog in the alpha, or a clamp that may raise it. (A destination factor of
+ * zero needs no alpha.) */
+static inline bool PrepassAlphaFromVertices(const PolyParam *pp)
+{
+	return !(pp->tsp.DstInstr == 0 || pp->tsp.FogCtrl == 3 || pp->tsp.ColorClamp || !pp->tsp.UseAlpha
+			|| (pp->pcw.Texture && pp->tsp.ShadInstr < 2));
+}
+
 static inline PrepassKey PrepassMakeKey(const PolyParam *pp, u64 texid)
 {
 	TSP tsp = pp->tsp;

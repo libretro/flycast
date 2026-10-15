@@ -395,9 +395,7 @@ void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, 
  * theirs times the texture's) and no vertex has 255 */
 static bool PrepassVerticesOpaque(const PolyParam *pp, const Vertex *vtx_base, const u32 *idx_base)
 {
-	// (fog in the alpha, or a clamp that may raise it, and the vertices say nothing)
-	if (pp->tsp.DstInstr == 0 || pp->tsp.FogCtrl == 3 || pp->tsp.ColorClamp || !pp->tsp.UseAlpha
-			|| (pp->pcw.Texture && pp->tsp.ShadInstr < 2))
+	if (!PrepassAlphaFromVertices(pp))
 		return true;
 	const u32 *idx = idx_base + pp->first;
 	for (u32 i = 0; i < pp->count; i++)

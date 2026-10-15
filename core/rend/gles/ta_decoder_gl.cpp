@@ -481,7 +481,8 @@ bool GlTaDecoder::Init()
 	glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, &bindings);
 	glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &align);
 	glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &blockSize);
-	if (blocks < B_COUNT + 1 || bindings < TAG_GL_BINDING + B_COUNT + 1)
+	// (and the prepass's kernel's sorted indices after them)
+	if (blocks < B_COUNT + 1 || bindings < TAG_GL_BINDING + B_COUNT + 2)
 		return no("not enough storage buffers for the kernels");
 	if (align <= 0 || align > 4096)
 		align = 256;
@@ -568,8 +569,10 @@ bool GlTaDecoder::Init()
 		r->instances = make_buffer((GLsizeiptr)numbers.size() * 4, 0, nullptr, numbers.data());
 	}
 	/* The sorted indices: three a triangle, for as many triangles as a frame
-	 * can have indices, and as many again for the depth prepass, which the
-	 * CPU writes once and the GPU reads once */
+	 * can have indices, and as many again for the depth prepass, and the
+	 * prepass's checks (TAG_T_PREP), which the CPU writes once and the GPU
+	 * reads once - but for the prepass's triangles the prepass's kernel
+	 * makes nothing of (TAG_K_PREPASS) */
 	if (sortWanted)
 	{
 		const GLintptr slot = ((GLintptr)sz.idx * 2 * 3 * 4 + 255) & ~(GLintptr)255;
@@ -782,6 +785,12 @@ void GlTaDecoder::Record(TA_context *ctx)
 	if (r.queries[0] != 0)
 		gx.queryCounter(r.queries[2 * index], GL_TIMESTAMP);
 
+	/* The sorted translucent indices (TA_GPU_SORT), and the prepass's checks
+	 * after them, are the CPU's: written now, before the kernel that reads
+	 * them is given (the mapping is coherent) */
+	const u32 checks = draw.sortedMap != nullptr && ta_gpu_sorted_indices() != 0 ? ta_gpu_prepass_checks() : 0;
+	WriteSorted();
+
 	// what is not written this frame is left from the one before: these are
 	const GLuint frm = r.buffers[B_FRM];
 	clear_words(frm, 0, TAG_O_WORDS * 4, 0);
@@ -797,6 +806,9 @@ void GlTaDecoder::Record(TA_context *ctx)
 			(GLintptr)index * r.tableWords * 4, (GLsizeiptr)r.tableWords * 4);
 	for (int b = B_VTX; b < B_COUNT; b++)
 		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, TAG_GL_BINDING + 1 + b, r.buffers[b]);
+	// (the prepass's kernel's: after the others)
+	if (checks != 0)
+		gx.bindBufferRange(GL_SHADER_STORAGE_BUFFER, TAG_GL_BINDING + 1 + B_COUNT, draw.sorted, draw.sortedOffset, (GLsizeiptr)r.sortSlot);
 	glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, frm);
 
 	const GLbitfield step = GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT;
@@ -813,6 +825,9 @@ void GlTaDecoder::Record(TA_context *ctx)
 	};
 	const u32 scanGroups = (frame.verts + TAG_SCAN_N - 1) / TAG_SCAN_N;
 	dispatch(TAG_K_UNPACK, (frame.verts + frame.modtrig + 63) / 64);
+	// (the vertices as unpacked, before TAG_K_PROVOKE moves colours)
+	if (checks != 0)
+		dispatch(TAG_K_PREPASS, std::min(checks, 65535u));
 	dispatch(TAG_K_COUNT, scanGroups);
 	dispatch(TAG_K_COUNTSUM, 1);
 	dispatch(TAG_K_ENDS, scanGroups);

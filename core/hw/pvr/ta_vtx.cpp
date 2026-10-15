@@ -3631,6 +3631,18 @@ static struct TaGpuSortState
 	u32 *hcount;			// a header's triangles, then where they go (all 0 between frames)
 	u32 *htouched;
 	std::pair<PrepassKey, u32> *hkey;
+	/* The prepass's checks (TAG_K_PREPASS): each strip of the sorted
+	 * passes, as TaGpuSortStrip made it - its first vertex, its vertices
+	 * and its first triangle - (sroom of them; past that, no checks this
+	 * frame), each triangle's place among the prepass's, and the checks:
+	 * the strips in the prepass whose alpha is their vertices', for the GPU
+	 * to look at them (TAG_PC_WORDS each) */
+	u32 *strip;
+	u32 strips, sroom;
+	bool strips_full;
+	u32 *tpos;
+	u32 *check;
+	u32 checks;
 } gsort;
 
 bool ta_gpu_sort_reserve(bool on)
@@ -3652,6 +3664,9 @@ bool ta_gpu_sort_reserve(bool on)
 	free(g.hcount);
 	free(g.htouched);
 	free(g.hkey);
+	free(g.strip);
+	free(g.tpos);
+	free(g.check);
 	memset(&g, 0, sizeof(g));
 	if (!on)
 		return true;
@@ -3668,8 +3683,14 @@ bool ta_gpu_sort_reserve(bool on)
 	g.hcount = (u32 *)calloc(hroom, sizeof(u32));
 	g.htouched = (u32 *)malloc((size_t)hroom * sizeof(u32));
 	g.hkey = (std::pair<PrepassKey, u32> *)malloc((size_t)hroom * sizeof(std::pair<PrepassKey, u32>));
+	// (a translucent strip is a polygon parameter of its own: as many as the list has room for)
+	const u32 sroom = sz.list[2];
+	g.strip = (u32 *)malloc((size_t)sroom * 3 * sizeof(u32));
+	g.tpos = (u32 *)malloc((size_t)room * sizeof(u32));
+	g.check = (u32 *)malloc((size_t)sroom * TAG_PC_WORDS * sizeof(u32));
 	if (g.tri == NULL || g.keys[0] == NULL || g.keys[1] == NULL || g.run == NULL
-			|| g.porder == NULL || g.prun == NULL || g.hcount == NULL || g.htouched == NULL || g.hkey == NULL)
+			|| g.porder == NULL || g.prun == NULL || g.hcount == NULL || g.htouched == NULL || g.hkey == NULL
+			|| g.strip == NULL || g.tpos == NULL || g.check == NULL)
 	{
 		ta_gpu_sort_reserve(false);
 		WARN_LOG(PVR, "TA processing: no memory for sorting translucent triangles");
@@ -3684,6 +3705,10 @@ bool ta_gpu_sort_reserve(bool on)
 	memset(g.prun, 0, (size_t)hroom * sizeof(SortTrigDrawParam));
 	memset(g.htouched, 0, (size_t)hroom * sizeof(u32));
 	memset((void *)g.hkey, 0, (size_t)hroom * sizeof(std::pair<PrepassKey, u32>));
+	memset(g.strip, 0, (size_t)sroom * 3 * sizeof(u32));
+	memset(g.tpos, 0, (size_t)room * sizeof(u32));
+	memset(g.check, 0, (size_t)sroom * TAG_PC_WORDS * sizeof(u32));
+	g.sroom = sroom;
 	g.hroom = hroom;
 	g.room = room;
 	return true;
@@ -3716,6 +3741,16 @@ u32 ta_gpu_sorted_indices(void)
 	return (gsort.tris + gsort.ptris) * 3;
 }
 
+u32 ta_gpu_prepass_checks(void)
+{
+	return gsort.checks;
+}
+
+u32 ta_gpu_sorted_words(void)
+{
+	return ta_gpu_sorted_indices() + (gsort.checks != 0 ? 1 + gsort.checks * TAG_PC_WORDS : 0);
+}
+
 void ta_gpu_sorted_write(u32 *dst)
 {
 	const TaGpuSortState &g = gsort;
@@ -3736,6 +3771,12 @@ void ta_gpu_sorted_write(u32 *dst)
 		dst[0] = t[0];
 		dst[1] = t[1];
 		dst[2] = t[2];
+	}
+	// (the prepass's checks: TAG_T_PREP)
+	if (g.checks != 0)
+	{
+		dst[0] = g.checks;
+		memcpy(dst + 1, g.check, (size_t)g.checks * TAG_PC_WORDS * sizeof(u32));
 	}
 }
 
@@ -3770,6 +3811,25 @@ struct TaGpuSortStrip
 		dupe = false;
 		link = false;
 		i = 0;
+	}
+
+	// (the prepass's checks) the strip's vertex @place: its first makes its record
+	void note(u32 place)
+	{
+		if (i == 0)
+		{
+			if (g.strips == g.sroom)
+			{
+				g.strips_full = true;
+				return;
+			}
+			u32 *s = &g.strip[g.strips++ * 3];
+			s[0] = place;
+			s[1] = 0;
+			s[2] = g.tris;
+		}
+		if (!g.strips_full)
+			g.strip[(g.strips - 1) * 3 + 1] = place - g.strip[(g.strips - 1) * 3] + 1;
 	}
 
 	void put(u32 place, u32 key)
@@ -3821,6 +3881,7 @@ struct TaGpuSortStrip
 	// the strip's next vertex, number @place (make_index()'s loop, its look ahead for the next kept vertex turned round)
 	void vertex(u32 place, u32 x, u32 y, u32 z)
 	{
+		note(place);
 		if (tag_inf(x, y, z) != 0)
 			link = true;
 		else
@@ -3972,11 +4033,59 @@ static u32 ta_gpu_sort_keys(u64 *k[2], u32 first, u32 n)
 	return at;
 }
 
+/* The prepass's checks (TAG_K_PREPASS): each strip with triangles in the
+ * prepass whose alpha is its vertices' (PrepassAlphaFromVertices()), for
+ * the GPU to look at the vertices of and to leave out if none has an alpha
+ * of 255, as GenPrepass() does. A strip's triangles there are one after
+ * the other (its header's are, in the order they were made). */
+static void ta_gpu_prepass_make_checks(const TaWalkFrame &f)
+{
+	TaGpuSortState &g = gsort;
+	g.checks = 0;
+	if (g.strips_full)
+		return;
+	for (u32 k = 0; k < g.strips; k++)
+	{
+		const u32 *s = &g.strip[k * 3];
+		const u32 tend = k + 1 < g.strips ? g.strip[(k + 1) * 3 + 2] : g.tris;
+		u32 first = TAG_NONE, n = 0;
+		for (u32 t = s[2]; t < tend; t++)
+		{
+			const u32 *d = &g.tri[t * 4];
+			if (d[0] == d[1] || d[1] == d[2] || d[0] == d[2])
+				continue;
+			const u32 at = g.tpos[t];
+			if (at == TAG_NONE)
+				break;	// (not in the prepass: none of the strip's is)
+			if (first == TAG_NONE)
+				first = at;
+			else if (at != first + n)
+			{
+				first = TAG_NONE;	// (cannot be: no check, it is drawn)
+				break;
+			}
+			n++;
+		}
+		if (first == TAG_NONE || n == 0 || !PrepassAlphaFromVertices(&f.header[g.tri[s[2] * 4 + 3]].pp))
+			continue;
+		u32 *c = &g.check[g.checks++ * TAG_PC_WORDS];
+		c[TAG_PC_V] = s[0];
+		c[TAG_PC_NV] = s[1];
+		c[TAG_PC_T] = g.tris + first;
+		c[TAG_PC_NT] = n;
+	}
+	/* (in the sorted indices' room, which is six words a triangle a frame
+	 * can have: three a triangle sorted and drawn in the prepass take all
+	 * of it only where no strip is - see ta_gpu_sort_reserve()) */
+	if (ta_gpu_sorted_words() > g.room * 6)
+		g.checks = 0;
+}
+
 /* The depth prepass of each sorted pass, as GenPrepass() makes it but for
- * the vertices, which are the GPU's (no vertex alpha is looked at: a
- * polygon whose vertices cannot make alpha 1 is drawn, and none of its
- * pixels is kept). The triangles are the sorted ones, before they were
- * sorted. */
+ * the vertices, which are the GPU's: the polygons whose alpha is their
+ * vertices' are drawn, and the GPU makes nothing of those of them none of
+ * whose vertices has an alpha of 255 (ta_gpu_prepass_checks()). The
+ * triangles are the sorted ones, before they were sorted. */
 static void ta_gpu_prepass_frame(const TaWalkFrame &f)
 {
 	TaGpuSortState &g = gsort;
@@ -3984,6 +4093,8 @@ static void ta_gpu_prepass_frame(const TaWalkFrame &f)
 	u32 npr = 0;
 	g.ptris = 0;
 	memset(g.pass_pruns, 0, sizeof(g.pass_pruns));
+	// (no triangle in the prepass yet: TAG_NONE)
+	memset(g.tpos, 0xFF, (size_t)g.tris * sizeof(u32));
 	if (f.headers > g.hroom)
 		return;
 	for (u32 p = 0; p < f.passes && p < TAG_MAX_PASS; p++)
@@ -4045,7 +4156,10 @@ static void ta_gpu_prepass_frame(const TaWalkFrame &f)
 				continue;
 			u32 &o = g.hcount[d[3]];
 			if (o != none)
+			{
+				g.tpos[t] = o;
 				g.porder[o++] = t;
+			}
 		}
 		for (u32 k = 0; k < nt; k++)
 			g.hcount[g.htouched[k]] = 0;
@@ -4066,6 +4180,9 @@ static bool ta_gpu_sort_frame(TaWalkFrame &f, const u8 *root)
 
 	g.tris = 0;
 	g.ptris = 0;
+	g.strips = 0;
+	g.strips_full = false;
+	g.checks = 0;
 	memset(g.pass_pruns, 0, sizeof(g.pass_pruns));
 	memset(g.pass_first, 0, sizeof(g.pass_first));
 	memset(g.pass_count, 0, sizeof(g.pass_count));
@@ -4113,6 +4230,7 @@ static bool ta_gpu_sort_frame(TaWalkFrame &f, const u8 *root)
 		g.pass_runs[p] = nrun - g.pass_run[p];
 	}
 	ta_gpu_prepass_frame(f);
+	ta_gpu_prepass_make_checks(f);
 	g.ns = (u64)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
 	return true;
 }
@@ -4544,6 +4662,7 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	t[TAG_T_OFF_SHD] = off_shd;
 	t[TAG_T_NSHD] = 0;
 	t[TAG_T_SHD_CMD] = sz.headers;
+	t[TAG_T_PREP] = (flags & TA_GPU_SORT) && gsort.checks != 0 ? ta_gpu_sorted_indices() : TAG_NONE;
 
 	out->table_words = words;
 	out->verts = f.verts;

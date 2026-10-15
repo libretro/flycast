@@ -493,8 +493,8 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 {
 	/* (a frame decoded on the GPU has its sorted passes sorted already, and
-	 * their indices go straight to the decoder's room for them: see
-	 * TA_GPU_SORT) */
+	 * their indices went straight to the decoder's room for them when the
+	 * decode was recorded: see TA_GPU_SORT) */
 	if (!pvrrc.gpu)
 		SortTriangles();
 	else
@@ -502,8 +502,6 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		for (std::vector<u32>& idx : sortedIndexes)
 			idx.clear();
 		sortedIndexCount = 0;
-		if (ta_gpu_sorted_indices() != 0)
-			ta_gpu_sorted_write(gpuDraw->sortedMap);
 	}
 	currentScissor = vk::Rect2D();
 

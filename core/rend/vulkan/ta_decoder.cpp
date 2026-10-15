@@ -18,8 +18,9 @@ static_assert(sizeof(ta_gpu_spv) / sizeof(ta_gpu_spv[0]) == TAG_KERNELS + 1, "a 
 // (the drawers draw from the records and commands: BaseDrawer::DrawIndices())
 static_assert(TAG_C_WORDS * 4 == sizeof(VkDrawIndexedIndirectCommand), "a record is an indexed indirect draw");
 
-// The buffers, in the kernels' bindings' order (set 1)
-enum { B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_COUNT };
+/* The buffers, in the kernels' bindings' order (set 1); then the frame's
+ * piece of the sorted indices (B_SRT: the prepass's kernel's) */
+enum { B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_COUNT, B_SRT = B_COUNT };
 
 struct TaDecoder::Resources
 {
@@ -137,13 +138,16 @@ bool TaDecoder::Init(CommandPool& pool)
 		r->buffers[B_TRP] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4, storage, local));
 		/* The sorted indices: three a triangle, for as many triangles as a
 		 * frame can have indices, and as many again for the depth prepass
-		 * (rend/sorter.h), whose triangles are some of those. In
-		 * host-visible memory, which the CPU writes them to once (they are
-		 * its sort's) and the GPU reads once. */
+		 * (rend/sorter.h), whose triangles are some of those, and its
+		 * checks after them (TAG_T_PREP). In host-visible memory, which the
+		 * CPU writes them to once (they are its sort's) and the GPU reads
+		 * once - but for the prepass's triangles the prepass's kernel makes
+		 * nothing of (TAG_K_PREPASS). */
 		if (sortWanted)
 		{
 			const vk::DeviceSize slot = ((vk::DeviceSize)sz.idx * 2 * 3 * 4 + 255) & ~(vk::DeviceSize)255;
-			r->sorted = std::unique_ptr<BufferData>(new BufferData(slot * frames, vk::BufferUsageFlagBits::eIndexBuffer));
+			r->sorted = std::unique_ptr<BufferData>(new BufferData(slot * frames,
+					vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eStorageBuffer));
 			r->sortedMap = (u8 *)r->sorted->MapMemory();
 			r->sortSlot = slot;
 		}
@@ -160,11 +164,11 @@ bool TaDecoder::Init(CommandPool& pool)
 	r->layout.words[11] = sz.list[0] * TAG_C_WORDS;
 	r->layout.words[12] = (sz.list[0] + sz.list[1]) * TAG_C_WORDS;
 
-	vk::DescriptorSetLayoutBinding bindings[B_COUNT];
-	for (int i = 0; i < B_COUNT; i++)
+	vk::DescriptorSetLayoutBinding bindings[B_COUNT + 1];
+	for (int i = 0; i <= B_COUNT; i++)
 		bindings[i] = vk::DescriptorSetLayoutBinding(i, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute);
 	r->setLayouts[0] = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), 1, bindings));
-	r->setLayouts[1] = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), B_COUNT, bindings));
+	r->setLayouts[1] = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), B_COUNT + 1, bindings));
 	const vk::DescriptorSetLayout layouts[] = { *r->setLayouts[0], *r->setLayouts[1] };
 	r->pipelineLayout = device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), 2, layouts));
 
@@ -178,14 +182,14 @@ bool TaDecoder::Init(CommandPool& pool)
 				vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *r->pipelineLayout));
 	}
 
-	const vk::DescriptorPoolSize poolSize(vk::DescriptorType::eStorageBuffer, r->slices + B_COUNT * frames);
+	const vk::DescriptorPoolSize poolSize(vk::DescriptorType::eStorageBuffer, r->slices + (B_COUNT + 1) * frames);
 	r->descriptorPool = device.createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlags(), r->slices + frames, 1, &poolSize));
 	std::vector<vk::DescriptorSetLayout> sliceLayouts(r->slices, layouts[0]), tableLayouts(frames, layouts[1]);
 	r->sliceSets = device.allocateDescriptorSets(vk::DescriptorSetAllocateInfo(*r->descriptorPool, r->slices, sliceLayouts.data()));
 	r->tableSets = device.allocateDescriptorSets(vk::DescriptorSetAllocateInfo(*r->descriptorPool, frames, tableLayouts.data()));
 	std::vector<vk::DescriptorBufferInfo> infos;
 	std::vector<vk::WriteDescriptorSet> writes;
-	infos.reserve(r->slices + B_COUNT * frames);
+	infos.reserve(r->slices + (B_COUNT + 1) * frames);
 	for (u32 i = 0; i < r->slices; i++)
 	{
 		infos.push_back(vk::DescriptorBufferInfo(*r->pool->buffer, (vk::DeviceSize)i * r->slice, r->slice));
@@ -200,6 +204,15 @@ bool TaDecoder::Init(CommandPool& pool)
 				infos.push_back(vk::DescriptorBufferInfo(*r->buffers[b]->buffer, 0, VK_WHOLE_SIZE));
 			writes.push_back(vk::WriteDescriptorSet(r->tableSets[f], b, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &infos.back()));
 		}
+	// (the frame's sorted indices; without them, which no kernel then reads, the frame buffer stands in)
+	for (int f = 0; f < frames; f++)
+	{
+		if (r->sortSlot != 0)
+			infos.push_back(vk::DescriptorBufferInfo(*r->sorted->buffer, (vk::DeviceSize)f * r->sortSlot, r->sortSlot));
+		else
+			infos.push_back(vk::DescriptorBufferInfo(*r->buffers[B_FRM]->buffer, 0, VK_WHOLE_SIZE));
+		writes.push_back(vk::WriteDescriptorSet(r->tableSets[f], B_SRT, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &infos.back()));
+	}
 	device.updateDescriptorSets(writes, nullptr);
 
 	// GPU time, read when a frame is known to be done: never waited for
@@ -429,6 +442,13 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	const vk::MemoryBarrier filled(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, filled, nullptr, nullptr);
 
+	/* The sorted translucent indices (TA_GPU_SORT), and the prepass's checks
+	 * after them, are the CPU's: written now, before the kernel that reads
+	 * them is (the host's writes before the submit are the GPU's) */
+	const u32 checks = sortable && draw.sortedMap != nullptr && ta_gpu_sorted_indices() != 0 ? ta_gpu_prepass_checks() : 0;
+	if (sortable && draw.sortedMap != nullptr && ta_gpu_sorted_indices() != 0)
+		ta_gpu_sorted_write(draw.sortedMap);
+
 	const vk::DescriptorSet sets[] = { r.sliceSets[ctx->pool], r.tableSets[index] };
 	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *r.pipelineLayout, 0, 2, sets, 0, nullptr);
 	const vk::MemoryBarrier step(vk::AccessFlagBits::eShaderWrite,
@@ -447,6 +467,9 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	};
 	const u32 scanGroups = (frame.verts + TAG_SCAN_N - 1) / TAG_SCAN_N;
 	dispatch(TAG_K_UNPACK, (frame.verts + frame.modtrig + 63) / 64);
+	// (the vertices as unpacked, before TAG_K_PROVOKE moves colours)
+	if (checks != 0)
+		dispatch(TAG_K_PREPASS, std::min(checks, 65535u));
 	dispatch(TAG_K_COUNT, scanGroups);
 	dispatch(TAG_K_COUNTSUM, 1);
 	dispatch(TAG_K_ENDS, scanGroups);

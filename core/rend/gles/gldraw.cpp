@@ -776,10 +776,8 @@ void DrawStrips()
 {
 	SetupMainVBO(pvrrc.gpu);
 	/* (a frame decoded on the GPU has its sorted passes sorted already, and
-	 * their indices go straight to the decoder's room for them: see
-	 * TA_GPU_SORT) */
-	if (pvrrc.gpu)
-		glTaDecoder.WriteSorted();
+	 * their indices went straight to the decoder's room for them when the
+	 * decode was given: see TA_GPU_SORT) */
 	//Draw the strips !
 
 	//We use sampler 0
