@@ -166,8 +166,10 @@ void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 	else
 		SetScissor(cmdBuffer, baseScissor);
 
+	// (what the shader multiplies by when it is trilinear: pushed for every such polygon, 1 included)
+	const bool trilinear = poly.tsp.FilterMode > 1 && poly.pcw.Texture && listType != ListType_Punch_Through && poly.tcw.MipMapped == 1;
 	float trilinearAlpha = 1.f;
-	if (poly.tsp.FilterMode > 1 && poly.pcw.Texture && listType != ListType_Punch_Through && poly.tcw.MipMapped == 1)
+	if (trilinear)
 	{
 		trilinearAlpha = 0.25 * (poly.tsp.MipMapD & 0x3);
 		if (poly.tsp.FilterMode == 2)
@@ -184,25 +186,35 @@ void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 			palette_index = (float((poly.tcw.PalSelect >> 4) << 8) + 0.5f) / 1024.f;
 	}
 
-	if (tileClip == TileClipping::Inside || trilinearAlpha != 1.f || palette)
+	const PsoChoice pso = pipelineManager->GetPipeline(listType, sortTriangles, poly, shadowPass);
+	if (pso.pipeline == VK_NULL_HANDLE)
+		return;
+	// (the general pipeline is told the polygon's key too: pso.h)
+	if (tileClip == TileClipping::Inside || trilinear || palette || pso.general)
 	{
-		std::array<float, 6> pushConstants = {
+		struct {
+			float f[6];
+			s32 key;
+		} pushConstants = { {
 			(float)scissorRect.offset.x,
 			(float)scissorRect.offset.y,
 			(float)scissorRect.offset.x + (float)scissorRect.extent.width,
 			(float)scissorRect.offset.y + (float)scissorRect.extent.height,
 			trilinearAlpha,
 			palette_index
-		};
-		cmdBuffer.pushConstants<float>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
-		pushed = pushConstants;
+		}, (s32)(pso.key & ((1u << TRI_SC_BITS) - 1)) };
+		cmdBuffer.pushConstants(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0,
+				pso.general ? TRI_PUSH_KEY_OFFSET + 4 : TRI_PUSH_KEY_OFFSET, &pushConstants);
+		for (int i = 0; i < 6; i++)
+			pushed[i] = pushConstants.f[i];
 	}
 
 	if (poly.pcw.Texture)
 		GetCurrentDescSet().SetTexture(poly.texid, poly.tsp);
 
-	vk::Pipeline pipeline = pipelineManager->GetPipeline(listType, sortTriangles, poly, shadowPass);
-	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, vk::Pipeline(pso.pipeline));
+	if (pso.general)
+		pipelineManager->SetDynamicState(cmdBuffer, pso.key);
 	if (poly.pcw.Texture)
 		GetCurrentDescSet().BindPerPolyDescriptorSets(cmdBuffer, poly.texid, poly.tsp);
 

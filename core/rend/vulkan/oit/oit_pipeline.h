@@ -27,6 +27,7 @@
 #include "oit_buffer.h"
 #include "../texture.h"
 #include "../ssaa.h"
+#include "../pso.h"
 #include "hw/pvr/ta_ctx.h"
 
 class OITDescriptorSets
@@ -69,7 +70,9 @@ public:
 		int use_alpha1;
 		int ignore_tex_alpha0;
 		int ignore_tex_alpha1;
+		int key;	// the general pipelines' (pso_key.h): at OIT_PUSH_KEY_OFFSET
 	};
+	static_assert(sizeof(PushConstants) == OIT_PUSH_KEY_OFFSET + 4, "the shaders' push constants (shaders/oit.frag)");
 
 	void Init(SamplerManager* samplerManager, vk::PipelineLayout pipelineLayout, vk::DescriptorSetLayout perFrameLayout,
 			vk::DescriptorSetLayout perPolyLayout, vk::DescriptorSetLayout colorInputLayout)
@@ -109,6 +112,18 @@ public:
 			static vk::DescriptorImageInfo imageInfo;
 			imageInfo = { fogSampler, fogImageView, vk::ImageLayout::eShaderReadOnlyOptimal };
 			writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perFrameDescSet, 2, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr));
+			/* What an untextured polygon has as its textures: the general
+			 * pipelines read them only for a textured polygon, but have them
+			 * in their shader (pso.h) */
+			if (!noTextureDescSet)
+				noTextureDescSet = std::move(GetContext()->GetDevice().allocateDescriptorSetsUnique(
+						vk::DescriptorSetAllocateInfo(GetContext()->GetDescriptorPool(), 1, &perPolyLayout)).front());
+			if (noTextureView != fogImageView)
+			{
+				noTextureView = fogImageView;
+				writeDescriptorSets.push_back(vk::WriteDescriptorSet(*noTextureDescSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr));
+				writeDescriptorSets.push_back(vk::WriteDescriptorSet(*noTextureDescSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr));
+			}
 		}
 		if (paletteImageView)
 		{
@@ -170,13 +185,14 @@ public:
 		std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
 		writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perPolyDescSets.back(), 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo0, nullptr, nullptr));
 
+		// (a polygon with one volume has the first texture as its second: the general pipelines' shader has both)
+		vk::DescriptorImageInfo imageInfo1 = imageInfo0;
 		if (textureId1 != (u64)-1)
 		{
 			Texture *texture1 = reinterpret_cast<Texture *>(textureId1);
-			vk::DescriptorImageInfo imageInfo1(samplerManager->GetSampler(tsp1), texture1->GetReadOnlyImageView(), vk::ImageLayout::eShaderReadOnlyOptimal);
-
-			writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perPolyDescSets.back(), 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo1, nullptr, nullptr));
+			imageInfo1 = vk::DescriptorImageInfo(samplerManager->GetSampler(tsp1), texture1->GetReadOnlyImageView(), vk::ImageLayout::eShaderReadOnlyOptimal);
 		}
+		writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perPolyDescSets.back(), 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo1, nullptr, nullptr));
 		GetContext()->GetDevice().updateDescriptorSets(writeDescriptorSets, nullptr);
 		perPolyDescSetsInFlight[index] = std::move(perPolyDescSets.back());
 		perPolyDescSets.pop_back();
@@ -185,6 +201,9 @@ public:
 	void BindPerFrameDescriptorSets(vk::CommandBuffer cmdBuffer)
 	{
 		cmdBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, 1, &perFrameDescSet.get(), 0, nullptr);
+		// (a texture's replaces it; until one does, an untextured polygon has this)
+		if (noTextureDescSet)
+			cmdBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 1, 1, &noTextureDescSet.get(), 0, nullptr);
 	}
 
 	void BindColorInputDescSet(vk::CommandBuffer cmdBuffer, int index)
@@ -216,6 +235,8 @@ private:
 	vk::PipelineLayout pipelineLayout;
 
 	vk::UniqueDescriptorSet perFrameDescSet;
+	vk::UniqueDescriptorSet noTextureDescSet;
+	vk::ImageView noTextureView;
 	std::array<vk::UniqueDescriptorSet, 2> colorInputDescSets;
 	std::vector<vk::UniqueDescriptorSet> perPolyDescSets;
 	std::map<std::tuple<u64, u32, u64, u32>, vk::UniqueDescriptorSet> perPolyDescSetsInFlight;
@@ -223,13 +244,28 @@ private:
 	SamplerManager* samplerManager;
 };
 
-class OITPipelineManager
+/* What a draw is made with: its pipeline, and whether that is the general
+ * one (pso.h), which is then told the key's bits with the push constants
+ * and its dynamic states with SetDynamicState() */
+struct OITPsoChoice
+{
+	VkPipeline pipeline;
+	u64 key;
+	bool general;
+};
+
+/* The per-pixel renderer's pipelines (pso.h). A polygon's is kept under a
+ * key of everything it is made of: its shader's bits (pso_key.h), the
+ * module and subpass it takes, and its depth, stencil, cull and blend
+ * states as they are made. */
+class OITPipelineManager : public PsoBuilder
 {
 public:
 	OITPipelineManager() : renderPasses(&ownRenderPasses) {}
-	virtual ~OITPipelineManager() = default;
+	~OITPipelineManager() override { Reset(); }
 
-	/* @samples: SSAA's (1: off), which the shader manager has been given too */
+	/* @samples: SSAA's (1: off), which the shader manager has been given too.
+	 * The general pipelines and the fixed ones are made here. */
 	virtual void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers, u32 samples = 1)
 	{
 		this->shaderManager = shaderManager;
@@ -237,11 +273,8 @@ public:
 		if (samples != renderPasses->GetSamples())
 		{
 			// everything was made for the render passes of the other count
+			Reset();
 			renderPasses->SetSamples(samples);
-			trModVolPipelines.clear();
-			finalPipeline.reset();
-			finalPerSamplePipeline.reset();
-			clearPipeline.reset();
 		}
 		renderPasses->MakeAll();
 
@@ -277,74 +310,40 @@ public:
 			vk::DescriptorSetLayout layouts[] = { *perFrameLayout, *perPolyLayout, *colorInputLayout, oitBuffers->GetDescriptorSetLayout() };
 			pipelineLayout = GetContext()->GetDevice().createPipelineLayoutUnique(
 					vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), ARRAY_SIZE(layouts), layouts, 1, &pushConstant));
+			pipelines.Init(4096, this);
+			general.Init(1024, this);
 		}
 
-		pipelines.clear();
-		modVolPipelines.clear();
-		// (SSAA's are made now, not when first drawn)
-		if (samples > 1)
-		{
-			GetFinalPipeline(false);
-			GetFinalPipeline(true);
-			GetClearPipeline();
-		}
+		// (made once for the render passes: a new size keeps them)
+		if (!prepared)
+			Prepare();
 	}
 
-	vk::Pipeline GetPipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass)
+	OITPsoChoice GetPipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass)
 	{
-		/* SSAA: shaded at each sample, but for what is drawn at a single
-		 * rate; and a translucent fragment put in the lists once a pixel,
-		 * with the samples it covers, so the lists are no longer for it */
-		const u32 samples = renderPasses->GetSamples();
-		const bool sampleRate = samples > 1 && pass != Pass::OIT && !SsaaSingleRate(pp);
-		const u32 pipehash = hash(listType, autosort, &pp, pass) | ((u32)sampleRate << 30);
-		const auto &pipeline = pipelines.find(pipehash);
-		if (pipeline != pipelines.end())
-			return pipeline->second.get();
-
-		CreatePipeline(listType, autosort, pp, pass, sampleRate);
-		// (the other rate is made with it: see the per-triangle renderer's)
-		if (samples > 1 && pass != Pass::OIT && pipelines.find(pipehash ^ (1u << 30)) == pipelines.end())
-			CreatePipeline(listType, autosort, pp, pass, !sampleRate);
-
-		return *pipelines[pipehash];
+		return Choose(Key(listType, autosort, pp, pass));
 	}
+	// the dynamic states of a general pipeline's draw, after it is bound
+	void SetDynamicState(vk::CommandBuffer cmdBuffer, u64 key) const;
 
-	vk::Pipeline GetModifierVolumePipeline(ModVolMode mode, int cullMode)
+	vk::Pipeline GetModifierVolumePipeline(ModVolMode mode, int cullMode) const
 	{
-		u32 pipehash = hash(mode, cullMode);
-		const auto &pipeline = modVolPipelines.find(pipehash);
-		if (pipeline != modVolPipelines.end())
-			return pipeline->second.get();
-		CreateModVolPipeline(mode, cullMode);
-
-		return *modVolPipelines[pipehash];
+		return vk::Pipeline(fixedSlots[FIXED_MODVOL + ModVolIndex(mode, cullMode)].pipeline);
 	}
-	vk::Pipeline GetTrModifierVolumePipeline(ModVolMode mode, int cullMode)
+	vk::Pipeline GetTrModifierVolumePipeline(ModVolMode mode, int cullMode) const
 	{
-		u32 pipehash = hash(mode, cullMode);
-		const auto &pipeline = trModVolPipelines.find(pipehash);
-		if (pipeline != trModVolPipelines.end())
-			return pipeline->second.get();
-		CreateTrModVolPipeline(mode, cullMode);
-
-		return *trModVolPipelines[pipehash];
+		return vk::Pipeline(fixedSlots[FIXED_TRMODVOL + ModVolIndex(mode, cullMode)].pipeline);
 	}
 	// @perSample: SSAA's for a render pass that is not the last (OITShaderManager::GetFinalShader())
-	vk::Pipeline GetFinalPipeline(bool perSample = false)
+	vk::Pipeline GetFinalPipeline(bool perSample = false) const
 	{
-		vk::UniquePipeline& pipeline = perSample ? finalPerSamplePipeline : finalPipeline;
-		if (!pipeline)
-			CreateFinalPipeline(perSample);
-		return *pipeline;
+		return vk::Pipeline(fixedSlots[perSample ? FIXED_FINAL_PER_SAMPLE : FIXED_FINAL].pipeline);
 	}
 	int GetFinalSubpass() const { return renderPasses->GetFinalSubpass(); }
 	u32 GetSamples() const { return renderPasses->GetSamples(); }
-	vk::Pipeline GetClearPipeline()
+	vk::Pipeline GetClearPipeline() const
 	{
-		if (!clearPipeline)
-			CreateClearPipeline();
-		return *clearPipeline;
+		return vk::Pipeline(fixedSlots[FIXED_CLEAR].pipeline);
 	}
 	vk::PipelineLayout GetPipelineLayout() const { return *pipelineLayout; }
 	vk::DescriptorSetLayout GetPerFrameDSLayout() const { return *perFrameLayout; }
@@ -353,38 +352,59 @@ public:
 
 	vk::RenderPass GetRenderPass(bool initial, bool last, bool depthWrites = false, bool resumed = false) { return renderPasses->GetRenderPass(initial, last, depthWrites, resumed); }
 
+	/* Everything made dropped: what the worker has of it first. (Render
+	 * passes made again, another count of samples.) */
+	void Reset();
+
+	VkPipeline BuildPipeline(u64 key, vk::PipelineCache cache) override;
+
+	/* The key's fields. Bits 0 to 13 are the shader's (pso_key.h); 56 to 59
+	 * say what kind of pipeline it is, 60 to 63 are PsoKeyLog's. */
+	enum : u64
+	{
+		KEY_GOURAUD = 14,
+		KEY_RATE = 15,		// 2 bits: 0 without SSAA, 1 at each sample, 2 once a pixel
+		KEY_PASS = 17,		// 2 bits: Pass
+		KEY_SUBPASS = 19,	// 2 bits
+		KEY_CULL = 21,		// 2 bits: none, front, back
+		KEY_ZWRITE = 23,
+		KEY_DEPTH_OP = 24,	// 3 bits: vk::CompareOp
+		KEY_STENCIL = 27,	// 2 bits: none, the shadow bit set, cleared
+		KEY_BLEND = 29,
+		KEY_COLOR_WRITE = 30,
+		KEY_SRC = 31,		// 3 bits: the PVR's
+		KEY_DST = 34,		// 3 bits
+		KEY_KIND = 56,		// 4 bits: Kind
+	};
+	enum Kind { KIND_POLY, KIND_GENERAL, KIND_FIXED };
+	static constexpr u64 MODULE_BITS = (1ull << KEY_GOURAUD) | (3ull << KEY_RATE) | (3ull << KEY_PASS) | (3ull << KEY_SUBPASS);
+	static constexpr u64 DEPTH_STENCIL_BITS = (3ull << KEY_CULL) | (1ull << KEY_ZWRITE) | (7ull << KEY_DEPTH_OP) | (3ull << KEY_STENCIL);
+	static constexpr u64 BLEND_BITS = (1ull << KEY_BLEND) | (1ull << KEY_COLOR_WRITE) | (7ull << KEY_SRC) | (7ull << KEY_DST);
+
 private:
-	void CreateModVolPipeline(ModVolMode mode, int cullMode);
-	void CreateTrModVolPipeline(ModVolMode mode, int cullMode);
-
-	u32 hash(u32 listType, bool autosort, const PolyParam *pp, Pass pass) const
+	u64 Key(u32 listType, bool autosort, const PolyParam& pp, Pass pass) const;
+	OITPsoChoice Choose(u64 key);
+	u64 GeneralKey(u64 key) const
 	{
-		u32 hash = pp->pcw.Gouraud | (pp->pcw.Offset << 1) | (pp->pcw.Texture << 2) | (pp->pcw.Shadow << 3)
-			| (((pp->tileclip >> 28) == 3) << 4);
-		hash |= ((listType >> 1) << 5);
-		if (pp->tcw1.full != (u32)-1 || pp->tsp1.full != (u32)-1)
-		{
-			// Two-volume mode
-			hash |= (1 << 31) | (pp->tsp.ColorClamp << 11);
-		}
-		else
-      {
-         bool ignoreTexAlpha = pp->tsp.IgnoreTexA || pp->tcw.PixelFmt == Pixel565;
-         hash |= (pp->tsp.ShadInstr << 7) | (ignoreTexAlpha << 9) | (pp->tsp.UseAlpha << 10)
-            | (pp->tsp.ColorClamp << 11) | (pp->tsp.FogCtrl << 12)
-            | (pp->tsp.SrcInstr << 14) | (pp->tsp.DstInstr << 17);
-      }
-		hash |= (pp->isp.ZWriteDis << 20) | (pp->isp.CullMode << 21) | ((autosort ? 6 : pp->isp.DepthMode) << 23);
-		hash |= ((u32)BaseTextureCacheData::IsGpuHandledPaletted(pp->tsp, pp->tcw) << 26) | ((u32)pass << 27);
-		// a bump map has a shader of its own: see the per-triangle renderer's hash
-		hash |= (u32)(pp->tcw.PixelFmt == PixelBumpMap) << 29;
+		u64 fixed = MODULE_BITS;
+		const pso_ext::Functions& dynamic = GetContext()->DynamicState();
+		if (!dynamic.depthStencil)
+			fixed |= DEPTH_STENCIL_BITS;
+		if (!dynamic.blend)
+			fixed |= BLEND_BITS;
+		return (key & fixed) | ((u64)KIND_GENERAL << KEY_KIND);
+	}
+	void Prepare();
+	VkPipeline BuildPoly(u64 key, bool general, vk::PipelineCache cache);
+	VkPipeline CreateModVolPipeline(ModVolMode mode, int cullMode, vk::PipelineCache cache);
+	VkPipeline CreateTrModVolPipeline(ModVolMode mode, int cullMode, vk::PipelineCache cache);
+	VkPipeline CreateFinalPipeline(bool perSample, vk::PipelineCache cache);
+	VkPipeline CreateClearPipeline(vk::PipelineCache cache);
 
-		return hash;
-	}
-	u32 hash(ModVolMode mode, int cullMode) const
-	{
-		return ((int)mode << 2) | cullMode;
-	}
+	// the fixed pipelines' slots: the modifier volumes' by mode and cull mode, the last subpass's, the lists'
+	enum { FIXED_MODVOL = 0, FIXED_TRMODVOL = 12, FIXED_FINAL = 24, FIXED_FINAL_PER_SAMPLE, FIXED_CLEAR, FIXED_COUNT };
+	// (Xor to Exclusion; cull modes 0 and 1 are both none)
+	static u32 ModVolIndex(ModVolMode mode, int cullMode) { return (u32)mode * 3 + (cullMode < 2 ? 0 : cullMode - 1); }
 
 	vk::PipelineVertexInputStateCreateInfo GetMainVertexInputStateCreateInfo(bool full = true) const
 	{
@@ -415,16 +435,14 @@ private:
 				full ? vertexInputAttributeDescriptions : vertexInputLightAttributeDescriptions);
 	}
 
-	void CreatePipeline(u32 listType, bool autosort, const PolyParam& pp, Pass pass, bool sampleRate);
-	void CreateFinalPipeline(bool perSample);
-	void CreateClearPipeline();
-
-	std::map<u32, vk::UniquePipeline> pipelines;
-	std::map<u32, vk::UniquePipeline> modVolPipelines;
-	std::map<u32, vk::UniquePipeline> trModVolPipelines;
-	vk::UniquePipeline finalPipeline;
-	vk::UniquePipeline finalPerSamplePipeline;
-	vk::UniquePipeline clearPipeline;
+	PsoTable pipelines;		// the polygons' own
+	PsoTable general;		// the general ones
+	PsoSlot fixedSlots[FIXED_COUNT] = {};
+	bool prepared = false;
+	// what the pipelines are made for (one of a kind: all of them work with any)
+	vk::RenderPass renderPass;
+	u64 lastKey = ~0ull;
+	OITPsoChoice lastChoice = {};
 
 	vk::UniquePipelineLayout pipelineLayout;
 	vk::UniqueDescriptorSetLayout perFrameLayout;
@@ -437,15 +455,19 @@ protected:
 
 	RenderPasses *renderPasses;
 	OITShaderManager *shaderManager = nullptr;
+	// PsoKeyLog's: the screen's, the textures'
+	u32 who = 3;
 };
 
 class RttOITPipelineManager : public OITPipelineManager
 {
 public:
-	RttOITPipelineManager() { renderPasses = &rttRenderPasses; }
+	RttOITPipelineManager() { renderPasses = &rttRenderPasses; who = 4; }
 	void Init(OITShaderManager *shaderManager, OITBuffers *oitBuffers, u32 samples = 1) override
 	{
 		this->oitBuffers = oitBuffers;
+		// (what was made for the render passes goes before they do)
+		Reset();
 		rttRenderPasses.Reset();
 		OITPipelineManager::Init(shaderManager, oitBuffers, samples);
 	}

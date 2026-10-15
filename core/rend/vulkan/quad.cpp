@@ -174,9 +174,9 @@ void QuadPipeline::Init(ShaderManager *shaderManager, vk::RenderPass renderPass,
 		this->samples = samples;
 		pipeline.reset();
 		alphaPipeline.reset();
-		// (one for a subpass with samples is SSAA's: made now, not when first drawn)
-		if (samples > 1)
-			CreatePipeline(false);
+		// (both made now, not when first drawn: what the VMUs and the OSD are drawn with, the last picture)
+		CreatePipeline(false);
+		CreatePipeline(true);
 	}
 }
 

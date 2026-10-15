@@ -25,6 +25,7 @@
 #include "rend/TexCache.h"
 #include "rend/vram_budget.h"
 #include "libretro_vulkan.h"
+#include "pso.h"
 
 extern int screen_width, screen_height;
 
@@ -49,7 +50,7 @@ public:
 
 	vk::PhysicalDevice GetPhysicalDevice() const { return physicalDevice; }
 	vk::Device GetDevice() const { return device; }
-	vk::PipelineCache GetPipelineCache() const { return *pipelineCache; }
+	vk::PipelineCache GetPipelineCache() const { return pipelineCache; }
 	vk::DescriptorPool GetDescriptorPool() const { return *descriptorPool; }
 	vk::Extent2D GetViewPort() const { return { width, height }; }
 	/* How many frames the renderer keeps in its rings (command pools,
@@ -125,6 +126,14 @@ public:
 	bool HasLazyMemory() const { return lazyMemory; }
 	/* The video memory budget read again, and logged: what is in use now */
 	void LogVramUsage() { QueryVramBudget(); }
+	/* The dynamic states the general pipelines are drawn with, as the
+	 * device was made with them (pso.h) */
+	const pso_ext::Functions& DynamicState() const { return dynamicState; }
+	// the keys of the pipelines made, kept with the pipeline cache
+	PsoKeyLog& PsoKeys() { return psoKeys; }
+	/* The pipeline cache written to the system directory, with the
+	 * worker's merged in, if pipelines were made since it last was */
+	void SavePipelineCache();
 
 private:
 	vk::Format FindDepthFormat();
@@ -155,7 +164,16 @@ public:
 	bool drawIndirectFirstInstance = false;
 	bool drawIndirectCount = false;		// VK_KHR_draw_indirect_count
 	bool sampleRateShading = false;
+	/* VK_EXT_extended_dynamic_state and _state3 (pso.h), and
+	 * VK_EXT_pipeline_creation_cache_control: caches without a lock */
+	bool extendedDynamicState = false;
+	bool extendedDynamicState3 = false;
+	bool pipelineCacheControl = false;
 private:
+	void LoadPipelineCache();
+	pso_ext::Functions dynamicState = {};
+	PsoKeyLog psoKeys;
+	u32 savedBuilt = 0;
 	u32 maxDrawIndirectCount = 1;
 	PFN_vkCmdDrawIndexedIndirectCountKHR cmdDrawIndexedIndirectCount = nullptr;
 	u32 vendorID = 0;
@@ -169,7 +187,7 @@ private:
 
 	vk::Format depthFormat = vk::Format::eUndefined;
 
-	vk::UniquePipelineCache pipelineCache;
+	vk::PipelineCache pipelineCache;
 
 	retro_hw_render_interface_vulkan *retro_render_if = nullptr;
 	vk::Instance instance;

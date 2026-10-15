@@ -2831,6 +2831,11 @@ void retro_unload_game(void)
     * there after this (the context is destroyed later than this). */
    rtt_watch_forget();
    last_picture_drop();
+#ifdef HAVE_VULKAN
+   /* The pipelines made so far kept now: a frontend may not destroy the
+    * context, where they are kept too, before it quits */
+   theVulkanContext.SavePipelineCache();
+#endif
    if (game_data)
       free(game_data);
    game_data = NULL;

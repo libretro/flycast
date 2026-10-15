@@ -178,11 +178,6 @@ protected:
 	void NewImage()
 	{
 		imageIndex = (imageIndex + 1) % GetContext()->GetSwapChainSize();
-		if (alphaSortMode != settings.pvr.Emulation.AlphaSortMode)
-		{
-			alphaSortMode = settings.pvr.Emulation.AlphaSortMode;
-			pipelineManager->Reset();
-		}
 	}
 
 	void Init(SamplerManager *samplerManager, PipelineManager *pipelineManager)
@@ -264,7 +259,6 @@ private:
 	/* The push constants last pushed for the colours: the prepass pushes
 	 * its own, and puts these back for the polygons after it that push none */
 	std::array<float, 6> pushed = {};
-	bool alphaSortMode = false;
 };
 
 class ScreenDrawer : public Drawer

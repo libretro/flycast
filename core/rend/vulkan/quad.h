@@ -74,6 +74,7 @@ public:
 	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass = 0, u32 samples = 1);
 	void Term() {
 		pipeline.reset();
+		alphaPipeline.reset();
 		linearSampler.reset();
 		nearestSampler.reset();
 		pipelineLayout.reset();

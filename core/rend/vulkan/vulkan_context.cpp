@@ -134,6 +134,9 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 
 	// Enable VK_KHR_dedicated_allocation if available
 	bool getMemReq2Supported = false;
+	bool hasEds = false;
+	bool hasEds3 = false;
+	bool hasCacheControl = false;
 	VulkanContext::Instance()->dedicatedAllocationSupported = false;
 	std::vector<const char *> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 	for (int i = 0; i < num_required_device_extensions; i++)
@@ -156,8 +159,84 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 			deviceExtensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
 			VulkanContext::Instance()->drawIndirectCount = true;
 		}
+		else if (!strcmp(property.extensionName, "VK_EXT_extended_dynamic_state"))
+			hasEds = true;
+		else if (!strcmp(property.extensionName, "VK_EXT_extended_dynamic_state3"))
+			hasEds3 = true;
+		else if (!strcmp(property.extensionName, "VK_EXT_pipeline_creation_cache_control"))
+			hasCacheControl = true;
 	}
 	VulkanContext::Instance()->dedicatedAllocationSupported &= getMemReq2Supported;
+
+	/* What the general pipelines are drawn with (pso.h): the depth,
+	 * stencil, cull and topology states, and the blend ones, set with each
+	 * draw; and pipeline caches the core keeps to one thread each, which
+	 * the driver then takes no lock for. Asked of the device's features
+	 * first: an extension can be there with the feature off. */
+	pso_ext::EdsFeatures eds = {};
+	pso_ext::Eds3Features eds3 = {};
+	pso_ext::CacheControlFeatures cacheControl = {};
+	eds.sType = pso_ext::STRUCTURE_TYPE_EDS_FEATURES;
+	eds3.sType = pso_ext::STRUCTURE_TYPE_EDS3_FEATURES;
+	cacheControl.sType = pso_ext::STRUCTURE_TYPE_CACHE_CONTROL_FEATURES;
+	VulkanContext::Instance()->extendedDynamicState = false;
+	VulkanContext::Instance()->extendedDynamicState3 = false;
+	VulkanContext::Instance()->pipelineCacheControl = false;
+	vk::PhysicalDeviceProperties deviceProperties;
+	physicalDevice.getProperties(&deviceProperties);
+	void *featuresChain = nullptr;
+	if ((hasEds || hasEds3 || hasCacheControl) && ::vkGetPhysicalDeviceFeatures2 != nullptr
+			&& VK_VERSION_MINOR(deviceProperties.apiVersion) >= 1)
+	{
+		eds.pNext = &eds3;
+		eds3.pNext = &cacheControl;
+		VkPhysicalDeviceFeatures2 features2 = {};
+		features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		features2.pNext = &eds;
+		// (structures of extensions the device does not have are not to be in the chain)
+		void **link = &features2.pNext;
+		if (!hasEds)
+			*link = eds.pNext;
+		else
+			link = &eds.pNext;
+		if (!hasEds3)
+			*link = eds3.pNext;
+		else
+			link = &eds3.pNext;
+		if (!hasCacheControl)
+			*link = cacheControl.pNext;
+		::vkGetPhysicalDeviceFeatures2((VkPhysicalDevice)physicalDevice, &features2);
+		const bool useEds = hasEds && eds.extendedDynamicState;
+		const bool useEds3 = hasEds3 && eds3.colorBlendEnable && eds3.colorBlendEquation && eds3.colorWriteMask;
+		const bool useCacheControl = hasCacheControl && cacheControl.pipelineCreationCacheControl;
+		// the chain again, of what is enabled, with nothing else on
+		void *chain = nullptr;
+		eds3 = {};
+		eds3.sType = pso_ext::STRUCTURE_TYPE_EDS3_FEATURES;
+		if (useCacheControl)
+		{
+			cacheControl.pNext = chain;
+			chain = &cacheControl;
+			deviceExtensions.push_back("VK_EXT_pipeline_creation_cache_control");
+		}
+		if (useEds3)
+		{
+			eds3.colorBlendEnable = eds3.colorBlendEquation = eds3.colorWriteMask = VK_TRUE;
+			eds3.pNext = chain;
+			chain = &eds3;
+			deviceExtensions.push_back("VK_EXT_extended_dynamic_state3");
+		}
+		if (useEds)
+		{
+			eds.pNext = chain;
+			chain = &eds;
+			deviceExtensions.push_back("VK_EXT_extended_dynamic_state");
+		}
+		featuresChain = chain;
+		VulkanContext::Instance()->extendedDynamicState = useEds;
+		VulkanContext::Instance()->extendedDynamicState3 = useEds3;
+		VulkanContext::Instance()->pipelineCacheControl = useCacheControl;
+	}
 
 	// create a Device
 	float queuePriority = 1.0f;
@@ -178,9 +257,11 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 		features.drawIndirectFirstInstance = true;
 	if (VulkanContext::Instance()->sampleRateShading)
 		features.sampleRateShading = true;
-	vk::Device device = physicalDevice.createDevice(vk::DeviceCreateInfo(vk::DeviceCreateFlags(),
+	vk::DeviceCreateInfo deviceCreateInfo(vk::DeviceCreateFlags(),
 			context->queue_family_index == context->presentation_queue_family_index ? 1 : 2, deviceQueueCreateInfos,
-			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features));
+			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features);
+	deviceCreateInfo.pNext = featuresChain;
+	vk::Device device = physicalDevice.createDevice(deviceCreateInfo);
 	context->device = (VkDevice)device;
 	vulkan_symbol_wrapper_load_core_device_symbols(context->device);
 
@@ -238,6 +319,37 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	maxDrawIndirectCount = properties->limits.maxDrawIndirectCount;
 	cmdDrawIndexedIndirectCount = drawIndirectCount
 			? (PFN_vkCmdDrawIndexedIndirectCountKHR)device.getProcAddr("vkCmdDrawIndexedIndirectCountKHR") : nullptr;
+	// the general pipelines' dynamic states, as the device was made with them (pso.h)
+	dynamicState = {};
+	if (extendedDynamicState)
+	{
+		pso_ext::Functions& f = dynamicState;
+		f.CmdSetCullMode = (decltype(f.CmdSetCullMode))device.getProcAddr("vkCmdSetCullModeEXT");
+		f.CmdSetPrimitiveTopology = (decltype(f.CmdSetPrimitiveTopology))device.getProcAddr("vkCmdSetPrimitiveTopologyEXT");
+		f.CmdSetDepthTestEnable = (decltype(f.CmdSetDepthTestEnable))device.getProcAddr("vkCmdSetDepthTestEnableEXT");
+		f.CmdSetDepthWriteEnable = (decltype(f.CmdSetDepthWriteEnable))device.getProcAddr("vkCmdSetDepthWriteEnableEXT");
+		f.CmdSetDepthCompareOp = (decltype(f.CmdSetDepthCompareOp))device.getProcAddr("vkCmdSetDepthCompareOpEXT");
+		f.CmdSetStencilTestEnable = (decltype(f.CmdSetStencilTestEnable))device.getProcAddr("vkCmdSetStencilTestEnableEXT");
+		f.CmdSetStencilOp = (decltype(f.CmdSetStencilOp))device.getProcAddr("vkCmdSetStencilOpEXT");
+		f.depthStencil = f.CmdSetCullMode && f.CmdSetPrimitiveTopology && f.CmdSetDepthTestEnable && f.CmdSetDepthWriteEnable
+				&& f.CmdSetDepthCompareOp && f.CmdSetStencilTestEnable && f.CmdSetStencilOp;
+	}
+	if (extendedDynamicState3)
+	{
+		pso_ext::Functions& f = dynamicState;
+		f.CmdSetColorBlendEnable = (decltype(f.CmdSetColorBlendEnable))device.getProcAddr("vkCmdSetColorBlendEnableEXT");
+		f.CmdSetColorBlendEquation = (decltype(f.CmdSetColorBlendEquation))device.getProcAddr("vkCmdSetColorBlendEquationEXT");
+		f.CmdSetColorWriteMask = (decltype(f.CmdSetColorWriteMask))device.getProcAddr("vkCmdSetColorWriteMaskEXT");
+		f.blend = f.CmdSetColorBlendEnable && f.CmdSetColorBlendEquation && f.CmdSetColorWriteMask;
+	}
+#ifdef VK_PSO_TEST_NO_EDS
+	dynamicState.depthStencil = false;
+#endif
+#ifdef VK_PSO_TEST_NO_EDS3
+	dynamicState.blend = false;
+#endif
+	NOTICE_LOG(RENDERER, "Vulkan: general pipelines drawn with %s depth, stencil, cull and topology, and %s blend",
+			dynamicState.depthStencil ? "dynamic" : "fixed", dynamicState.blend ? "dynamic" : "fixed");
 	QueryVramBudget();
 	// what SSAA can have: the sample counts colour, depth and stencil attachments can all have, and memory that is only there if used
 	ssaaSampleCounts = (u32)(properties->limits.framebufferColorSampleCounts & properties->limits.framebufferDepthSampleCounts
@@ -292,21 +404,7 @@ bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)
 	descriptorPool = device.createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
    		10000, ARRAY_SIZE(pool_sizes), pool_sizes));
 
-   std::string cachePath = get_writable_data_path(PipelineCacheFileName);
-   RFILE *f = filestream_open(cachePath.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-   if (f == nullptr)
-   	pipelineCache = device.createPipelineCacheUnique(vk::PipelineCacheCreateInfo());
-   else
-   {
-   	size_t cacheSize = (size_t)filestream_get_size(f);
-   	u8 *cacheData = new u8[cacheSize];
-   	if ((size_t)filestream_read(f, cacheData, cacheSize) != cacheSize)
-   		cacheSize = 0;
-   	filestream_close(f);
-		pipelineCache = device.createPipelineCacheUnique(vk::PipelineCacheCreateInfo(vk::PipelineCacheCreateFlags(), cacheSize, cacheData));
-		delete [] cacheData;
-		INFO_LOG(RENDERER, "Vulkan pipeline cache loaded from %s: %zd bytes", cachePath.c_str(), cacheSize);
-   }
+	LoadPipelineCache();
    heap.Init(physicalDevice, device);
    FindDepthFormat();
 
@@ -454,23 +552,140 @@ void VulkanContext::Term()
 	if (device)
 	{
 		device.waitIdle();
-		if (pipelineCache)
-		{
-			std::vector<u8> cacheData = device.getPipelineCacheData(*pipelineCache);
-			if (!cacheData.empty())
-			{
-				std::string cachePath = get_writable_data_path(PipelineCacheFileName);
-				RFILE *f = filestream_open(cachePath.c_str(), RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-				if (f != nullptr)
-				{
-					(void)filestream_write(f, &cacheData[0], cacheData.size());
-					filestream_close(f);
-				}
-			}
-		}
+		// (the worker's cache merged into this one)
+		VkPsoWorker::Instance().Stop(pipelineCache);
+		SavePipelineCache();
 	}
 	ShaderCompiler::Term();
 	descriptorPool.reset();
 	heap.Term();
-	pipelineCache.reset();
+	if (pipelineCache)
+		device.destroyPipelineCache(pipelineCache);
+	pipelineCache = nullptr;
+	psoKeys.Term();
+	extendedDynamicState = false;
+	extendedDynamicState3 = false;
+	pipelineCacheControl = false;
+	dynamicState = {};
+}
+
+/* The cache file: this header, the keys of the pipelines made (PsoKeyLog),
+ * then the device's pipeline cache data. A file without the header is a
+ * cache of an earlier core's, the device's data alone. */
+struct PsoCacheFileHeader
+{
+	char magic[8];
+	u32 version;	// of the keys' layout (pipeline.h, oit_pipeline.h)
+	u32 keyCount;
+	u64 dataSize;
+};
+static const char PsoCacheMagic[8] = { 'F', 'C', 'V', 'K', 'P', 'S', 'O', 0 };
+static const u32 PsoCacheVersion = 1;
+
+void VulkanContext::LoadPipelineCache()
+{
+	psoKeys.Init();
+	std::string cachePath = get_writable_data_path(PipelineCacheFileName);
+	void *file = nullptr;
+	int64_t fileSize = 0;
+	const u8 *data = nullptr;
+	size_t dataSize = 0;
+	if (filestream_read_file(cachePath.c_str(), &file, &fileSize) && file != nullptr && fileSize > 0)
+	{
+		PsoCacheFileHeader header;
+		if ((size_t)fileSize >= sizeof(header))
+			memcpy(&header, file, sizeof(header));
+		if ((size_t)fileSize >= sizeof(header) && !memcmp(header.magic, PsoCacheMagic, sizeof(PsoCacheMagic)))
+		{
+			const size_t keyBytes = (size_t)header.keyCount * sizeof(u64);
+			if (keyBytes / sizeof(u64) == header.keyCount && sizeof(header) + keyBytes <= (size_t)fileSize
+					&& header.dataSize <= (u64)fileSize - sizeof(header) - keyBytes)
+			{
+				if (header.version == PsoCacheVersion)
+				{
+					std::vector<u64> keys(header.keyCount);
+					if (!keys.empty())
+						memcpy(&keys[0], (const u8 *)file + sizeof(header), keyBytes);
+					psoKeys.Load(keys.data(), header.keyCount);
+				}
+				data = (const u8 *)file + sizeof(header) + keyBytes;
+				dataSize = (size_t)header.dataSize;
+			}
+		}
+		else
+		{
+			data = (const u8 *)file;
+			dataSize = (size_t)fileSize;
+		}
+	}
+	VkPipelineCacheCreateInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	info.flags = pipelineCacheControl ? pso_ext::PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED : 0;
+	info.initialDataSize = dataSize;
+	info.pInitialData = data;
+	VkPipelineCache cache = VK_NULL_HANDLE;
+	if (vkCreatePipelineCache((VkDevice)device, &info, nullptr, &cache) != VK_SUCCESS)
+	{
+		info.initialDataSize = 0;
+		info.pInitialData = nullptr;
+		if (vkCreatePipelineCache((VkDevice)device, &info, nullptr, &cache) != VK_SUCCESS)
+			cache = VK_NULL_HANDLE;
+	}
+	pipelineCache = vk::PipelineCache(cache);
+	// the worker's, from the same data
+	VkPsoWorker::Instance().Start(device, data, dataSize, pipelineCacheControl);
+	savedBuilt = 0;
+	u32 keyCount = 0;
+	psoKeys.Keys(keyCount);
+	NOTICE_LOG(RENDERER, "Vulkan pipeline cache loaded from %s: %zd bytes, %u pipeline keys", cachePath.c_str(), dataSize, keyCount);
+	free(file);
+}
+
+void VulkanContext::SavePipelineCache()
+{
+	if (!pipelineCache)
+		return;
+	VkPsoWorker& worker = VkPsoWorker::Instance();
+	// nothing made since the last save: as it is
+	const u32 made = worker.Built() + worker.SyncBuilt();
+	if (made == savedBuilt && savedBuilt != 0)
+		return;
+	worker.WaitIdle();
+	worker.MergeInto(pipelineCache);
+	size_t dataSize = 0;
+	if (vkGetPipelineCacheData((VkDevice)device, (VkPipelineCache)pipelineCache, &dataSize, nullptr) != VK_SUCCESS)
+		return;
+	u32 keyCount = 0;
+	const u64 *keys = psoKeys.Keys(keyCount);
+	PsoCacheFileHeader header;
+	memcpy(header.magic, PsoCacheMagic, sizeof(PsoCacheMagic));
+	header.version = PsoCacheVersion;
+	header.keyCount = keyCount;
+	std::vector<u8> file(sizeof(header) + keyCount * sizeof(u64) + dataSize);
+	if (vkGetPipelineCacheData((VkDevice)device, (VkPipelineCache)pipelineCache, &dataSize,
+			&file[sizeof(header) + keyCount * sizeof(u64)]) != VK_SUCCESS)
+		return;
+	header.dataSize = dataSize;
+	memcpy(&file[0], &header, sizeof(header));
+	if (keyCount != 0)
+		memcpy(&file[sizeof(header)], keys, keyCount * sizeof(u64));
+	file.resize(sizeof(header) + keyCount * sizeof(u64) + dataSize);
+	// (written beside it, then put in its place: a write cut short leaves the one there was)
+	const std::string cachePath = get_writable_data_path(PipelineCacheFileName);
+	const std::string tmpPath = cachePath + ".tmp";
+	RFILE *f = filestream_open(tmpPath.c_str(), RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	if (f == nullptr)
+		return;
+	bool written = filestream_write(f, &file[0], (int64_t)file.size()) == (int64_t)file.size();
+	filestream_close(f);
+	if (written)
+	{
+		filestream_delete(cachePath.c_str());
+		written = filestream_rename(tmpPath.c_str(), cachePath.c_str()) == 0;
+	}
+	if (!written)
+		filestream_delete(tmpPath.c_str());
+	else
+		NOTICE_LOG(RENDERER, "Vulkan pipeline cache saved to %s: %zd bytes, %u pipeline keys", cachePath.c_str(), dataSize, keyCount);
+	savedBuilt = made;
 }

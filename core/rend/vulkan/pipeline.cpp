@@ -23,7 +23,294 @@
 #include "hw/pvr/Renderer_if.h"
 #include "quad.h"
 
-void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
+static vk::CullModeFlags CullMode(u32 cull)
+{
+	return cull == 2 ? vk::CullModeFlagBits::eBack : cull == 1 ? vk::CullModeFlagBits::eFront : vk::CullModeFlagBits::eNone;
+}
+
+// a key's stencil state (PipelineManager::Stencil)
+static vk::StencilOpState StencilState(u32 stencil)
+{
+	switch (stencil)
+	{
+	case PipelineManager::STENCIL_SHADOW_SET:
+		return vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eAlways, 0, 0x80, 0x80);
+	case PipelineManager::STENCIL_SHADOW_CLEAR:
+		return vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eAlways, 0, 0x80, 0);
+	/* Drawn again for its shadow: where this polygon is the one showing
+	 * (same depth), takes shadows (stencil bit 7) and is in a volume
+	 * (bit 0). Bit 6 marks the pixels drawn this way; whether one already
+	 * marked may be drawn over is what tells the two kinds apart. */
+	case PipelineManager::STENCIL_LATER_WINS:
+		return vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eEqual, 0x81, 0x40, 0xC1);
+	case PipelineManager::STENCIL_EARLIER_WINS:
+		return vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eInvert, vk::StencilOp::eKeep, vk::CompareOp::eEqual, 0xC1, 0x40, 0x81);
+	default:
+		return vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::CompareOp::eNever);
+	}
+}
+
+u64 PipelineManager::Key(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass) const
+{
+	// the shader
+	FragmentShaderParams params = {};
+	params.alphaTest = listType == ListType_Punch_Through;
+	params.bumpmap = pp.tcw.PixelFmt == PixelBumpMap;
+	/* By the polygon alone. The clamping limits were looked at too, to leave
+	 * the clamp out of the shader while they clamp nothing - but a pipeline
+	 * is made once and kept under a key that has only the polygon's bit in
+	 * it, and the limits change: a polygon first drawn while they clamped
+	 * nothing was never clamped after. (Upstream: Red Dog.) */
+	params.clamping = pp.tsp.ColorClamp;
+	params.insideClipTest = (pp.tileclip >> 28) == 3;
+	params.fog = pp.tsp.FogCtrl;
+	params.ignoreTexAlpha = pp.tsp.IgnoreTexA || pp.tcw.PixelFmt == Pixel565;
+	params.offset = pp.pcw.Offset;
+	params.shaderInstr = pp.tsp.ShadInstr;
+	params.texture = pp.pcw.Texture;
+	params.trilinear = pp.pcw.Texture && pp.tsp.FilterMode > 1 && listType != ListType_Punch_Through && pp.tcw.MipMapped == 1;
+	params.useAlpha = pp.tsp.UseAlpha;
+	params.palette = BaseTextureCacheData::IsGpuHandledPaletted(pp.tsp, pp.tcw);
+	params.shadowed = shadowPass != ShadowPass::None;
+	u64 key = (u32)params.key() | ((u64)pp.pcw.Gouraud << KEY_GOURAUD);
+	// (SSAA: shaded at each sample, but for what is drawn at a single rate)
+	if (samples > 1)
+		key |= (u64)(SsaaSingleRate(pp) ? 2 : 1) << KEY_RATE;
+
+	// the fixed functions
+	key |= (u64)(pp.isp.CullMode == 3 ? 2 : pp.isp.CullMode == 2 ? 1 : 0) << KEY_CULL;
+	if (sortTriangles && !settings.pvr.Emulation.AlphaSortMode)
+		key |= 1ull << KEY_LIST;
+
+	vk::CompareOp depthOp;
+	if (listType == ListType_Punch_Through || sortTriangles)
+		depthOp = vk::CompareOp::eGreaterOrEqual;
+	else
+		depthOp = depthOps[pp.isp.DepthMode];
+	bool depthWriteEnable;
+	// Sorted translucent polygons, per triangle or per strip, do not write
+	// depth: a strip drawn in sorted order would hide parts of the ones after it.
+	if (sortTriangles)
+		// FIXME temporary work-around for intel driver bug
+		depthWriteEnable = GetContext()->GetVendorID() == VENDOR_INTEL;
+	else
+	{
+		// Z Write Disable seems to be ignored for punch-through.
+		// Fixes Worms World Party, Bust-a-Move 4 and Re-Volt
+		if (listType == ListType_Punch_Through)
+			depthWriteEnable = true;
+		else
+			depthWriteEnable = !pp.isp.ZWriteDis;
+	}
+	const bool shadowed = listType == ListType_Opaque || listType == ListType_Punch_Through;
+	u32 stencil = STENCIL_NONE;
+	if (shadowPass != ShadowPass::None)
+	{
+		depthOp = vk::CompareOp::eEqual;
+		depthWriteEnable = false;
+		if (shadowed)
+			stencil = shadowPass == ShadowPass::LaterWins ? STENCIL_LATER_WINS : STENCIL_EARLIER_WINS;
+	}
+	else if (shadowed)
+		stencil = pp.pcw.Shadow != 0 ? STENCIL_SHADOW_SET : STENCIL_SHADOW_CLEAR;
+	key |= ((u64)depthWriteEnable << KEY_ZWRITE) | ((u64)depthOp << KEY_DEPTH_OP) | ((u64)stencil << KEY_STENCIL);
+
+	// Apparently punch-through polys support blending, or at least some combinations
+	// An opaque polygon is blended by its instructions too when it is in a
+	// list continuation; the ones of the first render pass have had theirs
+	// set to source x 1 and destination x 0 when the list was read. That
+	// pair is no blending at all, and is left as that so it costs nothing.
+	if (shadowPass == ShadowPass::None
+			&& (listType == ListType_Translucent || listType == ListType_Punch_Through
+				|| pp.tsp.SrcInstr != 1 || pp.tsp.DstInstr != 0))
+		key |= (1ull << KEY_BLEND) | ((u64)pp.tsp.SrcInstr << KEY_SRC) | ((u64)pp.tsp.DstInstr << KEY_DST);
+
+	return key;
+}
+
+PsoChoice PipelineManager::Choose(u64 key)
+{
+	if (key == lastKey)
+		return lastChoice;
+	VkPsoWorker& worker = VkPsoWorker::Instance();
+	PsoSlot *slot = pipelines.Find(key);
+	if (slot == nullptr && worker.Running() && !PsoTestGeneral)
+	{
+		// its own pipeline, asked for now; drawn with the general one until it is made
+		slot = pipelines.Insert(key);
+		if (slot != nullptr)
+		{
+			worker.Request(slot);
+			GetContext()->PsoKeys().Record(who, key);
+		}
+	}
+	if (PsoReady(slot))
+	{
+		lastKey = key;
+		lastChoice = { slot->pipeline, key, false };
+		return lastChoice;
+	}
+	const u64 generalKey = GeneralKey(key);
+	PsoSlot *slotGeneral = general.Find(generalKey);
+	if (slotGeneral == nullptr)
+	{
+		/* A device that cannot set this polygon's depth, stencil or blend
+		 * states with the draw, and a general pipeline for them not made
+		 * when the renderer started: made now, the draw waiting for it */
+		slotGeneral = general.Insert(generalKey);
+		if (slotGeneral != nullptr)
+			VkPsoWorker::BuildSync(slotGeneral, GetContext()->GetPipelineCache());
+	}
+	if (PsoReady(slotGeneral))
+		return { slotGeneral->pipeline, key, true };
+	return { VK_NULL_HANDLE, key, false };
+}
+
+void PipelineManager::SetDynamicState(vk::CommandBuffer cmdBuffer, u64 key) const
+{
+	const pso_ext::Functions& f = GetContext()->DynamicState();
+	const VkCommandBuffer cmd = (VkCommandBuffer)cmdBuffer;
+	if (f.depthStencil)
+	{
+		f.CmdSetCullMode(cmd, (VkCullModeFlags)CullMode((key >> KEY_CULL) & 3));
+		f.CmdSetPrimitiveTopology(cmd, ((key >> KEY_LIST) & 1) ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+		f.CmdSetDepthTestEnable(cmd, VK_TRUE);
+		f.CmdSetDepthWriteEnable(cmd, (VkBool32)((key >> KEY_ZWRITE) & 1));
+		f.CmdSetDepthCompareOp(cmd, (VkCompareOp)((key >> KEY_DEPTH_OP) & 7));
+		const u32 stencil = (key >> KEY_STENCIL) & 7;
+		const vk::StencilOpState state = StencilState(stencil);
+		f.CmdSetStencilTestEnable(cmd, stencil != STENCIL_NONE);
+		f.CmdSetStencilOp(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, (VkStencilOp)state.failOp, (VkStencilOp)state.passOp,
+				(VkStencilOp)state.depthFailOp, (VkCompareOp)state.compareOp);
+		cmdBuffer.setStencilCompareMask(vk::StencilFaceFlagBits::eVkStencilFrontAndBack, state.compareMask);
+		cmdBuffer.setStencilWriteMask(vk::StencilFaceFlagBits::eVkStencilFrontAndBack, state.writeMask);
+		cmdBuffer.setStencilReference(vk::StencilFaceFlagBits::eVkStencilFrontAndBack, state.reference);
+	}
+	if (f.blend)
+	{
+		const VkBool32 enable = (VkBool32)((key >> KEY_BLEND) & 1);
+		f.CmdSetColorBlendEnable(cmd, 0, 1, &enable);
+		pso_ext::ColorBlendEquation equation = {};
+		equation.colorBlendOp = VK_BLEND_OP_ADD;
+		equation.alphaBlendOp = VK_BLEND_OP_ADD;
+		if (enable)
+		{
+			equation.srcColorBlendFactor = equation.srcAlphaBlendFactor = (VkBlendFactor)getBlendFactor((key >> KEY_SRC) & 7, true);
+			equation.dstColorBlendFactor = equation.dstAlphaBlendFactor = (VkBlendFactor)getBlendFactor((key >> KEY_DST) & 7, false);
+		}
+		f.CmdSetColorBlendEquation(cmd, 0, 1, &equation);
+		const VkColorComponentFlags writeMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		f.CmdSetColorWriteMask(cmd, 0, 1, &writeMask);
+	}
+}
+
+void PipelineManager::Reset()
+{
+	// (nothing of it is to be made any more; what is being made, finished)
+	NewGeneration();
+	VkPsoWorker::Instance().WaitIdle();
+	if (GetContext() != nullptr && GetContext()->GetDevice())
+	{
+		vk::Device device = GetContext()->GetDevice();
+		pipelines.Clear(device);
+		general.Clear(device);
+		for (PsoSlot& slot : modVolSlots)
+		{
+			if (slot.pipeline != VK_NULL_HANDLE)
+				device.destroyPipeline(vk::Pipeline(slot.pipeline));
+			slot.pipeline = VK_NULL_HANDLE;
+			slot.owner = nullptr;
+		}
+		PsoSlot *prepass = &prepassSlots[0][0][0][0];
+		for (u32 i = 0; i < sizeof(prepassSlots) / sizeof(PsoSlot); i++)
+		{
+			if (prepass[i].pipeline != VK_NULL_HANDLE)
+				device.destroyPipeline(vk::Pipeline(prepass[i].pipeline));
+			prepass[i].pipeline = VK_NULL_HANDLE;
+			prepass[i].owner = nullptr;
+		}
+	}
+	lastKey = ~0ull;
+}
+
+void PipelineManager::Prepare()
+{
+	VkPsoWorker& worker = VkPsoWorker::Instance();
+	std::vector<PsoSlot *> now;
+	auto addGeneral = [&](u64 key) {
+		const u64 generalKey = GeneralKey(key);
+		if (general.Find(generalKey) == nullptr)
+		{
+			PsoSlot *slot = general.Insert(generalKey);
+			if (slot != nullptr)
+				now.push_back(slot);
+		}
+	};
+	auto fits = [&](u64 key) {
+		const u32 rate = (key >> KEY_RATE) & 3;
+		return ((key >> KEY_KIND) & 15) == KIND_POLY && (samples > 1 ? rate == 1 || rate == 2 : rate == 0);
+	};
+	// the general pipelines: of each module, and of each fixed state the device must have made with them
+	for (u64 gouraud = 0; gouraud < 2; gouraud++)
+		for (u64 rate = samples > 1 ? 1 : 0; rate <= (samples > 1 ? 2u : 0u); rate++)
+			addGeneral((gouraud << KEY_GOURAUD) | (rate << KEY_RATE));
+	GetContext()->PsoKeys().ForEach(who, [&](u64 key) { if (fits(key)) addGeneral(key); });
+	// the modifier volumes'
+	for (int mode = 0; mode <= (int)ModVolMode::Depth; mode++)
+		for (int cull = 0; cull < 3; cull++)
+		{
+			if ((ModVolMode)mode == ModVolMode::Final && cull != 0)
+				continue;
+			PsoSlot& slot = modVolSlots[mode * 3 + cull];
+			slot.key = ((u64)KIND_MODVOL << KEY_KIND) | ((u64)mode << 2) | (u64)(cull == 0 ? 0 : cull + 1);
+			slot.owner = this;
+			slot.pipeline = VK_NULL_HANDLE;
+			now.push_back(&slot);
+		}
+	// the depth prepass's (rend/sorter.h)
+	for (int texture = 0; texture < 2; texture++)
+		for (int gouraud = 0; gouraud < 2; gouraud++)
+			for (int cull = 0; cull < 3; cull++)
+				for (int rate = 0; rate < (samples > 1 ? 2 : 1); rate++)
+				{
+					PsoSlot& slot = prepassSlots[texture][gouraud][cull][rate];
+					slot.key = ((u64)KIND_PREPASS << KEY_KIND) | (u64)((texture << 4) | (gouraud << 3) | (cull << 1) | rate);
+					slot.owner = this;
+					slot.pipeline = VK_NULL_HANDLE;
+					now.push_back(&slot);
+				}
+	worker.BuildNow(now.data(), (u32)now.size(), GetContext()->GetPipelineCache());
+	/* The polygons' own pipelines made in earlier runs: asked for now, made
+	 * while nothing more pressing is */
+	if (worker.Running())
+		GetContext()->PsoKeys().ForEach(who, [&](u64 key) {
+			if (fits(key) && pipelines.Find(key) == nullptr)
+			{
+				PsoSlot *slot = pipelines.Insert(key);
+				if (slot != nullptr)
+					worker.Prefetch(slot);
+			}
+		});
+}
+
+VkPipeline PipelineManager::BuildPipeline(u64 key, vk::PipelineCache cache)
+{
+	switch ((key >> KEY_KIND) & 15)
+	{
+	case KIND_POLY:
+		return BuildPoly(key, false, cache);
+	case KIND_GENERAL:
+		return BuildPoly(key, true, cache);
+	case KIND_MODVOL:
+		return BuildModVol((ModVolMode)((key >> 2) & 7), (int)(key & 3), cache);
+	case KIND_PREPASS:
+		return BuildPrepass((int)((key >> 4) & 1), (int)((key >> 3) & 1), (int)((key >> 1) & 3), (int)(key & 1), cache);
+	default:
+		return VK_NULL_HANDLE;
+	}
+}
+
+VkPipeline PipelineManager::BuildModVol(ModVolMode mode, int cullMode, vk::PipelineCache cache)
 {
 	// Vertex input state
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo;
@@ -167,18 +454,18 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 	  renderPass                                  // renderPass
 	);
 
-	modVolPipelines[hash(mode, cullMode)] =
-			GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
-					graphicsPipelineCreateInfo);
+	return PsoCreate(GetContext()->GetDevice(), cache, graphicsPipelineCreateInfo);
 }
 
-void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, ShadowPass shadowPass, bool sampleRate)
+/* A polygon's pipeline, all of it from @key; @general: the one that draws
+ * for the keys that differ from it only in what the draw sets (pso.h) */
+VkPipeline PipelineManager::BuildPoly(u64 key, bool general, vk::PipelineCache cache)
 {
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo();
 
 	// Input assembly state
 	vk::PipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateCreateInfo(vk::PipelineInputAssemblyStateCreateFlags(),
-			sortTriangles && !settings.pvr.Emulation.AlphaSortMode ? vk::PrimitiveTopology::eTriangleList : vk::PrimitiveTopology::eTriangleStrip);
+			((key >> KEY_LIST) & 1) ? vk::PrimitiveTopology::eTriangleList : vk::PrimitiveTopology::eTriangleStrip);
 
 	// Viewport and scissor states
 	vk::PipelineViewportStateCreateInfo pipelineViewportStateCreateInfo(vk::PipelineViewportStateCreateFlags(), 1, nullptr, 1, nullptr);
@@ -190,9 +477,7 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  false,                                        // depthClampEnable
 	  false,                                        // rasterizerDiscardEnable
 	  vk::PolygonMode::eFill,                       // polygonMode
-	  pp.isp.CullMode == 3 ? vk::CullModeFlagBits::eBack
-			  : pp.isp.CullMode == 2 ? vk::CullModeFlagBits::eFront
-			  : vk::CullModeFlagBits::eNone,        // cullMode
+	  CullMode((key >> KEY_CULL) & 3),              // cullMode
 	  vk::FrontFace::eCounterClockwise,             // frontFace
 	  false,                                        // depthBiasEnable
 	  0.0f,                                         // depthBiasConstantFactor
@@ -200,62 +485,20 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  0.0f,                                         // depthBiasSlopeFactor
 	  1.0f                                          // lineWidth
 	);
-	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, sampleRate);
+	const u32 rate = (key >> KEY_RATE) & 3;
+	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, rate == 1);
 
 	// Depth and stencil
-	vk::CompareOp depthOp;
-	if (listType == ListType_Punch_Through || sortTriangles)
-		depthOp = vk::CompareOp::eGreaterOrEqual;
-	else
-		depthOp = depthOps[pp.isp.DepthMode];
-	bool depthWriteEnable;
-	// Sorted translucent polygons, per triangle or per strip, do not write
-	// depth: a strip drawn in sorted order would hide parts of the ones after it.
-	if (sortTriangles)
-		// FIXME temporary work-around for intel driver bug
-		depthWriteEnable = GetContext()->GetVendorID() == VENDOR_INTEL;
-	else
-	{
-		// Z Write Disable seems to be ignored for punch-through.
-		// Fixes Worms World Party, Bust-a-Move 4 and Re-Volt
-		if (listType == ListType_Punch_Through)
-			depthWriteEnable = true;
-		else
-			depthWriteEnable = !pp.isp.ZWriteDis;
-	}
-
-	bool shadowed = listType == ListType_Opaque || listType == ListType_Punch_Through;
-	vk::StencilOpState stencilOpState;
-	if (shadowPass != ShadowPass::None)
-	{
-		/* Drawn again for its shadow: where this polygon is the one showing
-		 * (same depth), takes shadows (stencil bit 7) and is in a volume
-		 * (bit 0). Bit 6 marks the pixels drawn this way; whether one already
-		 * marked may be drawn over is what tells the two kinds apart. */
-		depthOp = vk::CompareOp::eEqual;
-		depthWriteEnable = false;
-		if (shadowPass == ShadowPass::LaterWins)
-			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eEqual, 0x81, 0x40, 0xC1);
-		else
-			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eInvert, vk::StencilOp::eKeep, vk::CompareOp::eEqual, 0xC1, 0x40, 0x81);
-	}
-	else if (shadowed)
-	{
-		if (pp.pcw.Shadow != 0)
-			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eAlways, 0, 0x80, 0x80);
-		else
-			stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eReplace, vk::StencilOp::eKeep, vk::CompareOp::eAlways, 0, 0x80, 0);
-	}
-	else
-		stencilOpState = vk::StencilOpState(vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::CompareOp::eNever);
+	const u32 stencil = (key >> KEY_STENCIL) & 7;
+	const vk::StencilOpState stencilOpState = StencilState(stencil);
 	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo
 	(
 	  vk::PipelineDepthStencilStateCreateFlags(), // flags
 	  true,                                       // depthTestEnable
-	  depthWriteEnable,                           // depthWriteEnable
-	  depthOp,                                    // depthCompareOp
+	  (key >> KEY_ZWRITE) & 1,                    // depthWriteEnable
+	  (vk::CompareOp)((key >> KEY_DEPTH_OP) & 7), // depthCompareOp
 	  false,                                      // depthBoundTestEnable
-	  shadowed,                                   // stencilTestEnable
+	  stencil != STENCIL_NONE,                    // stencilTestEnable
 	  stencilOpState,                             // front
 	  stencilOpState                              // back
 	);
@@ -263,17 +506,10 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	// Color flags and blending
 	vk::ColorComponentFlags colorComponentFlags(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
 	vk::PipelineColorBlendAttachmentState pipelineColorBlendAttachmentState;
-	// Apparently punch-through polys support blending, or at least some combinations
-	// An opaque polygon is blended by its instructions too when it is in a
-	// list continuation; the ones of the first render pass have had theirs
-	// set to source x 1 and destination x 0 when the list was read. That
-	// pair is no blending at all, and is left as that so it costs nothing.
-	if (shadowPass == ShadowPass::None
-			&& (listType == ListType_Translucent || listType == ListType_Punch_Through
-				|| pp.tsp.SrcInstr != 1 || pp.tsp.DstInstr != 0))
+	if ((key >> KEY_BLEND) & 1)
 	{
-		u32 src = pp.tsp.SrcInstr;
-		u32 dst = pp.tsp.DstInstr;
+		u32 src = (key >> KEY_SRC) & 7;
+		u32 dst = (key >> KEY_DST) & 7;
 		pipelineColorBlendAttachmentState =
 		{
 		  true,                          // blendEnable
@@ -311,34 +547,39 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  { { 1.0f, 1.0f, 1.0f, 1.0f } }              // blendConstants
 	);
 
-	vk::DynamicState dynamicStates[2] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
-	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), 2, dynamicStates);
+	// the general pipeline's states that are set with each draw (SetDynamicState())
+	vk::DynamicState dynamicStates[18] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+	u32 dynamicCount = 2;
+	if (general)
+	{
+		const pso_ext::Functions& dynamic = GetContext()->DynamicState();
+		if (dynamic.depthStencil)
+		{
+			const int states[] = { pso_ext::DYNAMIC_STATE_CULL_MODE, pso_ext::DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
+					pso_ext::DYNAMIC_STATE_DEPTH_TEST_ENABLE, pso_ext::DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+					pso_ext::DYNAMIC_STATE_DEPTH_COMPARE_OP, pso_ext::DYNAMIC_STATE_STENCIL_TEST_ENABLE,
+					pso_ext::DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+					VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE };
+			for (int state : states)
+				dynamicStates[dynamicCount++] = (vk::DynamicState)state;
+		}
+		if (dynamic.blend)
+		{
+			const int states[] = { pso_ext::DYNAMIC_STATE_COLOR_BLEND_ENABLE, pso_ext::DYNAMIC_STATE_COLOR_BLEND_EQUATION,
+					pso_ext::DYNAMIC_STATE_COLOR_WRITE_MASK };
+			for (int state : states)
+				dynamicStates[dynamicCount++] = (vk::DynamicState)state;
+		}
+	}
+	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), dynamicCount, dynamicStates);
 
-	vk::ShaderModule vertex_module = shaderManager->GetVertexShader(VertexShaderParams{ pp.pcw.Gouraud == 1 });
+	const bool gouraud = (key >> KEY_GOURAUD) & 1;
+	vk::ShaderModule vertex_module = shaderManager->GetVertexShader(VertexShaderParams{ gouraud });
 	FragmentShaderParams params = {};
-	params.alphaTest = listType == ListType_Punch_Through;
-	params.bumpmap = pp.tcw.PixelFmt == PixelBumpMap;
-	/* By the polygon alone. The clamping limits were looked at too, to leave
-	 * the clamp out of the shader while they clamp nothing - but a pipeline
-	 * is made once and kept under a key that has only the polygon's bit in
-	 * it, and the limits change: a polygon first drawn while they clamped
-	 * nothing was never clamped after. (Upstream: Red Dog.) */
-	params.clamping = pp.tsp.ColorClamp;
-	params.insideClipTest = (pp.tileclip >> 28) == 3;
-	params.fog = pp.tsp.FogCtrl;
-	params.gouraud = pp.pcw.Gouraud;
-   params.ignoreTexAlpha = pp.tsp.IgnoreTexA || pp.tcw.PixelFmt == Pixel565;
-	params.offset = pp.pcw.Offset;
-	params.shaderInstr = pp.tsp.ShadInstr;
-	params.texture = pp.pcw.Texture;
-	params.trilinear = pp.pcw.Texture && pp.tsp.FilterMode > 1 && listType != ListType_Punch_Through && pp.tcw.MipMapped == 1;
-	params.useAlpha = pp.tsp.UseAlpha;
-	params.palette = BaseTextureCacheData::IsGpuHandledPaletted(pp.tsp, pp.tcw);
-	params.shadowed = shadowPass != ShadowPass::None;
-	params.sampleRate = samples > 1 ? (sampleRate ? 1 : 2) : 0;
-	params.samples = samples;
+	params.gouraud = gouraud;
+	params.sampleRate = (int)rate;
 	vk::ShaderModule fragment_module = shaderManager->GetFragmentShader(params);
-	const PsoSpecialization specialization(params.key(), samples);
+	const PsoSpecialization specialization(general ? -1 : (s32)(key & ((1u << TRI_SC_BITS) - 1)), samples);
 
 	vk::PipelineShaderStageCreateInfo stages[] = {
 			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main" },
@@ -362,17 +603,17 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  renderPass                                  // renderPass
 	);
 
-	pipelines[key(listType, sortTriangles, pp, shadowPass, sampleRate)] = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
-			graphicsPipelineCreateInfo);
+	return PsoCreate(GetContext()->GetDevice(), cache, graphicsPipelineCreateInfo);
 }
 
-void PipelineManager::CreatePrepassPipelines()
+/* A pipeline of the depth prepass of a sorted translucent list (rend/sorter.h):
+ * depth only, written where the depth test passes (the colour pass's test) */
+VkPipeline PipelineManager::BuildPrepass(int texture, int gouraud, int cull, int rate, vk::PipelineCache cache)
 {
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo();
 	vk::PipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateCreateInfo(vk::PipelineInputAssemblyStateCreateFlags(),
 			vk::PrimitiveTopology::eTriangleList);
 	vk::PipelineViewportStateCreateInfo pipelineViewportStateCreateInfo(vk::PipelineViewportStateCreateFlags(), 1, nullptr, 1, nullptr);
-	// (depth only, written where the depth test passes: the colour pass's test)
 	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo(vk::PipelineDepthStencilStateCreateFlags(),
 			true, true, vk::CompareOp::eGreaterOrEqual, false, false);
 	vk::PipelineColorBlendAttachmentState pipelineColorBlendAttachmentState(false, vk::BlendFactor::eZero, vk::BlendFactor::eZero,
@@ -381,38 +622,28 @@ void PipelineManager::CreatePrepassPipelines()
 			vk::LogicOp::eNoOp, 1, &pipelineColorBlendAttachmentState, { { 1.0f, 1.0f, 1.0f, 1.0f } });
 	vk::DynamicState dynamicStates[2] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
 	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), 2, dynamicStates);
+	vk::PipelineRasterizationStateCreateInfo pipelineRasterizationStateCreateInfo(vk::PipelineRasterizationStateCreateFlags(),
+			false, false, vk::PolygonMode::eFill, CullMode(cull), vk::FrontFace::eCounterClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
+	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, rate == 1);
 
-	for (int texture = 0; texture < 2; texture++)
-		for (int gouraud = 0; gouraud < 2; gouraud++)
-			for (int cull = 0; cull < 3; cull++)
-				for (int rate = 0; rate < (samples > 1 ? 2 : 1); rate++)
-				{
-					vk::PipelineRasterizationStateCreateInfo pipelineRasterizationStateCreateInfo(vk::PipelineRasterizationStateCreateFlags(),
-							false, false, vk::PolygonMode::eFill,
-							cull == 2 ? vk::CullModeFlagBits::eBack : cull == 1 ? vk::CullModeFlagBits::eFront : vk::CullModeFlagBits::eNone,
-							vk::FrontFace::eCounterClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
-					vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo = SsaaMultisample(samples, rate == 1);
-
-					PrepassShaderParams params = {};
-					params.texture = texture == 1;
-					params.gouraud = gouraud == 1;
-					params.sampleRate = samples > 1 ? (rate == 1 ? 1 : 2) : 0;
-					params.samples = samples;
-					const PsoSpecialization specialization(0, samples);
-					vk::PipelineShaderStageCreateInfo stages[] = {
-							{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex,
-									shaderManager->GetVertexShader(VertexShaderParams{ gouraud == 1 }), "main" },
-							{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
-									shaderManager->GetPrepassShader(params), "main", &specialization.info },
-					};
-					vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo(vk::PipelineCreateFlags(), 2, stages,
-							&pipelineVertexInputStateCreateInfo, &pipelineInputAssemblyStateCreateInfo, nullptr,
-							&pipelineViewportStateCreateInfo, &pipelineRasterizationStateCreateInfo, &pipelineMultisampleStateCreateInfo,
-							&pipelineDepthStencilStateCreateInfo, &pipelineColorBlendStateCreateInfo, &pipelineDynamicStateCreateInfo,
-							*pipelineLayout, renderPass);
-					prepassPipelines[texture][gouraud][cull][rate] = GetContext()->GetDevice().createGraphicsPipelineUnique(
-							GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo);
-				}
+	PrepassShaderParams params = {};
+	params.texture = texture == 1;
+	params.gouraud = gouraud == 1;
+	params.sampleRate = samples > 1 ? (rate == 1 ? 1 : 2) : 0;
+	params.samples = samples;
+	const PsoSpecialization specialization(0, samples);
+	vk::PipelineShaderStageCreateInfo stages[] = {
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex,
+					shaderManager->GetVertexShader(VertexShaderParams{ gouraud == 1 }), "main" },
+			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
+					shaderManager->GetPrepassShader(params), "main", &specialization.info },
+	};
+	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo(vk::PipelineCreateFlags(), 2, stages,
+			&pipelineVertexInputStateCreateInfo, &pipelineInputAssemblyStateCreateInfo, nullptr,
+			&pipelineViewportStateCreateInfo, &pipelineRasterizationStateCreateInfo, &pipelineMultisampleStateCreateInfo,
+			&pipelineDepthStencilStateCreateInfo, &pipelineColorBlendStateCreateInfo, &pipelineDynamicStateCreateInfo,
+			*pipelineLayout, renderPass);
+	return PsoCreate(GetContext()->GetDevice(), cache, graphicsPipelineCreateInfo);
 }
 
 vk::UniqueRenderPass MakeSsaaRenderPass(vk::Format colorFormat, u32 samples, vk::ImageLayout pictureLayout)

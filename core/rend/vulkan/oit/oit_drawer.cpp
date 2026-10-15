@@ -92,14 +92,21 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 		pushConstants.ignore_tex_alpha0 = poly.tsp.IgnoreTexA;
 		pushConstants.ignore_tex_alpha1 = poly.tsp1.IgnoreTexA;
 	}
-	cmdBuffer.pushConstants<OITDescriptorSets::PushConstants>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
+	const OITPsoChoice pso = pipelineManager->GetPipeline(listType, autosort, poly, pass);
+	if (pso.pipeline == VK_NULL_HANDLE)
+		return;
+	// (the general pipeline is told the polygon's key too: pso.h)
+	pushConstants.key = (int)(pso.key & ((1u << OIT_SC_BITS) - 1));
+	cmdBuffer.pushConstants(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0,
+			pso.general ? (u32)sizeof(pushConstants) : (u32)OIT_PUSH_KEY_OFFSET, &pushConstants);
 
 	bool needTexture = poly.pcw.Texture;
 	if (needTexture)
 		GetCurrentDescSet().SetTexture(poly.texid, poly.tsp, poly.texid1, poly.tsp1);
 
-	vk::Pipeline pipeline = pipelineManager->GetPipeline(listType, autosort, poly, pass);
-	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, vk::Pipeline(pso.pipeline));
+	if (pso.general)
+		pipelineManager->SetDynamicState(cmdBuffer, pso.key);
 	if (needTexture)
 		GetCurrentDescSet().BindPerPolyDescriptorSets(cmdBuffer, poly.texid, poly.tsp, poly.texid1, poly.tsp1);
 
