@@ -23,16 +23,68 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include "rend/TexCache.h"
+#include "rend/texdecode.h"
+#include "rend/tex_pool.h"
 #include <map>
 #include <string>
 #include <cstdio>
 #include "comptr.h"
 
+class DX11TexDecoder;
+
+/* A texture of the texture pool's: a view of it to sample, and of each
+ * level for the decoder to write through - an unsigned integer view of
+ * the 32-bit and 8-bit ones (made typeless for that), a render target view
+ * of the 16-bit ones - where the decoder makes textures of its format */
+struct DX11PooledTexture : TexPoolEntry
+{
+	ComPtr<ID3D11Texture2D> texture;
+	ComPtr<ID3D11ShaderResourceView> view;
+	ComPtr<ID3D11UnorderedAccessView> uavs[TEXD_MAX_LEVELS];
+	ComPtr<ID3D11RenderTargetView> targets[TEXD_MAX_LEVELS];
+	u32 levels = 1;
+	bool writable = false;
+	DX11PooledTexture *all = nullptr;		// every one there is, for Term()
+};
+
+/* The cache's textures (rend/tex_pool.h): made when the renderer starts,
+ * and handed out to the textures that need one of their shape. The pool's
+ * formats are the texture types, by their numbers. A texture is given
+ * back as soon as it is done with: Direct3D sees to it that what the GPU
+ * still has to do with it is done first. */
+class DX11TexturePool
+{
+public:
+	void Init(ID3D11Device *device, const VramBudget& budget, const DX11TexDecoder *decoder);
+	void Term();
+	/* A texture of @type, @width by @height, with its levels or not: a
+	 * free one of that shape, or one made now if there is none. Null if
+	 * the shape is not one of the pool's. */
+	DX11PooledTexture *Take(TextureType type, u32 width, u32 height, bool mips);
+	void Give(DX11PooledTexture *texture) { book.Give(texture); }
+	const TexPoolBook& Book() const { return book; }
+
+private:
+	DX11PooledTexture *Make(int cls, bool late);
+
+	TexPoolBook book;
+	ID3D11Device *device = nullptr;
+	bool ready = false;
+	bool usable[5] = {};
+	bool writable[5] = {};
+	DX11PooledTexture *all = nullptr;
+};
+
 class DX11Texture : public BaseTextureCacheData
 {
 public:
+	~DX11Texture() { ReleasePooled(); }
 	void UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded = false) override;
+	bool GpuDecode(const texd_plan& plan) override;
 	bool Delete() override;
+	/* The renderer's, while it has them */
+	static void SetDecoder(DX11TexDecoder *decoder) { DX11Texture::decoder = decoder; }
+	static void SetPool(DX11TexturePool *pool) { DX11Texture::pool = pool; }
 	bool Force32BitTexture(TextureType type) const override;
 	std::string GetId() override { char s[20]; sprintf(s, "%p", (void *)this); return s; }
 	u64 GetIntId() { return (u64)reinterpret_cast<uintptr_t>(this); }
@@ -51,10 +103,25 @@ public:
 	ComPtr<ID3D11RenderTargetView> spareTarget;
 	void SwapWithSpare()
 	{
+		// (the pool's texture is not one to be rendered to: it goes back)
+		ReleasePooled();
 		std::swap(texture, spare);
 		std::swap(textureView, spareView);
 		spareTarget.reset();
 	}
+
+private:
+	/* The pool's texture for this shape, the one it has if it is that;
+	 * false if the pool has none of this shape */
+	bool TakePooled(u32 width, u32 height, bool mips);
+	void ReleasePooled();
+	/* What was asked of the decoder for it is not done after all */
+	void CancelDecode();
+
+	DX11PooledTexture *pooled = nullptr;
+	u32 decodeJob = 0, decodeCount = 0, decodeSerial = 0;
+	static DX11TexDecoder *decoder;
+	static DX11TexturePool *pool;
 };
 
 class DX11TextureCache : public BaseTextureCache<DX11Texture>

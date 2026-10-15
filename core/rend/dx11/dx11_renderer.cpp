@@ -146,6 +146,11 @@ bool DX11Renderer::Init()
 		WARN_LOG(RENDERER, "DX11 renderer initialization failed");
 		return false;
 	}
+	// textures made on the GPU, and the textures themselves, all of them now (rend/tex_pool.h)
+	texDecoder.Init(context);
+	texPool.Init(device, context->GetVramBudget(), &texDecoder);
+	DX11Texture::SetDecoder(texDecoder.Ready() ? &texDecoder : nullptr);
+	DX11Texture::SetPool(&texPool);
 	return true;
 }
 
@@ -160,6 +165,11 @@ void DX11Renderer::Term()
 	DX11Context::Instance()->SetFrame(nullptr, nullptr);
 	dx11_rtt_term();
 	texCache.Clear();
+	// (what the cache's textures had is back in the pool by now)
+	DX11Texture::SetPool(nullptr);
+	DX11Texture::SetDecoder(nullptr);
+	texPool.Term();
+	texDecoder.Term();
 	overlay.Term();
 	depthStencilStates.Term();
 	fbView.reset();
@@ -288,6 +298,8 @@ bool DX11Renderer::ProcessLocked(TA_context* ctx)
 	}
 
 	bool result = ta_parse_vdrc(ctx);
+	// the textures the frame's polygons asked for that are made on the GPU, before the draws
+	texDecoder.Flush();
 
 	texCache.Cleanup();
 

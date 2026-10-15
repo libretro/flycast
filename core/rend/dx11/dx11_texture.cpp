@@ -19,10 +19,223 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "dx11_texture.h"
 #include "dx11context_lr.h"
+#include "dx11_texdecoder.h"
 #include "rend/rtt_watch.h"
 #include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/pvr_mem.h"
 #include <algorithm>
 #include <vector>
+
+DX11TexDecoder *DX11Texture::decoder;
+DX11TexturePool *DX11Texture::pool;
+
+/* ---- The texture pool ---- */
+
+// by TextureType: 565, 5551, 4444, 8888, 8
+static const DXGI_FORMAT poolFormats[5] = {
+	DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B5G5R5A1_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8_UNORM
+};
+static const char * const poolFormatNames[5] = { "565", "5551", "4444", "8888", "8-bit" };
+static const u32 poolTexel[5] = { 2, 2, 2, 4, 1 };
+
+void DX11TexturePool::Init(ID3D11Device *device, const VramBudget& budget, const DX11TexDecoder *decoder)
+{
+	if (ready)
+		return;
+	this->device = device;
+	book.Reset(1);
+	// how much games use them, in eighths of what they use 565
+	static const u32 use[5] = { 8, 4, 4, 4, 2 };
+	u32 have[5];
+	for (int f = 0; f < 5; f++)
+	{
+		usable[f] = DX11Context::Instance()->IsFormatSupported((TextureType)f);
+		writable[f] = usable[f] && decoder != nullptr && decoder->Takes((TextureType)f);
+		have[f] = usable[f] ? poolTexel[f] : 0;
+	}
+	u32 counts[TexPoolBook::CLASSES];
+	const u64 bytes = TexPoolBook::Plan(budget, have, use, 5, counts);
+	ready = true;
+	for (int c = 0; c < TexPoolBook::CLASSES; c++)
+		for (u32 i = 0; i < counts[c]; i++)
+		{
+			DX11PooledTexture *texture = Make(c, false);
+			if (texture == nullptr)
+				break;
+			book.Give(texture);
+		}
+	NOTICE_LOG(RENDERER, "DX11: texture pool of %u textures, %u MB (planned %u MB)", book.made, (u32)(book.bytesMade >> 20), (u32)(bytes >> 20));
+}
+
+void DX11TexturePool::Term()
+{
+	if (!ready)
+		return;
+	book.Summary("DX11");
+	while (all != nullptr)
+	{
+		DX11PooledTexture *next = all->all;
+		delete all;
+		all = next;
+	}
+	book.Reset(1);
+	ready = false;
+	device = nullptr;
+}
+
+DX11PooledTexture *DX11TexturePool::Make(int cls, bool late)
+{
+	const u32 f = TexPoolBook::Format(cls);
+	const u32 width = TexPoolBook::Width(cls), height = TexPoolBook::Height(cls);
+	const bool wide = f == (u32)TextureType::_8888 || f == (u32)TextureType::_8;
+	DX11PooledTexture *t = new DX11PooledTexture();
+	t->levels = TexPoolBook::Mips(cls) ? 1 + bitscanrev(std::max(width, height)) : 1;
+	t->writable = writable[f];
+
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = width;
+	desc.Height = height;
+	desc.MipLevels = t->levels;
+	desc.ArraySize = 1;
+	// (typeless, for the unsigned integer views the kernels write through)
+	desc.Format = t->writable && wide ? (f == (u32)TextureType::_8 ? DXGI_FORMAT_R8_TYPELESS : DXGI_FORMAT_R8G8B8A8_TYPELESS) : poolFormats[f];
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (t->writable ? (wide ? D3D11_BIND_UNORDERED_ACCESS : D3D11_BIND_RENDER_TARGET) : 0);
+	bool ok = SUCCEEDED(device->CreateTexture2D(&desc, nullptr, t->texture.put()));
+	if (ok)
+	{
+		D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+		view.Format = poolFormats[f];
+		view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		view.Texture2D.MostDetailedMip = 0;
+		view.Texture2D.MipLevels = t->levels;
+		ok = SUCCEEDED(device->CreateShaderResourceView(t->texture, &view, t->view.put()));
+	}
+	for (u32 level = 0; ok && t->writable && level < t->levels; level++)
+		if (wide)
+		{
+			D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
+			uav.Format = f == (u32)TextureType::_8 ? DXGI_FORMAT_R8_UINT : DXGI_FORMAT_R8G8B8A8_UINT;
+			uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+			uav.Texture2D.MipSlice = level;
+			ok = SUCCEEDED(device->CreateUnorderedAccessView(t->texture, &uav, t->uavs[level].put()));
+		}
+		else
+		{
+			D3D11_RENDER_TARGET_VIEW_DESC rtv{};
+			rtv.Format = poolFormats[f];
+			rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+			rtv.Texture2D.MipSlice = level;
+			ok = SUCCEEDED(device->CreateRenderTargetView(t->texture, &rtv, t->targets[level].put()));
+		}
+	if (!ok)
+	{
+		WARN_LOG(RENDERER, "DX11: texture pool: a %ux%u %s texture could not be made", width, height, poolFormatNames[f]);
+		delete t;
+		return nullptr;
+	}
+	book.Made(t, cls, TexPoolBook::Bytes(cls, poolTexel[f]), late, poolFormatNames[f]);
+	t->all = all;
+	all = t;
+	return t;
+}
+
+DX11PooledTexture *DX11TexturePool::Take(TextureType type, u32 width, u32 height, bool mips)
+{
+	const u32 f = (u32)type;
+	if (!ready || f >= 5 || !usable[f])
+		return nullptr;
+	const int cls = TexPoolBook::Class(f, width, height, mips);
+	if (cls < 0)
+		return nullptr;
+	TexPoolEntry *e = book.Take(cls);
+	return e != nullptr ? static_cast<DX11PooledTexture *>(e) : Make(cls, true);
+}
+
+bool DX11Texture::TakePooled(u32 width, u32 height, bool mips)
+{
+	if (pool == nullptr)
+		return false;
+	if (pooled != nullptr && (int)pooled->cls == TexPoolBook::Class((u32)tex_type, width, height, mips))
+		return true;
+	DX11PooledTexture *t = pool->Take(tex_type, width, height, mips);
+	if (t == nullptr)
+		return false;
+	ReleasePooled();
+	pooled = t;
+	texture = t->texture;
+	textureView = t->view;
+	return true;
+}
+
+void DX11Texture::ReleasePooled()
+{
+	CancelDecode();
+	if (pooled == nullptr)
+		return;
+	textureView.reset();
+	texture.reset();
+	if (pool != nullptr)
+		pool->Give(pooled);
+	pooled = nullptr;
+}
+
+void DX11Texture::CancelDecode()
+{
+	if (decodeCount != 0 && decoder != nullptr)
+		decoder->Cancel(decodeJob, decodeCount, decodeSerial);
+	decodeCount = 0;
+}
+
+/* Made on the GPU (dx11_texdecoder.h), or copied as it is. Everything that
+ * can say no does before anything is changed but the texture it is made
+ * into, which a no leaves for the CPU's upload to take. */
+bool DX11Texture::GpuDecode(const texd_plan& plan)
+{
+	DX11Context *context = DX11Context::Instance();
+	if (context->GetDevice() == nullptr || pool == nullptr)
+		return false;
+	if (plan.native)
+	{
+		/* A planar 16-bit texture: the PowerVR's texels are Direct3D's
+		 * as they are, and its rows go from video memory to the texture */
+		if (tex_type == TextureType::_8888 || tex_type == TextureType::_8 || !context->IsFormatSupported(tex_type)
+				|| !TakePooled(plan.width, plan.height, false))
+			return false;
+		CancelDecode();
+		context->GetDeviceContext()->UpdateSubresource(texture, 0, nullptr, &vram[plan.src + plan.level[0].data],
+				(plan.level[0].sr & 0xFFFF) * 2, 0);
+		return true;
+	}
+	if (decoder == nullptr || !decoder->Takes(tex_type)
+			|| !TakePooled(plan.width, plan.height, plan.mipmapped != 0) || !pooled->writable || pooled->levels < plan.levels)
+		return false;
+	CancelDecode();
+	u32 base;
+	u8 * const to = decoder->Begin(plan.pal + plan.pal_entries * 4, plan.levels, &base);
+	if (to == nullptr)
+		return false;
+	memcpy(to, &vram[plan.src], plan.bytes);
+	if (plan.pal_entries != 0)
+		memcpy(to + plan.pal, (plan.out == TEXD_OUT16 ? palette16_ram : palette32_ram) + plan.pal_index, plan.pal_entries * 4);
+
+	const u32 d3d16 = plan.out != TEXD_OUT16 ? 0
+			: TEXD_D3D16(tex_type == TextureType::_5551 ? TEXD_D3D_5551 : tex_type == TextureType::_4444 ? TEXD_D3D_4444 : TEXD_D3D_565);
+	decodeJob = decoder->Next();
+	decodeSerial = decoder->Serial();
+	for (u32 i = 0; i < plan.levels; i++)
+	{
+		const texd_level& lv = plan.level[i];
+		const u32 pc[6] = { base, lv.data, plan.pal, lv.wh, lv.sr, lv.mode | d3d16 };
+		if (plan.out == TEXD_OUT16)
+			decoder->Add(nullptr, pooled->targets[lv.mip], pc);
+		else
+			decoder->Add(pooled->uavs[lv.mip], nullptr, pc);
+	}
+	decodeCount = plan.levels;
+	return true;
+}
 
 /* The 16-bit textures come out of the texture cache as OpenGL has them,
  * red in the top bits and alpha in the bottom one or four. Direct3D's
@@ -52,6 +265,8 @@ void DX11Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, b
 	ID3D11DeviceContext *deviceContext = context->GetDeviceContext();
 	if (device == nullptr)
 		return;
+	// what the decoder was to make of it this frame is this now
+	CancelDecode();
 
 	DXGI_FORMAT format;
 	u32 bpp = 2;
@@ -103,7 +318,12 @@ void DX11Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, b
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (generate ? D3D11_BIND_RENDER_TARGET : 0);
 	desc.MiscFlags = generate ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
 
-	if (texture)
+	/* One of the pool's, made before the game (but one whose smaller levels
+	 * the card makes) */
+	const bool fromPool = !generate && TakePooled(width, height, mipmapsIncluded);
+	if (!fromPool)
+		ReleasePooled();
+	if (texture && !fromPool)
 	{
 		/* Kept if it is what the new one would be. (A render to this
 		 * texture leaves one that can be rendered to, which is not.) */
@@ -189,6 +409,7 @@ bool DX11Texture::Delete()
 {
 	if (!BaseTextureCacheData::Delete())
 		return false;
+	ReleasePooled();
 	textureView.reset();
 	texture.reset();
 	spareTarget.reset();

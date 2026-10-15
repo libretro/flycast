@@ -31,6 +31,7 @@
 #include "rend/shadows.h"
 #include "dx11context_lr.h"
 #include "dx11_overlay.h"
+#include "dx11_texdecoder.h"
 #include <vector>
 
 /* The Direct3D 11 renderers. This one sorts translucent polygons by
@@ -102,6 +103,8 @@ protected:
 	DX11Samplers *samplers = nullptr;
 	DX11BlendStates *blendStates = nullptr;
 	DX11DepthStencilStates depthStencilStates;
+	DX11TexDecoder texDecoder;		// (before the cache: textures going away tell it)
+	DX11TexturePool texPool;		// (and give their textures back)
 	DX11TextureCache texCache;
 	DX11Overlay overlay;
 	TransformMatrix<false> matrices;
