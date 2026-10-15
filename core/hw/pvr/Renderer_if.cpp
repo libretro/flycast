@@ -201,7 +201,7 @@ void rend_term_renderer()
 	texcache_scratch_free();
 }
 
-bool rend_frame(TA_context* ctx, bool draw_osd)
+void rend_prepare_renderer()
 {
    if (renderer_changed || renderer == NULL)
    {
@@ -211,6 +211,11 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
 	  rend_create_renderer();
 	  rend_init_renderer();
    }
+}
+
+bool rend_frame(TA_context* ctx, bool draw_osd)
+{
+   rend_prepare_renderer();
 #if !defined(TARGET_NO_THREADS)
    /* The renderer reads the registers as they were when the game started
     * this render. */

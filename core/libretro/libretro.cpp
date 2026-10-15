@@ -1528,6 +1528,18 @@ void retro_run (void)
             || settings.pvr.rend == 6 || settings.pvr.rend == 7))
          rend_keep_picture();
 #endif
+#ifdef HAVE_VULKAN
+      /* With Vulkan, what the options ask for is set up here, between
+       * frames, while the machine is not running - the renderer made
+       * again, GPU-side TA processing made or taken down - and not in the
+       * frame drawn next. (Not without a renderer: then there is no
+       * context either, and the next one sets it up.) */
+      if (renderer != NULL && (settings.pvr.rend == 4 || settings.pvr.rend == 5))
+      {
+         rend_prepare_renderer();
+         renderer->OptionsChanged();
+      }
+#endif
    }
    if (resize_pending)
       apply_new_size();
@@ -2139,7 +2151,13 @@ static void retro_vk_context_reset()
    context_resets++;
    take_pending_size();
    theVulkanContext.SetWindowSize(screen_width, screen_height);
-   theVulkanContext.Init((retro_hw_render_interface_vulkan *)vulkan);
+   if (!theVulkanContext.Init((retro_hw_render_interface_vulkan *)vulkan))
+      return;
+   /* The renderer is set up now, with the context, and not in the first
+    * frame after it: its pipelines, its kernels, its buffers (rend/vulkan:
+    * GPU-side TA processing's are made with it, when that is on). The
+    * machine is not running here. */
+   rend_prepare_renderer();
 }
 
 static void retro_vk_context_destroy()

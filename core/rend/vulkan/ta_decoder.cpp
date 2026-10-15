@@ -5,6 +5,7 @@
 #include "rend/ta_gpu.h"
 
 #include <algorithm>
+#include <chrono>
 
 extern int screen_height;
 
@@ -289,30 +290,46 @@ void TaDecoder::PollDone(CommandPool& pool)
 	tactx_gpu_done(done);
 }
 
-void TaDecoder::BeginFrame(CommandPool& pool, bool wanted)
+void TaDecoder::Setup(CommandPool& pool, bool wanted)
 {
-	if (!wanted || (ready && frames != pool.GetSize()))
-	{
-		if (ready)
-		{
-			/* Turned off while a game runs: the frames in the pool go on in
-			 * memory of their own, and the buffers go once the frames that
-			 * may still read them are done */
-			ta_set_gpu_processing(false);
-			tactx_gpu_pool_detach();
-			pool.DeferDelete(std::move(res));
-			ready = false;
-			sortable = false;
-			prepared = false;
-		}
-		if (!wanted)
-		{
-			failed = false;
-			return;
-		}
-	}
-	if (!ready && (failed || !Init(pool)))
+	if (ready && wanted && frames == pool.GetSize())
 		return;
+	if (ready)
+	{
+		/* Turned off while a game runs, or another size of the texture
+		 * pool: the frames in the pool go on in memory of their own, and
+		 * the buffers go once the frames that may still read them are done */
+		ta_set_gpu_processing(false);
+		tactx_gpu_pool_detach();
+		pool.DeferDelete(std::move(res));
+		ready = false;
+		sortable = false;
+		prepared = false;
+	}
+	if (!wanted)
+	{
+		failed = false;
+		return;
+	}
+	if (failed)
+		return;
+	const auto start = std::chrono::steady_clock::now();
+	if (Init(pool))
+		NOTICE_LOG(RENDERER, "Vulkan: TA processing set up in %.1f ms",
+				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+}
+
+void TaDecoder::BeginFrame(CommandPool& pool)
+{
+	/* (made in Setup(), never here: a frame the decoder is not ready for
+	 * is parsed on the CPU) */
+	if (!ready)
+		return;
+	if (frames != pool.GetSize())
+	{
+		Setup(pool, false);
+		return;
+	}
 	prepared = false;
 	index = pool.GetIndex();
 	if (++serial == 0)

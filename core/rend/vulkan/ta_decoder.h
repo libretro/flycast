@@ -17,9 +17,10 @@
  *   (ta_gpu_prepare()'s TA_GPU_WHY_*) is parsed and drawn as ever.
  * - The kernels (SPIR-V made when the core is built: rend/ta_gpu_spv.inc),
  *   every buffer (sized for the largest frame the machine has), the
- *   descriptor sets and the timestamp queries are made in Init(), and the
- *   pipelines go through the context's pipeline cache; nothing is
- *   allocated or compiled while a game runs.
+ *   descriptor sets and the timestamp queries are made in Setup(), when
+ *   the renderer is set up or the option changes, and the pipelines go
+ *   through the context's pipeline cache; nothing is allocated or
+ *   compiled while a game runs.
  * - The outputs are on the device, one copy: frames are decoded one after
  *   the other on the one queue, and each decode waits for whatever the one
  *   before is read by.
@@ -65,10 +66,15 @@ public:
 	TaDecoder();
 	~TaDecoder();
 
-	/* Made, or taken down, as the option says; at the start of each
-	 * Process(), after the texture pool's BeginFrame(). The GPU's progress
-	 * is told to the TA contexts' pool here. */
-	void BeginFrame(CommandPool& pool, bool wanted);
+	/* Made, or taken down, as the option says (@wanted), for the texture
+	 * pool's size: when the renderer is set up (its context made, or its
+	 * size changed) and when the options change, never while a frame is
+	 * drawn. Off, or where it cannot be made, nothing of it exists. */
+	void Setup(CommandPool& pool, bool wanted);
+	/* At the start of each Process(), after the texture pool's
+	 * BeginFrame(); nothing is made here. The GPU's progress is told to
+	 * the TA contexts' pool here. */
+	void BeginFrame(CommandPool& pool);
 	void Term();
 	bool Ready() const { return ready; }
 

@@ -65,6 +65,11 @@ struct Renderer
 
 	// @area: 1 for the texture of a polygon's second volume
 	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) { return 0; }
+
+	/* The core options were read again, between frames: what they ask
+	 * the renderer to have is made, or taken down, now and not in the
+	 * next frame */
+	virtual void OptionsChanged() { }
 };
 
 extern Renderer* renderer;
@@ -87,6 +92,11 @@ bool rend_frame_produced(void);
 
 void rend_create_renderer();
 void rend_init_renderer();
+/* The renderer made, or made again, if it is to be (renderer_changed, or
+ * none yet): between frames - when the context is made, when an option
+ * has it made again - so that the first frame does not; rend_frame() does
+ * it otherwise */
+void rend_prepare_renderer();
 void rend_term_renderer();
 void rend_keep_picture();
 /* The size rendered at has changed and the context is the one there was. */

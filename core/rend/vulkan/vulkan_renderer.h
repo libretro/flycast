@@ -51,6 +51,12 @@ public:
 		framebufferTextures.clear();
 	}
 
+	// (TA processing switched on or off)
+	virtual void OptionsChanged() override
+	{
+		taDecoder.Setup(texCommandPool, ta_gpu_wanted());
+	}
+
 	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override
 	{
 		Texture* tf = textureCache.getTextureCacheData(tsp, tcw, area);
@@ -91,7 +97,7 @@ public:
 		texCommandPool.BeginFrame();
 		textureCache.SetCurrentIndex(texCommandPool.GetIndex());
 		texDecoder.BeginFrame(texCommandPool.GetIndex());
-		taDecoder.BeginFrame(texCommandPool, ta_gpu_wanted());
+		taDecoder.BeginFrame(texCommandPool);
 
       if (!ctx->rend.isRTT)
          vmus->PrepareOSD(&texCommandPool);
@@ -145,6 +151,8 @@ protected:
 		quadPipeline.Init(&shaderManager, renderPass, subpass);
 		vmus = std::unique_ptr<VulkanOSD>(new VulkanOSD());
 		vmus->Init(&quadPipeline);
+		// GPU-side TA processing, if it is on: here, not in a frame
+		taDecoder.Setup(texCommandPool, ta_gpu_wanted());
 
 		return true;
 	}
