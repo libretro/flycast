@@ -10,7 +10,10 @@
 #   core/rend/vulkan/raster_spv.inc
 #                                the raster renderers' shaders
 #                                (vulkan/shaders/; vulkan/shaders.cpp)
-#
+#   core/rend/vulkan/compute_spv.inc
+#                                the compute renderer's kernels
+#                                (rend/tile/pvr_compute.h, after the shared
+#                                rules' headers; vulkan/compute_drawer.cpp)
 #
 # and the OpenGL renderers' (gles/ta_decoder_gl.cpp), whose OpenGL takes
 # SPIR-V (4.6, ARB_gl_spirv) or else compiles the text once:
@@ -49,6 +52,9 @@ TA_GLSL_INC=core/rend/ta_gpu_glsl.inc
 TAG_KERNELS=$(awk '$1 == "#define" && $2 == "TAG_KERNELS" { print $3 }' core/rend/ta_gpu.h)
 TEXD_FORMATS="r8ui r16ui r32ui"
 RASTER_INC=core/rend/vulkan/raster_spv.inc
+COMPUTE_INC=core/rend/vulkan/compute_spv.inc
+PVRC_KERNELS=$(awk '$1 == "#define" && $2 == "PVRC_KERNELS" { print $3 }' core/rend/tile/pvr_compute.h)
+PVRC_K_WALK=$(awk '$1 == "#define" && $2 == "PVRC_K_WALK" { print $3 }' core/rend/tile/pvr_compute.h)
 RS=core/rend/vulkan/shaders
 GL_INC=core/rend/texdecode_gl.inc
 # kernel: stage
@@ -91,13 +97,31 @@ spv_array() {
    echo "};"
 }
 
+# a compute kernel's text: the shared rules' headers without their
+# #includes, then pvr_compute.h; the walk exchanges between lanes through
+# shared memory (pvr_lane.h), the others have no use for it
+compute_source() {
+   echo "#version 450"; echo "#define PVR_SHADER_GLSL"; echo "#define PVRC_SHADER_GLSL"; echo "#define PVRC_KERNEL $1"
+   if [ "$1" = "$PVRC_K_WALK" ]; then echo "#define PVR_LANE_COUNT 8"; echo "#define PVR_LANE_GROUP_SIZE 256"; else echo "#define PVR_LANE_NONE"; fi
+   for h in core/rend/tile/pvr_lane.h core/rend/tile/pvr_tile.h core/rend/tile/pvr_modvol.h core/rend/tile/pvr_resolve.h core/rend/ssaa_pattern.h core/rend/tile/pvr_compute.h; do
+      sed '/^#include/d' $h
+   done
+}
+
 sums() {
-   # @1: ta, tagl, texd or gl
+   # @1: ta, tagl, texd, gl or compute
    if [ "$1" = gl ]; then
       echo " * text $(sha1sum < core/rend/texdecode.h | cut -c1-40)"
       for k in $GL_KERNELS; do
          gl_source ${k%%:*} > "$WORK/s.glsl"
          echo " * kernel gl${k%%:*} $(sha1sum < "$WORK/s.glsl" | cut -c1-40)"
+      done
+   elif [ "$1" = compute ]; then
+      k=1
+      while [ $k -le "$PVRC_KERNELS" ]; do
+         compute_source $k > "$WORK/s.comp"
+         echo " * kernel $k $(sha1sum < "$WORK/s.comp" | cut -c1-40)"
+         k=$((k + 1))
       done
    elif [ "$1" = ta ] || [ "$1" = tagl ]; then
       k=1
@@ -218,6 +242,29 @@ make_gl() {
    echo "static const size_t texdecode_glspv_size[] = { 0, sizeof(texdecode_glspv_1), sizeof(texdecode_glspv_2), sizeof(texdecode_glspv_3), sizeof(texdecode_glspv_4) };"
 }
 
+make_compute() {
+   echo "/* SPIR-V of the compute renderer's kernels (rend/tile/pvr_compute.h, each"
+   echo " * after the shared rules' headers, with PVRC_SHADER_GLSL and its"
+   echo " * PVRC_KERNEL): made by tools/rend/kernels_spv.sh update from them. Not"
+   echo " * to be edited."
+   echo " * glslang $(glslang_version)"
+   sums compute
+   echo " */"
+   k=1
+   while [ $k -le "$PVRC_KERNELS" ]; do
+      compute_source $k > "$WORK/s.comp"
+      spv_array compute_spv_$k "$WORK/s.comp"
+      k=$((k + 1))
+   done
+   echo "// by PVRC_K_*: the words, and their size in bytes"
+   printf 'static const u32 * const compute_spv[] = { nullptr'
+   k=1; while [ $k -le "$PVRC_KERNELS" ]; do printf ', compute_spv_%d' $k; k=$((k + 1)); done
+   echo ' };'
+   printf 'static const size_t compute_spv_size[] = { 0'
+   k=1; while [ $k -le "$PVRC_KERNELS" ]; do printf ', sizeof(compute_spv_%d)' $k; k=$((k + 1)); done
+   echo ' };'
+}
+
 # The raster modules, one a line: the name, the stage, the #defines
 # (NAME=VALUE, comma separated, - for none) and what the text is made of
 raster_list() {
@@ -315,13 +362,15 @@ update)
    make_ta_gl > "$WORK/tagl.inc"
    make_ta_glsl > "$WORK/taglsl.inc"
    make_gl > "$WORK/gl.inc"
+   make_compute > "$WORK/compute.inc"
    cp "$WORK/ta.inc" $TA_INC
    cp "$WORK/texd.inc" $TEXD_INC
    cp "$WORK/raster.inc" $RASTER_INC
    cp "$WORK/tagl.inc" $TA_GL_INC
    cp "$WORK/taglsl.inc" $TA_GLSL_INC
    cp "$WORK/gl.inc" $GL_INC
-   echo "made $TA_INC, $TEXD_INC, $RASTER_INC, $TA_GL_INC, $TA_GLSL_INC and $GL_INC"
+   cp "$WORK/compute.inc" $COMPUTE_INC
+   echo "made $TA_INC, $TEXD_INC, $RASTER_INC, $TA_GL_INC, $TA_GLSL_INC, $GL_INC and $COMPUTE_INC"
    ;;
 check)
    rc=0
@@ -332,8 +381,8 @@ check)
       echo "FAIL: $TA_GLSL_INC is not its header's text as it is: run '$0 update'" >&2
       rc=1
    fi
-   for t in ta texd raster tagl gl; do
-      case $t in ta) inc=$TA_INC ;; texd) inc=$TEXD_INC ;; raster) inc=$RASTER_INC ;; tagl) inc=$TA_GL_INC ;; gl) inc=$GL_INC ;; esac
+   for t in ta texd raster tagl gl compute; do
+      case $t in ta) inc=$TA_INC ;; texd) inc=$TEXD_INC ;; raster) inc=$RASTER_INC ;; tagl) inc=$TA_GL_INC ;; gl) inc=$GL_INC ;; compute) inc=$COMPUTE_INC ;; esac
       if [ $t = raster ]; then
          raster_sums > "$WORK/sums"
          grep '^ \* module ' $inc > "$WORK/had" || true
@@ -349,7 +398,7 @@ check)
       fi
       v=$(glslang_version)
       if [ -n "$v" ] && grep -q "^ \* glslang $v\$" $inc; then
-         case $t in ta) make_ta > "$WORK/new.inc" ;; texd) make_texd > "$WORK/new.inc" ;; raster) make_raster > "$WORK/new.inc" ;; tagl) make_ta_gl > "$WORK/new.inc" ;; gl) make_gl > "$WORK/new.inc" ;; esac
+         case $t in ta) make_ta > "$WORK/new.inc" ;; texd) make_texd > "$WORK/new.inc" ;; raster) make_raster > "$WORK/new.inc" ;; tagl) make_ta_gl > "$WORK/new.inc" ;; gl) make_gl > "$WORK/new.inc" ;; compute) make_compute > "$WORK/new.inc" ;; esac
          if ! cmp -s "$WORK/new.inc" $inc; then
             echo "FAIL: $inc is not what glslangValidator $v makes of its header: run '$0 update'" >&2
             rc=1
