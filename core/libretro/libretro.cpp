@@ -1100,8 +1100,13 @@ static void update_variables(bool first_startup)
    /* Takes effect with the next texture made: one made either way is the
     * same texture, so nothing has to be made again. */
    var.key = CORE_OPTION_NAME "_gpu_texture_decode";
-   settings.rend.GpuTextureDecode = !(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
-         && !strcmp("disabled", var.value));
+   {
+      const bool got = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value;
+      settings.rend.GpuTextureDecode = !(got && !strcmp("disabled", var.value));
+      /* (Direct3D 9's pixel shaders: not by default, until they are found
+       * faster there than the CPU) */
+      settings.rend.GpuTextureDecodeD3D9 = got && !strcmp("enabled_d3d9", var.value);
+   }
 
    /* GPU-side TA processing: taken up by a renderer that has it at its
     * next frame */

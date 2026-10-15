@@ -30,6 +30,7 @@
 #include "rend/shadows.h"
 #include "dx9context_lr.h"
 #include "dx9_texture.h"
+#include "dx9_texdecoder.h"
 #include "dx9_overlay.h"
 #include <vector>
 
@@ -64,6 +65,8 @@ private:
 	IDirect3DDevice9 *device = nullptr;
 	DX9Context *context = nullptr;
 	DX9Shaders *shaders = nullptr;
+	DX9TexDecoder texDecoder;		// (before the cache: textures going away tell it)
+	DX9TexturePool texPool;			// (and give their textures back)
 	DX9TextureCache texCache;
 	DX9Overlay overlay;
 	TransformMatrix<false> matrices;

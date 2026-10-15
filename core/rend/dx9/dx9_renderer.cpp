@@ -104,6 +104,12 @@ bool DX9Renderer::Init()
 	screenWidth = screenHeight = 0;
 	polyEpoch = frameEpoch = 0;
 	heldFromProcess = false;
+	/* textures drawn on the GPU (with the core option for it), and the
+	 * textures themselves, all of them now (rend/tex_pool.h) */
+	texDecoder.Init(context);
+	texPool.Init(context, &texDecoder);
+	DX9Texture::SetDecoder(texDecoder.Ready() ? &texDecoder : nullptr);
+	DX9Texture::SetPool(&texPool);
 	/* The depth buffer and the screen's pictures now, at the size the
 	 * screen is, and not when the first frame comes */
 	if (success && screen_width > 0 && screen_height > 0)
@@ -130,6 +136,11 @@ void DX9Renderer::Term()
 		context->SetFrame(nullptr);
 	dx9_rtt_term();
 	texCache.Clear();
+	// (what the cache's textures had is back in the pool by now)
+	DX9Texture::SetPool(nullptr);
+	DX9Texture::SetDecoder(nullptr);
+	texPool.Term();
+	texDecoder.Term();
 	overlay.Term();
 	fbTexture.reset();
 	restoredPicture.reset();
@@ -260,6 +271,8 @@ bool DX9Renderer::ProcessLocked(TA_context* ctx)
 	}
 
 	bool result = ta_parse_vdrc(ctx);
+	// the textures the frame's polygons asked for that are drawn on the GPU, before its scene
+	texDecoder.Flush();
 
 	texCache.Cleanup();
 
@@ -745,11 +758,13 @@ bool DX9Renderer::BeginRTT()
 				|| desc.Format != D3DFMT_A8R8G8B8 || (desc.Usage & D3DUSAGE_RENDERTARGET) == 0
 				|| rttTexture->spare->GetLevelCount() != 1)
 		{
+			rttTexture->ReleaseSpare();
 			rttTexture->spareSurface.reset();
 			context->Recycle(rttTexture->spare);
 		}
 	}
-	if (!rttTexture->spare)
+	// (one of the pool's, made at the start, where it has one of this shape)
+	if (!rttTexture->spare && !rttTexture->TakeSpare(widthPow2, heightPow2))
 		rttTexture->spare = context->MakeTexture(widthPow2, heightPow2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8);
 	if (!rttTexture->spare)
 		return false;

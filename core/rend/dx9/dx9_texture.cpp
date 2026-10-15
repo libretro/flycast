@@ -19,15 +19,252 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "dx9_texture.h"
 #include "dx9context_lr.h"
+#include "dx9_texdecoder.h"
 #include "rend/rtt_watch.h"
 #include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/pvr_mem.h"
 #include <algorithm>
 
+DX9TexDecoder *DX9Texture::decoder;
+DX9TexturePool *DX9Texture::pool;
+
+/* ---- The texture pool ---- */
+
+static const char * const poolNames[DX9TexturePool::FORMATS] = {
+	"565", "5551", "4444", "8888", "8-bit", "565 drawn", "5551 drawn", "4444 drawn", "8888 drawn", "8-bit drawn", "8888 rendered to"
+};
+
+static TextureType poolType(u32 f)
+{
+	return (TextureType)(f >= DX9TexturePool::TARGET ? (u32)TextureType::_8888 : f >= DX9TexturePool::DRAWN ? f - DX9TexturePool::DRAWN : f);
+}
+
+static u32 poolTexel(u32 f)
+{
+	const TextureType type = poolType(f);
+	return type == TextureType::_8888 ? 4 : type == TextureType::_8 ? 1 : 2;
+}
+
+void DX9TexturePool::Init(DX9Context *context, const DX9TexDecoder *decoder)
+{
+	const bool drawn = decoder != nullptr && decoder->Ready();
+	if (ready)
+		return;
+	this->context = context;
+	book.Reset(1);
+	/* how much games use them, in eighths of what they use 565: the ones
+	 * the processor writes fewer when the pixel shader draws most */
+	static const u32 written[FORMATS] = { 8, 4, 4, 4, 2, 0, 0, 0, 0, 0, 0 };
+	static const u32 shared[FORMATS] = { 4, 2, 2, 2, 1, 8, 4, 4, 4, 2, 0 };
+	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, TexPoolBook::TARGETS };
+	u32 have[FORMATS];
+	for (u32 f = 0; f < FORMATS; f++)
+	{
+		const TextureType type = poolType(f);
+		usable[f] = f == TARGET || (context->IsFormatSupported(type) && (f < DRAWN || (drawn && decoder->Takes(type))));
+		have[f] = usable[f] ? poolTexel(f) : 0;
+	}
+	u32 counts[TexPoolBook::CLASSES];
+	const u64 bytes = TexPoolBook::Plan(context->GetVramBudget(), have, drawn ? shared : written, kind, FORMATS, counts);
+	ready = true;
+	for (int c = 0; c < TexPoolBook::CLASSES; c++)
+		for (u32 i = 0; i < counts[c]; i++)
+		{
+			DX9PooledTexture *t = Make(c, false);
+			if (t == nullptr)
+				break;
+			book.Give(t);
+		}
+	NOTICE_LOG(RENDERER, "DX9: texture pool of %u textures, %u MB (planned %u MB)", book.made, (u32)(book.bytesMade >> 20), (u32)(bytes >> 20));
+}
+
+void DX9TexturePool::Term()
+{
+	if (!ready)
+		return;
+	book.Summary("DX9");
+	while (all != nullptr)
+	{
+		DX9PooledTexture *next = all->all;
+		delete all;
+		all = next;
+	}
+	book.Reset(1);
+	ready = false;
+	context = nullptr;
+}
+
+DX9PooledTexture *DX9TexturePool::Make(int cls, bool late)
+{
+	IDirect3DDevice9 *device = context->GetDevice();
+	const u32 f = TexPoolBook::Format(cls);
+	const u32 width = TexPoolBook::Width(cls), height = TexPoolBook::Height(cls);
+	if (device == nullptr)
+		return nullptr;
+	DX9PooledTexture *t = new DX9PooledTexture();
+	t->levels = TexPoolBook::Mips(cls) ? 1 + bitscanrev(std::max(width, height)) : 1;
+	const DWORD usage = f >= DRAWN ? D3DUSAGE_RENDERTARGET : context->WriteUsage();
+	// (the managed pool where the device has one and the processor writes the texture without dynamic ones)
+	const D3DPOOL where = (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DYNAMIC)) != 0 || context->IsEx() ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED;
+	bool ok = SUCCEEDED(device->CreateTexture(width, height, t->levels, usage, DX9Context::TextureFormat(poolType(f)), where, t->texture.put(), nullptr));
+	for (u32 level = 0; ok && f >= DRAWN && level < t->levels; level++)
+		ok = SUCCEEDED(t->texture->GetSurfaceLevel(level, t->surfaces[level].put()));
+	if (!ok)
+	{
+		WARN_LOG(RENDERER, "DX9: texture pool: a %ux%u %s texture could not be made", width, height, poolNames[f]);
+		delete t;
+		return nullptr;
+	}
+	book.Made(t, cls, TexPoolBook::Bytes(cls, poolTexel(f)), late, poolNames[f]);
+	t->all = all;
+	all = t;
+	return t;
+}
+
+DX9PooledTexture *DX9TexturePool::Take(u32 f, u32 width, u32 height, bool mips)
+{
+	if (!ready || f >= FORMATS || !usable[f])
+		return nullptr;
+	const int cls = TexPoolBook::Class(f, width, height, mips);
+	if (cls < 0)
+		return nullptr;
+	TexPoolEntry *e = book.Take(cls);
+	return e != nullptr ? static_cast<DX9PooledTexture *>(e) : Make(cls, true);
+}
+
+bool DX9Texture::TakePooled(u32 f, u32 width, u32 height, bool mips)
+{
+	if (pool == nullptr)
+		return false;
+	if (pooled != nullptr && (int)pooled->cls == TexPoolBook::Class(f, width, height, mips))
+		return true;
+	DX9PooledTexture *t = pool->Take(f, width, height, mips);
+	if (t == nullptr)
+		return false;
+	ReleasePooled();
+	if (texture)
+		DX9Context::Instance()->Recycle(texture);
+	pooled = t;
+	texture = t->texture;
+	return true;
+}
+
+void DX9Texture::ReleasePooled()
+{
+	CancelDecode();
+	if (pooled == nullptr)
+		return;
+	if (lockedBits != nullptr && texture)
+		texture->UnlockRect(0);
+	lockedBits = nullptr;
+	texture.reset();
+	if (pool != nullptr)
+		pool->Give(pooled);
+	pooled = nullptr;
+}
+
+void DX9Texture::CancelDecode()
+{
+	if (decodeCount != 0 && decoder != nullptr)
+		decoder->Cancel(decodeJob, decodeCount, decodeSerial);
+	decodeCount = 0;
+}
+
+bool DX9Texture::TakeSpare(u32 width, u32 height)
+{
+	DX9PooledTexture *t = pool != nullptr ? pool->Take(DX9TexturePool::TARGET, width, height, false) : nullptr;
+	if (t == nullptr)
+		return false;
+	ReleaseSpare();
+	sparePooled = t;
+	spare = t->texture;
+	if (FAILED(spare->GetSurfaceLevel(0, spareSurface.put())))
+	{
+		ReleaseSpare();
+		return false;
+	}
+	return true;
+}
+
+void DX9Texture::ReleaseSpare()
+{
+	if (sparePooled == nullptr)
+		return;
+	spareSurface.reset();
+	spare.reset();
+	if (pool != nullptr)
+		pool->Give(sparePooled);
+	sparePooled = nullptr;
+}
+
+/* A planar 16-bit texture copied as it is: R5G6B5, A1R5G5B5 and A4R4G4B4
+ * have the PowerVR's bits in its order, and its rows go from video memory
+ * to the texture where it is locked, with no conversion. Or made by the
+ * pixel shader (dx9_texdecoder.h), with the core option for it. */
+bool DX9Texture::GpuDecode(const texd_plan& plan)
+{
+	DX9Context *context = DX9Context::Instance();
+	if (context->GetDevice() == nullptr)
+		return false;
+	if (plan.native)
+	{
+		if ((unsigned)tex_type >= 3 || !context->IsFormatSupported(tex_type))
+			return false;
+		CancelDecode();
+		if (lockedBits != nullptr && texture)
+			texture->UnlockRect(0);
+		lockedBits = nullptr;
+		if (!Prepare(plan.width, plan.height, 1, context->WriteUsage(), DX9Context::TextureFormat(tex_type)))
+			return false;
+		D3DLOCKED_RECT rect;
+		if (FAILED(texture->LockRect(0, &rect, nullptr, context->WriteLockFlags())))
+			return false;
+		const u8 *from = &vram[plan.src + plan.level[0].data];
+		const u32 stride = (plan.level[0].sr & 0xFFFF) * 2, row = plan.width * 2;
+		if (stride == row && (u32)rect.Pitch == row)
+			memcpy(rect.pBits, from, (size_t)row * plan.height);
+		else
+			for (u32 y = 0; y < plan.height; y++)
+				memcpy((u8 *)rect.pBits + (size_t)y * rect.Pitch, from + (size_t)y * stride, row);
+		texture->UnlockRect(0);
+		swapRB = false;
+		return true;
+	}
+	if (!settings.rend.GpuTextureDecodeD3D9 || decoder == nullptr || !decoder->Takes(tex_type)
+			|| !TakePooled(DX9TexturePool::DRAWN + (u32)tex_type, plan.width, plan.height, plan.mipmapped != 0) || pooled->levels < plan.levels)
+		return false;
+	CancelDecode();
+	u32 base;
+	u8 * const to = decoder->Begin(plan.pal + plan.pal_entries * 4, plan.levels, &base);
+	if (to == nullptr)
+		return false;
+	memcpy(to, &vram[plan.src], plan.bytes);
+	if (plan.pal_entries != 0)
+		memcpy(to + plan.pal, (plan.out == TEXD_OUT16 ? palette16_ram : palette32_ram) + plan.pal_index, plan.pal_entries * 4);
+	decodeJob = decoder->Next();
+	decodeSerial = decoder->Serial();
+	for (u32 i = 0; i < plan.levels; i++)
+	{
+		const texd_level& lv = plan.level[i];
+		const u32 pc[6] = { base, lv.data, plan.pal, lv.wh, lv.sr, lv.mode };
+		decoder->Add(pooled->surfaces[lv.mip], tex_type, pc);
+	}
+	decodeCount = plan.levels;
+	// (drawn with its channels where they are sampled from)
+	swapRB = false;
+	return true;
+}
+
 /* Whether the texture is the one wanted, and made if not (the one it had
- * goes back to the context, to be used again) */
+ * goes back to the context, to be used again). The pool's, if it has one
+ * of this shape. */
 bool DX9Texture::Prepare(u32 width, u32 height, u32 levels, DWORD usage, D3DFORMAT format)
 {
 	DX9Context *context = DX9Context::Instance();
+	if ((usage & D3DUSAGE_AUTOGENMIPMAP) == 0 && (unsigned)tex_type < 5 && format == DX9Context::TextureFormat(tex_type)
+			&& TakePooled((u32)tex_type, width, height, levels > 1))
+		return true;
+	ReleasePooled();
 	if (texture)
 	{
 		/* (A render to this texture leaves one that can be rendered to,
@@ -90,6 +327,8 @@ static void copyRow(u8 *dst, const u8 *src, u32 bytes, unsigned turn)
 void DX9Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded)
 {
 	DX9Context *context = DX9Context::Instance();
+	// what the decoder was to make of it this frame is this now
+	CancelDecode();
 	if (lockedBits != nullptr)
 	{
 		const bool inPlace = data == lockedBits;
@@ -177,6 +416,8 @@ bool DX9Texture::Delete()
 	if (lockedBits != nullptr && texture)
 		texture->UnlockRect(0);
 	lockedBits = nullptr;
+	ReleasePooled();
+	ReleaseSpare();
 	DX9Context *context = DX9Context::Instance();
 	context->Recycle(texture);
 	spareSurface.reset();
