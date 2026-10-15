@@ -1,0 +1,12 @@
+// For texdecode_test.c: every texel of an image as the shaders read it, the four floats' bits
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D img;
+layout(std430, set = 0, binding = 1) writeonly buffer Out { uvec4 v[]; } o;
+layout(push_constant) uniform P { uint w, h; } p;
+void main()
+{
+   uvec2 c = gl_GlobalInvocationID.xy;
+   if (c.x >= p.w || c.y >= p.h)
+      return;
+   o.v[c.y * p.w + c.x] = floatBitsToUint(texelFetch(img, ivec2(c), 0));
+}
