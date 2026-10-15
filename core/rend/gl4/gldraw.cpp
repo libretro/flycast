@@ -1,5 +1,6 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "gl4.h"
+#include "rend/gles/ta_decoder_gl.h"
 
 /*
 
@@ -313,9 +314,15 @@ static void DrawList(const List<PolyParam>& gply, int first, int count)
 				params++;
 				continue;
 			}
-			gl4ShaderUniforms.poly_number = params - gply.head();
+			/* (of a frame decoded on the GPU, a draw group's translucent
+			 * strips are numbered by their draws: TA_GPU_INSTANCE) */
+			gl4ShaderUniforms.poly_number = pvrrc.gpu ? 0 : params - gply.head();
 			SetGPState<Type, SortingEnabled, pass>(params);
-			glDrawElements(GL_TRIANGLE_STRIP, params->count, GL_UNSIGNED_INT, (GLvoid*)(sizeof(u32) * params->first)); glCheck();
+			if (pvrrc.gpu)
+				glTaDecoder.DrawGroup(Type, params->first, params->count);
+			else
+				glDrawElements(GL_TRIANGLE_STRIP, params->count, GL_UNSIGNED_INT, (GLvoid*)(sizeof(u32) * params->first));
+			glCheck();
 		}
 
 		params++;
@@ -350,6 +357,53 @@ void gl4SetupMainVBO()
 
 	glEnableVertexAttribArray(VERTEX_UV1_ARRAY); glCheck();
 	glVertexAttribPointer(VERTEX_UV1_ARRAY, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, u1)); glCheck();
+}
+
+/* What the vertex arrays and storage binding 1 have: -1 not known, 0 the
+ * renderer's own buffers, 1 the GPU decode's */
+static int frame_buffers = -1;
+
+void gl4ForgetFrameBuffers()
+{
+	frame_buffers = -1;
+}
+
+void gl4BindFrameBuffers(bool gpu)
+{
+	if (frame_buffers == (gpu ? 1 : 0))
+		return;
+	frame_buffers = gpu ? 1 : 0;
+	if (!gpu)
+	{
+		gl4SetupMainVBO();
+		glDisableVertexAttribArray(VERTEX_PP_ARRAY);
+		// (an attribute without its array: the number is 0)
+		gl4.vertexAttribI4ui(VERTEX_PP_ARRAY, 0, 0, 0, 0);
+		gl4SetupModvolVBO();
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl4.vbo.tr_poly_params);
+		glBindVertexArray(gl4.vbo.main_vao);
+		return;
+	}
+	const GlTaDraw& d = glTaDecoder.Draw();
+	glBindVertexArray(gl4.vbo.main_vao);
+	glTaDecoder.BindGeometry();
+	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex,x));
+	glVertexAttribPointer(VERTEX_COL_BASE_ARRAY, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)offsetof(Vertex,col));
+	glVertexAttribPointer(VERTEX_COL_OFFS_ARRAY, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)offsetof(Vertex,vtx_spc));
+	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex,u));
+	glVertexAttribPointer(VERTEX_COL_BASE1_ARRAY, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)offsetof(Vertex, col1));
+	glVertexAttribPointer(VERTEX_COL_OFFS1_ARRAY, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)offsetof(Vertex, spc1));
+	glVertexAttribPointer(VERTEX_UV1_ARRAY, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, u1));
+	// a strip's number: one a draw, the draw record's baseInstance picking it
+	glBindBuffer(GL_ARRAY_BUFFER, d.instances);
+	glVertexAttribIPointer(VERTEX_PP_ARRAY, 1, GL_UNSIGNED_INT, sizeof(u32), (void*)0);
+	gl4.vertexAttribDivisor(VERTEX_PP_ARRAY, 1);
+	glEnableVertexAttribArray(VERTEX_PP_ARRAY);
+	glBindVertexArray(gl4.vbo.modvol_vao);
+	glTaDecoder.BindModVols();
+	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void*)0);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, d.trParams);
+	glBindVertexArray(gl4.vbo.main_vao);
 }
 
 void gl4SetupModvolVBO()
@@ -785,6 +839,7 @@ static void gl4_draw_quad_texture(GLuint texture, float w, float h)
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, texture);
+	gl4BindFrameBuffers(false);
 
 	struct Vertex vertices[] = {
 		{ 0,     0 + h, 1, { 255, 255, 255, 255 }, { 0, 0, 0, 0 }, 0, 1 },
@@ -861,6 +916,7 @@ void gl4DrawVmuTexture(u8 vmu_screen_number)
    glcache.Enable(GL_BLEND);
    glcache.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+   gl4BindFrameBuffers(false);
    glBindVertexArray(gl4.vbo.main_vao);
 
 	gl4ShaderUniforms.trilinear_alpha = 1.0;
@@ -974,6 +1030,7 @@ void gl4DrawGunCrosshair(u8 port)
    glcache.Enable(GL_BLEND);
 	glcache.BlendFunc(GL_SRC_ALPHA, GL_ONE);
 
+	gl4BindFrameBuffers(false);
 	glBindVertexArray(gl4.vbo.main_vao);
 
 	gl4ShaderUniforms.trilinear_alpha = 1.0;

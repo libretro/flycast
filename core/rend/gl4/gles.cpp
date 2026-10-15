@@ -3,6 +3,8 @@
 #include "rend/rtt_watch.h"
 
 #include "gl4.h"
+#include "rend/gles/ta_decoder_gl.h"
+#include "rend/ta_gpu.h"
 
 gl4_ctx gl4;
 
@@ -33,6 +35,8 @@ in vec2 in_uv;
 in vec4 in_base1;
 in vec4 in_offs1;
 in vec2 in_uv1;
+// a translucent strip's number, of a frame decoded on the GPU (TA_GPU_INSTANCE); 0 for the others
+in uint in_pp;
 /* output */
 INTERPOLATION out vec4 vtx_base;
 INTERPOLATION out vec4 vtx_offs;
@@ -40,8 +44,10 @@ INTERPOLATION out vec4 vtx_offs;
 INTERPOLATION out vec4 vtx_base1;
 INTERPOLATION out vec4 vtx_offs1;
 			  out vec2 vtx_uv1;
+flat out uint vtx_pp;
 void main()
 {
+	vtx_pp = in_pp;
 	vtx_base = in_base;
 	vtx_offs = in_offs;
 	vtx_uv = in_uv;
@@ -126,6 +132,7 @@ INTERPOLATION in vec4 vtx_offs;
 INTERPOLATION in vec4 vtx_base1;
 INTERPOLATION in vec4 vtx_offs1;
 			  in vec2 vtx_uv1;
+flat in uint vtx_pp;
 
 // The fog coefficient for a depth, worked out the way the PowerVR2 does it.
 // The depth times the fog density, between 1 and just under 256, is taken
@@ -401,7 +408,7 @@ void main()
       Pixel pixel;
       pixel.color = color;
       pixel.depth = gl_FragDepth;
-      pixel.seq_num = uint(pp_Number);
+      pixel.seq_num = uint(pp_Number) + vtx_pp;
       pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);
       pixels[idx] = pixel;
      
@@ -549,6 +556,20 @@ static bool gl_create_resources(void)
 
 	gl4SetupMainVBO();
 	gl4SetupModvolVBO();
+
+	glsm_ctx_proc_address_t proc = { nullptr };
+	if (!glsm_ctl(GLSM_CTL_PROC_ADDRESS_GET, &proc) || proc.addr == nullptr)
+		return false;
+	gl4.vertexAttribDivisor = (void (APIENTRYP)(GLuint, GLuint))proc.addr("glVertexAttribDivisor");
+	gl4.vertexAttribI4ui = (void (APIENTRYP)(GLuint, GLuint, GLuint, GLuint, GLuint))proc.addr("glVertexAttribI4ui");
+	if (gl4.vertexAttribDivisor == nullptr || gl4.vertexAttribI4ui == nullptr)
+		return false;
+	{
+		TaGpuSizes sz;
+		ta_gpu_sizes(&sz);
+		// (the most translucent polygons a frame can have: two words each, kept from frame to frame)
+		gl4.trPolyWords.assign((size_t)sz.list[2] * 2, 0);
+	}
 
 	char vshader[16384];
 	sprintf(vshader, VertexShaderSource, 1);
@@ -750,8 +771,12 @@ static bool RenderFrame()
 	glcache.Disable(GL_SCISSOR_TEST);
 
 	//move vertex to gpu
-	if (!pvrrc.isRenderFramebuffer)
+	if (!pvrrc.isRenderFramebuffer && pvrrc.gpu)
+		// (decoded on the GPU: there already)
+		gl4BindFrameBuffers(true);
+	else if (!pvrrc.isRenderFramebuffer)
 	{
+		gl4BindFrameBuffers(false);
 		//Main VBO
 		glBindVertexArray(gl4.vbo.main_vao);
 		glBindBuffer(GL_ARRAY_BUFFER, gl4.vbo.geometry); glCheck();
@@ -769,11 +794,23 @@ static bool RenderFrame()
 			glBufferData(GL_ARRAY_BUFFER,pvrrc.modtrig.bytes(),pvrrc.modtrig.head(),GL_STREAM_DRAW); glCheck();
 		}
 
-		// TR PolyParam data
+		/* The translucent polygons' words: two each (see PolyParam in
+		 * SHADER_HEADER), made into memory kept for them */
+		const u32 trCount = std::min<u32>(pvrrc.global_param_tr.used(), (u32)gl4.trPolyWords.size() / 2);
+		const PolyParam *pp = pvrrc.global_param_tr.head();
+		u32 *words = gl4.trPolyWords.data();
+		for (u32 i = 0; i < trCount; i++, pp++, words += 2)
+		{
+			words[0] = (pp->tsp.full & 0xffff00c0) | ((pp->isp.full >> 16) & 0xe400) | ((pp->pcw.full >> 7) & 1)
+					| (pp->tsp1.full != (u32)-1 || pp->tcw1.full != (u32)-1 ? TAG_P_TWOVOL : 0u);
+			words[1] = pp->tsp1.full;
+		}
 		glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl4.vbo.tr_poly_params);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(struct PolyParam) * pvrrc.global_param_tr.used(), pvrrc.global_param_tr.head(), GL_STATIC_DRAW);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, trCount * 8, gl4.trPolyWords.data(), GL_STATIC_DRAW);
 		glCheck();
-
+	}
+	if (!pvrrc.isRenderFramebuffer)
+	{
 		if (is_rtt || !settings.rend.WideScreen || matrices.IsClipped())
 		{
 			float width;
@@ -916,6 +953,11 @@ struct gl4rend : Renderer
 
 		initABuffer();
 
+		// GPU-side TA processing, if it is on: here, when the renderer is set up, not in a frame
+		glTaDecoder.WantSort(false);
+		glTaDecoder.Setup(ta_gpu_wanted());
+		gl4ForgetFrameBuffers();
+
 #ifdef HAVE_TEXUPSCALE
 		if (settings.rend.TextureUpscale > 1)
 		{
@@ -958,6 +1000,7 @@ struct gl4rend : Renderer
 		glcache.DeleteTextures(ARRAY_SIZE(lightgunTextureId), lightgunTextureId);
 		memset(lightgunTextureId, 0, sizeof(lightgunTextureId));
 
+		glTaDecoder.Term();
 		termABuffer();
 		if (stencilTexId != 0)
 		{
@@ -1006,11 +1049,14 @@ struct gl4rend : Renderer
 		if (!settings.rend.ThreadedRendering)
 #endif
 			glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
-		return ProcessFrame(ctx);
+		/* GPU-side TA processing: the frame drawn from the decode, each
+		 * translucent strip numbered by its draw (TA_GPU_INSTANCE) */
+		return ProcessFrame(ctx, TA_GPU_DRAW | TA_GPU_INSTANCE);
 	}
 	bool Render() override
 	{
 		bool ret = RenderFrame();
+		glTaDecoder.EndFrame();
 #if !defined(TARGET_NO_THREADS)
 		if (!settings.rend.ThreadedRendering)
 #endif
@@ -1021,6 +1067,13 @@ struct gl4rend : Renderer
 	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override
 	{
 		return gl_GetTexture(tsp, tcw, area);
+	}
+
+	// (TA processing switched on or off: between frames, the state bound)
+	void OptionsChanged() override
+	{
+		glTaDecoder.Setup(ta_gpu_wanted());
+		gl4ForgetFrameBuffers();
 	}
 };
 

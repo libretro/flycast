@@ -1,6 +1,7 @@
 #pragma once
 #include "rend/gles/gles.h"
 #include <unordered_map>
+#include <vector>
 
 void gl4DrawStrips(GLuint output_fbo, int width, int height);
 
@@ -62,6 +63,12 @@ struct gl4_ctx
 		GLuint modvol_vao;
 		GLuint tr_poly_params;
 	} vbo;
+	/* (made with the resources) the translucent polygons' words of a frame
+	 * the CPU parsed, made here (see PolyParam in SHADER_HEADER) */
+	std::vector<u32> trPolyWords;
+	// what the state manager (glsm) has no function for
+	void (APIENTRYP vertexAttribDivisor)(GLuint index, GLuint divisor);
+	void (APIENTRYP vertexAttribI4ui)(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w);
 };
 
 extern gl4_ctx gl4;
@@ -128,27 +135,21 @@ void setFragDepth(void) \n\
 	float w = 100000.0 * gl_FragCoord.w; \n\
 	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0; \n\
 } \n\
+/* A translucent polygon's words, as the Vulkan per-pixel renderer and \n\
+ * GPU-side TA processing have them (rend/ta_gpu.h, TAG_P_WORDS): its TSP \n\
+ * word with the ISP word's depth function and depth write bits in 13-15 \n\
+ * and 10, whether it has two volumes (its second TSP or TCW word not all \n\
+ * ones: TAG_P_TWOVOL) in 1 and whether it takes shadows in 0; and its \n\
+ * second volume's TSP word */ \n\
 struct PolyParam { \n\
-	int first; \n\
-	int count; \n\
-	int texid_low; \n\
-	int texid_high; \n\
-	int tsp; \n\
-	int tcw; \n\
-	int pcw; \n\
-	int isp; \n\
-	float zvZ; \n\
-	int tileclip; \n\
+	int tsp_isp_pcw; \n\
 	int tsp1; \n\
-	int tcw1; \n\
-	int texid1_low; \n\
-	int texid1_high; \n\
 }; \n\
 layout (binding = 1, std430) readonly buffer TrPolyParamBuffer { \n\
 	PolyParam tr_poly_params[]; \n\
 }; \n\
  \n\
-#define GET_TSP_FOR_AREA int tsp; if (area1) tsp = pp.tsp1; else tsp = pp.tsp; \n\
+#define GET_TSP_FOR_AREA int tsp; if (area1) tsp = pp.tsp1; else tsp = pp.tsp_isp_pcw; \n\
  \n\
 int getSrcBlendFunc(const PolyParam pp, bool area1) \n\
 { \n\
@@ -200,17 +201,17 @@ int getShadingInstruction(const PolyParam pp, bool area1) \n\
 \n\
 int getDepthFunc(const PolyParam pp) \n\
 { \n\
-	return (pp.isp >> 29) & 7; \n\
+	return (pp.tsp_isp_pcw >> 13) & 7; \n\
 } \n\
 \n\
 bool getDepthMask(const PolyParam pp) \n\
 { \n\
-	return ((pp.isp >> 26) & 1) != 1; \n\
+	return ((pp.tsp_isp_pcw >> 10) & 1) != 1; \n\
 } \n\
 \n\
 bool getShadowEnable(const PolyParam pp) \n\
 { \n\
-	return ((pp.pcw >> 7) & 1) != 0; \n\
+	return (pp.tsp_isp_pcw & 1) != 0; \n\
 } \n\
 \n\
 uint getPolyNumber(const Pixel pixel) \n\
@@ -228,13 +229,24 @@ bool isShadowed(const Pixel pixel) \n\
 \n\
 bool isTwoVolumes(const PolyParam pp) \n\
 { \n\
-	return pp.tsp1 != -1 || pp.tcw1 != -1; \n\
+	return (pp.tsp_isp_pcw & 2) != 0; \n\
 } \n\
  \n\
 "
 
 void gl4SetupMainVBO();
 void gl4SetupModvolVBO();
+/* A frame decoded on the GPU (pvrrc.gpu, rend/gles/ta_decoder_gl.h): its
+ * vertices, indices, modifier volume triangles and translucent polygons'
+ * words bound in their places (the vertex arrays' and binding 1), and each
+ * translucent strip's number given its fragments by the draw
+ * (TA_GPU_INSTANCE); or, @gpu false, the renderer's own buffers - for a
+ * frame the CPU parsed, and what is drawn from them after (the VMU
+ * screens, the crosshairs, the framebuffer). Nothing is done when they are
+ * bound already; gl4ForgetFrameBuffers(): the decoder's buffers are made
+ * again, and are bound the next time. */
+void gl4BindFrameBuffers(bool gpu);
+void gl4ForgetFrameBuffers();
 
 extern struct gl4ShaderUniforms_t
 {

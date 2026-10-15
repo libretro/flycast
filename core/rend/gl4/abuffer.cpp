@@ -410,7 +410,9 @@ void abufferDrawQuad()
 
 void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 {
-	if (count == 0 || pvrrc.modtrig.used() == 0)
+	// (of a frame decoded on the GPU, its triangles are the GPU's)
+	const u32 triangles = pvrrc.gpu ? pvrrc.gpu_modtrig : (u32)pvrrc.modtrig.used();
+	if (count == 0 || triangles == 0)
 		return;
 	glBindVertexArray(gl4.vbo.modvol_vao);
 
@@ -443,7 +445,7 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 
 		u32 mv_mode = param.isp.DepthMode;
 
-		verify(param.first >= 0 && param.first + param.count <= (u32)pvrrc.modtrig.used());
+		verify(param.first >= 0 && param.first + param.count <= triangles);
 
 		if (mod_base == -1)
 			mod_base = param.first;
