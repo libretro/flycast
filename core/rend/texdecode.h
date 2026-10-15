@@ -20,6 +20,10 @@
  * makes and checks (tools/rend/texdecode_test.sh runs the check); and the
  * Direct3D 11 ones (TEXD_KERNEL_D3D defined) as DXBC in
  * texdecode_dxbc.inc, which tools/rend/kernels_dxbc.sh makes and checks.
+ * The OpenGL ones (TEXD_KERNEL_GL defined) are compiled from this text
+ * when the renderer starts, which texdecode_gl.inc has, with their SPIR-V
+ * for OpenGL 4.6 (kernels_spv.sh makes and checks it too). Direct3D 9's
+ * shader model 3 has no integers: rend/texdecode_sm3.h is its text.
  *
  * The bytes of a texture, as copied, start at its first byte in video
  * memory (the codebook, for a compressed one) and run to its last, every
@@ -114,34 +118,84 @@ RWTexture2D<uint> texd_dst : register(u0);
 #endif
 #endif
 
+/* The kernels in GLSL for the OpenGL renderers (gles/gl_texdecoder.h).
+ * TEXD_KERNEL_GL is which:
+ *   1  a compute kernel (GLSL 4.30), a level of 32-bit texels into an
+ *      rgba8ui image of it (the texture is RGBA8)
+ *   2  the same, palette indices into an r8ui image (an R8 texture)
+ *   3  the vertex shader of the triangle that covers a level, for 4
+ *   4  a fragment shader, a level's texels drawn into it through a
+ *      framebuffer: of every kind, the 16-bit ones each field over its
+ *      largest value, which the target turns back into the field exactly
+ * and TEXD_GL_RING where the bytes are read from:
+ *   1  a shader storage buffer, the ring itself (GLSL 4.30)
+ *   2  an unsigned integer texture the ring is copied into, rows of
+ *      TEXD_GL_RING_WIDTH words (GLSL 1.30, GLSL ES 3.00)
+ * The six words are two uniforms; TEXD_GL_LOC(n) gives them the location
+ * n where it has to be said (SPIR-V). */
+#define TEXD_GL_RING_WIDTH 2048
+#if defined(TEXD_SHADER_GLSL) && defined(TEXD_KERNEL_GL)
+#ifndef TEXD_GL_LOC
+#define TEXD_GL_LOC(n)
+#endif
+#if TEXD_KERNEL_GL != 3
+TEXD_GL_LOC(0) uniform highp uvec4 texd_lv0;	// base, data, pal, wh
+TEXD_GL_LOC(1) uniform highp uvec2 texd_lv1;	// sr, mode
+#if TEXD_GL_RING == 1
+layout(std430, binding = 7) readonly buffer TexdRing { uint words[]; } texd_ring;
+#define TEXD_WORD(i) texd_ring.words[texd_lv0.x + (i)]
+#else
+uniform highp usampler2D texd_ring;
+uint texd_ring_word(uint i)
+{
+   return texelFetch(texd_ring, ivec2(int(i & uint(TEXD_GL_RING_WIDTH - 1)), int(i / uint(TEXD_GL_RING_WIDTH))), 0).r;
+}
+#define TEXD_WORD(i) texd_ring_word(texd_lv0.x + (i))
+#endif
+#if TEXD_KERNEL_GL == 1 || TEXD_KERNEL_GL == 2
+layout(local_size_x = 8, local_size_y = 8) in;
+#if TEXD_KERNEL_GL == 1
+layout(rgba8ui, binding = 7) uniform writeonly highp uimage2D texd_dst;
+#else
+layout(r8ui, binding = 7) uniform writeonly highp uimage2D texd_dst;
+#endif
+#else
+TEXD_GL_LOC(0) out highp vec4 texd_color;
+#endif
+#else
+#define TEXD_WORD(i) 0u		/* (the vertex shader reads none) */
+#endif
+#endif
+
 /* What kernel 4 draws: the 16-bit texels' format, in the mode's bits 20
  * and 21 */
-#define TEXD_D3D_565   0
-#define TEXD_D3D_5551  1
-#define TEXD_D3D_4444  2
+#define TEXD_D3D_565   TEXD_U32(0)
+#define TEXD_D3D_5551  TEXD_U32(1)
+#define TEXD_D3D_4444  TEXD_U32(2)
 #define TEXD_D3D16(f)  (TEXD_U32(f) << 20)
 
-/* The pixel formats, as the texture control word has them */
-#define TEXD_1555    0
-#define TEXD_565     1
-#define TEXD_4444    2
-#define TEXD_YUV     3
-#define TEXD_BUMP    4   /* converted as 4444 */
-#define TEXD_PAL4    5
-#define TEXD_PAL8    6
+/* The pixel formats, as the texture control word has them. (Unsigned, as
+ * all of these: GLSL before 4.00 compares no uint with an int.) */
+#define TEXD_1555    TEXD_U32(0)
+#define TEXD_565     TEXD_U32(1)
+#define TEXD_4444    TEXD_U32(2)
+#define TEXD_YUV     TEXD_U32(3)
+#define TEXD_BUMP    TEXD_U32(4)   /* converted as 4444 */
+#define TEXD_PAL4    TEXD_U32(5)
+#define TEXD_PAL8    TEXD_U32(6)
 
 /* How the texels are laid out */
-#define TEXD_TW      0   /* twiddled */
-#define TEXD_VQ      1   /* twiddled and compressed: a codebook index for every 4 (8, 16 paletted) texels */
-#define TEXD_PL      2   /* planar, rows of 'stride' texels */
-#define TEXD_PLVQ    3   /* planar and compressed: an index for every 4 texels of a row */
+#define TEXD_TW      TEXD_U32(0)   /* twiddled */
+#define TEXD_VQ      TEXD_U32(1)   /* twiddled and compressed: a codebook index for every 4 (8, 16 paletted) texels */
+#define TEXD_PL      TEXD_U32(2)   /* planar, rows of 'stride' texels */
+#define TEXD_PLVQ    TEXD_U32(3)   /* planar and compressed: an index for every 4 texels of a row */
 
 /* What a texel is made into: a palette index; 16 bits, as the 16-bit
  * converters make them (5551, 565, 4444 with the alpha at the bottom);
  * 32 bits, RGBA from the lowest byte */
-#define TEXD_OUT8    0
-#define TEXD_OUT16   1
-#define TEXD_OUT32   2
+#define TEXD_OUT8    TEXD_U32(0)
+#define TEXD_OUT16   TEXD_U32(1)
+#define TEXD_OUT32   TEXD_U32(2)
 
 /* @corner: the level is the 1x1 one of a compressed texture, which is the
  * lower right texel of the 2x2 block its index names */
@@ -333,6 +387,51 @@ void main()
       return;
    imageStore(dst, ivec2(x, y), uvec4(texd_texel(lv.data, lv.pal, lv.sr, lv.mode, x, y), 0u, 0u, 0u));
 }
+#endif
+
+#if defined(TEXD_SHADER_GLSL) && defined(TEXD_KERNEL_GL)
+#if TEXD_KERNEL_GL == 1 || TEXD_KERNEL_GL == 2
+/* a texel of the level for each invocation, in groups of 8x8 */
+void main()
+{
+   uint x = gl_GlobalInvocationID.x;
+   uint y = gl_GlobalInvocationID.y;
+   uint v;
+   if (x >= (texd_lv0.w & 0xFFFFu) || y >= (texd_lv0.w >> 16))
+      return;
+   v = texd_texel(texd_lv0.y, texd_lv0.z, texd_lv1.x, texd_lv1.y, x, y);
+#if TEXD_KERNEL_GL == 1
+   imageStore(texd_dst, ivec2(x, y), uvec4(v & 0xFFu, (v >> 8) & 0xFFu, (v >> 16) & 0xFFu, v >> 24));
+#else
+   imageStore(texd_dst, ivec2(x, y), uvec4(v, 0u, 0u, 0u));
+#endif
+}
+#elif TEXD_KERNEL_GL == 3
+void main()
+{
+   gl_Position = vec4(float(gl_VertexID & 1) * 4.0 - 1.0, float(gl_VertexID >> 1) * 4.0 - 1.0, 0.0, 1.0);
+}
+#else
+/* the texel at the fragment: the first row of the level is the first row
+ * of the texture, as it is uploaded */
+void main()
+{
+   uint mode = texd_lv1.y;
+   uint v = texd_texel(texd_lv0.y, texd_lv0.z, texd_lv1.x, mode, uint(gl_FragCoord.x), uint(gl_FragCoord.y));
+   uint otype = (mode >> 6) & 3u;
+   uint f = (mode >> 20) & 3u;
+   if (otype == TEXD_OUT32)
+      texd_color = vec4(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu), float(v >> 24)) / 255.0;
+   else if (otype == TEXD_OUT8)
+      texd_color = vec4(float(v) / 255.0, 0.0, 0.0, 1.0);
+   else if (f == TEXD_D3D_565)
+      texd_color = vec4(float(v >> 11) / 31.0, float((v >> 5) & 63u) / 63.0, float(v & 31u) / 31.0, 1.0);
+   else if (f == TEXD_D3D_5551)
+      texd_color = vec4(float(v >> 11) / 31.0, float((v >> 6) & 31u) / 31.0, float((v >> 1) & 31u) / 31.0, float(v & 1u));
+   else
+      texd_color = vec4(float(v >> 12) / 15.0, float((v >> 8) & 15u) / 15.0, float((v >> 4) & 15u) / 15.0, float(v & 15u) / 15.0);
+}
+#endif
 #endif
 
 #if defined(TEXD_SHADER_HLSL) && defined(TEXD_KERNEL_D3D)

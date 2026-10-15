@@ -2,10 +2,10 @@
  * each with TEXD_SHADER_HLSL and its TEXD_KERNEL_D3D): made by
  * tools/rend/kernels_dxbc.sh update from it. Not to be edited.
  * d3dcompiler_47 60896937039e7c4a1c8485b750f820ab0dad62e5
- * kernel 1 cs_5_0 05f50063f0feef2a8680f6395060f07b06740624
- * kernel 2 cs_5_0 e9712e43c145114019653ace0eabf2568e221615
- * kernel 3 vs_5_0 f44f51dde67878d89b99cf41b83cbd12e4638c6a
- * kernel 4 ps_5_0 77050f3976544350515d5fea2c9d9cfc557e68da
+ * kernel 1 cs_5_0 99fc60858b495aebe8e18b482a7805856db7d8ca
+ * kernel 2 cs_5_0 9fd5075a701f240204d2e0a70b0bfde5fc8ee0a2
+ * kernel 3 vs_5_0 87bc3c8de2a525444c9c5b3f8b41ea9419f7639f
+ * kernel 4 ps_5_0 13888050f17a5289349c67ad63982fc68775e63e
  */
 static const unsigned char texdecode_dxbc_1[] = {
 0x44,0x58,0x42,0x43,0x1b,0xf8,0x2e,0x69,0x57,0x3f,0x4b,0xd9,0xa3,0xe8,0x77,0x22,

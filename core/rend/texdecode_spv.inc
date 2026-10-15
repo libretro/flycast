@@ -2,9 +2,9 @@
  * each with TEXD_SHADER_GLSL and its TEXD_KERNEL_FORMAT): made by
  * tools/rend/kernels_spv.sh update from it. Not to be edited.
  * glslang 11:15.1.0
- * kernel r8ui df05556ccd1985db10e6d507c910958ad3a77197
- * kernel r16ui f6b2dc3d3954486dc1c389d41a1886dfea91b326
- * kernel r32ui dadb8e893fc2b268e4c5d14a25dbb0d47e7d720d
+ * kernel r8ui cb3d6c9da6586a9805fb30cba221201d848855ee
+ * kernel r16ui 67e07a119c136e143777299f9529547552a39549
+ * kernel r32ui 338fe00c8e6888eab14aca22f0fd0e1f32e90981
  */
 static const u32 texdecode_spv_r8ui[] = {
 0x07230203,0x00010000,0x0008000b,0x0000034f,0x00000000,0x00020011,0x00000001,0x00020011,
