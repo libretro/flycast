@@ -246,6 +246,15 @@ TA_context* tactx_Find(u32 addr, bool allocnew)
    return 0;
 }
 
+void tactx_walk_forget(void)
+{
+	for (unsigned i = 0; i < ctx_count; i++)
+	{
+		ctx_list[i]->walk_count = TA_WALK_INVALID;
+		ctx_list[i]->walk_restart = false;
+	}
+}
+
 TA_context* tactx_Pop(u32 addr)
 {
 	// (called once for each render the game starts)
@@ -364,6 +373,7 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
 	// (data is in 32-byte blocks, and is copied to where this points as aligned ones)
 	size &= ~31u;
 	ta_ctx->tad.thd_data = ta_ctx->tad.thd_root + size;
+	ta_ctx->walk_count = TA_WALK_INVALID;	// (the data is not what was walked)
    if (version >= V12)
 	{
 		/* render_passes is a fixed [10] array of which the last is never
@@ -578,6 +588,9 @@ bool pvr_unserialize_v21(void **data, unsigned int *total_size)
 			tad.thd_data     = tad.thd_root + size;
 			tad.thd_old_data = tad.thd_root;
 		}
+
+		// the control-word walk's table of the data, which the state does not have
+		ta_walk_rebuild(ctx);
 
 		if (i == current)
 			current_addr = ctx->Address;

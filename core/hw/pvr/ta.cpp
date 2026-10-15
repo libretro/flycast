@@ -1,6 +1,7 @@
 #include "ta.h"
 #include "ta_ctx.h"
 #include "hw/holly/holly_intc.h"
+#include "lockfree.h"
 
 /*
 	Threaded TA Implementation
@@ -196,6 +197,65 @@ static void fill_fsm(void)
 	fill_fsm(TAS_MLV64_H,-1,-1,TAS_MLV64); //64 MH -> expect M64
 }
 
+/* The control-word walk (ta_set_walk()). While it is on, every entry of
+ * ta_fsm for a block that is not a vertex - any parameter but a vertex,
+ * in a state that does not expect the second half of one - has this bit
+ * as well: the block is then handed to ta_handle_cmd() by the code that
+ * steps the state, which notes where the block is in the frame's table
+ * of them (TA_context::walk) and goes on as without it. Vertices, and
+ * everything while the walk is off, take the very same way as ever: the
+ * table holds no such bit then, and nothing else is looked at. */
+#define TA_FSM_WALK 0x40
+
+/* Whether ta_fsm has the bit (the emulation thread's), and whether it is
+ * wanted (from any thread: it is put in or taken out at the next list
+ * init, on the emulation thread, between two blocks) */
+static bool ta_walk_on;
+static retro_atomic_int_t ta_walk_wanted = RETRO_ATOMIC_INT_INITIALIZER(0);
+
+/* The bit put in or taken out, the table of every frame being written
+ * forgotten: what has been sent to them so far was not walked, or walked
+ * without what follows */
+static void ta_walk_apply(bool on)
+{
+	u32 i;
+	for (i = 0; i < 2048; i++)
+	{
+		u8 e = ta_fsm[i] & ~TA_FSM_WALK;
+		if (on && (i >> 8) <= TAS_MLV64 && ((i >> 5) & 7) != ParamType_Vertex_Parameter)
+			e |= TA_FSM_WALK;
+		ta_fsm[i] = e;
+	}
+	ta_walk_on = on;
+	tactx_walk_forget();
+}
+
+void ta_set_walk(bool on)
+{
+	retro_atomic_store_release_int(&ta_walk_wanted, on ? 1 : 0);
+}
+
+/* The block before ta_tad.thd_data goes in the frame's table: one store.
+ * A table that is full is not to be trusted for the rest of the frame,
+ * which is then parsed as it always is. */
+static NOINLINE u32 ta_walk_note(u32 trans)
+{
+	TA_context *ctx = ta_ctx;
+	u32 n = ctx->walk_count;
+
+	if (ctx->walk_restart)
+	{
+		ctx->walk_restart = false;
+		n = 0;
+	}
+	if (n < ctx->walk_size)
+		ctx->walk[n++] = (u32)(ta_tad.thd_data - 32 - ta_tad.thd_root) / 32;
+	else
+		n = TA_WALK_INVALID;
+	ctx->walk_count = n;
+	return trans & ~TA_FSM_WALK;
+}
+
 static const HollyInterruptID ListEndInterrupt[5]=
 {
 	holly_OPAQUE,
@@ -209,6 +269,17 @@ static const HollyInterruptID ListEndInterrupt[5]=
 static NOINLINE void DYNACALL ta_handle_cmd(u32 trans)
 {
    Ta_Dma* dat=(Ta_Dma*)(ta_tad.thd_data-32);
+
+   if (trans & TA_FSM_WALK)
+   {
+      trans = ta_walk_note(trans);
+      if ((trans & 0xF0) == 0)
+      {
+         // nothing else to do for it
+         ta_cur_state = (ta_state)trans;
+         return;
+      }
+   }
 
    u32 cmd = trans>>4;
    trans&=7;
@@ -266,8 +337,14 @@ void ta_vtx_ListCont(void)
 
 void ta_vtx_ListInit(void)
 {
+	if ((retro_atomic_load_relaxed_int(&ta_walk_wanted) != 0) != ta_walk_on)
+		ta_walk_apply(!ta_walk_on);
 	SetCurrentTARC(TA_CURRENT_CTX);
    ta_tad.ClearPartial();
+	/* (the data from here on is a new frame's: the table of the old one is
+	 * kept for as long as it is what a render draws) */
+	if (ta_ctx)
+		ta_ctx->walk_restart = true;
 
 	ta_cur_state=TAS_NS;
 	ta_fsm_cl = 7;
@@ -384,6 +461,81 @@ u8 *ta_vtx_room(u32 blocks)
    if (used > ctx->data_size || blocks > (ctx->data_size - used) / 32)
       return NULL;
    return ta_tad.thd_data;
+}
+
+/* The state machine's step for a block that has to be handled, as
+ * ta_handle_cmd() takes it but with nothing raised: for walking data
+ * again. @cl is the list that is open (ta_fsm_cl). */
+static u32 ta_walk_cmd(u32 trans, PCW pcw, u32 *cl)
+{
+   u32 cmd = trans >> 4;
+
+   trans &= 7;
+   if (cmd != 8)
+   {
+      if (pcw.ParaType == ParamType_End_Of_List)
+      {
+         *cl  = 7;
+         trans = TAS_NS;
+      }
+      else if (pcw.ParaType == ParamType_Polygon_or_Modifier_Volume)
+      {
+         if (*cl == 7)
+            *cl = pcw.ListType;
+         trans = IsModVolList(*cl) ? TAS_MLV64 : TAS_PLV32;
+      }
+      else if (pcw.ParaType == ParamType_Sprite)
+      {
+         if (*cl == 7)
+            *cl = pcw.ListType;
+         trans = TAS_PLV32;
+      }
+   }
+   return ta_fsm[(trans<<8) | (pcw.ParaType<<5) | (pcw.obj_ctrl>>2)%32] & 0xF;
+}
+
+/* A frame's data that did not come in through here - a state was loaded -
+ * walked again, for its table: from the start, with the state machine
+ * starting over where the lists were started and continued. (The data
+ * goes as far as it was sent; what the tile accelerator was in the
+ * middle of is in the state, and the table goes on from there as the
+ * next blocks come.) Only while the walk is on. */
+void ta_walk_rebuild(TA_context *ctx)
+{
+   const tad_context &tad = ctx->tad;
+   const u8 *p, *end;
+   u32 n = 0, state = TAS_NS, cl = 7, pass = 0;
+
+   ctx->walk_count   = TA_WALK_INVALID;
+   ctx->walk_restart = false;
+   if (!ta_walk_on)
+      return;
+   end = tad.End();
+   for (p = tad.thd_root; p < end; p += 32)
+   {
+      PCW pcw;
+      u32 trans;
+
+      while (pass < tad.render_pass_count && p >= tad.render_passes[pass])
+      {
+         // ta_vtx_ListCont()
+         state = TAS_NS;
+         cl    = 7;
+         pass++;
+      }
+      pcw   = *(const PCW *)p;
+      trans = ta_fsm[(state<<8) | (pcw.ParaType<<5) | (pcw.obj_ctrl>>2)%32];
+      if (trans & TA_FSM_WALK)
+      {
+         if (n == ctx->walk_size)
+            return;
+         ctx->walk[n++] = (u32)(p - tad.thd_root) / 32;
+         trans &= ~TA_FSM_WALK;
+      }
+      state = (trans & 0xF0) ? ta_walk_cmd(trans, pcw, &cl) : trans;
+   }
+   ctx->walk_count   = n;
+   ctx->walk_restart = tad.thd_data == tad.thd_root;
 }
 
 /* Many blocks at once: a DMA transfer, or the NAOMI 2's geometry processor.

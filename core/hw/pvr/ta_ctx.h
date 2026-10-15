@@ -85,7 +85,7 @@ struct  tad_context
 			render_pass_count++;
 	}
 
-   u8* End()
+   u8* End() const
    {
       return thd_data == thd_root ? thd_old_data : thd_data;
    }
@@ -178,6 +178,17 @@ struct rend_context
 /* A NAOMI 2's geometry processor sends several times what a game can send
  * by itself: everything a frame is kept in is that much bigger there. */
 #define TA_NAOMI2_SCALE 4
+
+/* The control-word walk's table of a frame (ta_set_walk()): an entry for
+ * each block of the frame's data that is not a vertex, as the blocks come
+ * in, for the header pass (ta_walk_parse()). Room for this many, times
+ * TA_NAOMI2_SCALE on a NAOMI 2 (64 KB, 256 KB there): games send a few
+ * thousand parameters a frame. A frame with more is parsed the way it
+ * always is. */
+#define TA_WALK_MAX 16384
+/* (walk_count: the table is not the frame's, or not all of it) */
+#define TA_WALK_INVALID 0xFFFFFFFFu
+
 static inline u32 ta_data_size(void)
 {
 	return settings.System == DC_PLATFORM_NAOMI2 ? TA_DATA_SIZE * TA_NAOMI2_SCALE : TA_DATA_SIZE;
@@ -203,6 +214,16 @@ struct TA_context
 
 	tad_context tad;
 	rend_context rend;
+
+	/* The control-word walk's table (TA_WALK_MAX): the block number of each
+	 * block of the data that is not a vertex, in order. walk_restart: the
+	 * lists were started again, and the next entry starts the table of a
+	 * new frame's data. Written by the emulation thread as the blocks come
+	 * in, read by whoever draws the frame once it is handed over. */
+	u32 *walk;
+	u32 walk_size;		// entries it has room for
+	u32 walk_count;		// entries it has; TA_WALK_INVALID: it is not to be trusted
+	bool walk_restart;
 
 	
 	/*
@@ -260,12 +281,14 @@ struct TA_context
       rend.render_passes.Init(sizeof(RenderPass) * 10, &rend.Overrun, "render_passes");	// 10 render passes
 		rend.region_tiles = (u32 *)malloc(REGION_TILES_MAX * sizeof(u32));
 		rend.region_tile_count = 0;
+		walk_size = TA_WALK_MAX * scale;
+		walk = (u32 *)malloc(walk_size * sizeof(u32));
 
 		if (!tad.thd_root || !regs || !rend.verts.daty || !rend.idx.daty
 				|| !rend.global_param_op.daty || !rend.global_param_pt.daty
 				|| !rend.global_param_mvo.daty || !rend.global_param_mvo_tr.daty
 				|| !rend.global_param_tr.daty || !rend.modtrig.daty
-				|| !rend.render_passes.daty || !rend.region_tiles)
+				|| !rend.render_passes.daty || !rend.region_tiles || !walk)
 		{
 			Free();
 			tad.Reset(NULL);
@@ -283,6 +306,8 @@ struct TA_context
       tad.Clear();
 		rend.Clear();
 		rend.proc_end = rend.proc_start = tad.thd_root;
+		walk_count = TA_WALK_INVALID;
+		walk_restart = false;
 	}
 
 	void Free()
@@ -300,6 +325,8 @@ struct TA_context
       rend.render_passes.Free();
 		free(rend.region_tiles);
 		rend.region_tiles = NULL;
+		free(walk);
+		walk = NULL;
 	}
 };
 
@@ -315,6 +342,9 @@ void tactx_Reset(void);
 
 TA_context* tactx_Alloc();
 void tactx_Recycle(TA_context* poped_ctx);
+/* The frames being written: their tables of the control-word walk are not
+ * to be trusted (from the emulation thread) */
+void tactx_walk_forget(void);
 
 /*
 	Ta Context

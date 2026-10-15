@@ -47,6 +47,15 @@ void ta_set_flat_strips(bool on);
  * without it. */
 void ta_set_region_table(bool on);
 
+/* The control-word walk (GPU-side TA processing, its CPU side). On, every
+ * block the tile accelerator is sent that is not a vertex has its place
+ * noted in its frame's table as it comes in, one store each; off (the
+ * default) the blocks go through just as they did without it. Taken up
+ * at the next list init. (From any thread.) */
+void ta_set_walk(bool on);
+/* A frame's data came back from a state: its table made again from it */
+void ta_walk_rebuild(TA_context *ctx);
+
 class TaTypeLut
 {
 public:
