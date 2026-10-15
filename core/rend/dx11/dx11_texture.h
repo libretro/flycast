@@ -49,9 +49,10 @@ struct DX11PooledTexture : TexPoolEntry
 
 /* The cache's textures (rend/tex_pool.h): made when the renderer starts,
  * and handed out to the textures that need one of their shape. The pool's
- * formats are the texture types, by their numbers. A texture is given
- * back as soon as it is done with: Direct3D sees to it that what the GPU
- * still has to do with it is done first. */
+ * formats are the texture types, by their numbers, and TARGET: the
+ * pictures rendered to, RGBA8 with a render target view (targets[0]). A
+ * texture is given back as soon as it is done with: Direct3D sees to it
+ * that what the GPU still has to do with it is done first. */
 class DX11TexturePool
 {
 public:
@@ -61,7 +62,11 @@ public:
 	 * free one of that shape, or one made now if there is none. Null if
 	 * the shape is not one of the pool's. */
 	DX11PooledTexture *Take(TextureType type, u32 width, u32 height, bool mips);
+	/* A picture to render to, @width by @height; null if the pool has
+	 * none of that shape */
+	DX11PooledTexture *TakeTarget(u32 width, u32 height);
 	void Give(DX11PooledTexture *texture) { book.Give(texture); }
+	enum { FORMATS = 6, TARGET = 5 };
 	const TexPoolBook& Book() const { return book; }
 
 private:
@@ -70,15 +75,15 @@ private:
 	TexPoolBook book;
 	ID3D11Device *device = nullptr;
 	bool ready = false;
-	bool usable[5] = {};
-	bool writable[5] = {};
+	bool usable[FORMATS] = {};
+	bool writable[FORMATS] = {};
 	DX11PooledTexture *all = nullptr;
 };
 
 class DX11Texture : public BaseTextureCacheData
 {
 public:
-	~DX11Texture() { ReleasePooled(); }
+	~DX11Texture() { ReleasePooled(); ReleaseSpare(); }
 	void UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded = false) override;
 	bool GpuDecode(const texd_plan& plan) override;
 	bool Delete() override;
@@ -103,12 +108,17 @@ public:
 	ComPtr<ID3D11RenderTargetView> spareTarget;
 	void SwapWithSpare()
 	{
-		// (the pool's texture is not one to be rendered to: it goes back)
+		// (the texture it had goes back to the pool, if it is the pool's: the spare is that now)
 		ReleasePooled();
+		pooled = sparePooled;
+		sparePooled = nullptr;
 		std::swap(texture, spare);
 		std::swap(textureView, spareView);
 		spareTarget.reset();
 	}
+	/* The spare, from the pool if it has one of this shape */
+	bool TakeSpare(u32 width, u32 height);
+	void ReleaseSpare();
 
 private:
 	/* The pool's texture for this shape, the one it has if it is that;
@@ -119,6 +129,7 @@ private:
 	void CancelDecode();
 
 	DX11PooledTexture *pooled = nullptr;
+	DX11PooledTexture *sparePooled = nullptr;
 	u32 decodeJob = 0, decodeCount = 0, decodeSerial = 0;
 	static DX11TexDecoder *decoder;
 	static DX11TexturePool *pool;

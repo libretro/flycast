@@ -16,10 +16,13 @@
  * has a list of the free images of that shape. How many of each are made
  * at the start is a share of the video memory the renderer may use
  * (rend/vram_budget.h), spread over the classes the way games' textures
- * are: mostly 16-bit, mipmapped and square, 64 to 256 texels. A class that
- * has none left when one is asked for has one made then - which means the
- * share was too small for the game - and it stays in the pool after: it
- * is counted, and said once for each class.
+ * are: mostly 16-bit, mipmapped and square, 64 to 256 texels; a quarter of
+ * it to the rectangles, by fixed shares - the smaller the shape and the
+ * nearer to square, the more. Pictures rendered to (a format of the kind
+ * TARGETS) are a fixed few of the shapes renders come in, from 64x64 to
+ * 1024x1024 (half as many where the share is the least). A class that has none left when one is asked for has one made
+ * then - which means the share was too small for the game - and it stays in
+ * the pool after: it is counted, and said once for each class.
  *
  * The lists are threaded through the images' own entries, and nothing is
  * allocated to take an image or to give one back. Only the thread that
@@ -43,7 +46,9 @@ struct TexPoolEntry
 class TexPoolBook
 {
 public:
-	enum { SIZES = 8, MIN_LOG2 = 3, MAX_FORMATS = 8, MAX_FRAMES = 8 };
+	enum { SIZES = 8, MIN_LOG2 = 3, MAX_FORMATS = 12, MAX_FRAMES = 8 };
+	/* What a format's images are for: textures; or pictures rendered to */
+	enum { TEXTURES = 0, TARGETS = 1 };
 	enum { CLASSES = MAX_FORMATS * SIZES * SIZES * 2 };
 
 	/* The class of an image of @format (the renderer's own number for it,
@@ -73,47 +78,98 @@ public:
 		return bytes;
 	}
 
+	/* A rectangle of the PowerVR's, 2^(@lw + 3) by 2^(@lh + 3) texels: its
+	 * share of the rectangles of a format used as much as 565. Strips and
+	 * large ones are few. */
+	static u32 RectShare(u32 lw, u32 lh)
+	{
+		// by the shorter side, for one twice as long; half as many for each doubling more
+		static const u32 shorter[SIZES] = { 2, 4, 6, 6, 4, 2, 1, 0 };
+		const u32 d = lw > lh ? lw - lh : lh - lw;
+		return d == 0 ? 0 : shorter[lw < lh ? lw : lh] >> (d - 1);
+	}
+	/* How many of each shape of picture rendered to there are: the square
+	 * ones from 64 to 512, two each, and 1024x1024; and what renders of a
+	 * screen are, 1024x512 (640x480 and the like) and 512x256 */
+	static u32 TargetCount(u32 lw, u32 lh)
+	{
+		if (lw == lh)
+			return lw >= 3 && lw <= 6 ? 2 : lw == 7 ? 1 : 0;
+		if (lw == 7 && lh == 6)
+			return 4;
+		if (lw == 6 && lh == 5)
+			return 2;
+		return lw >= 3 && lh >= 3 && (lw == lh + 1 || lh == lw + 1) ? 1 : 0;
+	}
+
 	/* How many images of each class to make at the start (into @counts,
 	 * CLASSES of them), for formats of @texel bytes a texel (0 for a
-	 * format there is none of) and the given relative use (@use, in
-	 * eighths: 8 for a format games use as much as 565). What they take is
+	 * format there is none of), of the kind @kind[f] (TEXTURES, TARGETS;
+	 * all TEXTURES if null) and the given relative use (@use, in eighths:
+	 * 8 for a format games use as much as 565). What the textures take is
 	 * a sixteenth of what the budget has left, but no less than 16 MB and
-	 * no more than 64 MB. Returns the bytes. */
-	static u64 Plan(const VramBudget& budget, const u32 *texel, const u32 *use, u32 formats, u32 *counts)
+	 * no more than 64 MB: three quarters of it the square ones, a quarter
+	 * the rectangles. Returns the bytes, the targets' too. */
+	static u64 Plan(const VramBudget& budget, const u32 *texel, const u32 *use, const u8 *kind, u32 formats, u32 *counts)
 	{
 		/* For a format used as much as 565: square, mipmapped, then not;
 		 * from 8 texels to 1024. */
 		static const u32 mipped[SIZES] = { 1, 4, 6, 12, 16, 16, 4, 0 };
 		static const u32 plain[SIZES]  = { 0, 0, 1,  2,  4,  4, 2, 0 };
-		u64 unit = 0, want, bytes = 0;
-		u32 f, s;
+		u64 unit = 0, rectUnit = 0, want, bytes = 0;
+		u32 f, s, t;
 
 		memset(counts, 0, sizeof(u32) * CLASSES);
 		for (f = 0; f < formats && f < MAX_FORMATS; f++)
+		{
+			if (texel[f] == 0 || (kind != nullptr && kind[f] != TEXTURES))
+				continue;
 			for (s = 0; s < SIZES; s++)
 			{
 				unit += (u64)mipped[s] * use[f] * Bytes(Class(f, 8u << s, 8u << s, true), texel[f]);
 				unit += (u64)plain[s] * use[f] * Bytes(Class(f, 8u << s, 8u << s, false), texel[f]);
+				for (t = 0; t < SIZES; t++)
+					rectUnit += (u64)RectShare(s, t) * use[f] * Bytes(Class(f, 8u << s, 8u << t, false), texel[f]);
 			}
-		if (unit == 0)
-			return 0;
+		}
 		want = (u64)budget.available_kib() * 1024 / 16;
 		if (want < 16ull << 20)
 			want = 16ull << 20;
 		if (want > 64ull << 20)
 			want = 64ull << 20;
-		// the table above times want / unit, rounded up (unit is in eighths)
-		want *= 8;
+		// the tables above times their part of want / unit, rounded up (the units are in eighths)
+		const u64 squares = want * 8 * 3 / 4, rects = want * 8 / 4;
 		for (f = 0; f < formats && f < MAX_FORMATS; f++)
 		{
 			if (texel[f] == 0)
 				continue;
-			for (s = 0; s < SIZES; s++)
+			if (kind != nullptr && kind[f] == TARGETS)
+			{
+				for (s = 0; s < SIZES; s++)
+					for (t = 0; t < SIZES; t++)
+					{
+						const int c = Class(f, 8u << s, 8u << t, false);
+						// (half as many on a card with little memory)
+						counts[c] = want < 64ull << 20 ? (TargetCount(s, t) + 1) / 2 : TargetCount(s, t);
+						bytes += (u64)counts[c] * Bytes(c, texel[f]);
+					}
+				continue;
+			}
+			for (s = 0; s < SIZES && unit != 0; s++)
 			{
 				const int m = Class(f, 8u << s, 8u << s, true), p = Class(f, 8u << s, 8u << s, false);
-				counts[m] = (u32)(((u64)mipped[s] * use[f] * want + unit * 8 - 1) / (unit * 8));
-				counts[p] = (u32)(((u64)plain[s] * use[f] * want + unit * 8 - 1) / (unit * 8));
+				counts[m] = (u32)(((u64)mipped[s] * use[f] * squares + unit * 8 - 1) / (unit * 8));
+				counts[p] = (u32)(((u64)plain[s] * use[f] * squares + unit * 8 - 1) / (unit * 8));
 				bytes += (u64)counts[m] * Bytes(m, texel[f]) + (u64)counts[p] * Bytes(p, texel[f]);
+				for (t = 0; t < SIZES && rectUnit != 0; t++)
+				{
+					if (t == s)
+						continue;
+					const int r = Class(f, 8u << s, 8u << t, false);
+					// (to the nearest: there are many of them, and few of each are used)
+					counts[r] = (u32)(((u64)RectShare(s, t) * use[f] * rects + rectUnit * 4) / (rectUnit * 8));
+					bytes += (u64)counts[r] * Bytes(r, texel[f]);
+				}
 			}
 		}
 		return bytes;

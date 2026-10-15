@@ -822,7 +822,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 		texture->extent = vk::Extent2D(widthPow2, heightPow2);
 		texture->format = vk::Format::eR8G8B8A8Unorm;
 		texture->needsStaging = true;
-		texture->CreateImage(vk::ImageTiling::eOptimal, renderTargetUsage, vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
+		texture->CreateRenderTarget(renderTargetUsage);
 		colorImageCurrentLayout = vk::ImageLayout::eUndefined;
 	}
 	else

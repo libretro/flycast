@@ -45,37 +45,46 @@ class TexDecoder;
  * and a piece of the heap - and retire it afterwards, and the texture was
  * converted into the cache's memory and copied into the buffer. A texture
  * is converted straight into its piece now (Texture::UploadMemory), and the
- * pieces come out of a few large buffers that are made once.
+ * pieces come out of one buffer, made when the renderer starts (Init()), a
+ * share of the video memory budget, and never grown: a ring, the frames'
+ * pieces one after the other.
  *
  * A piece is spoken for until the frame it was handed out in has been
- * through the GPU, which is when that frame's place in the chain of frames
- * comes round again (SetCurrentIndex): the same life as the command buffer
- * the copy was recorded in. */
+ * through the GPU: when that frame's place in the chain of frames comes
+ * round again (SetCurrentIndex(), after the texture command pool waited for
+ * its fence), or before, when the ring is full and that frame's fence,
+ * polled, says it is done. Nothing waits for it: when the frames still on
+ * the GPU hold the whole ring, there is no piece (Allocate() is null), and
+ * the texture is made with the next frame instead. */
+class CommandPool;
 class UploadRing
 {
 public:
+	/* The ring, @bytes of it, for the frames of @pool */
+	void Init(size_t bytes, CommandPool *pool);
 	/* @index is the current frame's from here on: whatever was handed out
-	 * under it the last time is free again, and buffers that have gone
-	 * unused for a long while are given back */
+	 * under it the last time is free again */
 	void SetCurrentIndex(int index);
 	/* @bytes of mapped memory, and where they are: in @buffer at @offset,
-	 * a multiple of 16 */
+	 * a multiple of 16; null if the ring has no room */
 	u8 *Allocate(size_t bytes, vk::Buffer *buffer, vk::DeviceSize *offset);
-	void Term() { chunks.clear(); }
+	void Term();
+	bool Ready() const { return mapped != nullptr; }
+
+	// what has been done so far, for measuring
+	u64 statFull = 0;		// pieces there was no room for
+	u64 statPolled = 0;		// frames found done before their turn
 
 private:
-	struct Chunk
-	{
-		std::unique_ptr<BufferData> buffer;
-		u8 *mapped;
-		size_t size;
-		size_t used;
-		u32 idle;			// turns of its frame's place it has gone unused
-		bool touched;
-	};
-	enum { IDLE_ROUNDS = 200 };
-	std::vector<std::vector<Chunk>> chunks;		// by frame index
+	enum { MAX_FRAMES = 8 };
+	std::unique_ptr<BufferData> buffer;
+	u8 *mapped = nullptr;
+	u64 size = 0;
+	u64 head = 0, tail = 0;			// bytes handed out and given back, ever
+	u64 frameEnd[MAX_FRAMES] = {};	// where each place's last frame ended,
+	bool frameLive[MAX_FRAMES] = {};	// while it may be on the GPU
 	u32 current = 0;
+	CommandPool *pool = nullptr;
 };
 
 /* An image of the texture pool's: optimal, sampled, copied to and from,
@@ -96,7 +105,8 @@ struct PooledImage : TexPoolEntry
 
 /* The cache's textures' images (rend/tex_pool.h): made when the renderer
  * starts, in the device memory's large blocks, and handed out to the
- * textures that need one of their shape */
+ * textures that need one of their shape. And the pictures rendered to
+ * (TakeTarget()), RGBA8, of their own kind of image. */
 class TexturePool
 {
 public:
@@ -109,6 +119,8 @@ public:
 	 * levels or not: a free one of that shape, or one made now if there is
 	 * none. Null if the shape is not one of the pool's. */
 	PooledImage *Take(vk::Format format, u32 width, u32 height, bool mips);
+	/* An image to render to, @width by @height, with @usage */
+	PooledImage *TakeTarget(u32 width, u32 height, const vk::ImageUsageFlags& usage);
 	/* Free again now; or when the frames that may still use it are done */
 	void Give(PooledImage *image) { book.Give(image); }
 	void Retire(PooledImage *image) { book.Retire(image); }
@@ -117,7 +129,7 @@ public:
 	const TexPoolBook& Book() const { return book; }
 
 private:
-	enum { FORMATS = 7 };
+	enum { FORMATS = 8, TARGET = 7 };
 	static int FormatIndex(vk::Format format);
 	PooledImage *Make(int cls, bool late);
 
@@ -179,6 +191,12 @@ private:
 	 * done, or now */
 	void ReleasePooled(bool now);
 	vk::ImageView StorageView(u32 level) const { return pooled != nullptr ? *pooled->storageViews[level] : *storageViews[level]; }
+	/* The image rendered to, extent by extent, with @usage: the pool's, or
+	 * one made (CreateImage()) where the pool has none of that shape */
+	void CreateRenderTarget(const vk::ImageUsageFlags& usage);
+	/* No room in the upload ring: the texture is made with the next frame,
+	 * and until then its image is left as it is */
+	void Defer(bool isNew);
 	/* what the image was made to be used for */
 	vk::ImageUsageFlags imageUsage;
 	void GenerateMipmaps();

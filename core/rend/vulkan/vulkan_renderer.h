@@ -154,6 +154,10 @@ protected:
 	bool BaseInit(vk::RenderPass renderPass, int subpass = 0)
 	{
 		texCommandPool.Init();
+		/* where the textures converted on the CPU go to the GPU through: one
+		 * buffer, a share of the video memory, between 16 and 64 MB */
+		Texture::Ring().Init((size_t)std::min<u64>(std::max<u64>((u64)GetContext()->GetVramBudget().available_kib() * 1024 / 32,
+				16ull << 20), 64ull << 20), &texCommandPool);
 		texDecoder.Init();
 		Texture::SetDecoder(&texDecoder);
 		// the textures' images, all of them now (rend/tex_pool.h)

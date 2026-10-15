@@ -166,13 +166,18 @@ Texture::~Texture()
 /* ---- The texture pool ---- */
 
 /* The formats the pool has images of, by its numbers for them: the
- * converters' five, and the two the decoder copies planar textures into */
+ * converters' five, the two the decoder copies planar textures into, and
+ * the pictures rendered to */
 static const vk::Format poolFormats[] = {
 	vk::Format::eR5G5B5A1UnormPack16, vk::Format::eR5G6B5UnormPack16, vk::Format::eR4G4B4A4UnormPack16,
 	vk::Format::eR8G8B8A8Unorm, vk::Format::eR8Unorm,
 	vk::Format::eA1R5G5B5UnormPack16, vk::Format::eB4G4R4A4UnormPack16,
+	vk::Format::eR8G8B8A8Unorm,
 };
-static const char * const poolFormatNames[] = { "5551", "565", "4444", "8888", "8-bit", "1555", "4444 (planar)" };
+static const char * const poolFormatNames[] = { "5551", "565", "4444", "8888", "8-bit", "1555", "4444 (planar)", "8888 rendered to" };
+// what the pictures rendered to are used for (the drawers' renderTargetUsage, and to be written as a texture after)
+static const vk::ImageUsageFlags targetUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
+		| vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 
 int TexturePool::FormatIndex(vk::Format format)
 {
@@ -191,9 +196,10 @@ void TexturePool::Init(const TexDecoder *decoder)
 	this->decoder = decoder;
 	book.Reset(TexPoolBook::MAX_FRAMES);
 
-	static const u32 texel[FORMATS] = { 2, 2, 2, 4, 1, 2, 2 };
+	static const u32 texel[FORMATS] = { 2, 2, 2, 4, 1, 2, 2, 4 };
 	// how much games use them, in eighths of what they use 565
-	static const u32 use[FORMATS] = { 4, 8, 4, 4, 2, 1, 1 };
+	static const u32 use[FORMATS] = { 4, 8, 4, 4, 2, 1, 1, 0 };
+	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, 0, 0, TexPoolBook::TARGETS };
 	u32 have[FORMATS];
 	for (int f = 0; f < FORMATS; f++)
 	{
@@ -202,16 +208,18 @@ void TexturePool::Init(const TexDecoder *decoder)
 		const vk::FormatFeatureFlags needed = vk::FormatFeatureFlagBits::eSampledImage | vk::FormatFeatureFlagBits::eTransferDst
 				| vk::FormatFeatureFlagBits::eTransferSrc;
 		usable[f] = (props.optimalTilingFeatures & needed) == needed;
+		if (f == TARGET)
+			usable[f] = usable[f] && (props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eColorAttachment);
 		// the 16-bit ones the device cannot sample are converted to 32 bits (Force32BitTexture())
 		if (f < 3 && !context->IsFormatSupported((TextureType)(f == 0 ? TextureType::_5551 : f == 1 ? TextureType::_565 : TextureType::_4444)))
 			usable[f] = false;
 		if (f >= 5)
 			usable[f] = usable[f] && decoder != nullptr && decoder->NativeFormat(f == 5 ? TextureType::_5551 : TextureType::_4444) == formats[f];
-		storable[f] = f < 5 && decoder != nullptr && decoder->Ready() && decoder->Takes(formats[f]);
+		storable[f] = f < 5 && f != TARGET && decoder != nullptr && decoder->Ready() && decoder->Takes(formats[f]);
 		have[f] = usable[f] ? texel[f] : 0;
 	}
 	u32 counts[TexPoolBook::CLASSES];
-	const u64 bytes = TexPoolBook::Plan(context->GetVramBudget(), have, use, FORMATS, counts);
+	const u64 bytes = TexPoolBook::Plan(context->GetVramBudget(), have, use, kind, FORMATS, counts);
 	ready = true;
 	for (int c = 0; c < TexPoolBook::CLASSES; c++)
 		for (u32 i = 0; i < counts[c]; i++)
@@ -252,6 +260,8 @@ PooledImage *TexturePool::Make(int cls, bool late)
 	pi->levels = TexPoolBook::Mips(cls) ? 1 + bitscanrev(std::max(width, height)) : 1;
 	pi->storage = storable[f];
 	pi->usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
+	if (f == TARGET)
+		pi->usage = targetUsage;
 	vk::ImageCreateFlags flags;
 	if (pi->storage)
 	{
@@ -292,7 +302,7 @@ PooledImage *TexturePool::Make(int cls, bool late)
 			pi->storageViews[level] = device.createImageViewUnique(info);
 		}
 	}
-	book.Made(pi, cls, TexPoolBook::Bytes(cls, f == 3 ? 4 : f == 4 ? 1 : 2), late, poolFormatNames[f]);
+	book.Made(pi, cls, TexPoolBook::Bytes(cls, f == 3 || f == TARGET ? 4 : f == 4 ? 1 : 2), late, poolFormatNames[f]);
 	pi->all = all;
 	all = pi;
 	return pi;
@@ -308,6 +318,42 @@ PooledImage *TexturePool::Take(vk::Format format, u32 width, u32 height, bool mi
 		return nullptr;
 	TexPoolEntry *e = book.Take(cls);
 	return e != nullptr ? static_cast<PooledImage *>(e) : Make(cls, true);
+}
+
+PooledImage *TexturePool::TakeTarget(u32 width, u32 height, const vk::ImageUsageFlags& usage)
+{
+	if (!ready || !usable[TARGET] || (usage & targetUsage) != usage)
+		return nullptr;
+	const int cls = TexPoolBook::Class(TARGET, width, height, false);
+	if (cls < 0)
+		return nullptr;
+	TexPoolEntry *e = book.Take(cls);
+	return e != nullptr ? static_cast<PooledImage *>(e) : Make(cls, true);
+}
+
+void Texture::CreateRenderTarget(const vk::ImageUsageFlags& usage)
+{
+	PooledImage *pi = pool != nullptr ? pool->TakeTarget(extent.width, extent.height, usage) : nullptr;
+	if (pi == nullptr)
+	{
+		CreateImage(vk::ImageTiling::eOptimal, usage, vk::ImageLayout::eUndefined, vk::ImageAspectFlagBits::eColor);
+		return;
+	}
+	// what it had goes, as CreateImage() lets it go
+	CancelDecode();
+	ReleasePooled(false);
+	for (auto& view : storageViews)
+		view.reset();
+	imageView.reset();
+	image.reset();
+	allocation = Allocation();
+	pooled = pi;
+	// (a texture of the cache's, whose image is the pool's to take back)
+	cached = true;
+	mipmapLevels = 1;
+	imageUsage = pi->usage;
+	storage = false;
+	fresh = true;
 }
 
 bool Texture::TakePooled(u32 width, u32 height, bool mipmapped)
@@ -363,62 +409,96 @@ UploadRing& Texture::Ring()
 	return ring;
 }
 
+void UploadRing::Init(size_t bytes, CommandPool *pool)
+{
+	this->pool = pool;
+	if (mapped != nullptr && size == (u64)bytes)
+		return;
+	Term();
+	this->pool = pool;
+	buffer = std::unique_ptr<BufferData>(new BufferData(bytes, vk::BufferUsageFlagBits::eTransferSrc));
+	mapped = (u8 *)buffer->MapMemory();
+	size = bytes;
+	head = tail = 0;
+	current = 0;
+	for (u32 i = 0; i < MAX_FRAMES; i++)
+		frameLive[i] = false;
+	INFO_LOG(RENDERER, "Vulkan: upload ring of %u KB", (u32)(bytes >> 10));
+}
+
+void UploadRing::Term()
+{
+	if (mapped != nullptr)
+		NOTICE_LOG(RENDERER, "Vulkan: upload ring: %u MB handed out, %u frames found done before their turn, %u textures put off for want of room",
+				(u32)(head >> 20), (u32)statPolled, (u32)statFull);
+	mapped = nullptr;
+	buffer.reset();
+	size = head = tail = 0;
+	for (u32 i = 0; i < MAX_FRAMES; i++)
+		frameLive[i] = false;
+}
+
 void UploadRing::SetCurrentIndex(int index)
 {
+	if (mapped == nullptr)
+		return;
+	// where the frame that ends here ends; then this place's last frame is done
+	frameEnd[current % MAX_FRAMES] = head;
+	frameLive[current % MAX_FRAMES] = true;
 	current = (u32)index;
-	if (chunks.size() <= current)
-		chunks.resize(current + 1);
-	std::vector<Chunk>& mine = chunks[current];
-	for (size_t i = 0; i < mine.size(); )
+	if (frameLive[current % MAX_FRAMES])
 	{
-		/* Not needed for a long while - textures arrive in bursts, a scene at
-		 * a time, and a buffer given back between two of them would only be
-		 * made again: it goes after IDLE_ROUNDS turns of this frame's place
-		 * without a texture, some ten seconds. The frame that could have
-		 * used it last is long done. */
-		if (!mine[i].touched && ++mine[i].idle >= IDLE_ROUNDS)
-		{
-			mine.erase(mine.begin() + i);
-			continue;
-		}
-		if (mine[i].touched)
-			mine[i].idle = 0;
-		mine[i].used = 0;
-		mine[i].touched = false;
-		i++;
+		tail = std::max(tail, frameEnd[current % MAX_FRAMES]);
+		frameLive[current % MAX_FRAMES] = false;
 	}
 }
 
 u8 *UploadRing::Allocate(size_t bytes, vk::Buffer *buffer, vk::DeviceSize *offset)
 {
-	const size_t CHUNK = 4 * 1024 * 1024;
-
-	if (chunks.size() <= current)
-		chunks.resize(current + 1);
-	std::vector<Chunk>& mine = chunks[current];
+	if (mapped == nullptr)
+		return nullptr;
 	bytes = (bytes + 15) & ~(size_t)15;
-	size_t i;
-	for (i = 0; i < mine.size(); i++)
-		if (mine[i].size - mine[i].used >= bytes)
-			break;
-	if (i == mine.size())
+	if (bytes > size)
 	{
-		Chunk chunk;
-		chunk.size = bytes > CHUNK ? bytes : CHUNK;
-		chunk.buffer = std::unique_ptr<BufferData>(new BufferData(chunk.size, vk::BufferUsageFlagBits::eTransferSrc));
-		chunk.mapped = (u8 *)chunk.buffer->MapMemory();
-		chunk.used = 0;
-		chunk.idle = 0;
-		chunk.touched = false;
-		mine.push_back(std::move(chunk));
+		statFull++;
+		return nullptr;
 	}
-	Chunk& chunk = mine[i];
-	u8 *memory = chunk.mapped + chunk.used;
-	*buffer = chunk.buffer->buffer.get();
-	*offset = chunk.used;
-	chunk.used += bytes;
-	chunk.touched = true;
-	return memory;
+	for (;;)
+	{
+		const u64 at = head % size;
+		// (a piece is never split: from the start again if it would be)
+		const u64 skip = at + bytes > size ? size - at : 0;
+		if (head + skip + bytes - tail <= size)
+		{
+			head += skip;
+			u8 *memory = mapped + head % size;
+			*buffer = this->buffer->buffer.get();
+			*offset = head % size;
+			head += bytes;
+			return memory;
+		}
+		/* Full: the oldest frame still out, if its fence says it is done
+		 * (the frames are done in the order they went) */
+		const int frames = pool != nullptr ? std::min(pool->GetSize(), (int)MAX_FRAMES) : 0;
+		bool freed = false;
+		for (int k = 1; k < frames && !freed; k++)
+		{
+			const u32 slot = (current + (u32)k) % (u32)frames;
+			if (!frameLive[slot])
+				continue;
+			if (!pool->IsDone((int)slot))
+				break;
+			tail = std::max(tail, frameEnd[slot]);
+			frameLive[slot] = false;
+			statPolled++;
+			freed = true;
+		}
+		if (!freed)
+		{
+			statFull++;
+			return nullptr;
+		}
+	}
 }
 
 /* Makes the image what a texture of this size and kind needs, if it is not
@@ -532,7 +612,8 @@ void *Texture::UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool
 		return nullptr;
 	const u32 pad = mipmaps && mipmapLevels > 1 ? upload_levels_pad(pixel) : 0;
 	slot = Ring().Allocate(pad + bytes, &slotBuffer, &slotOffset);
-	return slot + pad;
+	// (no room: converted into the cache's memory, and SetImage() finds none either)
+	return slot != nullptr ? slot + pad : nullptr;
 }
 
 void Texture::UploadToGPU(int width, int height, u8 *data, bool mipmapped, bool mipmapsIncluded)
@@ -661,12 +742,46 @@ void Texture::CreateImage(vk::ImageTiling tiling, const vk::ImageUsageFlags& usa
 	imageView = device.createImageViewUnique(imageViewCreateInfo);
 }
 
+void Texture::Defer(bool isNew)
+{
+	if (isNew)
+	{
+		/* (an image never written is sampled all the same: it is made one
+		 * that can be, whatever is in it) */
+		commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+		setImageLayout(commandBuffer, GetImage(), format, mipmapLevels, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+		commandBuffer.end();
+	}
+	fresh = false;
+	if (cached)
+		dirty = FrameCount != 0 ? FrameCount : 1;
+}
+
 void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 {
 	if (!commandBuffer && commandPool != nullptr)
 		commandBuffer = commandPool->Allocate();
 	verify((bool)commandBuffer);
 	isNew = isNew || fresh;
+	if (needsStaging)
+	{
+		const u32 pixel = texel_bytes(tex_type);
+		const u32 pad = mipmapLevels > 1 && !genMipmaps ? upload_levels_pad(pixel) : 0;
+		/* Converted into its piece of the ring already - or, for what was
+		 * not (a custom texture, one scaled up, the renderer's own small
+		 * textures, one there was no room for), a piece for it now, and the
+		 * one copy. None, and it waits for the next frame. */
+		if (slot == nullptr || srcData != slot + pad)
+		{
+			slot = Ring().Allocate(pad + srcSize, &slotBuffer, &slotOffset);
+			if (slot == nullptr)
+			{
+				Defer(isNew);
+				return;
+			}
+			memcpy(slot + pad, srcData, srcSize);
+		}
+	}
 	fresh = false;
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
@@ -678,15 +793,6 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 		const u32 pixel = texel_bytes(tex_type);
 		const bool levels = mipmapLevels > 1 && !genMipmaps;
 		const u32 pad = levels ? upload_levels_pad(pixel) : 0;
-
-		/* Converted into its piece of the ring already - or, for what was
-		 * not (a custom texture, one scaled up, the renderer's own small
-		 * textures), a piece for it now, and the one copy. */
-		if (slot == nullptr || srcData != slot + pad)
-		{
-			slot = Ring().Allocate(pad + srcSize, &slotBuffer, &slotOffset);
-			memcpy(slot + pad, srcData, srcSize);
-		}
 		if (pad != 0)
 			// the 1x1 level, to where a copy can start: see upload_layout.h
 			memcpy(slot, slot + pad, pixel);

@@ -31,12 +31,13 @@ DX11TexturePool *DX11Texture::pool;
 
 /* ---- The texture pool ---- */
 
-// by TextureType: 565, 5551, 4444, 8888, 8
-static const DXGI_FORMAT poolFormats[5] = {
-	DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B5G5R5A1_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8_UNORM
+// by TextureType: 565, 5551, 4444, 8888, 8; and the pictures rendered to
+static const DXGI_FORMAT poolFormats[DX11TexturePool::FORMATS] = {
+	DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B5G5R5A1_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8_UNORM,
+	DXGI_FORMAT_R8G8B8A8_UNORM
 };
-static const char * const poolFormatNames[5] = { "565", "5551", "4444", "8888", "8-bit" };
-static const u32 poolTexel[5] = { 2, 2, 2, 4, 1 };
+static const char * const poolFormatNames[DX11TexturePool::FORMATS] = { "565", "5551", "4444", "8888", "8-bit", "8888 rendered to" };
+static const u32 poolTexel[DX11TexturePool::FORMATS] = { 2, 2, 2, 4, 1, 4 };
 
 void DX11TexturePool::Init(ID3D11Device *device, const VramBudget& budget, const DX11TexDecoder *decoder)
 {
@@ -45,16 +46,17 @@ void DX11TexturePool::Init(ID3D11Device *device, const VramBudget& budget, const
 	this->device = device;
 	book.Reset(1);
 	// how much games use them, in eighths of what they use 565
-	static const u32 use[5] = { 8, 4, 4, 4, 2 };
-	u32 have[5];
-	for (int f = 0; f < 5; f++)
+	static const u32 use[FORMATS] = { 8, 4, 4, 4, 2, 0 };
+	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, TexPoolBook::TARGETS };
+	u32 have[FORMATS];
+	for (int f = 0; f < FORMATS; f++)
 	{
-		usable[f] = DX11Context::Instance()->IsFormatSupported((TextureType)f);
-		writable[f] = usable[f] && decoder != nullptr && decoder->Takes((TextureType)f);
+		usable[f] = f == TARGET || DX11Context::Instance()->IsFormatSupported((TextureType)f);
+		writable[f] = f != TARGET && usable[f] && decoder != nullptr && decoder->Takes((TextureType)f);
 		have[f] = usable[f] ? poolTexel[f] : 0;
 	}
 	u32 counts[TexPoolBook::CLASSES];
-	const u64 bytes = TexPoolBook::Plan(budget, have, use, 5, counts);
+	const u64 bytes = TexPoolBook::Plan(budget, have, use, kind, FORMATS, counts);
 	ready = true;
 	for (int c = 0; c < TexPoolBook::CLASSES; c++)
 		for (u32 i = 0; i < counts[c]; i++)
@@ -102,6 +104,8 @@ DX11PooledTexture *DX11TexturePool::Make(int cls, bool late)
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_DEFAULT;
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (t->writable ? (wide ? D3D11_BIND_UNORDERED_ACCESS : D3D11_BIND_RENDER_TARGET) : 0);
+	if (f == TARGET)
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 	bool ok = SUCCEEDED(device->CreateTexture2D(&desc, nullptr, t->texture.put()));
 	if (ok)
 	{
@@ -112,6 +116,8 @@ DX11PooledTexture *DX11TexturePool::Make(int cls, bool late)
 		view.Texture2D.MipLevels = t->levels;
 		ok = SUCCEEDED(device->CreateShaderResourceView(t->texture, &view, t->view.put()));
 	}
+	if (ok && f == TARGET)
+		ok = SUCCEEDED(device->CreateRenderTargetView(t->texture, nullptr, t->targets[0].put()));
 	for (u32 level = 0; ok && t->writable && level < t->levels; level++)
 		if (wide)
 		{
@@ -139,6 +145,42 @@ DX11PooledTexture *DX11TexturePool::Make(int cls, bool late)
 	t->all = all;
 	all = t;
 	return t;
+}
+
+DX11PooledTexture *DX11TexturePool::TakeTarget(u32 width, u32 height)
+{
+	if (!ready)
+		return nullptr;
+	const int cls = TexPoolBook::Class(TARGET, width, height, false);
+	if (cls < 0)
+		return nullptr;
+	TexPoolEntry *e = book.Take(cls);
+	return e != nullptr ? static_cast<DX11PooledTexture *>(e) : Make(cls, true);
+}
+
+bool DX11Texture::TakeSpare(u32 width, u32 height)
+{
+	DX11PooledTexture *t = pool != nullptr ? pool->TakeTarget(width, height) : nullptr;
+	if (t == nullptr)
+		return false;
+	ReleaseSpare();
+	sparePooled = t;
+	spare = t->texture;
+	spareView = t->view;
+	spareTarget = t->targets[0];
+	return true;
+}
+
+void DX11Texture::ReleaseSpare()
+{
+	if (sparePooled == nullptr)
+		return;
+	spareTarget.reset();
+	spareView.reset();
+	spare.reset();
+	if (pool != nullptr)
+		pool->Give(sparePooled);
+	sparePooled = nullptr;
 }
 
 DX11PooledTexture *DX11TexturePool::Take(TextureType type, u32 width, u32 height, bool mips)
@@ -410,6 +452,7 @@ bool DX11Texture::Delete()
 	if (!BaseTextureCacheData::Delete())
 		return false;
 	ReleasePooled();
+	ReleaseSpare();
 	textureView.reset();
 	texture.reset();
 	spareTarget.reset();

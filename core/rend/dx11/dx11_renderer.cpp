@@ -871,12 +871,14 @@ bool DX11Renderer::BeginRTT()
 		if (desc.Width != widthPow2 || desc.Height != heightPow2 || desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM
 				|| (desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0 || desc.MipLevels != 1)
 		{
+			rttTexture->ReleaseSpare();
 			rttTexture->spareTarget.reset();
 			rttTexture->spareView.reset();
 			rttTexture->spare.reset();
 		}
 	}
-	if (!rttTexture->spare
+	// (one of the pool's, made at the start, where it has one of this shape)
+	if (!rttTexture->spare && !rttTexture->TakeSpare(widthPow2, heightPow2)
 			&& !makeTexture(device, widthPow2, heightPow2, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
 					rttTexture->spare, rttTexture->spareView))
 		return false;
