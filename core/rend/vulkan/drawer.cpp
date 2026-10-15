@@ -207,35 +207,54 @@ void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 void Drawer::DrawShadowed(const vk::CommandBuffer& cmdBuffer, u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 		const ScreenBounds& area, const vk::Rect2D& scissor)
 {
+	/* (of a frame decoded on the GPU, the GPU has said which groups reach
+	 * into the volumes: the others' second commands draw nothing) */
+	gpuDraws = GpuDraws::Shadows;
 	const PolyParam *pp_end = polys.head() + last;
 	for (const PolyParam *pp = polys.head() + first; pp != pp_end; pp++)
-		// (where the vertices are is not known here for a frame decoded on the GPU: the stencil says it all)
 		if (CanDrawShadowed(listType, pp) && (pvrrc.gpu || PolyOverlaps(pp, area)))
 			DrawPoly(cmdBuffer, listType, false, *pp, pp->first, pp->count,
 					ShadowLaterWins(listType, pp) ? PipelineManager::ShadowPass::LaterWins : PipelineManager::ShadowPass::EarlierWins,
 					&scissor);
+	gpuDraws = GpuDraws::Groups;
 }
 
-void Drawer::DrawSorted(const vk::CommandBuffer& cmdBuffer, const std::vector<SortTrigDrawParam>& polys, bool multipass)
+void Drawer::DrawSorted(const vk::CommandBuffer& cmdBuffer, const SortTrigDrawParam *polys, u32 count, bool multipass)
 {
-	for (const SortTrigDrawParam& param : polys)
-		DrawPoly(cmdBuffer, ListType_Translucent, true, *param.ppid, pvrrc.idx.used() + param.first, param.count);
+	/* (a frame decoded on the GPU: its sorted indices are this frame's in
+	 * the decoder's room for them, and name the GPU's vertices) */
+	const u32 base = pvrrc.gpu ? 0 : pvrrc.idx.used();
+	if (pvrrc.gpu)
+	{
+		if (count == 0)
+			return;
+		cmdBuffer.bindIndexBuffer(gpuDraw->sorted, gpuDraw->sortedOffset, vk::IndexType::eUint32);
+		gpuDraws = GpuDraws::Sorted;
+	}
+	for (u32 i = 0; i < count; i++)
+		DrawPoly(cmdBuffer, ListType_Translucent, true, *polys[i].ppid, base + polys[i].first, polys[i].count);
 
 	if (multipass && settings.rend.TranslucentPolygonDepthMask)
 	{
 		// Sorted translucent polygons are drawn without writing depth. Where
 		// a later render pass needs their depth (Cosmic Smash), it is written
 		// now, for those that do not have Z write disabled.
-		for (const SortTrigDrawParam& param : polys)
+		for (u32 i = 0; i < count; i++)
 		{
+			const SortTrigDrawParam& param = polys[i];
 			if (param.count <= 2 || param.ppid->isp.ZWriteDis)
 				continue;
 			vk::Rect2D scissorRect;
 			SetScissor(cmdBuffer, SetTileClip(param.ppid->tileclip, scissorRect) == TileClipping::Outside ? scissorRect : baseScissor);
 			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
 					pipelineManager->GetModifierVolumePipeline(ModVolMode::Depth, param.ppid->isp.CullMode));
-			cmdBuffer.drawIndexed(param.count, 1, pvrrc.idx.used() + param.first, 0, 0);
+			cmdBuffer.drawIndexed(param.count, 1, base + param.first, 0, 0);
 		}
+	}
+	if (pvrrc.gpu)
+	{
+		cmdBuffer.bindIndexBuffer(gpuDraw->indices, 0, vk::IndexType::eUint32);
+		gpuDraws = GpuDraws::Groups;
 	}
 }
 
@@ -247,7 +266,8 @@ void Drawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 			DrawPoly(cmdBuffer, listType, sortTriangles, *pp, pp->first, pp->count);
 }
 
-void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
+void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass,
+		int render_pass)
 {
 	if (count == 0 || ModVolTriangles() == 0)
 		return;
@@ -257,7 +277,6 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 	SetScissor(cmdBuffer, baseScissor);
 
 	ModifierVolumeParam* params = &pvrrc.global_param_mvo.head()[first];
-	bool any = false;
 
 	int mod_base = -1;
 	vk::Pipeline pipeline;
@@ -268,7 +287,6 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 
 		if (param.count == 0)
 			continue;
-		any = true;
 
 		u32 mv_mode = param.isp.DepthMode;
 
@@ -303,15 +321,16 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 	SetScissor(cmdBuffer, baseScissor);
 	BindVertices(cmdBuffer, buffer);
 
-	/* The polygons that take shadows, again, where they are in a volume. Of
-	 * a frame decoded on the GPU the volumes' triangles are not here: all
-	 * of them, all over, which the stencil makes the same */
-	const ScreenBounds area = pvrrc.gpu ? ScreenBounds{ -1e30f, -1e30f, 1e30f, 1e30f } : ModVolBounds(first, count);
-	if (!area.empty() && (any || !pvrrc.gpu))
+	/* The polygons that take shadows, again, where they are in a volume.
+	 * Of a frame decoded on the GPU, the volumes' bounds are the header
+	 * pass's, from their blocks (TA_GPU_SHADOWS) */
+	const f32 *ga = pvrrc.gpu_shadow_area[render_pass < 10 ? render_pass : 0];
+	const ScreenBounds area = pvrrc.gpu ? ScreenBounds{ ga[0], ga[1], ga[2], ga[3] } : ModVolBounds(first, count);
+	if (!area.empty())
 	{
 		int rect[4];
 		BoundsToScissor(area, matrices.GetViewportMatrix(), rect);
-		const vk::Rect2D scissor = pvrrc.gpu ? baseScissor : vk::Rect2D(vk::Offset2D(rect[0], rect[1]), vk::Extent2D(rect[2], rect[3]));
+		const vk::Rect2D scissor(vk::Offset2D(rect[0], rect[1]), vk::Extent2D(rect[2], rect[3]));
 		DrawShadowed(cmdBuffer, ListType_Opaque, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count, area, scissor);
 		DrawShadowed(cmdBuffer, ListType_Punch_Through, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count, area, scissor);
 		SetScissor(cmdBuffer, baseScissor);
@@ -390,8 +409,9 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 
 bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 {
-	/* (a frame decoded on the GPU has no sorted pass, and no vertices here
-	 * to sort: see TA_GPU_NO_SORT) */
+	/* (a frame decoded on the GPU has its sorted passes sorted already, and
+	 * their indices go straight to the decoder's room for them: see
+	 * TA_GPU_SORT) */
 	if (!pvrrc.gpu)
 		SortTriangles();
 	else
@@ -399,6 +419,8 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		for (std::vector<u32>& idx : sortedIndexes)
 			idx.clear();
 		sortedIndexCount = 0;
+		if (ta_gpu_sorted_indices() != 0)
+			ta_gpu_sorted_write(gpuDraw->sortedMap);
 	}
 	currentScissor = vk::Rect2D();
 
@@ -448,12 +470,21 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 				current_pass.mvo_count - previous_pass.mvo_count, current_pass.autosort);
 		DrawList(cmdBuffer, ListType_Opaque, false, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count);
 		DrawList(cmdBuffer, ListType_Punch_Through, false, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count);
-		DrawModVols(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, previous_pass, current_pass);
+		DrawModVols(cmdBuffer, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, previous_pass, current_pass,
+				render_pass);
 		if (current_pass.autosort)
 		{
-			if (!settings.pvr.Emulation.AlphaSortMode)
+			// (a frame decoded on the GPU with a sorted pass was sorted by triangle: TA_GPU_SORT)
+			if (pvrrc.gpu)
 			{
-				DrawSorted(cmdBuffer, sortedPolys[render_pass], render_pass < pvrrc.render_passes.used() - 1);
+				u32 n;
+				const SortTrigDrawParam *sorted = ta_gpu_sorted(render_pass, &n);
+				DrawSorted(cmdBuffer, sorted, n, render_pass < pvrrc.render_passes.used() - 1);
+			}
+			else if (!settings.pvr.Emulation.AlphaSortMode)
+			{
+				DrawSorted(cmdBuffer, sortedPolys[render_pass].data(), (u32)sortedPolys[render_pass].size(),
+						render_pass < pvrrc.render_passes.used() - 1);
 			}
 			else
 			{

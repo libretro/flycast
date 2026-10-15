@@ -130,6 +130,12 @@ protected:
 	}
 	u32 ModVolTriangles() const { return pvrrc.gpu ? pvrrc.gpu_modtrig : (u32)pvrrc.modtrig.used(); }
 
+	/* How DrawIndices() draws a frame decoded on the GPU: its draw groups;
+	 * the sorted translucent triangles, whose indices the CPU wrote
+	 * (TA_GPU_SORT); or the draw groups drawn again for shadows, by the
+	 * commands the GPU wrote for that (TA_GPU_SHADOWS) */
+	enum class GpuDraws { Groups, Sorted, Shadows };
+
 	/* A polygon parameter's indices drawn: @count from @first; or, of a
 	 * frame decoded on the GPU, a draw group's (PolyParam::first and count:
 	 * see TA_GPU_DRAW), by its command, or for a translucent one by its
@@ -137,8 +143,10 @@ protected:
 	void DrawIndices(const vk::CommandBuffer& cmdBuffer, u32 listType, u32 first, u32 count) const
 	{
 		const u32 stride = sizeof(VkDrawIndexedIndirectCommand);	// (rend/ta_gpu.h's records)
-		if (!pvrrc.gpu)
+		if (!pvrrc.gpu || gpuDraws == GpuDraws::Sorted)
 			cmdBuffer.drawIndexed(count, 1, first, 0, 0);
+		else if (gpuDraws == GpuDraws::Shadows)
+			cmdBuffer.drawIndexedIndirect(gpuDraw->commands, gpuDraw->shadowCommands + (vk::DeviceSize)first * stride, 1, stride);
 		else if (listType != ListType_Translucent)
 			cmdBuffer.drawIndexedIndirect(gpuDraw->commands, (vk::DeviceSize)first * stride, 1, stride);
 		else if (gpuDraw->drawCount != nullptr)
@@ -153,6 +161,7 @@ protected:
 	TransformMatrix<false> matrices;
 	CommandPool *commandPool = nullptr;
 	const TaGpuDraw *gpuDraw = nullptr;
+	GpuDraws gpuDraws = GpuDraws::Groups;
 };
 
 class Drawer : public BaseDrawer
@@ -221,9 +230,10 @@ private:
 			PipelineManager::ShadowPass shadowPass = PipelineManager::ShadowPass::None, const vk::Rect2D *within = nullptr);
 	void DrawShadowed(const vk::CommandBuffer& cmdBuffer, u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 			const ScreenBounds& area, const vk::Rect2D& scissor);
-	void DrawSorted(const vk::CommandBuffer& cmdBuffer, const std::vector<SortTrigDrawParam>& polys, bool multipass);
+	void DrawSorted(const vk::CommandBuffer& cmdBuffer, const SortTrigDrawParam *polys, u32 count, bool multipass);
    void DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
-	void DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass);
+	void DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass,
+			int render_pass);
 	void UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const FragmentShaderUniforms& fragmentUniforms);
 
 	int imageIndex = 0;

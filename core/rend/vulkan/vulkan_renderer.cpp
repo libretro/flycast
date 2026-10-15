@@ -40,6 +40,7 @@ public:
 		screenDrawer.Init(&samplerManager, &shaderManager);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		screenDrawer.SetGpuDraw(taDecoder.Draw());
+		taDecoder.WantSort(true);
 		BaseInit(screenDrawer.GetRenderPass());
 		screenDrawer.SetQuadPipeline(&quadPipeline);
 
@@ -61,10 +62,16 @@ public:
 	void SetRestoredPicture(vk::ImageView view) override { screenDrawer.SetRestoredPicture(view); }
 
 protected:
-	/* The translucent polygons are sorted on the CPU, from the CPU's
-	 * vertices: a frame that may have a sorted pass is parsed there (the
-	 * GPU's sort is for later) */
-	u32 TaFlags() const override { return TA_GPU_DRAW | TA_GPU_NO_SORT | TA_GPU_PROVOKE; }
+	/* A sorted pass's translucent triangles are sorted from the frame's
+	 * depths (TA_GPU_SORT); sorted by strip, the polygons are sorted from
+	 * the CPU's vertices, and a frame that may have a sorted pass is
+	 * parsed. The polygons drawn again for shadows are those the GPU says
+	 * reach into the volumes. */
+	u32 TaFlags() const override
+	{
+		return TA_GPU_DRAW | TA_GPU_PROVOKE | TA_GPU_SHADOWS
+				| (!settings.pvr.Emulation.AlphaSortMode && taDecoder.CanSort() ? TA_GPU_SORT : TA_GPU_NO_SORT);
+	}
 
 public:
 	void Term() override

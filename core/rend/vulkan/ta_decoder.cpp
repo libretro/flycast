@@ -38,6 +38,14 @@ struct TaDecoder::Resources
 	vk::UniqueQueryPool queries;		// two timestamps a frame, if the queue has them
 	double period = 0;			// ns a tick
 	u64 mask = 0;
+	/* (TA_GPU_SORT) room for the sorted translucent indices of a frame,
+	 * for each slot of the texture pool, whose command buffers the drawers
+	 * draw with: a slot's are written by the CPU once BeginFrame() has
+	 * waited for the slot's fence, which the draws of the frame that last
+	 * read them were submitted with */
+	std::unique_ptr<BufferData> sorted;
+	u8 *sortedMap = nullptr;
+	vk::DeviceSize sortSlot = 0;		// bytes; 0: none
 };
 
 TaDecoder::TaDecoder() {}
@@ -125,13 +133,24 @@ bool TaDecoder::Init(CommandPool& pool)
 				storage | vk::BufferUsageFlagBits::eTransferDst, local));
 		r->buffers[B_REC] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)strips * TAG_C_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer, local));
-		r->buffers[B_CMD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.headers * TAG_C_WORDS * 4,
+		// (and a second command for each, for shadows: TAG_T_SHD_CMD)
+		r->buffers[B_CMD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.headers * 2 * TAG_C_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer, local));
 		r->buffers[B_FRM] = std::unique_ptr<BufferData>(new BufferData(TAG_O_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
 		r->buffers[B_TRD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)trdSlots * TAG_C_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
 		r->buffers[B_TRP] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4, storage, local));
+		/* The sorted indices: three a triangle, for as many triangles as a
+		 * frame can have indices. In host-visible memory, which the CPU
+		 * writes them to once (they are its sort's) and the GPU reads once. */
+		if (sortWanted)
+		{
+			const vk::DeviceSize slot = ((vk::DeviceSize)sz.idx * 3 * 4 + 255) & ~(vk::DeviceSize)255;
+			r->sorted = std::unique_ptr<BufferData>(new BufferData(slot * frames, vk::BufferUsageFlagBits::eIndexBuffer));
+			r->sortedMap = (u8 *)r->sorted->MapMemory();
+			r->sortSlot = slot;
+		}
 	} catch (const vk::SystemError& e) {
 		INFO_LOG(RENDERER, "Vulkan: TA processing stays on the CPU (%s)", e.what());
 		failed = true;
@@ -215,6 +234,9 @@ bool TaDecoder::Init(CommandPool& pool)
 		failed = true;
 		return false;
 	}
+	// (without the CPU's room to sort in, a frame with a sorted pass is parsed and sorted as ever)
+	if (r->sortSlot != 0 && !ta_gpu_sort_reserve(true))
+		r->sortSlot = 0;
 	slotSerial.assign(frames, 0);
 	slotTimed.assign(frames, false);
 	draw.vertices = *r->buffers[B_VTX]->buffer;
@@ -224,12 +246,17 @@ bool TaDecoder::Init(CommandPool& pool)
 	draw.trDraws = *r->buffers[B_TRD]->buffer;
 	draw.trParams = *r->buffers[B_TRP]->buffer;
 	draw.trParamsSize = (vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4;
+	draw.shadowCommands = (vk::DeviceSize)sz.headers * TAG_C_WORDS * 4;
+	draw.sorted = r->sorted ? *r->sorted->buffer : vk::Buffer();
+	draw.sortedOffset = 0;
+	draw.sortedMap = nullptr;
+	sortable = r->sortSlot != 0;
 	res = std::move(r);
 	ready = true;
 	NOTICE_LOG(RENDERER, "Vulkan: TA processing on the GPU (%u frames of %u MB in host-cached memory, %u KB of tables a frame; "
-			"translucent groups drawn %s, %s strip numbers)",
+			"translucent groups drawn %s, %s strip numbers%s)",
 			res->slices, res->slice >> 20, res->tableWords / 256, draw.drawCount != nullptr ? "with their count" : "whole",
-			instance ? "with" : "without");
+			instance ? "with" : "without", res->sortSlot != 0 ? "; translucent triangles sorted from the frame's depths" : "");
 	return true;
 }
 
@@ -239,12 +266,15 @@ void TaDecoder::Log(const char *when)
 	tactx_gpu_pool_stats(&shortFrames, &allocated);
 	NOTICE_LOG(RENDERER, "Vulkan: TA processing%s: %llu frames decoded and drawn on the GPU, %llu parsed on the CPU "
 			"(%llu without a table, %llu frame skipping, %llu sorted on the CPU, %llu the header pass leaves to the parse, %llu might run out of room); "
-			"GPU time mean %.3f ms, max %.3f ms; pool: %u frames found it full, %u contexts allocated",
+			"GPU time mean %.3f ms, max %.3f ms; pool: %u frames found it full, %u contexts allocated; "
+			"%llu with a sorted pass (the sort mean %.1f us, max %.1f us), %llu with shadows the GPU decides",
 			when, (unsigned long long)statFrames, (unsigned long long)statSkipped,
 			(unsigned long long)statWhy[TA_GPU_WHY_TABLE], (unsigned long long)statWhy[TA_GPU_WHY_PARSE],
 			(unsigned long long)statWhy[TA_GPU_WHY_SORT], (unsigned long long)statWhy[TA_GPU_WHY_WALK],
 			(unsigned long long)statWhy[TA_GPU_WHY_ROOM],
-			statGpuTimed ? statGpuMs / statGpuTimed : 0.0, statGpuMaxMs, shortFrames, allocated);
+			statGpuTimed ? statGpuMs / statGpuTimed : 0.0, statGpuMaxMs, shortFrames, allocated,
+			(unsigned long long)statSorted, statSorted ? statSortUs / statSorted : 0.0, statSortMaxUs,
+			(unsigned long long)statShadowed);
 }
 
 void TaDecoder::Term()
@@ -257,6 +287,7 @@ void TaDecoder::Term()
 	tactx_gpu_pool_detach();
 	res.reset();
 	ready = false;
+	sortable = false;
 	prepared = false;
 }
 
@@ -283,6 +314,7 @@ void TaDecoder::BeginFrame(CommandPool& pool, bool wanted)
 			tactx_gpu_pool_detach();
 			pool.DeferDelete(std::move(res));
 			ready = false;
+			sortable = false;
 			prepared = false;
 		}
 		if (!wanted)
@@ -315,6 +347,11 @@ void TaDecoder::BeginFrame(CommandPool& pool, bool wanted)
 	slotSerial[index] = serial;
 	slotTimed[index] = false;
 	PollDone(pool);
+	if (sortable)
+	{
+		draw.sortedOffset = (vk::DeviceSize)index * res->sortSlot;
+		draw.sortedMap = (u32 *)(res->sortedMap + draw.sortedOffset);
+	}
 }
 
 bool TaDecoder::Prepare(TA_context *ctx, u32 want, bool *rv)
@@ -336,6 +373,15 @@ bool TaDecoder::Prepare(TA_context *ctx, u32 want, bool *rv)
 		return false;
 	}
 	*rv = frame.rv;
+	if (ta_gpu_sorted_indices() != 0)
+	{
+		statSorted++;
+		const double us = ta_gpu_sorted_ns() / 1e3;
+		statSortUs += us;
+		statSortMaxUs = std::max(statSortMaxUs, us);
+	}
+	if (frame.shadows != 0)
+		statShadowed++;
 	// (nothing to draw: nothing to decode)
 	if (!frame.rv)
 		prepared = false;
@@ -403,6 +449,9 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	indirect(TAG_K_STATES, TAG_O_ARGSCH);
 	indirect(TAG_K_EMIT, TAG_O_ARGS64);
 	dispatch(TAG_K_FINISH, (frame.slots + 63) / 64);
+	// (a workgroup for each group named, up to the most a dispatch can have: then each takes several)
+	if (frame.shadows != 0)
+		dispatch(TAG_K_SHADOW, std::min(frame.shadows, 65535u));
 	if (frame.trd != 0)
 		indirect(TAG_K_TRDRAW, TAG_O_ARGS64);
 	if (screen_height > 480)

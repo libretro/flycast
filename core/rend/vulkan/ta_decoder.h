@@ -46,6 +46,15 @@ struct TaGpuDraw
 	vk::Buffer vertices, indices, modtrig, commands, trDraws, trParams;
 	vk::DeviceSize trParamsSize = 0;
 	PFN_vkCmdDrawIndexedIndirectCountKHR drawCount = nullptr;
+	/* The second commands of the opaque and punch-through draw groups for
+	 * shadows (TA_GPU_SHADOWS, TAG_K_SHADOW): a group's at this many bytes
+	 * on from its own */
+	vk::DeviceSize shadowCommands = 0;
+	/* (TA_GPU_SORT) this frame's room for the sorted translucent triangles'
+	 * indices (ta_gpu_sorted_write()), mapped */
+	vk::Buffer sorted;
+	vk::DeviceSize sortedOffset = 0;
+	u32 *sortedMap = nullptr;
 };
 
 class TaDecoder
@@ -71,6 +80,10 @@ public:
 	const TaGpuDraw *Draw() const { return &draw; }
 	// whether the translucent draws can number their strips (firstInstance)
 	bool HasInstance() const { return instance; }
+	/* The per-triangle renderer's: room for the translucent triangles it
+	 * sorts (TA_GPU_SORT), made with the rest; and whether there is */
+	void WantSort(bool on) { sortWanted = on; }
+	bool CanSort() const { return sortable; }
 
 	// for measuring
 	u64 statFrames = 0;		// decoded
@@ -79,6 +92,10 @@ public:
 	double statGpuMs = 0;		// GPU time of the decodes timed
 	double statGpuMaxMs = 0;
 	u64 statGpuTimed = 0;
+	u64 statSorted = 0;		// decoded with a sorted pass, sorted on this side
+	double statSortUs = 0;		// ...what the sorts took
+	double statSortMaxUs = 0;
+	u64 statShadowed = 0;		// with draw groups the GPU says take shadows or not
 
 private:
 	bool Init(CommandPool& pool);
@@ -90,6 +107,8 @@ private:
 	bool ready = false;
 	bool failed = false;		// could not be made on this device: not tried again
 	bool instance = false;
+	bool sortWanted = false;
+	bool sortable = false;
 	int frames = 0;
 	int index = 0;
 	u32 serial = 0;			// this frame's
