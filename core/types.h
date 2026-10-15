@@ -582,6 +582,7 @@ struct settings_t
 		bool WidescreenGameHacks;
 		int AnisotropicFiltering;
 		bool PowerVR2Filter;
+		bool GpuTextureDecode;	// textures converted from their bytes in video memory by the GPU, where the renderer can
 	} rend;
 
 	struct

@@ -10,6 +10,7 @@
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/_vmem.h"
 #include "hw/sh4/modules/mmu.h"
+#include "texdecode.h"
 
 #include <algorithm>
 // for a hash state that can be a local: ComputeHash() allocates nothing
@@ -735,6 +736,86 @@ void BaseTextureCacheData::ComputeHash()
 	texture_hash ^= tcw.full & 0xFC000000;	// everything but texaddr, reserved and stride
 }
 
+/* What GpuDecode() is handed: the texture's bytes and, for each level,
+ * what Update() below would convert it with - the same addresses, sizes
+ * and converter, as rend/texdecode.h has them. @out is TEXD_OUT8, 16 or
+ * 32, the converter Update() would take; @stride and @rows what it would
+ * read a planar texture with. False if there is nothing the kernel does
+ * for this texture. */
+bool BaseTextureCacheData::PlanDecode(texd_plan& plan, u32 stride, u32 rows, u32 out, bool mipmapped)
+{
+	const u32 fmt = (u32)(tex - format);
+	const bool planar = tcw.ScanOrder && (tex->PL || tex->PL32);
+	const u32 scan = planar ? (tcw.VQ_Comp ? TEXD_PLVQ : TEXD_PL) : (tcw.VQ_Comp ? TEXD_VQ : TEXD_TW);
+	const u32 lw = bitscanrev(w), lh = bitscanrev(h);
+	const u32 first = sa - sa_tex + (tcw.VQ_Comp ? 256 * 4 * 2 : 0);
+
+	if (fmt > TEXD_PAL8 || tex->bpp == 0 || stride > 0xFFFF || rows > 0xFFFF)
+		return false;
+	/* A twiddled texture that runs past the end of video memory - a
+	 * paletted one whose palette selection has the bit planar textures are
+	 * cut short by - is read there by the converters, from what follows
+	 * (the memory's mirror). Not copied for the GPU: left to them. */
+	if (!planar && sa + (tcw.VQ_Comp ? 256 * 4 * 2 + w * h / 4 : w * h * tex->bpp / 8) > VRAM_SIZE)
+		return false;
+	plan.src = sa_tex;
+	plan.bytes = sa + size - sa_tex;
+	plan.pal_entries = IsPaletted() && out != TEXD_OUT8 ? (tex->bpp == 4 ? 16 : 256) : 0;
+	plan.pal_index = palette_index;
+	plan.pal = (plan.bytes + 3) & ~3u;
+	plan.out = out;
+	plan.width = w;
+	plan.height = h;
+	plan.mipmapped = mipmapped;
+	plan.native = scan == TEXD_PL && out == TEXD_OUT16 && fmt != TEXD_YUV && stride >= w && rows == h;
+	if (!mipmapped)
+	{
+		texd_level& lv = plan.level[0];
+		lv.data = first;
+		lv.wh = w | (h << 16);
+		lv.sr = stride | (rows << 16);
+		lv.mode = TEXD_MODE(fmt, scan, out, 0, lw, lh);
+		lv.mip = 0;
+		plan.levels = 1;
+		return true;
+	}
+	// smallest first, as the converters go; level i is 2^i texels square
+	plan.levels = tsp.TexU + 3 + 1;
+	if (plan.levels > TEXD_MAX_LEVELS)
+		return false;
+	for (u32 i = 0; i < plan.levels; i++)
+	{
+		texd_level& lv = plan.level[i];
+		u32 f = fmt;
+		u32 corner = 0;
+		u32 l = i;
+		if (tcw.VQ_Comp)
+		{
+			lv.data = 256 * 4 * 2 + VQMipPoint[i];
+			if (i == 0)
+			{
+				/* the corner of a 2x2 block; of the 2x2 level's for YUV,
+				 * whose 1x1 block is not a colour */
+				corner = 1;
+				l = 1;
+				if (fmt == TEXD_YUV)
+					lv.data = 256 * 4 * 2 + VQMipPoint[1];
+			}
+		}
+		else
+		{
+			lv.data = OtherMipPoint[i] * tex->bpp / 8;
+			if (fmt == TEXD_YUV && i == 0)
+				f = TEXD_565;	// as Update() does it
+		}
+		lv.wh = (1u << i) | ((1u << i) << 16);
+		lv.sr = 0;
+		lv.mode = TEXD_MODE(f, scan, out, corner, l, l);
+		lv.mip = plan.levels - 1 - i;
+	}
+	return true;
+}
+
 void BaseTextureCacheData::Update()
 {
 	//texture state tracking stuff
@@ -856,6 +937,40 @@ void BaseTextureCacheData::Update()
 	 * that is scaled up, which is converted and then scaled into memory of
 	 * the scaler's own; nor when textures are dumped, which reads them back. */
 	const bool direct = !textureUpscaling && !settings.rend.DumpTextures;
+
+	/* Or made from its bytes on the GPU, where the renderer can: with the
+	 * converter, the format and the levels it would have here. Not a
+	 * texture scaled up or dumped, which need its texels on this side. */
+	if (direct && settings.rend.GpuTextureDecode)
+	{
+		u32 out = 0xFF;
+		TextureType type = tex_type;
+		if (texconv32 != NULL && need_32bit_buffer)
+		{
+			out = TEXD_OUT32;
+			type = TextureType::_8888;
+		}
+		else if (texconv8 != NULL && tex_type == TextureType::_8)
+			out = TEXD_OUT8;
+		else if (texconv != NULL)
+			out = TEXD_OUT16;
+		texd_plan plan;
+		if (out != 0xFF && PlanDecode(plan, stride, rows, out, mipmapped))
+		{
+			const TextureType before = tex_type;
+			tex_type = type;
+			if (GpuDecode(plan))
+			{
+				if (Updates < FREQUENT_UPDATE_COUNT)
+					libCore_vramlock_Lock(sa_tex, sa + size - 1, this);
+				else
+					vram_hash = ComputeVramHash();
+				PrintTextureName();
+				return;
+			}
+			tex_type = before;
+		}
+	}
 
 	if (texconv32 != NULL && need_32bit_buffer)
 	{

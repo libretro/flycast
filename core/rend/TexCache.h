@@ -953,6 +953,7 @@ void UpscalexBRZ(int factor, u32* source, u32* dest, int width, int height, bool
 #endif
 
 struct PvrTexInfo;
+struct texd_plan;
 template <class pixel_type> class PixelBuffer;
 typedef void TexConvFP(PixelBuffer<u16>* pb,u8* p_in,u32 Width,u32 Height);
 typedef void TexConvFP8(PixelBuffer<u8>* pb, u8* p_in, u32 Width, u32 Height);
@@ -1057,6 +1058,7 @@ public:
 	void ComputeHash();
 	u32 ComputeVramHash();
 	void Update();
+	bool PlanDecode(texd_plan& plan, u32 stride, u32 rows, u32 out, bool mipmapped);
 	void *ConvertInto(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps, bool direct);
 	virtual void UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) = 0;
 	/* Memory for Update() to convert the texture into, which UploadToGPU()
@@ -1067,6 +1069,12 @@ public:
 	 * copied by UploadToGPU() as before. What is returned is only good for
 	 * the UploadToGPU() that follows. */
 	virtual void *UploadMemory(u32 width, u32 height, size_t bytes, u32 pixel, bool mipmaps) { return NULL; }
+	/* The texture made on the GPU instead of converted here, if the
+	 * renderer can: @plan says which bytes of video memory to copy and
+	 * what to make of them (rend/texdecode.h). What the CPU would have
+	 * made, to the bit; tex_type is already what it would have been.
+	 * False, and the texture is converted here as before. */
+	virtual bool GpuDecode(const texd_plan& plan) { return false; }
 	virtual bool Force32BitTexture(TextureType type) const { return false; }
 	void CheckCustomTexture();
 	//true if : dirty or paletted texture and hashes don't match

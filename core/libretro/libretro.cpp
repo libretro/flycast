@@ -1102,6 +1102,12 @@ static void update_variables(bool first_startup)
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
      	settings.rend.PowerVR2Filter = !strcmp("enabled", var.value);
 
+   /* Takes effect with the next texture made: one made either way is the
+    * same texture, so nothing has to be made again. */
+   var.key = CORE_OPTION_NAME "_gpu_texture_decode";
+   settings.rend.GpuTextureDecode = !(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("disabled", var.value));
+
 #ifdef HAVE_TEXUPSCALE
    var.key = CORE_OPTION_NAME "_texupscale";
 
