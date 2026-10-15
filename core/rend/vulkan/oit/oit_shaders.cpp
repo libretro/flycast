@@ -94,12 +94,92 @@ struct Pixel {
 	uint next;
 };
 #define EOL 0xFFFFFFFFu
+/* The fragments, in up to four storage buffers of one size when the
+ * device cannot bind them as one (OITBuffers): fragment i is in the
+ * first while i is below its length, and so on. A buffer that is not
+ * needed is the first again, and never reached. */
 layout (set = 3, binding = 0, std430) coherent restrict buffer PixelBuffer_ {
 	Pixel pixels[];
-} PixelBuffer;
+} PixelBuffer[4];
 layout(set = 3, binding = 1) buffer PixelCounter_ {
 	uint buffer_index;
+	uint capacity;	// fragments there is room for
 } PixelCounter;
+
+Pixel loadPixel(uint i)
+{
+	const uint n = uint(PixelBuffer[0].pixels.length());
+	if (i < n)
+		return PixelBuffer[0].pixels[i];
+	if (i < 2u * n)
+		return PixelBuffer[1].pixels[i - n];
+	if (i < 3u * n)
+		return PixelBuffer[2].pixels[i - 2u * n];
+	return PixelBuffer[3].pixels[i - 3u * n];
+}
+
+void storePixel(uint i, Pixel pixel)
+{
+	const uint n = uint(PixelBuffer[0].pixels.length());
+	if (i < n)
+		PixelBuffer[0].pixels[i] = pixel;
+	else if (i < 2u * n)
+		PixelBuffer[1].pixels[i - n] = pixel;
+	else if (i < 3u * n)
+		PixelBuffer[2].pixels[i - 2u * n] = pixel;
+	else
+		PixelBuffer[3].pixels[i - 3u * n] = pixel;
+}
+
+// A fragment's seq_num, changed in place by the translucent modifier volumes
+uint pixelAtomicOr(uint i, uint v)
+{
+	const uint n = uint(PixelBuffer[0].pixels.length());
+	if (i < n)
+		return atomicOr(PixelBuffer[0].pixels[i].seq_num, v);
+	if (i < 2u * n)
+		return atomicOr(PixelBuffer[1].pixels[i - n].seq_num, v);
+	if (i < 3u * n)
+		return atomicOr(PixelBuffer[2].pixels[i - 2u * n].seq_num, v);
+	return atomicOr(PixelBuffer[3].pixels[i - 3u * n].seq_num, v);
+}
+
+uint pixelAtomicXor(uint i, uint v)
+{
+	const uint n = uint(PixelBuffer[0].pixels.length());
+	if (i < n)
+		return atomicXor(PixelBuffer[0].pixels[i].seq_num, v);
+	if (i < 2u * n)
+		return atomicXor(PixelBuffer[1].pixels[i - n].seq_num, v);
+	if (i < 3u * n)
+		return atomicXor(PixelBuffer[2].pixels[i - 2u * n].seq_num, v);
+	return atomicXor(PixelBuffer[3].pixels[i - 3u * n].seq_num, v);
+}
+
+uint pixelAtomicAnd(uint i, uint v)
+{
+	const uint n = uint(PixelBuffer[0].pixels.length());
+	if (i < n)
+		return atomicAnd(PixelBuffer[0].pixels[i].seq_num, v);
+	if (i < 2u * n)
+		return atomicAnd(PixelBuffer[1].pixels[i - n].seq_num, v);
+	if (i < 3u * n)
+		return atomicAnd(PixelBuffer[2].pixels[i - 2u * n].seq_num, v);
+	return atomicAnd(PixelBuffer[3].pixels[i - 3u * n].seq_num, v);
+}
+
+void storeSeqNum(uint i, uint v)
+{
+	const uint n = uint(PixelBuffer[0].pixels.length());
+	if (i < n)
+		PixelBuffer[0].pixels[i].seq_num = v;
+	else if (i < 2u * n)
+		PixelBuffer[1].pixels[i - n].seq_num = v;
+	else if (i < 3u * n)
+		PixelBuffer[2].pixels[i - 2u * n].seq_num = v;
+	else
+		PixelBuffer[3].pixels[i - 3u * n].seq_num = v;
+}
 
 #define ZERO				0
 #define ONE					1
@@ -112,8 +192,9 @@ layout(set = 3, binding = 1) buffer PixelCounter_ {
 
 uint getNextPixelIndex()
 {
+	// (every fragment is counted, those that find no room too: see OITBuffers::CountPass())
 	uint index = atomicAdd(PixelCounter.buffer_index, 1);
-	if (index >= PixelBuffer.pixels.length())
+	if (index >= PixelCounter.capacity)
 		// Buffer overflow
 		discard;
 	
@@ -658,7 +739,7 @@ void main()
 			pixel.seq_num |= coverage << COVERAGE_SHIFT;
 		#endif
 		pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);
-		PixelBuffer.pixels[idx] = pixel;
+		storePixel(idx, pixel);
 		
 	#endif
 }
@@ -701,14 +782,14 @@ int fillAndSortFragmentArray(ivec2 coords)
 	int count = 0;
 	for (; idx != EOL && count < MAX_PIXELS_PER_FRAGMENT; count++)
 	{
-		const Pixel p = PixelBuffer.pixels[idx];
+		const Pixel p = loadPixel(idx);
 		// Insertion sort. The entry before the first one is not looked at:
 		// this used to read pixel_list[-1], and the pixel buffer at whatever
 		// index that held, before finding out there was nothing there.
 		int j = count - 1;
 		while (j >= 0)
 		{
-			const Pixel jp = PixelBuffer.pixels[pixel_list[j]];
+			const Pixel jp = loadPixel(pixel_list[j]);
 			if (!(jp.depth > p.depth
 					|| (jp.depth == p.depth && getPolyNumber(jp) > getPolyNumber(p))))
 				break;
@@ -729,7 +810,7 @@ vec4 blendFragments(int num_frag, vec4 finalColor, uint sampleBit)
 	
 	for (int i = 0; i < num_frag; i++)
 	{
-		const Pixel pixel = PixelBuffer.pixels[pixel_list[i]];
+		const Pixel pixel = loadPixel(pixel_list[i]);
 #ifdef SSAA_SAMPLES
 		if ((getCoverage(pixel) & sampleBit) == 0u)
 			continue;
@@ -902,24 +983,24 @@ void main()
 	int list_len = 0;
 	while (idx != EOL && list_len < MAX_PIXELS_PER_FRAGMENT)
 	{
-		const Pixel pixel = PixelBuffer.pixels[idx];
+		const Pixel pixel = loadPixel(idx);
 		const PolyParam pp = TrPolyParam.tr_poly_params[getPolyNumber(pixel)];
 		if (getShadowEnable(pp))
 		{
 #if MV_MODE == MV_XOR
 			if (gl_FragDepth >= pixel.depth)
-				atomicXor(PixelBuffer.pixels[idx].seq_num, SHADOW_STENCIL);
+				pixelAtomicXor(idx, SHADOW_STENCIL);
 #elif MV_MODE == MV_OR
 			if (gl_FragDepth >= pixel.depth)
-				atomicOr(PixelBuffer.pixels[idx].seq_num, SHADOW_STENCIL);
+				pixelAtomicOr(idx, SHADOW_STENCIL);
 #elif MV_MODE == MV_INCLUSION
-			uint prev_val = atomicAnd(PixelBuffer.pixels[idx].seq_num, ~(SHADOW_STENCIL));
+			uint prev_val = pixelAtomicAnd(idx, ~(SHADOW_STENCIL));
 			if ((prev_val & (SHADOW_STENCIL|SHADOW_ACC)) == SHADOW_STENCIL)
-				PixelBuffer.pixels[idx].seq_num = bitfieldInsert(pixel.seq_num, 1u, 31, 1);
+				storeSeqNum(idx, bitfieldInsert(pixel.seq_num, 1u, 31, 1));
 #elif MV_MODE == MV_EXCLUSION
-			uint prev_val = atomicAnd(PixelBuffer.pixels[idx].seq_num, ~(SHADOW_STENCIL|SHADOW_ACC));
+			uint prev_val = pixelAtomicAnd(idx, ~(SHADOW_STENCIL|SHADOW_ACC));
 			if ((prev_val & (SHADOW_STENCIL|SHADOW_ACC)) == SHADOW_ACC)
-				PixelBuffer.pixels[idx].seq_num = bitfieldInsert(pixel.seq_num, 1u, 31, 1);
+				storeSeqNum(idx, bitfieldInsert(pixel.seq_num, 1u, 31, 1));
 #endif
 		}
 		idx = pixel.next;

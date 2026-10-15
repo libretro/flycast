@@ -364,6 +364,31 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			vk::ClearDepthStencilValue{ 0.f, 0 },
 	};
 
+	/* In bands, when the frames before had more translucent fragments than
+	 * there is room for: the bands are drawn one after the other, each with
+	 * all of the frame's render passes. The picture is cleared in the
+	 * first band only (RenderPasses::GetRenderPass(), @resumed), and the
+	 * last band's final render pass is the whole picture's, as the frame's
+	 * final render pass always is: what is drawn after it (the screen's
+	 * VMUs, the texture's copy) is drawn over the whole of it. */
+	ChooseBands();
+	const u32 height = std::max(viewport.extent.height, 1u);
+	const u32 bandHeight = (height + std::min(bands, height) - 1) / std::min(bands, height);
+	const u32 bandCount = (height + bandHeight - 1) / bandHeight;
+	oitBuffers->SetBands(bandCount);
+	for (u32 bandIndex = 0; bandIndex < bandCount; bandIndex++)
+	{
+	const bool lastBand = bandIndex == bandCount - 1;
+	if (bandCount > 1)
+	{
+		const u32 top = bandIndex * bandHeight;
+		band = vk::Rect2D(vk::Offset2D(viewport.offset.x, viewport.offset.y + (s32)top),
+				vk::Extent2D(viewport.extent.width, std::min(bandHeight, height - top)));
+		currentScissor = vk::Rect2D();
+		if (bandIndex > 0)
+			// (the band before ended with the quad's)
+			BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
+	}
 	RenderPass previous_pass = {};
     for (int render_pass = 0; render_pass < pvrrc.render_passes.used(); render_pass++)
     {
@@ -391,8 +416,8 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
     	else
     		targetFramebuffer = GetFinalFramebuffer();
     	cmdBuffer.beginRenderPass(
-    			vk::RenderPassBeginInfo(pipelineManager->GetRenderPass(initialPass, finalPass, depthWrites),
-    					targetFramebuffer, viewport, clear_colors.size(), clear_colors.data()),
+    			vk::RenderPassBeginInfo(pipelineManager->GetRenderPass(initialPass, finalPass, depthWrites, bandIndex > 0),
+    					targetFramebuffer, bandCount > 1 && !(finalPass && lastBand) ? band : viewport, clear_colors.size(), clear_colors.data()),
     			vk::SubpassContents::eInline);
 
         // Depth + stencil subpass
@@ -500,6 +525,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			// (the next render pass draws from the frame's geometry, not the quad)
 			BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
 			cmdBuffer.endRenderPass();
+			oitBuffers->CountPass(cmdBuffer);
 		}
 		else if (!finalPass)
 		{
@@ -510,12 +536,58 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			DrawList(cmdBuffer, ListType_Translucent, current_pass.autosort, Pass::Depth, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
 
 			cmdBuffer.endRenderPass();
+			oitBuffers->CountPass(cmdBuffer);
+		}
+		else if (!lastBand)
+		{
+			// (the last band's is ended by EndFrame())
+			cmdBuffer.endRenderPass();
+			oitBuffers->CountPass(cmdBuffer);
 		}
 
 		previous_pass = current_pass;
     }
+	}
+	band = vk::Rect2D();
 
 	return !pvrrc.isRTT;
+}
+
+/* The bands this frame is drawn in, from the counts of the frame drawn
+ * in this frame slot before (OITBuffers::Poll()): never this frame's, which
+ * nothing waits for. More at once when that one had fragments that found no
+ * room; fewer when a second of frames in a row would have fitted in fewer.
+ * Each band is taken to need what the fullest one did, with a quarter more
+ * room. */
+void OITDrawer::ChooseBands()
+{
+	constexpr u32 MaxBands = 64;
+	u32 fragments, drawnIn;
+	if (oitBuffers->Poll(commandPool->GetIndex(), this, fragments, drawnIn))
+	{
+		const u64 room = std::max(oitBuffers->GetCapacity(), 1u);
+		const u64 frame = (u64)fragments * std::max(drawnIn, 1u);
+		const u32 wanted = (u32)std::max<u64>(std::min<u64>((frame + frame / 4 + room - 1) / room, MaxBands), 1);
+		const u32 was = bands;
+		if (fragments > room)
+		{
+			bands = std::min(std::max({ bands, wanted, drawnIn + 1 }), MaxBands);
+			roomyFrames = 0;
+		}
+		else if (wanted < bands)
+		{
+			if (++roomyFrames >= 60)
+			{
+				bands = wanted;
+				roomyFrames = 0;
+			}
+		}
+		else
+			roomyFrames = 0;
+		if (bands != was)
+			NOTICE_LOG(RENDERER, "Vulkan per-pixel renderer: %u translucent fragments in a band of %u, room for %u: %u band%s",
+					fragments, drawnIn, (u32)room, bands, bands > 1 ? "s" : "");
+	}
 }
 
 void OITDrawer::MakeBuffers(int width, int height)
@@ -614,6 +686,7 @@ void OITScreenDrawer::MakeFramebuffers()
 	viewport.offset.y = 0;
 	viewport.extent = GetContext()->GetViewPort();
 
+	SetScreenSize(viewport.extent.width, viewport.extent.height);
 	MakeBuffers(viewport.extent.width, viewport.extent.height);
 	// (kept until the frames that could still use them have gone by: see the per-triangle screen drawer)
 	if (commandPool != nullptr)
@@ -782,6 +855,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 void OITTextureDrawer::EndFrame()
 {
 	currentCommandBuffer.endRenderPass();
+	CountPass(currentCommandBuffer);
 
 	currentCommandBuffer.end();
 

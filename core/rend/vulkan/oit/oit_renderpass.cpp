@@ -21,10 +21,10 @@
 */
 #include "oit_renderpass.h"
 
-vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool depthWrites)
+vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool depthWrites, bool resumed)
 {
 	if (samples > 1)
-		return MakeSsaaRenderPass(initial, last, depthWrites);
+		return MakeSsaaRenderPass(initial, last, depthWrites, resumed);
     vk::AttachmentDescription attachmentDescriptions[] = {
     		// Swap chain image
     		GetAttachment0Description(initial, last),
@@ -41,6 +41,11 @@ vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool 
 					vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
 					initial ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal),
     };
+    if (resumed)
+    {
+    	attachmentDescriptions[0].loadOp = vk::AttachmentLoadOp::eLoad;
+    	attachmentDescriptions[0].initialLayout = attachmentDescriptions[0].finalLayout;
+    }
     vk::AttachmentReference swapChainReference(0, vk::ImageLayout::eColorAttachmentOptimal);
     vk::AttachmentReference colorReference(1, vk::ImageLayout::eColorAttachmentOptimal);
     vk::AttachmentReference depthReference(2, vk::ImageLayout::eDepthStencilAttachmentOptimal);
@@ -147,7 +152,7 @@ vk::UniqueRenderPass RenderPasses::MakeRenderPass(bool initial, bool last, bool 
  * loaded, and stored by the last only. The colour samples are read and
  * written in subpass 2 (each put together where it is) and read in 3:
  * they are in the general layout there. */
-vk::UniqueRenderPass RenderPasses::MakeSsaaRenderPass(bool initial, bool last, bool depthWrites)
+vk::UniqueRenderPass RenderPasses::MakeSsaaRenderPass(bool initial, bool last, bool depthWrites, bool resumed)
 {
 	const vk::SampleCountFlagBits n = (vk::SampleCountFlagBits)samples;
 	const vk::ImageLayout depthLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
@@ -167,6 +172,11 @@ vk::UniqueRenderPass RenderPasses::MakeSsaaRenderPass(bool initial, bool last, b
 					vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
 					initial ? vk::ImageLayout::eUndefined : depthLayout, depthLayout),
 	};
+	if (resumed)
+	{
+		attachmentDescriptions[0].loadOp = vk::AttachmentLoadOp::eLoad;
+		attachmentDescriptions[0].initialLayout = attachmentDescriptions[0].finalLayout;
+	}
 	vk::AttachmentReference pictureReference(0, vk::ImageLayout::eColorAttachmentOptimal);
 	vk::AttachmentReference colorReference(1, vk::ImageLayout::eColorAttachmentOptimal);
 	vk::AttachmentReference depthReference(2, depthLayout);

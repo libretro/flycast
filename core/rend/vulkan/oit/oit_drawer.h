@@ -41,6 +41,19 @@ public:
 	virtual vk::CommandBuffer NewFrame() = 0;
 	virtual void EndFrame() = 0;
 
+	/* Clipped to the band being drawn, when a frame is drawn in bands */
+	void SetScissor(const vk::CommandBuffer& cmdBuffer, const vk::Rect2D& scissor)
+	{
+		if (band.extent.height == 0)
+		{
+			BaseDrawer::SetScissor(cmdBuffer, scissor);
+			return;
+		}
+		const s32 top = std::max(scissor.offset.y, band.offset.y);
+		const s32 bottom = std::max(top, std::min(scissor.offset.y + (s32)scissor.extent.height, band.offset.y + (s32)band.extent.height));
+		BaseDrawer::SetScissor(cmdBuffer, vk::Rect2D(vk::Offset2D(scissor.offset.x, top), vk::Extent2D(scissor.extent.width, (u32)(bottom - top))));
+	}
+
 protected:
 	void Init(SamplerManager *samplerManager, OITPipelineManager *pipelineManager, OITBuffers *oitBuffers)
 	{
@@ -104,6 +117,10 @@ protected:
 
 	void MakeBuffers(int width, int height);
 	void MakeSampleAttachments();
+	void ChooseBands();
+	// (what the lists of fragments a render pass asked for: OITBuffers::CountPass())
+	void CountPass(vk::CommandBuffer cmdBuffer) { oitBuffers->CountPass(cmdBuffer); }
+	void SetScreenSize(int width, int height) { oitBuffers->SetScreenSize(width, height); }
 	virtual vk::Format GetColorFormat() const = 0;
 	virtual vk::Framebuffer GetFinalFramebuffer() const = 0;
 	/* In the colour subpass of a frame's first pass, before any polygon:
@@ -112,6 +129,14 @@ protected:
 	virtual bool DrawLastPicture(vk::CommandBuffer) { return false; }
 
 	vk::Rect2D viewport;
+	/* A frame's translucent fragments that do not all fit in the buffer
+	 * (OITBuffers) are not dropped: the frame is drawn in this many
+	 * horizontal bands, all of it once a band, clipped to the band. Each
+	 * band's lists start empty, so they need the room of one band's
+	 * fragments. How many is told by the frames before (see Draw()). */
+	u32 bands = 1;
+	u32 roomyFrames = 0;	// frames in a row that would have fitted in fewer
+	vk::Rect2D band;	// the one being drawn; no height when not in bands
 	std::array<std::unique_ptr<FramebufferAttachment>, 2> colorAttachments;
 	std::unique_ptr<FramebufferAttachment> depthAttachment;
 	vk::CommandBuffer currentCommandBuffer;
@@ -188,6 +213,7 @@ public:
 		if (carriedPicture)
 			commandPool->DeferDelete(std::move(carriedPicture));
 		currentCommandBuffer.endRenderPass();
+		CountPass(currentCommandBuffer);
 		timer.End(currentCommandBuffer, commandPool->GetIndex());
 		currentCommandBuffer.end();
 		currentCommandBuffer = nullptr;

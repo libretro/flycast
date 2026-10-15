@@ -30,12 +30,17 @@ public:
 	 * sorted are drawn in that subpass and do write. For a frame that has
 	 * such polygons the buffer is in the general layout instead, which
 	 * allows both. The two kinds of render pass differ in nothing else and
-	 * a pipeline made for one works with the other. */
-	vk::RenderPass GetRenderPass(bool initial, bool last, bool depthWrites = false)
+	 * a pipeline made for one works with the other.
+	 * @resumed: a band of a frame drawn in bands (OITDrawer::Draw()) after
+	 * the first. The picture's attachment holds the bands drawn before, and
+	 * is loaded, not cleared and not taken from an undefined layout, which
+	 * would let the device drop all of it. Again a pipeline made for one
+	 * render pass works with the other. */
+	vk::RenderPass GetRenderPass(bool initial, bool last, bool depthWrites = false, bool resumed = false)
 	{
-		size_t index = (initial ? 1 : 0) | (last ? 2 : 0) | (depthWrites ? 4 : 0);
+		size_t index = (initial ? 1 : 0) | (last ? 2 : 0) | (depthWrites ? 4 : 0) | (resumed ? 8 : 0);
 		if (!renderPasses[index])
-			renderPasses[index] = MakeRenderPass(initial, last, depthWrites);
+			renderPasses[index] = MakeRenderPass(initial, last, depthWrites, resumed);
 		return *renderPasses[index];
 	}
 	// The layout the depth buffer is in while the colour subpass reads it
@@ -70,8 +75,8 @@ public:
 
 protected:
 	VulkanContext *GetContext() const { return VulkanContext::Instance(); }
-	vk::UniqueRenderPass MakeRenderPass(bool initial, bool last, bool depthWrites);
-	vk::UniqueRenderPass MakeSsaaRenderPass(bool initial, bool last, bool depthWrites);
+	vk::UniqueRenderPass MakeRenderPass(bool initial, bool last, bool depthWrites, bool resumed);
+	vk::UniqueRenderPass MakeSsaaRenderPass(bool initial, bool last, bool depthWrites, bool resumed);
 	virtual vk::AttachmentDescription GetAttachment0Description(bool initial, bool last) const
 	{
 		return vk::AttachmentDescription(vk::AttachmentDescriptionFlags(), GetContext()->GetColorFormat(), vk::SampleCountFlagBits::e1,
@@ -88,7 +93,7 @@ protected:
 	}
 
 private:
-	std::array<vk::UniqueRenderPass, 8> renderPasses;
+	std::array<vk::UniqueRenderPass, 16> renderPasses;
 	u32 samples = 1;
 };
 

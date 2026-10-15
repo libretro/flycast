@@ -139,7 +139,7 @@ private:
 	{
 		const vk::Extent2D size = GetContext()->GetViewPort();
 		return GetContext()->SsaaSamples(settings.rend.Ssaa, ssaa_per_sample_kib(size.width, size.height, 4 + GetContext()->GetDepthBytes()),
-				(u32)(pixel_buffer_size >> 10), false, "Vulkan per-pixel renderer");
+				(u32)(OITBuffers::PlannedSize(size.width, size.height) >> 10), false, "Vulkan per-pixel renderer");
 	}
 
 	OITBuffers oitBuffers;
