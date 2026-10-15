@@ -9,6 +9,8 @@
 #include "pvr_mem.h"
 #include "Renderer_if.h"
 #include "rend/tile/pvr_tile.h"
+#include "rend/ta_gpu.h"
+#include <retro_atomic.h>
 
 /* The larger and the smaller of two, as std::max() and std::min() have
  * them (which of two equal ones, and what a NaN does, included). */
@@ -2592,6 +2594,17 @@ struct TaWalkStrips
 	u32 room[3];
 };
 
+/* What a header's vertices are coloured with besides their own words, for
+ * the GPU decode: the face colours of the intensity formats as they are
+ * once its parameter is in (FaceBaseColor, FaceOffsColor and their
+ * second-volume twins), and a sprite's two colours */
+struct TaWalkFace
+{
+	u32 col[4];	// base, offset, base 1, offset 1: red, green, blue, alpha bytes
+	u32 f[12];	// ...and as the clamped floats' bits, red, green, blue each
+	u32 sprite[2];	// a sprite's base and offset colours, as sent
+};
+
 struct TaWalkFrame
 {
 	// in: what the frame had before it was parsed
@@ -2612,6 +2625,14 @@ struct TaWalkFrame
 	FB_X_CLIP_type x_clip;
 	FB_Y_CLIP_type y_clip;
 	bool rv;
+
+	/* For the GPU decode (gpu): each header's colours (face, room for
+	 * header_room), and whether the frame is one it does not do as the
+	 * full parse does (gpu_bad): a list open at the end of a render pass,
+	 * or the data ending in the middle of something */
+	bool gpu;
+	bool gpu_bad;
+	TaWalkFace *face;
 
 	// the check's: the lists strip by strip, as the full parse has them
 	PolyParam *list[3];
@@ -2644,6 +2665,7 @@ struct TaWalker
 	u32 hdr;	// its header
 	u32 kind, vblocks, half;
 	u32 tileclip;
+	u32 data_blocks;	// blocks the frame's buffer has
 	u32 used[3];	// polygon parameters in each list: strips (strips), or headers
 	u32 indexed[3];	// how many of them earlier render passes took
 	u32 pass_header;	// the first header since the last render pass
@@ -2651,6 +2673,7 @@ struct TaWalker
 	u32 next_group;
 	bool fail;
 	PolyParam spare;
+	TaWalkFace fc;	// (gpu) the colours of the moment
 
 	TaWalker(TaWalkFrame &frame) : f(frame) {}
 
@@ -2713,6 +2736,41 @@ struct TaWalker
 		counted = false;
 	}
 
+	/* poly_float_color(): face colour set @set from the four floats alpha,
+	 * red, green, blue at @w */
+	void face_set(u32 set, const u32 *w)
+	{
+		float c[4];
+		memcpy(c, w, sizeof(c));
+		fc.col[set] = (u32)float_to_satu8(c[1]) | ((u32)float_to_satu8(c[2]) << 8)
+				| ((u32)float_to_satu8(c[3]) << 16) | ((u32)float_to_satu8(c[0]) << 24);
+		for (int i = 0; i < 3; i++)
+		{
+			const float v = saturate01(c[1 + i]);
+			memcpy(&fc.f[set * 3 + i], &v, sizeof(v));
+		}
+	}
+
+	/* The face colours of parameter @ppid at @block (AppendPolyParam1(),
+	 * 2B, 4B), whose second half, if it has one, is the next block
+	 * whatever comes between (ta_main() takes it as that) */
+	void face_param(u32 block, u32 ppid, u32 room)
+	{
+		const u32 *w = (const u32 *)(root + (size_t)block * 32);
+		if (ppid == 1)
+			face_set(0, w + 4);
+		else if (ppid == 2 || ppid == 4)
+		{
+			if (block + 1 >= room)
+			{
+				f.gpu_bad = true;
+				return;
+			}
+			face_set(0, w + 8);
+			face_set(ppid == 2 ? 1 : 2, w + 12);
+		}
+	}
+
 	void poly_param(const Ta_Dma *d, u32 block, u32 ppid, u32 format, u32 vb)
 	{
 		if (pplist < 0)
@@ -2747,6 +2805,11 @@ struct TaWalker
 				p.texid1 = renderer->GetTexture(pp3->tsp1, pp3->tcw1, 1);
 		}
 		start_pp(p);
+		if (f.gpu)
+		{
+			face_param(block, ppid, data_blocks);
+			f.face[hdr] = fc;
+		}
 	}
 
 	void sprite_param(const Ta_Dma *d, u32 block)
@@ -2772,6 +2835,12 @@ struct TaWalker
 		p.texid1 = -1;
 		p.isp.CullMode ^= 1;
 		start_pp(p);
+		if (f.gpu)
+		{
+			fc.sprite[0] = spr->BaseCol;
+			fc.sprite[1] = spr->OffsCol;
+			f.face[hdr] = fc;
+		}
 	}
 
 	// (strips) EndPolyStrip()
@@ -3038,6 +3107,14 @@ struct TaWalker
 	{
 		u32 i, l;
 
+		/* A list still open: the full parse has the polygon parameter it
+		 * is filling in the pass's lists, with no vertices, and makes
+		 * indices for it (make_index() links it to the strip before);
+		 * and a modifier volume's count is not set. The GPU decode does
+		 * not do such a frame. */
+		if (list != ListType_None)
+			f.gpu_bad = true;
+
 		if (pass == 0)
 		{
 			// the first pass's opaque polygons are not blended
@@ -3143,6 +3220,17 @@ struct TaWalker
 		pass_made = false;
 		next_group = 1;
 		fail = false;
+		data_blocks = ctx->data_size / 32;
+		f.gpu_bad = false;
+		if (f.gpu)
+		{
+			// vdec_init()'s
+			for (int i = 0; i < 4; i++)
+				fc.col[i] = 0xFFFFFFFFu;
+			for (int i = 0; i < 12; i++)
+				fc.f[i] = 0x3F800000u;
+			fc.sprite[0] = fc.sprite[1] = 0;
+		}
 
 		f.headers = f.runs = 0;
 		f.mvos[0] = f.mvos[1] = 0;
@@ -3203,6 +3291,9 @@ struct TaWalker
 		}
 		if (fail)
 			return false;
+		// (the data ends in the middle of a parameter or vertex)
+		if (half != WHOLE)
+			f.gpu_bad = true;
 
 		f.rv = !empty_context;
 		f.x_clip = f.x_clip_in;
@@ -3236,6 +3327,7 @@ void ta_walk_term(void)
 		free(f.run);
 		free(f.mvo[0]);
 		free(f.mvo[1]);
+		free(f.face);
 		for (int l = 0; l < 3; l++)
 		{
 			free(f.list[l]);
@@ -3273,6 +3365,11 @@ bool ta_walk_init(void)
 		f.mvo[0] = (ModifierVolumeParam *)malloc(f.mvo_room * sizeof(ModifierVolumeParam));
 		f.mvo[1] = (ModifierVolumeParam *)malloc(f.mvo_room * sizeof(ModifierVolumeParam));
 		ok = ok && f.header && f.run && f.mvo[0] && f.mvo[1];
+		if (i == 0)
+		{
+			f.face = (TaWalkFace *)malloc(f.header_room * sizeof(TaWalkFace));
+			ok = ok && f.face;
+		}
 		if (i == 1)
 			for (int l = 0; l < 3; l++)
 			{
@@ -3305,6 +3402,8 @@ bool ta_walk_init(void)
 		memset(f.run, 0, f.run_room * sizeof(TaWalkRun));
 		memset(f.mvo[0], 0, f.mvo_room * sizeof(ModifierVolumeParam));
 		memset(f.mvo[1], 0, f.mvo_room * sizeof(ModifierVolumeParam));
+		if (f.face)
+			memset(f.face, 0, f.header_room * sizeof(TaWalkFace));
 		for (int l = 0; i == 1 && l < 3; l++)
 		{
 			memset(f.list[l], 0, f.list_room[l] * sizeof(PolyParam));
@@ -3364,6 +3463,257 @@ bool ta_walk_parse(TA_context *ctx)
 	f.x_clip_in = ctx->rend.fb_X_CLIP;
 	f.y_clip_in = ctx->rend.fb_Y_CLIP;
 	return ta_walk_run<false>(ctx, f, count);
+}
+
+/* ---- The GPU decode's tables (rend/ta_gpu.h) ----
+ *
+ * The header pass, and what it found written as the GPU decode reads it:
+ * the headers in the order make_index() goes through them (render pass,
+ * then list, then as they came), each with its vertices' place in that
+ * order, its format, its draw group's command slot, the words that say
+ * whether two are drawn the same way, and the colours its vertices take
+ * from it; the runs of vertex blocks; the modifier volume runs; the
+ * segments (a list of a render pass); and the background's four vertices,
+ * which FillBGP() made on this side. Nothing here reads a vertex. */
+static bool ta_gpu_on;
+static retro_atomic_int_t ta_gpu_want = RETRO_ATOMIC_INT_INITIALIZER(0);
+
+void ta_set_gpu_wanted(bool on)
+{
+	retro_atomic_store_release_int(&ta_gpu_want, on ? 1 : 0);
+}
+
+bool ta_gpu_wanted(void)
+{
+	return retro_atomic_load_acquire_int(&ta_gpu_want) != 0;
+}
+
+void ta_gpu_sizes(TaGpuSizes *sz)
+{
+	const u32 scale = ta_data_size() / TA_DATA_SIZE;
+	// (what TA_context::Alloc() gives each list, and the header pass's room)
+	sz->verts = 4 * 1024 * 1024 * scale / sizeof(Vertex);
+	sz->idx = 120 * 1024 * scale;
+	sz->list[0] = 16384 * scale;
+	sz->list[1] = 5120 * scale;
+	sz->list[2] = (STRIPS_AS_PPARAMS ? 10240 : 8192) * scale;
+	sz->modtrig = 16384 * scale;
+	sz->headers = TA_WALK_MAX * scale + 1;
+	sz->runs = TA_WALK_MAX * scale + 16;
+	sz->table_words = TAG_T_WORDS + sz->runs * TAG_R_WORDS + sz->headers * TAG_H_WORDS
+			+ sz->runs * TAG_M_WORDS + TAG_MAX_SEG * TAG_G_WORDS + 4 * TAG_V_WORDS;
+}
+
+bool ta_gpu_processing(void)
+{
+	return ta_gpu_on;
+}
+
+bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out)
+{
+	TaWalkFrame &f = walk_frame[0];
+	u32 count, i, l;
+
+	if (!ta_gpu_on || !ta_walk_table(ctx, &count))
+		return false;
+	f.bg_in = *ctx->rend.global_param_op.head();
+	f.x_clip_in = ctx->rend.fb_X_CLIP;
+	f.y_clip_in = ctx->rend.fb_Y_CLIP;
+	f.gpu = true;
+	const bool ok = ta_walk_run<false>(ctx, f, count);
+	f.gpu = false;
+	if (!ok || f.gpu_bad || f.passes > TAG_MAX_PASS)
+		return false;
+
+	TaGpuSizes sz;
+	ta_gpu_sizes(&sz);
+	/* What the full parse overruns with is left to it: it drops the frame
+	 * then, as it always has */
+	if (f.verts > (u32)ctx->rend.verts.size || f.verts > sz.verts
+			|| f.modtrig > (u32)ctx->rend.modtrig.size || f.modtrig > sz.modtrig)
+		return false;
+
+	// the headers with vertices, by segment, and the vertices of each
+	const u32 nseg = f.passes * 3;
+	u32 seg_hdr[TAG_MAX_SEG], seg_v[TAG_MAX_SEG], seg_last[TAG_MAX_SEG], seg_slot[TAG_MAX_SEG];
+	memset(seg_hdr, 0, sizeof(seg_hdr));
+	memset(seg_v, 0, sizeof(seg_v));
+	seg_hdr[0] = 1;
+	seg_v[0] = 4;
+	u32 nhdr = 1, nruns = 0, nmvruns = 0;
+	for (i = 0; i < f.headers; i++)
+	{
+		const TaWalkHeader &h = f.header[i];
+		if (h.pp.count == 0)
+			continue;
+		const u32 seg = h.pass * 3 + (u32)TaWalker<false>::pp_list(h.list);
+		seg_hdr[seg]++;
+		seg_v[seg] += h.pp.count;
+		nhdr++;
+	}
+	for (i = 0; i < f.runs; i++)
+		if (f.run[i].header & TA_WALK_MODVOL)
+			nmvruns++;
+		else
+			nruns++;
+
+	const u32 off_run = TAG_T_WORDS;
+	const u32 off_hdr = off_run + nruns * TAG_R_WORDS;
+	const u32 off_mvrun = off_hdr + nhdr * TAG_H_WORDS;
+	const u32 off_seg = off_mvrun + nmvruns * TAG_M_WORDS;
+	const u32 off_bg = off_seg + nseg * TAG_G_WORDS;
+	const u32 words = off_bg + 4 * TAG_V_WORDS;
+	if (words > table_room || nhdr > sz.headers)
+		return false;
+
+	// where each segment's headers and vertices start, in index order
+	u32 seg_next_h[TAG_MAX_SEG], seg_next_v[TAG_MAX_SEG];
+	{
+		u32 h = 0, v = 0;
+		for (i = 0; i < nseg; i++)
+		{
+			u32 *g = &table[off_seg + i * TAG_G_WORDS];
+			seg_next_h[i] = h;
+			seg_next_v[i] = v;
+			g[TAG_G_VSTART] = v;
+			g[TAG_G_VEND] = v + seg_v[i];
+			g[2] = g[3] = 0;
+			h += seg_hdr[i];
+			v += seg_v[i];
+			seg_last[i] = TAG_NONE;
+			seg_slot[i] = TAG_NONE;
+		}
+	}
+
+	/* A header's record. Its slot: a command for each draw group of the
+	 * opaque and punch-through lists (the translucent strips are each
+	 * their own, and drawn from the records) */
+	u32 nslots = 0;
+	auto put_header = [&](u32 id, const PolyParam &pp, u32 first, u32 cnt, u32 vstart, u32 fmt, u32 vb,
+			u32 list, u32 seg, u32 group, const TaWalkFace *face) {
+		u32 *w = &table[off_hdr + id * TAG_H_WORDS];
+		u32 slot = TAG_NONE;
+		if (list != 2)
+		{
+			if (seg_last[seg] != group)
+			{
+				seg_last[seg] = group;
+				seg_slot[seg] = nslots++;
+			}
+			slot = seg_slot[seg];
+		}
+		w[TAG_H_VFIRST] = first;
+		w[TAG_H_VCOUNT] = cnt;
+		w[TAG_H_VSTART] = vstart;
+		w[TAG_H_INFO] = TAG_INFO(fmt, vb, list, seg, pp.pcw.Texture);
+		w[TAG_H_SLOT] = slot;
+		w[TAG_H_STATE + TAG_S_TSP] = pp.tsp.full;
+		w[TAG_H_STATE + TAG_S_TCW] = pp.tcw.full;
+		w[TAG_H_STATE + TAG_S_PCW] = pp.pcw.full & ~PVR_PCW_SINGLE_RATE;
+		w[TAG_H_STATE + TAG_S_ISP] = pp.isp.full;
+		w[TAG_H_STATE + TAG_S_TSP1] = pp.tsp1.full;
+		w[TAG_H_STATE + TAG_S_TCW1] = pp.tcw1.full;
+		w[TAG_H_STATE + TAG_S_CLIP] = pp.tileclip;
+		if (face != NULL)
+		{
+			memcpy(&w[TAG_H_FCOL], face->col, sizeof(face->col));
+			memcpy(&w[TAG_H_FF], face->f, sizeof(face->f));
+			memcpy(&w[TAG_H_SCOL], face->sprite, sizeof(face->sprite));
+		}
+		else
+			memset(&w[TAG_H_FCOL], 0, (TAG_H_WORDS - TAG_H_FCOL) * sizeof(u32));
+		return id;
+	};
+
+	// the background, first of the first pass's opaque list (its group is 0)
+	put_header(seg_next_h[0]++, f.bg, 0, 4, 0, TAG_FMT_BG, 1, 0, 0, 0, NULL);
+	seg_next_v[0] += 4;
+	/* the others, as they came (which is their order within a segment);
+	 * the runs are given the headers' new numbers through the old ones'
+	 * group words, which are not needed after this */
+	for (i = 0; i < f.headers; i++)
+	{
+		TaWalkHeader &h = f.header[i];
+		if (h.pp.count == 0)
+			continue;
+		l = (u32)TaWalker<false>::pp_list(h.list);
+		const u32 seg = h.pass * 3 + l;
+		const u32 id = put_header(seg_next_h[seg]++, h.pp, h.pp.first, h.pp.count, seg_next_v[seg],
+				h.format, h.vblocks, l, seg, h.group, &f.face[i]);
+		seg_next_v[seg] += h.pp.count;
+		h.group = id;
+	}
+	{
+		u32 r = 0, m = 0;
+		for (i = 0; i < f.runs; i++)
+		{
+			const TaWalkRun &run = f.run[i];
+			if (run.header & TA_WALK_MODVOL)
+			{
+				u32 *w = &table[off_mvrun + m++ * TAG_M_WORDS];
+				w[TAG_M_BLOCK] = run.block;
+				w[TAG_M_FIRST] = run.vertex;
+				w[TAG_M_COUNT] = (run.blocks + 1) / 2;
+				w[3] = 0;
+			}
+			else
+			{
+				u32 *w = &table[off_run + r++ * TAG_R_WORDS];
+				w[TAG_R_BLOCK] = run.block;
+				w[TAG_R_VERTEX] = run.vertex;
+				w[TAG_R_COUNT] = 0;
+				w[TAG_R_HDR] = f.header[run.header].group;
+			}
+		}
+	}
+	memcpy(&table[off_bg], ctx->rend.verts.head(), 4 * sizeof(Vertex));
+
+	u32 *t = table;
+	t[TAG_T_NVERTS] = f.verts;
+	t[TAG_T_NRUNS] = nruns;
+	t[TAG_T_NHDR] = nhdr;
+	t[TAG_T_NMVRUN] = nmvruns;
+	t[TAG_T_NMOD] = f.modtrig;
+	t[TAG_T_NSEG] = nseg;
+	t[TAG_T_NSLOT] = nslots;
+	t[TAG_T_FLAGS] = screen_height > 480 ? TAG_FLAG_BLEED : 0;
+	t[TAG_T_ROOM_IDX] = (u32)ctx->rend.idx.size;
+	t[TAG_T_ROOM_OP] = (u32)ctx->rend.global_param_op.size;
+	t[TAG_T_ROOM_PT] = (u32)ctx->rend.global_param_pt.size;
+	t[TAG_T_ROOM_TR] = (u32)ctx->rend.global_param_tr.size;
+	t[TAG_T_OFF_RUN] = off_run;
+	t[TAG_T_OFF_HDR] = off_hdr;
+	t[TAG_T_OFF_MVRUN] = off_mvrun;
+	t[TAG_T_OFF_SEG] = off_seg;
+	t[TAG_T_OFF_BG] = off_bg;
+	memcpy(&t[TAG_T_TA_BASE], layout->words, sizeof(layout->words));
+	t[TAG_T_NPASS] = f.passes;
+	t[TAG_T_ROOM_VTX] = sz.verts;
+
+	out->table_words = words;
+	out->verts = f.verts;
+	out->modtrig = f.modtrig;
+	out->headers = nhdr;
+	out->slots = nslots;
+	out->segments = nseg;
+	out->passes = f.passes;
+	memcpy(out->pass, f.pass, sizeof(out->pass));
+	out->x_clip = f.x_clip;
+	out->y_clip = f.y_clip;
+	out->rv = f.rv;
+	return true;
+}
+
+void ta_set_gpu_processing(bool on)
+{
+	if (on == ta_gpu_on && (!on || walk_data_size >= ta_data_size()))
+		return;
+	if (on && !ta_walk_init())
+		on = false;
+	ta_gpu_on = on;
+	if (!on && !ta_walk_checking)
+		ta_walk_term();
+	ta_set_walk(on || ta_walk_checking);
 }
 
 /* ---- The check: the header pass beside the full parse, every frame ---- */
@@ -3681,10 +4031,12 @@ void ta_set_walk_check(bool on)
 	{
 		if (walk_stats != NULL && walk_stats->checked != 0)
 			ta_walk_log();
-		ta_walk_term();
+		// (the GPU decode's header pass works in the same memory)
+		if (!ta_gpu_on)
+			ta_walk_term();
 		free(walk_stats);
 		walk_stats = NULL;
 	}
 	ta_walk_checking = on;
-	ta_set_walk(on);
+	ta_set_walk(on || ta_gpu_on);
 }

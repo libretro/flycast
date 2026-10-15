@@ -363,3 +363,51 @@ void FinishRender(TA_context* ctx);
 void FillBGP(TA_context* ctx);
 void SerializeTAContext(void **data, unsigned int *total_size);
 void UnserializeTAContext(void **data, unsigned int *total_size, serialize_version_enum version);
+
+/* ---- GPU-side TA processing, its decode (rend/ta_gpu.h) ---- */
+
+/* The most a frame of the machine's size has of what the decode makes and
+ * reads, for the renderer to size its buffers by */
+struct TaGpuSizes
+{
+	u32 verts, idx, list[3], modtrig;
+	u32 headers, runs;	// in the tables
+	u32 table_words;
+};
+void ta_gpu_sizes(TaGpuSizes *sizes);
+
+/* Where the renderer has things: the tables' words TAG_T_TA_BASE to
+ * TAG_T_REC_TR, in that order */
+struct TaGpuLayout
+{
+	u32 words[13];
+};
+
+/* What the header pass found, for the renderer */
+struct TaGpuFrame
+{
+	u32 table_words;	// of the tables written
+	u32 verts, modtrig, headers, slots, segments, passes;
+	RenderPass pass[10];	// the region settings (the counts are the GPU's to give)
+	FB_X_CLIP_type x_clip;
+	FB_Y_CLIP_type y_clip;
+	bool rv;		// there is something to draw
+};
+
+/* Whether frames are decoded on the GPU: the control-word walk on, and the
+ * header pass's memory made for frames of the machine's size. (From the
+ * thread that renders, between frames.) */
+void ta_set_gpu_processing(bool on);
+bool ta_gpu_processing(void);
+/* What the core option asks for (TA Processing: GPU), for the renderers
+ * that can to take up (from any thread) */
+void ta_set_gpu_wanted(bool on);
+bool ta_gpu_wanted(void);
+/* The header pass over @ctx (after FillBGP(), before the full parse) and
+ * the decode's tables written to @table, up to @table_room words, with
+ * @layout's places. false: this frame is not one the GPU decode does - no
+ * table to trust, a list left open at the end of a render pass, the data
+ * ending in the middle of something, more than there is room for - and
+ * only the full parse can do it. (From the thread that renders.) */
+bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out);
+
