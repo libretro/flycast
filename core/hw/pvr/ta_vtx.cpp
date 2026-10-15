@@ -2964,6 +2964,10 @@ struct TaWalker
 				f.verts += n;
 			f.header[hdr].pp.count += n;
 			pass_made = true;
+			/* (gpu) A parameter where a strip has not ended: the full parse
+			 * takes it for a vertex, the decode for what it is */
+			if (f.gpu && nb < end && !eos(nb - 1))
+				f.gpu_bad = true;
 			return nb;
 		}
 		const u32 halves = (n + 1) / 2;	// first halves
@@ -3006,6 +3010,8 @@ struct TaWalker
 			return next;
 		}
 		// 64-byte polygon vertices
+		if (f.gpu && nb < end && !eos(cut ? nb - 1 : nb - 2))
+			f.gpu_bad = true;	// (as above)
 		add_run(pos, blocks, f.verts, hdr);
 		if (strips)
 			for (a = 0; a < halves; a++)
@@ -3509,13 +3515,47 @@ bool ta_gpu_processing(void)
 	return ta_gpu_on;
 }
 
-bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out)
+/* Whether any render pass the frame's data can have is sorted (the region
+ * array's settings, which getRegionSettings() reads for each pass the
+ * parse makes): a few words of video memory */
+static bool ta_gpu_any_autosort(const TA_context *ctx)
+{
+	RenderPass r;
+	for (u32 pass = 0; pass <= ctx->tad.render_pass_count; pass++)
+	{
+		getRegionSettings(pass, &r);
+		if (r.autosort)
+			return true;
+	}
+	return false;
+}
+
+bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out, u32 flags)
 {
 	TaWalkFrame &f = walk_frame[0];
 	u32 count, i, l;
+	const bool draw = (flags & TA_GPU_DRAW) != 0;
 
+	out->why = TA_GPU_WHY_TABLE;
 	if (!ta_gpu_on || !ta_walk_table(ctx, &count))
 		return false;
+	if (draw)
+	{
+		/* What only the full parse makes: a frame it passes over (frame
+		 * skipping), whose bookkeeping it keeps; the flat strips' and the
+		 * region array's table, which are made from the vertices */
+		out->why = TA_GPU_WHY_PARSE;
+		if (!(ctx->rend.isRTT || 0 == ((ta_parse_cnt + 1) % (settings.pvr.ta_skip + 1)))
+				|| flat_strips_wanted || region_table_wanted)
+			return false;
+		/* A renderer that sorts translucent polygons on the CPU sorts them
+		 * from the CPU's vertices: it has the full parse for a frame that
+		 * may have a sorted pass */
+		out->why = TA_GPU_WHY_SORT;
+		if ((flags & TA_GPU_NO_SORT) && ta_gpu_any_autosort(ctx))
+			return false;
+	}
+	out->why = TA_GPU_WHY_WALK;
 	f.bg_in = *ctx->rend.global_param_op.head();
 	f.x_clip_in = ctx->rend.fb_X_CLIP;
 	f.y_clip_in = ctx->rend.fb_Y_CLIP;
@@ -3566,6 +3606,66 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	if (words > table_room || nhdr > sz.headers)
 		return false;
 
+	rend_context &rc = ctx->rend;
+	if (draw)
+	{
+		/* The full parse drops a frame that runs out of room for its
+		 * indices or polygon parameters, and the screen keeps the last
+		 * picture; the decode knows that only on the GPU, which can then
+		 * leave out the draws but not keep the picture. So the frames that
+		 * might run out are left to the full parse, by what can be known
+		 * here: a list has one more polygon parameter than strips while it
+		 * is being filled (and the opaque list the background's), and a
+		 * strip has a vertex at least - or, where that is too many, as many
+		 * strips as the vertices' end-of-strip bits say, which is one word
+		 * read a vertex, and every fourth corner of a sprite; make_index()
+		 * puts at most four indices a vertex - one for the vertex, one for
+		 * the parity, and the two that link a strip, or a run of infinite
+		 * vertices, to what came before. */
+		out->why = TA_GPU_WHY_ROOM;
+		u32 lv[3] = { 0, 0, 0 };
+		for (i = 0; i < f.headers; i++)
+			if (f.header[i].pp.count != 0)
+				lv[TaWalker<false>::pp_list(f.header[i].list)] += f.header[i].pp.count;
+		lv[0]++;	// (the background)
+		const u32 lroom[3] = { (u32)rc.global_param_op.size, (u32)rc.global_param_pt.size, (u32)rc.global_param_tr.size };
+		if ((u64)f.verts * 4 > (u64)rc.idx.size
+				|| f.mvos[0] > (u32)rc.global_param_mvo.size || f.mvos[1] > (u32)rc.global_param_mvo_tr.size)
+			return false;
+		if ((u64)lv[0] + 1 > lroom[0] || (u64)lv[1] + 1 > lroom[1] || (u64)lv[2] + 1 > lroom[2])
+		{
+			u32 ls[3] = { 1, 0, 0 };
+			const u8 *root = ctx->tad.thd_root;
+			for (i = 0; i < f.runs; i++)
+			{
+				const TaWalkRun &run = f.run[i];
+				if (run.header & TA_WALK_MODVOL)
+					continue;
+				u32 j = i + 1, end = f.verts;
+				while (j < f.runs && (f.run[j].header & TA_WALK_MODVOL))
+					j++;
+				if (j < f.runs)
+					end = f.run[j].vertex;
+				const TaWalkHeader &h = f.header[run.header];
+				const u32 n = end - run.vertex;
+				l = (u32)TaWalker<false>::pp_list(h.list);
+				if (h.format == TA_WALK_SPRITE)
+					ls[l] += n / 4;
+				else
+					for (u32 k = 0; k < n; k++)
+						ls[l] += ((const PCW *)(root + (size_t)(run.block + k * h.vblocks) * 32))->EndOfStrip;
+			}
+			if ((u64)ls[0] + 1 > lroom[0] || (u64)ls[1] + 1 > lroom[1] || (u64)ls[2] + 1 > lroom[2])
+				return false;
+		}
+		/* Drawn from here on: the lists hold a polygon parameter for each
+		 * draw group (see TA_GPU_DRAW) */
+		rc.global_param_op.Clear();
+		rc.global_param_pt.Clear();
+		rc.global_param_tr.Clear();
+	}
+	out->why = TA_GPU_WHY_NONE;
+
 	// where each segment's headers and vertices start, in index order
 	u32 seg_next_h[TAG_MAX_SEG], seg_next_v[TAG_MAX_SEG];
 	{
@@ -3586,21 +3686,64 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	}
 
 	/* A header's record. Its slot: a command for each draw group of the
-	 * opaque and punch-through lists (the translucent strips are each
-	 * their own, and drawn from the records) */
-	u32 nslots = 0;
+	 * opaque and punch-through lists. The translucent strips are each their
+	 * own polygon parameter, with a record of their own; for drawing, the
+	 * translucent headers one after another in a segment that are drawn
+	 * the same way (poly_same_state()) are a draw group too, whose records
+	 * the GPU copies to a place of the group's in the translucent draw
+	 * records: a word for how many there are, then room for one a vertex,
+	 * which is the most strips the group can have (TAG_H_TRB, TAG_H_TRV).
+	 * With TA_GPU_DRAW each draw group is a polygon parameter of the lists
+	 * here, in the lists' order, which is the parse's. */
+	u32 nslots = 0, ntrd = 0;
+	const PolyParam *seg_tr[TAG_MAX_SEG];
+	u32 seg_trb[TAG_MAX_SEG], seg_trv[TAG_MAX_SEG], seg_groups[TAG_MAX_SEG];
+	for (i = 0; i < nseg; i++)
+	{
+		seg_tr[i] = NULL;
+		seg_trb[i] = seg_trv[i] = TAG_NONE;
+		seg_groups[i] = 0;
+	}
+	List<PolyParam> *lists[3] = { &rc.global_param_op, &rc.global_param_pt, &rc.global_param_tr };
 	auto put_header = [&](u32 id, const PolyParam &pp, u32 first, u32 cnt, u32 vstart, u32 fmt, u32 vb,
 			u32 list, u32 seg, u32 group, const TaWalkFace *face) {
 		u32 *w = &table[off_hdr + id * TAG_H_WORDS];
 		u32 slot = TAG_NONE;
+		bool fresh;
 		if (list != 2)
 		{
-			if (seg_last[seg] != group)
+			fresh = seg_last[seg] != group;
+			if (fresh)
 			{
 				seg_last[seg] = group;
 				seg_slot[seg] = nslots++;
 			}
 			slot = seg_slot[seg];
+		}
+		else
+		{
+			fresh = seg_tr[seg] == NULL || !poly_same_state(seg_tr[seg], &pp);
+			if (fresh)
+			{
+				seg_tr[seg] = &pp;
+				seg_trb[seg] = ntrd++;
+				seg_trv[seg] = vstart;
+			}
+			ntrd += cnt;
+		}
+		if (draw)
+		{
+			// first: the command's slot, or the group's place in the translucent draw records; count: its vertices
+			if (fresh)
+			{
+				PolyParam *d = lists[list]->Append();
+				*d = pp;
+				d->first = list != 2 ? slot : seg_trb[seg];
+				d->count = cnt;
+				seg_groups[seg]++;
+			}
+			else
+				lists[list]->LastPtr()->count += cnt;
 		}
 		w[TAG_H_VFIRST] = first;
 		w[TAG_H_VCOUNT] = cnt;
@@ -3621,7 +3764,9 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 			memcpy(&w[TAG_H_SCOL], face->sprite, sizeof(face->sprite));
 		}
 		else
-			memset(&w[TAG_H_FCOL], 0, (TAG_H_WORDS - TAG_H_FCOL) * sizeof(u32));
+			memset(&w[TAG_H_FCOL], 0, (TAG_H_TRB - TAG_H_FCOL) * sizeof(u32));
+		w[TAG_H_TRB] = list == 2 ? seg_trb[seg] : TAG_NONE;
+		w[TAG_H_TRV] = list == 2 ? seg_trv[seg] : TAG_NONE;
 		return id;
 	};
 
@@ -3676,7 +3821,8 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	t[TAG_T_NMOD] = f.modtrig;
 	t[TAG_T_NSEG] = nseg;
 	t[TAG_T_NSLOT] = nslots;
-	t[TAG_T_FLAGS] = screen_height > 480 ? TAG_FLAG_BLEED : 0;
+	t[TAG_T_FLAGS] = (screen_height > 480 ? TAG_FLAG_BLEED : 0) | ((flags & TA_GPU_PROVOKE) ? TAG_FLAG_PROVOKE : 0)
+			| ((flags & TA_GPU_INSTANCE) ? TAG_FLAG_INSTANCE : 0);
 	t[TAG_T_ROOM_IDX] = (u32)ctx->rend.idx.size;
 	t[TAG_T_ROOM_OP] = (u32)ctx->rend.global_param_op.size;
 	t[TAG_T_ROOM_PT] = (u32)ctx->rend.global_param_pt.size;
@@ -3701,6 +3847,39 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	out->x_clip = f.x_clip;
 	out->y_clip = f.y_clip;
 	out->rv = f.rv;
+	out->trd = ntrd;
+
+	if (draw)
+	{
+		/* The rest of what the full parse leaves for the renderer: the
+		 * render passes, with each list's draw groups as its count, the
+		 * modifier volumes, the clipping rectangle. The vertices, indices
+		 * and modifier volume triangles are the GPU's; fZ_max too, which
+		 * the Vulkan renderers do not use. */
+		rc.render_passes.Clear();
+		u32 groups[3] = { 0, 0, 0 };
+		for (u32 p = 0; p < f.passes; p++)
+		{
+			RenderPass *rp = rc.render_passes.Append();
+			*rp = f.pass[p];
+			for (l = 0; l < 3; l++)
+				groups[l] += seg_groups[p * 3 + l];
+			rp->op_count = groups[0];
+			rp->pt_count = groups[1];
+			rp->tr_count = groups[2];
+		}
+		rc.global_param_mvo.Clear();
+		rc.global_param_mvo_tr.Clear();
+		if (f.mvos[0] != 0)
+			memcpy(rc.global_param_mvo.Append(f.mvos[0]), f.mvo[0], f.mvos[0] * sizeof(ModifierVolumeParam));
+		if (f.mvos[1] != 0)
+			memcpy(rc.global_param_mvo_tr.Append(f.mvos[1]), f.mvo[1], f.mvos[1] * sizeof(ModifierVolumeParam));
+		rc.fb_X_CLIP = f.x_clip;
+		rc.fb_Y_CLIP = f.y_clip;
+		rc.gpu = true;
+		rc.gpu_modtrig = f.modtrig;
+		ta_parse_cnt++;
+	}
 	return true;
 }
 

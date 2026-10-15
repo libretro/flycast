@@ -35,9 +35,11 @@ public:
 
 		textureDrawer.Init(&samplerManager, &shaderManager, &textureCache);
 		textureDrawer.SetCommandPool(&texCommandPool);
+		textureDrawer.SetGpuDraw(taDecoder.Draw());
 
 		screenDrawer.Init(&samplerManager, &shaderManager);
 		screenDrawer.SetCommandPool(&texCommandPool);
+		screenDrawer.SetGpuDraw(taDecoder.Draw());
 		BaseInit(screenDrawer.GetRenderPass());
 		screenDrawer.SetQuadPipeline(&quadPipeline);
 
@@ -58,6 +60,13 @@ public:
 	void KeepPicture() override { screenDrawer.KeepPicture(); }
 	void SetRestoredPicture(vk::ImageView view) override { screenDrawer.SetRestoredPicture(view); }
 
+protected:
+	/* The translucent polygons are sorted on the CPU, from the CPU's
+	 * vertices: a frame that may have a sorted pass is parsed there (the
+	 * GPU's sort is for later) */
+	u32 TaFlags() const override { return TA_GPU_DRAW | TA_GPU_NO_SORT | TA_GPU_PROVOKE; }
+
+public:
 	void Term() override
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");

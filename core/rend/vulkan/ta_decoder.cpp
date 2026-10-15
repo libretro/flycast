@@ -16,8 +16,11 @@ static const char ta_gpu_text[] =
 #include "rend/ta_gpu_text.inc"
 ;
 
+// (the drawers draw from the records and commands: BaseDrawer::DrawIndices())
+static_assert(TAG_C_WORDS * 4 == sizeof(VkDrawIndexedIndirectCommand), "a record is an indexed indirect draw");
+
 // The buffers, in the kernels' bindings' order (set 1)
-enum { B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_COUNT };
+enum { B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_COUNT };
 
 struct TaDecoder::Resources
 {
@@ -74,14 +77,28 @@ bool TaDecoder::Init(CommandPool& pool)
 	const u32 spares = (u32)std::min<u64>(budget / r->slice, 4);
 	r->slices = std::min(frames + 4 + (int)spares, 16);
 	r->tableWords = (sz.table_words + 63) & ~63u;
+	// the translucent draw records: each group's count and room for a draw a vertex
+	const u32 trdSlots = sz.verts + sz.headers;
 
 	const u64 most = std::min<u64>(context->GetMaxStorageBufferRange(), context->GetMaxMemoryAllocationSize());
-	if ((u64)r->slice > most || (u64)sz.verts * TAG_V_WORDS * 4 > most || (u64)workWords * 4 > most)
+	if ((u64)r->slice > most || (u64)sz.verts * TAG_V_WORDS * 4 > most || (u64)workWords * 4 > most
+			|| (u64)trdSlots * TAG_C_WORDS * 4 > most)
 	{
 		INFO_LOG(RENDERER, "Vulkan: TA processing stays on the CPU (buffers larger than the device has)");
 		failed = true;
 		return false;
 	}
+	/* A translucent draw group is one indirect draw of all its strips: with
+	 * their count from the GPU (VK_KHR_draw_indirect_count), or of the
+	 * group's whole room, whose records past the count draw nothing */
+	draw.drawCount = context->GetDrawIndexedIndirectCount();
+	if (context->GetMaxDrawIndirectCount() < sz.verts || (draw.drawCount == nullptr && !context->SupportsMultiDrawIndirect()))
+	{
+		INFO_LOG(RENDERER, "Vulkan: TA processing stays on the CPU (no indirect draws of several at once)");
+		failed = true;
+		return false;
+	}
+	instance = context->SupportsDrawIndirectFirstInstance();
 	try {
 		r->pool = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)r->slice * r->slices,
 				vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst));
@@ -100,7 +117,8 @@ bool TaDecoder::Init(CommandPool& pool)
 		const vk::BufferUsageFlags storage = vk::BufferUsageFlagBits::eStorageBuffer;
 		r->buffers[B_VTX] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.verts * TAG_V_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eVertexBuffer, local));
-		r->buffers[B_MOD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.modtrig * 9 * 4 + 4, storage, local));
+		r->buffers[B_MOD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.modtrig * 9 * 4 + 4,
+				storage | vk::BufferUsageFlagBits::eVertexBuffer, local));
 		r->buffers[B_IDX] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.idx * 4,
 				storage | vk::BufferUsageFlagBits::eIndexBuffer, local));
 		r->buffers[B_WORK] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)workWords * 4,
@@ -111,6 +129,9 @@ bool TaDecoder::Init(CommandPool& pool)
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer, local));
 		r->buffers[B_FRM] = std::unique_ptr<BufferData>(new BufferData(TAG_O_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
+		r->buffers[B_TRD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)trdSlots * TAG_C_WORDS * 4,
+				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
+		r->buffers[B_TRP] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4, storage, local));
 	} catch (const vk::SystemError& e) {
 		INFO_LOG(RENDERER, "Vulkan: TA processing stays on the CPU (%s)", e.what());
 		failed = true;
@@ -196,20 +217,41 @@ bool TaDecoder::Init(CommandPool& pool)
 	}
 	slotSerial.assign(frames, 0);
 	slotTimed.assign(frames, false);
+	draw.vertices = *r->buffers[B_VTX]->buffer;
+	draw.indices = *r->buffers[B_IDX]->buffer;
+	draw.modtrig = *r->buffers[B_MOD]->buffer;
+	draw.commands = *r->buffers[B_CMD]->buffer;
+	draw.trDraws = *r->buffers[B_TRD]->buffer;
+	draw.trParams = *r->buffers[B_TRP]->buffer;
+	draw.trParamsSize = (vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4;
 	res = std::move(r);
 	ready = true;
-	NOTICE_LOG(RENDERER, "Vulkan: TA processing on the GPU (%u frames of %u MB in host-cached memory, %u KB of tables a frame)",
-			res->slices, res->slice >> 20, res->tableWords / 256);
+	NOTICE_LOG(RENDERER, "Vulkan: TA processing on the GPU (%u frames of %u MB in host-cached memory, %u KB of tables a frame; "
+			"translucent groups drawn %s, %s strip numbers)",
+			res->slices, res->slice >> 20, res->tableWords / 256, draw.drawCount != nullptr ? "with their count" : "whole",
+			instance ? "with" : "without");
 	return true;
+}
+
+void TaDecoder::Log(const char *when)
+{
+	u32 shortFrames, allocated;
+	tactx_gpu_pool_stats(&shortFrames, &allocated);
+	NOTICE_LOG(RENDERER, "Vulkan: TA processing%s: %llu frames decoded and drawn on the GPU, %llu parsed on the CPU "
+			"(%llu without a table, %llu frame skipping, %llu sorted on the CPU, %llu the header pass leaves to the parse, %llu might run out of room); "
+			"GPU time mean %.3f ms, max %.3f ms; pool: %u frames found it full, %u contexts allocated",
+			when, (unsigned long long)statFrames, (unsigned long long)statSkipped,
+			(unsigned long long)statWhy[TA_GPU_WHY_TABLE], (unsigned long long)statWhy[TA_GPU_WHY_PARSE],
+			(unsigned long long)statWhy[TA_GPU_WHY_SORT], (unsigned long long)statWhy[TA_GPU_WHY_WALK],
+			(unsigned long long)statWhy[TA_GPU_WHY_ROOM],
+			statGpuTimed ? statGpuMs / statGpuTimed : 0.0, statGpuMaxMs, shortFrames, allocated);
 }
 
 void TaDecoder::Term()
 {
 	if (!ready)
 		return;
-	NOTICE_LOG(RENDERER, "Vulkan: TA processing: %llu frames decoded on the GPU, %llu left to the CPU; GPU time mean %.3f ms, max %.3f ms",
-			(unsigned long long)statFrames, (unsigned long long)statSkipped,
-			statGpuTimed ? statGpuMs / statGpuTimed : 0.0, statGpuMaxMs);
+	Log("");
 	// (the renderer is done with the GPU)
 	ta_set_gpu_processing(false);
 	tactx_gpu_pool_detach();
@@ -275,18 +317,29 @@ void TaDecoder::BeginFrame(CommandPool& pool, bool wanted)
 	PollDone(pool);
 }
 
-bool TaDecoder::Prepare(TA_context *ctx)
+bool TaDecoder::Prepare(TA_context *ctx, u32 want, bool *rv)
 {
 	prepared = false;
 	if (ctx->pool < 0 || ctx->rend.isRenderFramebuffer)
 	{
+		// (a frame that found the pool full is in memory the GPU cannot read)
 		statSkipped++;
+		statWhy[TA_GPU_WHY_TABLE]++;
 		return false;
 	}
-	prepared = ta_gpu_prepare(ctx, &res->layout, res->tables + (size_t)index * res->tableWords, res->tableWords, &frame);
+	flags = want;
+	prepared = ta_gpu_prepare(ctx, &res->layout, res->tables + (size_t)index * res->tableWords, res->tableWords, &frame, flags);
 	if (!prepared)
+	{
 		statSkipped++;
-	return prepared;
+		statWhy[frame.why < TA_GPU_WHY_COUNT ? frame.why : TA_GPU_WHY_WALK]++;
+		return false;
+	}
+	*rv = frame.rv;
+	// (nothing to draw: nothing to decode)
+	if (!frame.rv)
+		prepared = false;
+	return true;
 }
 
 void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
@@ -308,14 +361,18 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	const vk::MemoryBarrier before(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
 			| vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eIndexRead | vk::AccessFlagBits::eIndirectCommandRead,
 			vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+	// (the per-pixel renderer reads the translucent polygon parameters in its fragment shaders)
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexInput
-			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader,
+			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader,
 			vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader, {}, before, nullptr, nullptr);
 	const vk::Buffer frm = *r.buffers[B_FRM]->buffer;
 	cmd.fillBuffer(frm, 0, TAG_O_WORDS * 4, 0);
 	cmd.fillBuffer(frm, TAG_O_ZMAX * 4, 4, 0x3F800000u);	// fZ_max starts at 1
 	if (frame.slots != 0)
 		cmd.fillBuffer(*r.buffers[B_WORK]->buffer, (vk::DeviceSize)r.layout.words[9] * 4, (vk::DeviceSize)frame.slots * 4, 0);
+	// the frame's translucent draw records: counts and room
+	if (frame.trd != 0)
+		cmd.fillBuffer(*r.buffers[B_TRD]->buffer, 0, (vk::DeviceSize)frame.trd * TAG_C_WORDS * 4, 0);
 	const vk::MemoryBarrier filled(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, filled, nullptr, nullptr);
 
@@ -346,15 +403,20 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	indirect(TAG_K_STATES, TAG_O_ARGSCH);
 	indirect(TAG_K_EMIT, TAG_O_ARGS64);
 	dispatch(TAG_K_FINISH, (frame.slots + 63) / 64);
+	if (frame.trd != 0)
+		indirect(TAG_K_TRDRAW, TAG_O_ARGS64);
 	if (screen_height > 480)
 		indirect(TAG_K_BLEED, TAG_O_ARGS1);
+	if (flags & TA_GPU_PROVOKE)
+		indirect(TAG_K_PROVOKE, TAG_O_ARGS1);
 
 	// for whatever draws from them
 	const vk::MemoryBarrier after(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eVertexAttributeRead
 			| vk::AccessFlagBits::eIndexRead | vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead
 			| vk::AccessFlagBits::eUniformRead);
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eVertexInput
-			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eComputeShader,
+			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader
+			| vk::PipelineStageFlagBits::eComputeShader,
 			{}, after, nullptr, nullptr);
 	if (r.queries)
 	{
@@ -365,7 +427,5 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	// the context's slice is read until this frame is done
 	ctx->gpu_serial = serial;
 	if (++statFrames % 600 == 0)
-		NOTICE_LOG(RENDERER, "Vulkan: TA processing: %llu frames decoded on the GPU, %llu left to the CPU; GPU time mean %.3f ms, max %.3f ms",
-				(unsigned long long)statFrames, (unsigned long long)statSkipped,
-				statGpuTimed ? statGpuMs / statGpuTimed : 0.0, statGpuMaxMs);
+		Log(" so far");
 }

@@ -108,11 +108,13 @@ public:
 			textureCache.ClearLater();
 		}
 
-		/* GPU-side TA processing: the header pass and the decode, while the
-		 * frame is still parsed on the CPU as well and drawn from that */
-		const bool gpuTa = taDecoder.Ready() && taDecoder.Prepare(ctx);
-		bool result = ta_parse_vdrc(ctx);
-		if (gpuTa && result)
+		/* GPU-side TA processing: the header pass makes the frame ready to
+		 * be drawn from the GPU's decode, in the full parse's place; or it
+		 * is parsed as ever */
+		bool result;
+		if (!taDecoder.Ready() || !taDecoder.Prepare(ctx, TaFlags(), &result))
+			result = ta_parse_vdrc(ctx);
+		else if (result)
 			taDecoder.Record(ctx, texCommandPool);
 		// the textures the frame's polygons asked for that are made on the GPU, before the draws
 		texDecoder.Flush(texCommandPool);
@@ -132,6 +134,8 @@ public:
 
 protected:
 	VulkanContext *GetContext() const { return VulkanContext::Instance(); }
+	// how the drawers draw a frame decoded on the GPU (ta_gpu_prepare()'s TA_GPU_*)
+	virtual u32 TaFlags() const = 0;
 
 	bool BaseInit(vk::RenderPass renderPass, int subpass = 0)
 	{

@@ -117,7 +117,7 @@ static VkFence fence;
 static VkPhysicalDeviceMemoryProperties mem_props;
 static VkDescriptorSetLayout set_layouts[2];
 static VkPipelineLayout pipeline_layout;
-static VkPipeline pipelines[12];
+static VkPipeline pipelines[TAG_KERNELS + 1];
 static VkDescriptorPool desc_pool;
 static VkDescriptorSet sets[2];
 
@@ -175,7 +175,7 @@ static VkPipeline make_pipeline(const char *path)
 
 static VkDescriptorSetLayout make_layout(unsigned n)
 {
-   VkDescriptorSetLayoutBinding b[8];
+   VkDescriptorSetLayoutBinding b[10];
    VkDescriptorSetLayoutCreateInfo ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
    VkDescriptorSetLayout layout;
    unsigned i;
@@ -225,14 +225,14 @@ static struct buffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage)
 }
 
 /* the buffers, in the kernels' bindings' order: the data, then set 1's */
-enum { B_TA, B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_COUNT };
+enum { B_TA, B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_COUNT };
 static struct buffer bufs[B_COUNT];
 static struct tgt_sizes sizes;
 static unsigned layout_words[13];
 static unsigned work_words;
 
 /* the model's own */
-static unsigned *m_vtx, *m_mod, *m_work, *m_rec, *m_cmd, *m_frm;
+static unsigned *m_vtx, *m_mod, *m_work, *m_rec, *m_cmd, *m_frm, *m_trd, *m_trp;
 
 int tgt_validation_errors(void)
 {
@@ -305,11 +305,11 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    CHECK(vkCreateFence(device, &fci, NULL, &fence));
 
    set_layouts[0] = make_layout(1);
-   set_layouts[1] = make_layout(8);
+   set_layouts[1] = make_layout(B_COUNT - 1);
    pli.setLayoutCount = 2;
    pli.pSetLayouts = set_layouts;
    CHECK(vkCreatePipelineLayout(device, &pli, NULL, &pipeline_layout));
-   for (i = 1; i <= 11; i++)
+   for (i = 1; i <= TAG_KERNELS; i++)
    {
       snprintf(path, sizeof(path), "%s/k%u.spv", spv_dir, i);
       pipelines[i] = make_pipeline(path);
@@ -335,6 +335,8 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    bufs[B_REC] = make_buffer((VkDeviceSize)strips * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_CMD] = make_buffer((VkDeviceSize)sz->headers * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_FRM] = make_buffer(TAG_O_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+   bufs[B_TRD] = make_buffer((VkDeviceSize)(sz->verts + sz->headers) * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+   bufs[B_TRP] = make_buffer((VkDeviceSize)sz->list[2] * TAG_P_WORDS * 4, 0);
 
    dpi.maxSets = 2;
    dpi.poolSizeCount = 1;
@@ -357,7 +359,7 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
    writes[0].pBufferInfo = &infos[B_TA];
    writes[1].dstSet = sets[1];
-   writes[1].descriptorCount = 8;
+   writes[1].descriptorCount = B_COUNT - 1;
    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
    writes[1].pBufferInfo = &infos[B_TAB];
    vkUpdateDescriptorSets(device, 2, writes, 0, NULL);
@@ -370,6 +372,8 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    m_rec = (unsigned *)calloc((size_t)strips * TAG_C_WORDS, 4);
    m_cmd = (unsigned *)calloc((size_t)sz->headers * TAG_C_WORDS, 4);
    m_frm = (unsigned *)calloc(TAG_O_WORDS, 4);
+   m_trd = (unsigned *)calloc((size_t)(sz->verts + sz->headers) * TAG_C_WORDS, 4);
+   m_trp = (unsigned *)calloc((size_t)sz->list[2] * TAG_P_WORDS, 4);
 }
 
 static void barrier(VkAccessFlags src, VkPipelineStageFlags src_stage, VkAccessFlags dst, VkPipelineStageFlags dst_stage)
@@ -409,7 +413,7 @@ static double now_ms(void)
    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
-void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned table_words, struct tgt_out *o, double *ms)
+void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned table_words, unsigned trd, struct tgt_out *o, double *ms)
 {
    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -428,6 +432,8 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    vkCmdFillBuffer(cmd, bufs[B_FRM].buffer, TAG_O_ZMAX * 4, 4, 0x3F800000u);
    if (nslot != 0)
       vkCmdFillBuffer(cmd, bufs[B_WORK].buffer, (VkDeviceSize)table[TAG_T_W_SLOTH] * 4, (VkDeviceSize)nslot * 4, 0);
+   if (trd != 0)
+      vkCmdFillBuffer(cmd, bufs[B_TRD].buffer, 0, (VkDeviceSize)trd * TAG_C_WORDS * 4, 0);
    barrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 2, sets, 0, NULL);
@@ -441,8 +447,12 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    dispatch_indirect(TAG_K_STATES, TAG_O_ARGSCH);
    dispatch_indirect(TAG_K_EMIT, TAG_O_ARGS64);
    dispatch(TAG_K_FINISH, (nslot + 63u) / 64u);
+   if (trd != 0)
+      dispatch_indirect(TAG_K_TRDRAW, TAG_O_ARGS64);
    if (table[TAG_T_FLAGS] & TAG_FLAG_BLEED)
       dispatch_indirect(TAG_K_BLEED, TAG_O_ARGS1);
+   if (table[TAG_T_FLAGS] & TAG_FLAG_PROVOKE)
+      dispatch_indirect(TAG_K_PROVOKE, TAG_O_ARGS1);
    barrier(VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_HOST_READ_BIT, VK_PIPELINE_STAGE_HOST_BIT);
    CHECK(vkEndCommandBuffer(cmd));
    si.commandBufferCount = 1;
@@ -460,6 +470,8 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    o->cmd = (const unsigned *)bufs[B_CMD].mapped;
    o->frm = (const unsigned *)bufs[B_FRM].mapped;
    o->work = (const unsigned *)bufs[B_WORK].mapped;
+   o->trd = (const unsigned *)bufs[B_TRD].mapped;
+   o->trp = (const unsigned *)bufs[B_TRP].mapped;
 }
 
 /* ---- The model: the kernels' steps, one after the other ---- */
@@ -486,7 +498,7 @@ static int m_check_scan(const tag_elem *pre, unsigned at, unsigned bits, unsigne
          && ((bits & TAG_E_HAS) == 0 || (pre->l[0] == l && pre->hd[0] == hd)) && pre->last == last;
 }
 
-int tgt_model(const void *ta, const unsigned *table, struct tgt_out *o)
+int tgt_model(const void *ta, const unsigned *table, unsigned trd, struct tgt_out *o)
 {
    const unsigned nv = table[TAG_T_NVERTS], nmod = table[TAG_T_NMOD];
    const unsigned room = table[TAG_T_ROOM_OP] + table[TAG_T_ROOM_PT] + table[TAG_T_ROOM_TR];
@@ -701,6 +713,75 @@ int tgt_model(const void *ta, const unsigned *table, struct tgt_out *o)
          }
       }
 
+   /* the translucent draw records: each translucent strip's record in its
+    * group's place, the group's count by its last strip */
+   memset(m_trd, 0, (size_t)trd * TAG_C_WORDS * 4);
+   for (k = 0; trd != 0 && k < ns; k++)
+   {
+      unsigned hdr = ssum[k * TAG_SS_WORDS + 4], r, li, b, s0, lo, hi, j, a, end;
+      if (TAG_INFO_LIST(table[hdr + TAG_H_INFO]) != 2)
+         continue;
+      r = m_record(k, hdr);
+      if (r == TAG_NONE)
+         continue;
+      li = (r - table[TAG_T_REC_TR]) / TAG_C_WORDS;
+      m_trp[li * TAG_P_WORDS] = (table[hdr + TAG_H_STATE + TAG_S_TSP] & 0xFFFF00C0u)
+            | ((table[hdr + TAG_H_STATE + TAG_S_ISP] >> 16) & 0xE400u) | ((table[hdr + TAG_H_STATE + TAG_S_PCW] >> 7) & 1u);
+      m_trp[li * TAG_P_WORDS + 1] = table[hdr + TAG_H_STATE + TAG_S_TSP1];
+      if (m_frm[TAG_O_OVERRUN] != 0)
+         continue;
+      b = table[hdr + TAG_H_TRB];
+      lo = 0;
+      hi = ns;
+      while (lo < hi)
+      {
+         unsigned mid = (lo + hi) / 2;
+         if (send[mid] < table[hdr + TAG_H_TRV])
+            lo = mid + 1;
+         else
+            hi = mid;
+      }
+      s0 = lo;
+      j = k - s0;
+      a = (b + 1 + j) * TAG_C_WORDS;
+      m_trd[a + TAG_C_COUNT] = m_rec[r + TAG_C_COUNT];
+      m_trd[a + TAG_C_INST] = 1;
+      m_trd[a + TAG_C_FIRST] = m_rec[r + TAG_C_FIRST];
+      m_trd[a + 3] = 0;
+      m_trd[a + TAG_C_INSTANCE] = (table[TAG_T_FLAGS] & TAG_FLAG_INSTANCE) ? li : 0;
+      end = k + 1 == ns;
+      if (!end)
+      {
+         unsigned next = ssum[(k + 1) * TAG_SS_WORDS + 4];
+         end = TAG_INFO_LIST(table[next + TAG_H_INFO]) != 2 || table[next + TAG_H_TRB] != b;
+      }
+      if (end)
+         m_trd[b * TAG_C_WORDS] = j + 1;
+   }
+
+   /* the provoking vertex, one index after the other, as the renderer does it */
+   if ((table[TAG_T_FLAGS] & TAG_FLAG_PROVOKE) && m_frm[TAG_O_OVERRUN] == 0)
+      for (k = 0; k < ns; k++)
+      {
+         unsigned hdr = ssum[k * TAG_SS_WORDS + 4], r, f, c, n;
+         if (table[hdr + TAG_H_STATE + TAG_S_PCW] & 2u)
+            continue;
+         r = m_record(k, hdr);
+         if (r == TAG_NONE || m_rec[r + TAG_C_COUNT] <= 2)
+            continue;
+         f = m_rec[r + TAG_C_FIRST];
+         c = m_rec[r + TAG_C_COUNT];
+         for (n = 0; n < c - 2; n++)
+         {
+            unsigned *d = &m_vtx[m_idx[f + n] * TAG_V_WORDS];
+            const unsigned *s = &m_vtx[m_idx[f + n + 2] * TAG_V_WORDS];
+            d[TAG_V_COL] = s[TAG_V_COL];
+            d[TAG_V_SPC] = s[TAG_V_SPC];
+            d[TAG_V_COL1] = s[TAG_V_COL1];
+            d[TAG_V_SPC1] = s[TAG_V_SPC1];
+         }
+      }
+
    o->vtx = m_vtx;
    o->mod = m_mod;
    o->idx = m_idx;
@@ -708,5 +789,7 @@ int tgt_model(const void *ta, const unsigned *table, struct tgt_out *o)
    o->cmd = m_cmd;
    o->frm = m_frm;
    o->work = m_work;
+   o->trd = m_trd;
+   o->trp = m_trp;
    return scan_ok;
 }

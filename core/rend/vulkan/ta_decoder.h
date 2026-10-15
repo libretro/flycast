@@ -1,6 +1,6 @@
 /* GPU-side TA processing on Vulkan: a frame's vertices, indices and
  * modifier volume triangles made on the GPU from the blocks the game sent
- * (rend/ta_gpu.h), with nothing read back.
+ * (rend/ta_gpu.h), and the frame drawn from them, with nothing read back.
  *
  * - The TA contexts' data are slices of one persistently mapped buffer of
  *   host-cached memory (tactx_gpu_pool_attach()): the SH4 writes a frame
@@ -9,9 +9,12 @@
  *   the work of the frame that read it last is done, which is known by
  *   polling the texture command pool's fences, never by waiting.
  * - At the start of Process() the header pass (ta_gpu_prepare()) writes
- *   the frame's tables into this frame's piece of a ring; the decode is
- *   recorded into a command buffer of the texture pool's, submitted with
- *   the frame's textures, before any draw.
+ *   the frame's tables into this frame's piece of a ring, and makes the
+ *   render context's lists of draw groups in the full parse's place; the
+ *   decode is recorded into a command buffer of the texture pool's,
+ *   submitted with the frame before its draws, which are indirect: their
+ *   counts are the GPU's (TaGpuDraw). A frame the header pass does not do
+ *   (ta_gpu_prepare()'s TA_GPU_WHY_*) is parsed and drawn as ever.
  * - The kernels, every buffer (sized for the largest frame the machine
  *   has), the descriptor sets and the timestamp queries are made in
  *   Init(); nothing is allocated or compiled while a game runs.
@@ -19,10 +22,7 @@
  *   the other on the one queue, and each decode waits for whatever the one
  *   before is read by.
  *
- * Until the raster renderers draw from these buffers (the next stage), the
- * frame is also parsed on the CPU as ever and drawn from that; the decode
- * only runs, for measuring it. Off (TA processing: CPU), none of this
- * exists. */
+ * Off (TA processing: CPU), none of this exists. */
 #pragma once
 #include "vulkan.h"
 #include "buffer.h"
@@ -32,6 +32,21 @@
 #include <vector>
 
 class CommandPool;
+
+/* What a frame decoded on the GPU is drawn from (rend_context::gpu): the
+ * vertex, index and modifier volume triangle buffers; the opaque and
+ * punch-through draw groups' commands, at their slot (PolyParam::first);
+ * the translucent draw records, each translucent draw group's at its
+ * place (first: a count, then at most PolyParam::count draws); and the
+ * translucent polygon parameters' words of the per-pixel renderer.
+ * drawCount: vkCmdDrawIndexedIndirectCountKHR(), or null, when a group's
+ * whole room is drawn (its records past the count draw nothing). */
+struct TaGpuDraw
+{
+	vk::Buffer vertices, indices, modtrig, commands, trDraws, trParams;
+	vk::DeviceSize trParamsSize = 0;
+	PFN_vkCmdDrawIndexedIndirectCountKHR drawCount = nullptr;
+};
 
 class TaDecoder
 {
@@ -46,14 +61,21 @@ public:
 	void Term();
 	bool Ready() const { return ready; }
 
-	/* The frame's tables, before the full parse; whether it is decoded */
-	bool Prepare(TA_context *ctx);
-	/* ...and its decode recorded, if the full parse had something to draw */
+	/* The frame's tables, and with TA_GPU_DRAW (in @flags, TA_GPU_*) its
+	 * render context made ready to draw in the full parse's place; whether
+	 * it is decoded, and then (@rv) whether it has something to draw */
+	bool Prepare(TA_context *ctx, u32 flags, bool *rv);
+	/* ...and its decode recorded */
 	void Record(TA_context *ctx, CommandPool& pool);
+	// what the drawers draw a decoded frame from
+	const TaGpuDraw *Draw() const { return &draw; }
+	// whether the translucent draws can number their strips (firstInstance)
+	bool HasInstance() const { return instance; }
 
 	// for measuring
 	u64 statFrames = 0;		// decoded
 	u64 statSkipped = 0;		// left to the CPU
+	u64 statWhy[TA_GPU_WHY_COUNT] = {};
 	double statGpuMs = 0;		// GPU time of the decodes timed
 	double statGpuMaxMs = 0;
 	u64 statGpuTimed = 0;
@@ -61,11 +83,13 @@ public:
 private:
 	bool Init(CommandPool& pool);
 	void PollDone(CommandPool& pool);
+	void Log(const char *when);
 
 	struct Resources;
 	std::unique_ptr<Resources> res;
 	bool ready = false;
 	bool failed = false;		// could not be made on this device: not tried again
+	bool instance = false;
 	int frames = 0;
 	int index = 0;
 	u32 serial = 0;			// this frame's
@@ -73,5 +97,7 @@ private:
 	std::vector<u32> slotSerial;	// the frame each slot of the pool last had
 	std::vector<bool> slotTimed;	// ...and whether it has a decode timed
 	bool prepared = false;
+	u32 flags = 0;
 	TaGpuFrame frame;
+	TaGpuDraw draw;
 };

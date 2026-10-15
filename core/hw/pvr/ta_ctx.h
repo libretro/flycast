@@ -148,6 +148,12 @@ struct rend_context
 	u32 *region_tiles;
 	u32 region_tile_count;
 
+	/* GPU-side TA processing drew it (ta_gpu_prepare(), TA_GPU_DRAW): the
+	 * polygon parameter lists hold draw groups, and the vertices, indices
+	 * and gpu_modtrig modifier volume triangles are on the GPU only */
+	bool gpu;
+	u32 gpu_modtrig;
+
 	void Clear()
 	{
 		verts.Clear();
@@ -160,6 +166,8 @@ struct rend_context
       global_param_mvo_tr.Clear();
       render_passes.Clear();
 		region_tile_count = 0;
+		gpu = false;
+		gpu_modtrig = 0;
 
 		Overrun=false;
 		fZ_min= 1000000.0f;
@@ -405,7 +413,33 @@ struct TaGpuFrame
 	FB_X_CLIP_type x_clip;
 	FB_Y_CLIP_type y_clip;
 	bool rv;		// there is something to draw
+	u32 trd;		// translucent draw record slots the frame takes (TAG_H_TRB)
+	u32 why;		// TA_GPU_WHY_*: why it was not decoded, if it was not
 };
+
+/* ta_gpu_prepare()'s @flags */
+/* The renderer draws the frame from the decode, and the full parse is not
+ * run: the lists of polygon parameters are made of the draw groups, in the
+ * lists' order - for the opaque and punch-through lists, first the slot of
+ * the group's draw command, count its vertices; for the translucent list,
+ * first the group's place in the translucent draw records, count its
+ * vertices, which is the most draw records it can have - and the render
+ * passes count those. Frames that the full parse would drop for want of
+ * room, or might, are left to it, and frames it passes over. */
+#define TA_GPU_DRAW     1u
+/* ...by a renderer that sorts translucent polygons on the CPU, from the
+ * CPU's vertices: a frame that may have a sorted pass is left to the
+ * full parse */
+#define TA_GPU_NO_SORT  2u
+/* The decode gives each triangle of a flat-shaded polygon the colours of
+ * its last vertex in its first, as the Vulkan renderers draw them
+ * (BaseDrawer::SetProvokingVertices()) */
+#define TA_GPU_PROVOKE  4u
+/* The translucent draw records number each strip as its polygon parameter
+ * (firstInstance: the per-pixel renderer's polygon number) */
+#define TA_GPU_INSTANCE 8u
+
+enum { TA_GPU_WHY_NONE, TA_GPU_WHY_TABLE, TA_GPU_WHY_PARSE, TA_GPU_WHY_SORT, TA_GPU_WHY_WALK, TA_GPU_WHY_ROOM, TA_GPU_WHY_COUNT };
 
 /* Whether frames are decoded on the GPU: the control-word walk on, and the
  * header pass's memory made for frames of the machine's size. (From the
@@ -420,9 +454,11 @@ bool ta_gpu_wanted(void);
  * the decode's tables written to @table, up to @table_room words, with
  * @layout's places. false: this frame is not one the GPU decode does - no
  * table to trust, a list left open at the end of a render pass, the data
- * ending in the middle of something, more than there is room for - and
- * only the full parse can do it. (From the thread that renders.) */
-bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out);
+ * ending in the middle of something, a parameter where a strip has not
+ * ended, more than there is room for - and only the full parse can do it
+ * (@out->why says which); with TA_GPU_DRAW, it is also made ready to
+ * draw in the full parse's place (@flags: TA_GPU_*). (From the thread that renders.) */
+bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 table_room, TaGpuFrame *out, u32 flags);
 
 /* The GPU pool: @count contexts made now whose data are the slices of
  * @slice bytes from @base (the renderer's persistently mapped, host-cached

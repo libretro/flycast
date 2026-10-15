@@ -38,6 +38,9 @@ static struct
 {
 	u32 seen, prepared, compared, same, differ, model_differ, scan_differ;
 	u32 no_table, fallback, empty, corner, overrun, overrun_agree;
+	u32 drawn, draw_same, draw_differ, draw_left;	// the frames made ready to draw (TA_GPU_DRAW)
+	u32 draw_why[TA_GPU_WHY_COUNT];
+	u32 edge_frames, edge_trials, edge_agree;	// the overrun check at the exact boundary
 	u32 verts, idx, strips;
 	std::vector<double> prep_us, parse_us;
 	double gpu_ms;
@@ -47,6 +50,10 @@ static TaGpuLayout layout;
 static u32 *table;
 static u32 table_room;
 static bool ready;
+// the frame as the header pass takes it, before the parse
+static PolyParam saved_bg;
+static FB_X_CLIP_type saved_x_clip;
+static FB_Y_CLIP_type saved_y_clip;
 
 static double pct(std::vector<double> &v, double q)
 {
@@ -78,9 +85,14 @@ static void report(void)
 				(double)st.verts / st.compared, (double)st.idx / st.compared, (double)st.strips / st.compared,
 				mean(st.prep_us), pct(st.prep_us, 0.99), pct(st.prep_us, 1.0),
 				mean(st.parse_us), pct(st.parse_us, 0.99), pct(st.parse_us, 1.0), st.gpu_ms / st.compared);
+	printf("ta_gpu_test: made ready to draw from the GPU: %u frames, %u with the parse's draws, %u different, %u left to the parse "
+			"(%u frame skipping, %u that might run out of room)\n",
+			st.drawn, st.draw_same, st.draw_differ, st.draw_left, st.draw_why[TA_GPU_WHY_PARSE], st.draw_why[TA_GPU_WHY_ROOM]);
+	printf("ta_gpu_test: overrun at the exact room: %u frames, %u trials, the parse and the GPU agree on %u\n",
+			st.edge_frames, st.edge_trials, st.edge_agree);
 	printf("ta_gpu_test: validation errors: %d\n", tgt_validation_errors());
 	printf("ta_gpu_test: %s\n", st.differ == 0 && st.model_differ == 0 && st.scan_differ == 0 && tgt_validation_errors() == 0
-			&& st.overrun == st.overrun_agree && st.compared > 0 ? "PASS" : "FAIL");
+			&& st.overrun == st.overrun_agree && st.compared > 0 && st.draw_differ == 0 && st.edge_agree == st.edge_trials ? "PASS" : "FAIL");
 	fflush(stdout);
 }
 
@@ -119,10 +131,29 @@ static const char *compare(TA_context *ctx, const TaGpuFrame &gf, const tgt_out 
 	const List<PolyParam> *lists[3] = { &rc.global_param_op, &rc.global_param_pt, &rc.global_param_tr };
 	const u32 nv = (u32)rc.verts.used();
 
-	for (u32 v = 0; v < nv; v++)
-		if (memcmp(&rc.verts.head()[v], &o.vtx[v * TAG_V_WORDS], sizeof(Vertex)) != 0)
+	/* the vertices as the Vulkan renderers draw them: the parse's, with the
+	 * provoking vertex's colours moved (BaseDrawer::SetProvokingVertices()) */
+	static std::vector<Vertex> drawn;
+	drawn.assign(rc.verts.head(), rc.verts.head() + nv);
+	for (u32 l = 0; l < 3; l++)
+		for (int i = 0; i < lists[l]->used(); i++)
 		{
-			const u32 *c = (const u32 *)&rc.verts.head()[v];
+			const PolyParam &pp = lists[l]->head()[i];
+			if (!pp.pcw.Gouraud && pp.count > 2)
+				for (u32 n = 0; n < pp.count - 2; n++)
+				{
+					Vertex *vertex = &drawn[rc.idx.head()[pp.first + n]];
+					const Vertex *lastVertex = &drawn[rc.idx.head()[pp.first + n + 2]];
+					memcpy(vertex->col, lastVertex->col, 4);
+					memcpy(vertex->vtx_spc, lastVertex->vtx_spc, 4);
+					memcpy(vertex->col1, lastVertex->col1, 4);
+					memcpy(vertex->spc1, lastVertex->spc1, 4);
+				}
+		}
+	for (u32 v = 0; v < nv; v++)
+		if (memcmp(&drawn[v], &o.vtx[v * TAG_V_WORDS], sizeof(Vertex)) != 0)
+		{
+			const u32 *c = (const u32 *)&drawn[v];
 			for (u32 k = 0; k < TAG_V_WORDS; k++)
 				if (c[k] != o.vtx[v * TAG_V_WORDS + k])
 				{
@@ -220,6 +251,55 @@ static const char *compare(TA_context *ctx, const TaGpuFrame &gf, const tgt_out 
 			return why;
 		}
 	}
+	/* the translucent polygon parameters' words, as the per-pixel renderer
+	 * makes them (OITDrawer::UploadMainBuffer()); and the translucent draw
+	 * records, which group by group are the parse's polygon parameters in
+	 * their order, numbered as they are in the list, and nothing more */
+	{
+		const List<PolyParam> &tr = rc.global_param_tr;
+		for (int i = 0; i < tr.used(); i++)
+		{
+			const PolyParam &pp = tr.head()[i];
+			if (o.trp[i * TAG_P_WORDS] != ((pp.tsp.full & 0xffff00c0) | ((pp.isp.full >> 16) & 0xe400) | ((pp.pcw.full >> 7) & 1))
+					|| o.trp[i * TAG_P_WORDS + 1] != pp.tsp1.full)
+			{
+				snprintf(why, room, "translucent polygon parameter words %d", i);
+				return why;
+			}
+		}
+		u32 next = 0;
+		for (u32 at = 0; at < gf.trd; )
+		{
+			const u32 n = o.trd[at * TAG_C_WORDS];
+			u32 j;
+			for (j = 0; j < n; j++, next++)
+			{
+				const u32 *r = &o.trd[(at + 1 + j) * TAG_C_WORDS];
+				if ((int)next >= tr.used() || r[TAG_C_COUNT] != tr.head()[next].count || r[TAG_C_FIRST] != tr.head()[next].first
+						|| r[TAG_C_INST] != 1 || r[3] != 0 || r[TAG_C_INSTANCE] != next)
+				{
+					snprintf(why, room, "translucent draw record %u (polygon parameter %u)", at + 1 + j, next);
+					return why;
+				}
+			}
+			/* the group's room past its count: zeroes, up to the next group,
+			 * whose count is the first word that is not (a group has a
+			 * strip at least) */
+			at += 1 + n;
+			while (at < gf.trd && o.trd[at * TAG_C_WORDS] == 0)
+			{
+				for (j = 0; j < TAG_C_WORDS; j++)
+					if (o.trd[at * TAG_C_WORDS + j] != 0)
+						return "the translucent draw records' room";
+				at++;
+			}
+		}
+		if ((int)next != tr.used())
+		{
+			snprintf(why, room, "translucent draw records: %u, %d polygon parameters", next, tr.used());
+			return why;
+		}
+	}
 	if (o.frm[TAG_O_OVERRUN] != 0)
 		return "an overrun the parse did not have";
 	return NULL;
@@ -241,7 +321,258 @@ static const char *compare_model(const TaGpuFrame &gf, const tgt_out &g, const t
 		return "commands";
 	if (memcmp(g.work + table[TAG_T_W_SSTATE], m.work + table[TAG_T_W_SSTATE], g.frm[TAG_O_NSTRIPS] * TAG_ST_WORDS * 4) != 0)
 		return "strip states";
+	if (memcmp(g.trd, m.trd, gf.trd * TAG_C_WORDS * 4) != 0)
+		return "translucent draw records";
+	if (memcmp(g.trp, m.trp, std::min(g.frm[TAG_O_PASS + (gf.passes - 1) * 3 + 2], table[TAG_T_ROOM_TR]) * TAG_P_WORDS * 4) != 0)
+		return "translucent polygon parameter words";
 	return NULL;
+}
+
+extern int ta_parse_cnt;
+
+/* The frame as it was before the parse (FillBGP()'s), to parse it again */
+static struct
+{
+	PolyParam bg;
+	Vertex bgv[4];
+	FB_X_CLIP_type x_clip;
+	FB_Y_CLIP_type y_clip;
+	bool rtt, fb, clear;
+} pre;
+
+static void snap_pre(TA_context *ctx)
+{
+	const rend_context &rc = ctx->rend;
+	pre.bg = *rc.global_param_op.head();
+	memcpy(pre.bgv, rc.verts.head(), sizeof(pre.bgv));
+	pre.x_clip = rc.fb_X_CLIP;
+	pre.y_clip = rc.fb_Y_CLIP;
+	pre.rtt = rc.isRTT;
+	pre.fb = rc.isRenderFramebuffer;
+	pre.clear = rc.clearFramebuffer;
+}
+
+// the parse again from the frame as it was, with list @l (0-2, 3 the indices) given room @room
+static bool parse_again(TA_context *ctx, int l, int room)
+{
+	rend_context &rc = ctx->rend;
+	List<PolyParam> *lists[3] = { &rc.global_param_op, &rc.global_param_pt, &rc.global_param_tr };
+	int saved = 0;
+	rc.Clear();
+	if (l >= 0)
+	{
+		saved = l < 3 ? lists[l]->size : rc.idx.size;
+		if (l < 3)
+			lists[l]->size = lists[l]->avail = room;
+		else
+			rc.idx.size = rc.idx.avail = room;
+	}
+	*rc.global_param_op.Append() = pre.bg;
+	memcpy(rc.verts.Append(4), pre.bgv, sizeof(pre.bgv));
+	rc.fb_X_CLIP = pre.x_clip;
+	rc.fb_Y_CLIP = pre.y_clip;
+	rc.isRTT = pre.rtt;
+	rc.isRenderFramebuffer = pre.fb;
+	rc.clearFramebuffer = pre.clear;
+	const int cnt = ta_parse_cnt;
+	const bool rv = __real__Z13ta_parse_vdrcP10TA_context(ctx);
+	ta_parse_cnt = cnt;
+	const bool overrun = rc.Overrun;
+	if (l >= 0)
+	{
+		if (l < 3)
+		{
+			lists[l]->Clear();
+			lists[l]->size = lists[l]->avail = saved;
+		}
+		else
+		{
+			rc.idx.Clear();
+			rc.idx.size = rc.idx.avail = saved;
+		}
+	}
+	(void)rv;
+	return overrun;
+}
+
+/* The overrun check at the exact boundary: each list given the room the
+ * frame takes - its strips and the one being filled, the indices - and one
+ * less, and the parse's verdict against the GPU's with the same room in
+ * its tables. The frame is parsed again as it was after. */
+static void edge_check(TA_context *ctx, const TaGpuFrame &gf, const tgt_out &o)
+{
+	static std::vector<u32> t;
+	const u32 last = TAG_O_PASS + (gf.passes - 1) * 3;
+	const u32 need[4] = { o.frm[last] + 1, o.frm[last + 1] + 1, o.frm[last + 2] + 1, o.frm[TAG_O_NIDX] };
+	static const u32 room_word[4] = { TAG_T_ROOM_OP, TAG_T_ROOM_PT, TAG_T_ROOM_TR, TAG_T_ROOM_IDX };
+	static const u32 bit[4] = { 2, 4, 8, 1 };
+	const u32 bytes = (u32)(ctx->tad.End() - ctx->tad.thd_root);
+	t.assign(table, table + gf.table_words);
+	st.edge_frames++;
+	for (int l = 0; l < 4; l++)
+	{
+		/* (a list with no polygon of its own - the opaque one has the
+		 * background - never has one being filled: the parse's room is
+		 * then its strips, the GPU's one more, and a list has room for
+		 * thousands) */
+		if (need[l] <= (l == 0 ? 2u : 1u))
+			continue;
+		for (u32 room = need[l] - 1; room <= need[l]; room++)
+		{
+			const bool cpu = parse_again(ctx, l, (int)room);
+			t[room_word[l]] = room;
+			tgt_out g;
+			double ms;
+			tgt_gpu(ctx->tad.thd_root, bytes, t.data(), gf.table_words, gf.trd, &g, &ms);
+			const bool gpu = (g.frm[TAG_O_OVERRUN] & bit[l]) != 0;
+			st.edge_trials++;
+			if (cpu == gpu && cpu == (room < need[l]))
+				st.edge_agree++;
+			else if (st.edge_trials - st.edge_agree < 10)
+				printf("ta_gpu_test: frame %u: list %d with room for %u of %u: the parse %s, the GPU %s\n", st.seen, l, room, need[l],
+						cpu ? "runs out" : "does not", gpu ? "runs out" : "does not");
+		}
+		t[room_word[l]] = table[room_word[l]];
+	}
+	parse_again(ctx, -1, 0);
+}
+
+/* The frame made ready to draw from the GPU, as the Vulkan renderers have
+ * it (TA_GPU_DRAW), against the parse's: each opaque and punch-through
+ * draw group's command, in the lists' order, and each translucent one's
+ * strips, are the parse's polygon parameters that have indices, in order,
+ * drawn the same way; the render passes count the groups, the modifier
+ * volumes and the clipping rectangle are the same. The parse's lists are
+ * put back after. NULL for nothing different, "" for a frame left to the
+ * parse. */
+static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, char *why, size_t room)
+{
+	rend_context &rc = ctx->rend;
+	static const char *const names[3] = { "opaque", "punch-through", "translucent" };
+	List<PolyParam> *lists[3] = { &rc.global_param_op, &rc.global_param_pt, &rc.global_param_tr };
+	static std::vector<PolyParam> parse[3];
+	static std::vector<RenderPass> passes;
+	static std::vector<ModifierVolumeParam> mvo[2];
+	const rend_context saved = rc;
+	for (u32 l = 0; l < 3; l++)
+		parse[l].assign(lists[l]->head(), lists[l]->head() + lists[l]->used());
+	passes.assign(rc.render_passes.head(), rc.render_passes.head() + rc.render_passes.used());
+	mvo[0].assign(rc.global_param_mvo.head(), rc.global_param_mvo.head() + rc.global_param_mvo.used());
+	mvo[1].assign(rc.global_param_mvo_tr.head(), rc.global_param_mvo_tr.head() + rc.global_param_mvo_tr.used());
+	// (the background as the frame had it before the parse, which the header pass takes)
+	*rc.global_param_op.head() = saved_bg;
+	rc.fb_X_CLIP = saved_x_clip;
+	rc.fb_Y_CLIP = saved_y_clip;
+
+	TaGpuFrame gf;
+	const int cnt = ta_parse_cnt;
+	const bool ok = ta_gpu_prepare(ctx, &layout, table, table_room, &gf, flags | TA_GPU_DRAW);
+	const char *d = NULL;
+	if (!ok)
+	{
+		d = "";
+		st.draw_why[gf.why < TA_GPU_WHY_COUNT ? gf.why : 0]++;
+	}
+	else
+	{
+		ta_parse_cnt = cnt;
+		auto same_state = [](const PolyParam &a, const PolyParam &b) {
+			return a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full && ((a.pcw.full ^ b.pcw.full) & ~0x100u) == 0
+					&& a.isp.full == b.isp.full && a.tsp1.full == b.tsp1.full && a.tcw1.full == b.tcw1.full
+					&& a.tileclip == b.tileclip && a.texid == b.texid && a.texid1 == b.texid1;
+		};
+		for (u32 l = 0; l < 3 && d == NULL; l++)
+		{
+			size_t next = 0;
+			for (int i = 0; i < lists[l]->used() && d == NULL; i++)
+			{
+				const PolyParam &g = lists[l]->head()[i];
+				if (l < 2)
+				{
+					const u32 *c = &o.cmd[g.first * TAG_C_WORDS];
+					// (the parse's group, its head and the ones joined to it, which have no indices)
+					while (next < parse[l].size() && parse[l][next].count == 0)
+						next++;
+					if (c[TAG_C_COUNT] == 0)
+						continue;
+					if (next >= parse[l].size() || parse[l][next].first != c[TAG_C_FIRST] || parse[l][next].count != c[TAG_C_COUNT]
+							|| !same_state(parse[l][next], g))
+					{
+						snprintf(why, room, "%s draw group %d", names[l], i);
+						d = why;
+					}
+					next++;
+				}
+				else
+				{
+					const u32 n = o.trd[g.first * TAG_C_WORDS];
+					if (n > g.count)
+					{
+						snprintf(why, room, "translucent draw group %d: %u strips, room for %u", i, n, g.count);
+						d = why;
+					}
+					for (u32 j = 0; j < n && d == NULL; j++, next++)
+						if (next >= parse[l].size() || !same_state(parse[l][next], g)
+								|| o.trd[(g.first + 1 + j) * TAG_C_WORDS + TAG_C_FIRST] != parse[l][next].first)
+						{
+							snprintf(why, room, "translucent draw group %d strip %u", i, j);
+							d = why;
+						}
+				}
+			}
+			if (d == NULL && l < 2)
+				while (next < parse[l].size() && parse[l][next].count == 0)
+					next++;
+			if (d == NULL && next != parse[l].size())
+			{
+				snprintf(why, room, "%s draw groups: %zu of %zu polygon parameters", names[l], next, parse[l].size());
+				d = why;
+			}
+		}
+		if (d == NULL && (rc.render_passes.used() != (int)passes.size()))
+			d = "the render passes";
+		for (size_t p = 0; d == NULL && p < passes.size(); p++)
+		{
+			const RenderPass &a = passes[p], &b = rc.render_passes.head()[p];
+			if (a.autosort != b.autosort || a.z_clear != b.z_clear || a.mv_op_tr_shared != b.mv_op_tr_shared
+					|| a.mvo_count != b.mvo_count || a.mvo_tr_count != b.mvo_tr_count
+					|| (a.op_count == (p ? passes[p - 1].op_count : 0)) != (b.op_count == (p ? rc.render_passes.head()[p - 1].op_count : 0))
+					|| (a.tr_count == (p ? passes[p - 1].tr_count : 0)) != (b.tr_count == (p ? rc.render_passes.head()[p - 1].tr_count : 0)))
+			{
+				snprintf(why, room, "render pass %zu", p);
+				d = why;
+			}
+		}
+		if (d == NULL && (rc.global_param_mvo.used() != (int)mvo[0].size() || rc.global_param_mvo_tr.used() != (int)mvo[1].size()
+				|| memcmp(rc.global_param_mvo.head(), mvo[0].data(), mvo[0].size() * sizeof(ModifierVolumeParam)) != 0
+				|| memcmp(rc.global_param_mvo_tr.head(), mvo[1].data(), mvo[1].size() * sizeof(ModifierVolumeParam)) != 0))
+			d = "the modifier volumes";
+		if (d == NULL && (rc.fb_X_CLIP.full != saved.fb_X_CLIP.full || rc.fb_Y_CLIP.full != saved.fb_Y_CLIP.full))
+			d = "the clipping rectangle";
+		if (d == NULL && (!rc.gpu || rc.gpu_modtrig != (u32)saved.modtrig.used()))
+			d = "the modifier volume triangles";
+	}
+	// the parse's frame, back
+	for (u32 l = 0; l < 3; l++)
+	{
+		lists[l]->Clear();
+		if (!parse[l].empty())
+			memcpy(lists[l]->Append((int)parse[l].size()), parse[l].data(), parse[l].size() * sizeof(PolyParam));
+	}
+	rc.render_passes.Clear();
+	if (!passes.empty())
+		memcpy(rc.render_passes.Append((int)passes.size()), passes.data(), passes.size() * sizeof(RenderPass));
+	rc.global_param_mvo.Clear();
+	if (!mvo[0].empty())
+		memcpy(rc.global_param_mvo.Append((int)mvo[0].size()), mvo[0].data(), mvo[0].size() * sizeof(ModifierVolumeParam));
+	rc.global_param_mvo_tr.Clear();
+	if (!mvo[1].empty())
+		memcpy(rc.global_param_mvo_tr.Append((int)mvo[1].size()), mvo[1].data(), mvo[1].size() * sizeof(ModifierVolumeParam));
+	rc.fb_X_CLIP = saved.fb_X_CLIP;
+	rc.fb_Y_CLIP = saved.fb_Y_CLIP;
+	rc.gpu = false;
+	rc.gpu_modtrig = 0;
+	return d;
 }
 
 typedef std::chrono::steady_clock clk;
@@ -255,9 +586,14 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 	const bool table_ok = ctx->walk_count != TA_WALK_INVALID || ctx->tad.End() == ctx->tad.thd_root;
 	/* (once untimed: the textures the frame asks for are converted, and the
 	 * pass timed below finds them made, as the parse after it does) */
-	ta_gpu_prepare(ctx, &layout, table, table_room, &gf);
+	const u32 flags = TA_GPU_PROVOKE | TA_GPU_INSTANCE;
+	snap_pre(ctx);
+	saved_bg = *ctx->rend.global_param_op.head();
+	saved_x_clip = ctx->rend.fb_X_CLIP;
+	saved_y_clip = ctx->rend.fb_Y_CLIP;
+	ta_gpu_prepare(ctx, &layout, table, table_room, &gf, flags);
 	clk::time_point t0 = clk::now();
-	const bool prepared = ta_gpu_prepare(ctx, &layout, table, table_room, &gf);
+	const bool prepared = ta_gpu_prepare(ctx, &layout, table, table_room, &gf, flags);
 	clk::time_point t1 = clk::now();
 	if (prepared)
 		memset(ctx->rend.verts.head() + 4, 0, (gf.verts - 4) * sizeof(Vertex));
@@ -282,8 +618,8 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 	tgt_out g, m;
 	double ms;
 	const u32 bytes = (u32)(ctx->tad.End() - ctx->tad.thd_root);
-	const int scan_ok = tgt_model(ctx->tad.thd_root, table, &m);
-	tgt_gpu(ctx->tad.thd_root, bytes, table, gf.table_words, &g, &ms);
+	const int scan_ok = tgt_model(ctx->tad.thd_root, table, gf.trd, &m);
+	tgt_gpu(ctx->tad.thd_root, bytes, table, gf.table_words, gf.trd, &g, &ms);
 	char why[256];
 	const char *d = compare_model(gf, g, m, table);
 	if (d != NULL && st.model_differ++ < 10)
@@ -316,6 +652,22 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 		st.same++;
 	else if (st.differ++ < 20)
 		printf("ta_gpu_test: frame %u differs from the parse: %s\n", st.seen, d);
+	/* and as the renderers draw it: its draw groups, by the device's
+	 * commands and records (the frame's tables made again, the same) */
+	d = compare_draw(ctx, g, flags, why, sizeof(why));
+	if (d != NULL && *d == 0)
+		st.draw_left++;
+	else
+	{
+		st.drawn++;
+		if (d == NULL)
+			st.draw_same++;
+		else if (st.draw_differ++ < 20)
+			printf("ta_gpu_test: frame %u made ready to draw differs from the parse: %s\n", st.seen, d);
+	}
+	// (every so often: it parses and decodes the frame nine times more)
+	if (st.compared % 50 == 1)
+		edge_check(ctx, gf, g);
 	if (st.compared % 300 == 0)
 		report();
 	return rv;

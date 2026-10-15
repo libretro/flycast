@@ -43,6 +43,16 @@ R"TAG_TEXT(
  *  9 emit       one thread a strip: its indices, and its record.
  *  10 finish    the indirect draw commands of the draw groups.
  *  11 bleeding  the texture bleeding fix, one workgroup a group.
+ *  12 trdraw    one thread a strip: a translucent strip's record copied to
+ *               its draw group's place in the translucent draw records
+ *               (TAG_H_TRB), with the group's count, for an indirect draw
+ *               of the group; and its polygon parameter's words for the
+ *               per-pixel renderer (TAG_P_WORDS), at its place in the list.
+ *  13 provoke   (TAG_FLAG_PROVOKE) one workgroup a strip: a flat-shaded
+ *               group's triangles get the colours of their last vertex in
+ *               their first, as the Vulkan renderers draw them
+ *               (BaseDrawer::SetProvokingVertices(), whose order of reads
+ *               and writes it keeps).
  * Nothing is read back: the counts are indirect dispatch and draw
  * arguments, and the farthest depth (fZ_max) is a word of the frame
  * buffer for the GPU to read.
@@ -74,7 +84,9 @@ R"TAG_TEXT(
 #define TAG_K_EMIT     9
 #define TAG_K_FINISH   10
 #define TAG_K_BLEED    11
-#define TAG_KERNELS    11
+#define TAG_K_TRDRAW   12
+#define TAG_K_PROVOKE  13
+#define TAG_KERNELS    13
 
 #if defined(TAG_SHADER_GLSL)
 
@@ -87,6 +99,8 @@ layout(std430, set = 1, binding = 4) buffer Work { uint w[]; } work;
 layout(std430, set = 1, binding = 5) buffer Records { uint w[]; } rec;
 layout(std430, set = 1, binding = 6) buffer Commands { uint w[]; } cmd;
 layout(std430, set = 1, binding = 7) buffer Frame { uint w[]; } frm;
+layout(std430, set = 1, binding = 8) buffer TrDraws { uint w[]; } trd;
+layout(std430, set = 1, binding = 9) buffer TrParams { uint w[]; } trp;
 
 #define TAG_TA(i) ta.w[i]
 #define TAG_TAB(i) tab.w[i]
@@ -179,6 +193,8 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_T_WORDS    32
 
 #define TAG_FLAG_BLEED 1u  /* the texture bleeding fix (above 480 lines) */
+#define TAG_FLAG_PROVOKE 2u  /* the provoking vertex's colours (kernel 13) */
+#define TAG_FLAG_INSTANCE 4u /* the translucent draw records' firstInstance: the strip's place in its list */
 
 /* A run: vertex blocks one after the other, of one header */
 #define TAG_R_BLOCK  0     /* the first, from the frame's first */
@@ -204,6 +220,8 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_H_FCOL   12    /* the face colours as bytes: base, offset, base 1, offset 1 */
 #define TAG_H_FF     16    /* ...and as clamped floats, red green blue: base, offset, base 1, offset 1 */
 #define TAG_H_SCOL   28    /* a sprite's base and offset colours, as sent */
+#define TAG_H_TRB    30    /* (translucent) its draw group's place in the translucent draw records, TAG_NONE for the others */
+#define TAG_H_TRV    31    /* ...and the group's first vertex's place in index order */
 #define TAG_H_WORDS  32
 /* the state words, in poly_same_state()'s order */
 #define TAG_S_TSP    0
@@ -244,6 +262,7 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_O_ARGSCH  7    /* ...a workgroup a 1024 strips (TAG_CH_WG x TAG_CH) */
 #define TAG_O_ARGS1   10   /* ...a workgroup a strip */
 #define TAG_O_PASS    16   /* each render pass's polygon parameters, as the lists have them at its end: 3 words */
+)TAG_TEXT" R"TAG_TEXT(
 #define TAG_O_SEG     48   /* each segment: TAG_OS_* */
 #define TAG_O_WORDS   176
 #define TAG_OS_SFIRST 0    /* its first strip */
@@ -258,7 +277,19 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_C_COUNT  0
 #define TAG_C_INST   1
 #define TAG_C_FIRST  2
+#define TAG_C_INSTANCE 4
 #define TAG_C_WORDS  5
+
+/* The translucent draw records: for each translucent draw group, at its
+ * TAG_H_TRB, a record whose first word is how many strips the group has,
+ * then a record for each of them in their order, as its polygon
+ * parameter's (with TAG_FLAG_INSTANCE, its place in the list for
+ * firstInstance); the rest of the group's room is left as it is, which is
+ * zeroes (a vkCmdDrawIndexedIndirect() of all of it draws nothing more) */
+
+/* A translucent polygon parameter's words for the per-pixel renderer, as
+ * OITDrawer::UploadMainBuffer() makes them */
+#define TAG_P_WORDS  2
 
 /* What a strip's summary and state take, in the work buffer */
 #define TAG_SS_WORDS 6     /* n[3], last kept vertex | 0x80000000 if any, header, first vertex */
@@ -274,7 +305,6 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_SCAN_WG  256   /* threads of the strip count's workgroups */
 #define TAG_SCAN_PER 4     /* ...and elements a thread */
 #define TAG_SCAN_N   (TAG_SCAN_WG * TAG_SCAN_PER)
-)TAG_TEXT" R"TAG_TEXT(
 #define TAG_CH_WG    128   /* threads of the group scan's workgroups */
 #define TAG_CH       8     /* ...and strips a thread */
 #define TAG_CH_N     (TAG_CH_WG * TAG_CH)
@@ -641,6 +671,7 @@ TAG_FN tag_u32 tag_sat(tag_u32 b)
    return b > 0x3F800000u ? 0x3F800000u : b;
 }
 
+)TAG_TEXT" R"TAG_TEXT(
 /* float_to_satu8(): the clamped value times 255, truncated. (The product
  * of a number from 0 to 1 and 255 is the same correctly rounded on any
  * GPU, and one too small to count is 0 whether the GPU keeps denormals or
@@ -696,7 +727,6 @@ TAG_FN tag_u32 tag_intcol(tag_u32 hdr, tag_u32 set, tag_u32 i)
 TAG_FN tag_u32 tag_inf(tag_u32 x, tag_u32 y, tag_u32 z)
 {
    const tag_u32 huge_xy = 0x69045951u;   /* 1e25f */
-)TAG_TEXT" R"TAG_TEXT(
    const tag_u32 huge_z = 0x7DCCA14Bu;    /* 3.4e37f */
    return ((x & 0x7FFFFFFFu) > huge_xy || (y & 0x7FFFFFFFu) > huge_xy
          || (z & 0x7FFFFFFFu) > 0x7F800000u || (z < 0x80000000u && z > huge_z)) ? 1u : 0u;
@@ -991,6 +1021,7 @@ TAG_FN tag_unpacked tag_unpack(tag_u32 v)
  *      same way, and that group has indices), after an even number of the
  *      group's indices;
  *   2  the same after an odd number.
+)TAG_TEXT" R"TAG_TEXT(
  * Joined, it starts with the group's last index again, and its first kept
  * vertex twice; a run of infinite vertices between two kept ones is
  * bridged by the last kept one and the next, twice; and a vertex is
@@ -1049,7 +1080,6 @@ TAG_FN tag_strip tag_strip_summary(tag_u32 p0, tag_u32 p1, tag_u32 hdr)
    s.n[1] = n1;
    s.n[2] = n2;
    s.last = last;
-)TAG_TEXT" R"TAG_TEXT(
    s.hdr = hdr;
    s.first = TAG_VFLAG(p0) >> 2;
    return s;
@@ -1407,6 +1437,7 @@ void main()
    for (s = 1u; s < TAG_SCAN_WG; s <<= 1)
    {
       uint add = t >= s ? s_sum[t - s] : 0u;
+)TAG_TEXT" R"TAG_TEXT(
       barrier();
       s_sum[t] += add;
       barrier();
@@ -1470,7 +1501,6 @@ layout(local_size_x = TAG_CH_WG) in;
 #if TAG_KERNEL == TAG_K_GROUPS
 shared uint s_e[2][TAG_CH_WG][TAG_E_WORDS];
 
-)TAG_TEXT" R"TAG_TEXT(
 void tag_put_shared(uint b, uint t, tag_elem e)
 {
    uint j;
@@ -1734,6 +1764,117 @@ void main()
       uint o = v * TAG_V_WORDS;
       vtx.w[o + TAG_V_U] = tag_bleed_fix(vtx.w[o + TAG_V_U], w);
       vtx.w[o + TAG_V_V] = tag_bleed_fix(vtx.w[o + TAG_V_V], h);
+   }
+}
+#endif
+
+#if TAG_KERNEL == TAG_K_TRDRAW
+/* A translucent strip's record in its draw group's place (TAG_H_TRB), and
+ * the group's count by its last strip; its polygon parameter's words */
+layout(local_size_x = 64) in;
+/* The first strip at or after the place @v in index order: the first one
+ * that ends there or later */
+TAG_FN uint tag_strip_at(uint v, uint ns)
+{
+   uint send = tab.w[TAG_T_W_SEND], lo = 0u, hi = ns, mid;
+   while (lo < hi)
+   {
+      mid = (lo + hi) >> 1;
+      if (work.w[send + mid] < v)
+         lo = mid + 1u;
+      else
+         hi = mid;
+   }
+   return lo;
+}
+void main()
+{
+   uint k = gl_GlobalInvocationID.x;
+   uint ns = frm.w[TAG_O_NSTRIPS];
+   if (k >= ns)
+      return;
+   uint ssum = tab.w[TAG_T_W_SSUM];
+   uint hdr = work.w[ssum + k * TAG_SS_WORDS + 4u];
+   if (TAG_INFO_LIST(tab.w[hdr + TAG_H_INFO]) != 2u)
+      return;
+   uint r = tag_strip_record(k, hdr);
+   if (r == TAG_NONE)
+      return;
+   uint li = (r - tab.w[TAG_T_REC_TR]) / TAG_C_WORDS;
+   uint st = hdr + TAG_H_STATE;
+   trp.w[li * TAG_P_WORDS] = (tab.w[st + TAG_S_TSP] & 0xFFFF00C0u) | ((tab.w[st + TAG_S_ISP] >> 16) & 0xE400u)
+         | ((tab.w[st + TAG_S_PCW] >> 7) & 1u);
+   trp.w[li * TAG_P_WORDS + 1u] = tab.w[st + TAG_S_TSP1];
+   if (frm.w[TAG_O_OVERRUN] != 0u)
+      return;
+   uint b = tab.w[hdr + TAG_H_TRB];
+   uint j = k - tag_strip_at(tab.w[hdr + TAG_H_TRV], ns);
+   uint at = (b + 1u + j) * TAG_C_WORDS;
+   trd.w[at + TAG_C_COUNT] = rec.w[r + TAG_C_COUNT];
+   trd.w[at + TAG_C_INST] = 1u;
+   trd.w[at + TAG_C_FIRST] = rec.w[r + TAG_C_FIRST];
+)TAG_TEXT" R"TAG_TEXT(
+   trd.w[at + 3u] = 0u;
+   trd.w[at + TAG_C_INSTANCE] = (tab.w[TAG_T_FLAGS] & TAG_FLAG_INSTANCE) != 0u ? li : 0u;
+   bool last = k + 1u == ns;
+   if (!last)
+   {
+      uint next = work.w[ssum + (k + 1u) * TAG_SS_WORDS + 4u];
+      last = TAG_INFO_LIST(tab.w[next + TAG_H_INFO]) != 2u || tab.w[next + TAG_H_TRB] != b;
+   }
+   if (last)
+      trd.w[b * TAG_C_WORDS] = j + 1u;
+}
+#endif
+
+#if TAG_KERNEL == TAG_K_PROVOKE
+/* A workgroup for strip gl_WorkGroupID.x: if it heads a flat-shaded group
+ * of three indices or more, each index but the last two takes the colours
+ * of the vertex two indices on. The CPU does it one index after another,
+ * so each reads the colours as they were (an earlier index of a strip is
+ * never the same vertex as one three or more places on: make_index()
+ * repeats a vertex at most three times running), and a vertex at several
+ * indices running keeps what the last of them wrote. Here a run of 64
+ * indices at a time reads, then writes. */
+layout(local_size_x = 64) in;
+void main()
+{
+   uint k = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+   if (frm.w[TAG_O_OVERRUN] != 0u)
+      return;
+   uint hdr = work.w[tab.w[TAG_T_W_SSUM] + k * TAG_SS_WORDS + 4u];
+   if ((tab.w[hdr + TAG_H_STATE + TAG_S_PCW] & 2u) != 0u)
+      return;   /* Gouraud */
+   uint r = tag_strip_record(k, hdr);
+   if (r == TAG_NONE || rec.w[r + TAG_C_COUNT] <= 2u)
+      return;
+   uint f = rec.w[r + TAG_C_FIRST], n = rec.w[r + TAG_C_COUNT] - 2u, base;
+   for (base = 0u; base < n; base += 64u)
+   {
+      uint i = base + t, dst = 0u, c0 = 0u, c1 = 0u, c2 = 0u, c3 = 0u;
+      bool put = false;
+      if (i < n)
+      {
+         uint s = idx.w[f + i + 2u] * TAG_V_WORDS;
+         c0 = vtx.w[s + TAG_V_COL];
+         c1 = vtx.w[s + TAG_V_SPC];
+         c2 = vtx.w[s + TAG_V_COL1];
+         c3 = vtx.w[s + TAG_V_SPC1];
+         dst = idx.w[f + i];
+         put = i + 1u >= n || idx.w[f + i + 1u] != dst;
+      }
+      memoryBarrierBuffer();
+      barrier();
+      if (put)
+      {
+         uint o = dst * TAG_V_WORDS;
+         vtx.w[o + TAG_V_COL] = c0;
+         vtx.w[o + TAG_V_SPC] = c1;
+         vtx.w[o + TAG_V_COL1] = c2;
+         vtx.w[o + TAG_V_SPC1] = c3;
+      }
+      memoryBarrierBuffer();
+      barrier();
    }
 }
 #endif

@@ -35,9 +35,11 @@ public:
 		oitBuffers.Init(0, 0, &texCommandPool);
 		textureDrawer.Init(&samplerManager, &oitShaderManager, &textureCache, &oitBuffers);
 		textureDrawer.SetCommandPool(&texCommandPool);
+		textureDrawer.SetGpuDraw(taDecoder.Draw());
 
 		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers);
 		screenDrawer.SetCommandPool(&texCommandPool);
+		screenDrawer.SetGpuDraw(taDecoder.Draw());
 		BaseInit(screenDrawer.GetRenderPass(), 2);
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
 		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1);
@@ -63,6 +65,16 @@ public:
 	void KeepPicture() override { screenDrawer.KeepPicture(); }
 	void SetRestoredPicture(vk::ImageView view) override { screenDrawer.SetRestoredPicture(view); }
 
+protected:
+	/* The per-pixel lists sort the translucent polygons, by depth and then
+	 * by polygon number: a frame decoded on the GPU numbers its strips by
+	 * their draws' firstInstance, and without that it has no sorted pass */
+	u32 TaFlags() const override
+	{
+		return TA_GPU_DRAW | TA_GPU_PROVOKE | (taDecoder.HasInstance() ? TA_GPU_INSTANCE : TA_GPU_NO_SORT);
+	}
+
+public:
 	void Term() override
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");

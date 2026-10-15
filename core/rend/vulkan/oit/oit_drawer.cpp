@@ -73,7 +73,8 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 			// together: those get a blend (8) that none of its cases take.
 			{ keepAll ? 8 : (int)poly.tsp.SrcInstr, keepAll ? 8 : (int)poly.tsp.DstInstr, 0, 0 },
 			trilinearAlpha,
-			listType == ListType_Translucent ? (int)(&poly - pvrrc.global_param_tr.head()) : 0,
+			// (a frame decoded on the GPU numbers its strips by their draws: see TA_GPU_INSTANCE)
+			listType == ListType_Translucent && !pvrrc.gpu ? (int)(&poly - pvrrc.global_param_tr.head()) : 0,
 			palette_index,
 	};
 	if (twoVolumes)
@@ -102,7 +103,7 @@ void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 	if (needTexture)
 		GetCurrentDescSet().BindPerPolyDescriptorSets(cmdBuffer, poly.texid, poly.tsp, poly.texid1, poly.tsp1);
 
-	cmdBuffer.drawIndexed(count, 1, first, 0, 0);
+	DrawIndices(cmdBuffer, listType, first, count);
 }
 
 void OITDrawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, Pass pass,
@@ -117,11 +118,11 @@ void OITDrawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool 
 template<bool Translucent>
 void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int first, int count, const ModifierVolumeParam *modVolParams)
 {
-	if (count == 0 || pvrrc.modtrig.used() == 0)
+	if (count == 0 || ModVolTriangles() == 0)
 		return;
 
 	vk::Buffer buffer = GetMainBuffer(0)->buffer.get();
-	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offsets.modVolOffset);
+	BindModVolTriangles(cmdBuffer, buffer, offsets.modVolOffset);
 	SetScissor(cmdBuffer, baseScissor);
 
 	const ModifierVolumeParam* params = &modVolParams[first];
@@ -147,7 +148,7 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 				SetScissor(cmdBuffer, baseScissor);
 		}
 
-		verify(param.first >= 0 && param.first + param.count <= (u32)pvrrc.modtrig.used());
+		verify(param.first >= 0 && param.first + param.count <= ModVolTriangles());
 
 		if (mod_base == -1)
 			mod_base = param.first;
@@ -190,8 +191,7 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 		}
 	}
 	SetScissor(cmdBuffer, baseScissor);
-	const vk::DeviceSize offset = 0;
-	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offset);
+	BindVertices(cmdBuffer, buffer);
 }
 
 void OITDrawer::UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& vertexUniforms,
@@ -204,29 +204,34 @@ void OITDrawer::UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& 
 	std::vector<const void *> chunks;
 	std::vector<u32> chunkSizes;
 
+	// (a frame decoded on the GPU has its geometry and translucent polygon parameters there)
+	const u32 vertexBytes = pvrrc.gpu ? 0 : pvrrc.verts.bytes();
+	const u32 modVolBytes = pvrrc.gpu ? 0 : pvrrc.modtrig.bytes();
+	const u32 indexBytes = pvrrc.gpu ? 0 : pvrrc.idx.bytes();
+
 	// Vertex
 	chunks.push_back(pvrrc.verts.head());
-	chunkSizes.push_back(pvrrc.verts.bytes());
+	chunkSizes.push_back(vertexBytes);
 
-	u32 padding = align(pvrrc.verts.bytes(), 4);
-	offsets.modVolOffset = pvrrc.verts.bytes() + padding;
+	u32 padding = align(vertexBytes, 4);
+	offsets.modVolOffset = vertexBytes + padding;
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
 	// Modifier Volumes
 	chunks.push_back(pvrrc.modtrig.head());
-	chunkSizes.push_back(pvrrc.modtrig.bytes());
-	padding = align(offsets.modVolOffset + pvrrc.modtrig.bytes(), 4);
-	offsets.indexOffset = offsets.modVolOffset + pvrrc.modtrig.bytes() + padding;
+	chunkSizes.push_back(modVolBytes);
+	padding = align(offsets.modVolOffset + modVolBytes, 4);
+	offsets.indexOffset = offsets.modVolOffset + modVolBytes + padding;
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
 	// Index
 	chunks.push_back(pvrrc.idx.head());
-	chunkSizes.push_back(pvrrc.idx.bytes());
+	chunkSizes.push_back(indexBytes);
 
 	// Uniform buffers
-	u32 indexSize = pvrrc.idx.bytes();
+	u32 indexSize = indexBytes;
 	padding = align(offsets.indexOffset + indexSize, std::max(4, (int)GetContext()->GetUniformBufferAlignment()));
 	offsets.vertexUniformOffset = offsets.indexOffset + indexSize + padding;
 	chunks.push_back(nullptr);
@@ -248,8 +253,8 @@ void OITDrawer::UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& 
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
-	std::vector<u32> trPolyParams(pvrrc.global_param_tr.used() * 2);
-	if (pvrrc.global_param_tr.used() == 0)
+	std::vector<u32> trPolyParams(pvrrc.gpu ? 0 : pvrrc.global_param_tr.used() * 2);
+	if (pvrrc.gpu || pvrrc.global_param_tr.used() == 0)
 		trPolyParams.push_back(0);	// makes the validation layers happy
 	else
 	{
@@ -291,7 +296,9 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 
 	oitBuffers->OnNewFrame(cmdBuffer);
 
-	SetProvokingVertices();
+	// (the GPU's decode has done it to a frame it made)
+	if (!pvrrc.gpu)
+		SetProvokingVertices();
 
 	// Upload vertex and index buffers
 	UploadMainBuffer(vtxUniforms, fragUniforms);
@@ -319,7 +326,8 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			fogTexture->GetImageView(), offsets.polyParamsOffset,
 			offsets.polyParamsSize, depthAttachment->GetStencilView(),
 			depthAttachment->GetImageView(), paletteTexture->GetImageView(),
-			RenderPasses::DepthInputLayout(depthWrites));
+			RenderPasses::DepthInputLayout(depthWrites),
+			pvrrc.gpu ? gpuDraw->trParams : vk::Buffer(), pvrrc.gpu ? gpuDraw->trParamsSize : 0);
 	GetCurrentDescSet().BindPerFrameDescriptorSets(cmdBuffer);
 	GetCurrentDescSet().UpdateColorInputDescSet(0, colorAttachments[0]->GetImageView());
 	GetCurrentDescSet().UpdateColorInputDescSet(1, colorAttachments[1]->GetImageView());
@@ -329,9 +337,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	GetCurrentDescSet().Reset();
 
 	// Bind vertex and index buffers
-	const vk::DeviceSize zeroOffset[] = { 0 };
-	cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, zeroOffset);
-	cmdBuffer.bindIndexBuffer(mainBuffer, offsets.indexOffset, vk::IndexType::eUint32);
+	BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
 
 	// Make sure to push constants even if not used
 	OITDescriptorSets::PushConstants pushConstants = { };
@@ -394,8 +400,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		{
 			GetCurrentDescSet().BindPerFrameDescriptorSets(cmdBuffer);
 			oitBuffers->BindDescriptorSet(cmdBuffer, pipelineManager->GetPipelineLayout(), 3);
-			cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, zeroOffset);
-			cmdBuffer.bindIndexBuffer(mainBuffer, offsets.indexOffset, vk::IndexType::eUint32);
+			BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
 			cmdBuffer.pushConstants<OITDescriptorSets::PushConstants>(pipelineManager->GetPipelineLayout(), vk::ShaderStageFlagBits::eFragment, 0, pushConstants);
 			SetScissor(cmdBuffer, baseScissor);
 		}
@@ -456,8 +461,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		if (!finalPass)
 		{
 	    	// Re-bind vertex and index buffers
-	    	cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, zeroOffset);
-	    	cmdBuffer.bindIndexBuffer(mainBuffer, offsets.indexOffset, vk::IndexType::eUint32);
+	    	BindGeometry(cmdBuffer, mainBuffer, offsets.indexOffset);
 
 			// Tr depth-only pass
 			DrawList(cmdBuffer, ListType_Translucent, current_pass.autosort, Pass::Depth, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);

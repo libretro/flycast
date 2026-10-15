@@ -30,6 +30,7 @@
 #include "shaders.h"
 #include "texture.h"
 #include "quad.h"
+#include "ta_decoder.h"
 #include "rend/shadows.h"
 
 class BaseDrawer
@@ -44,6 +45,8 @@ public:
 		}
 	}
 	void SetCommandPool(CommandPool *commandPool) { this->commandPool = commandPool; }
+	// what a frame decoded on the GPU is drawn from (pvrrc.gpu)
+	void SetGpuDraw(const TaGpuDraw *gpuDraw) { this->gpuDraw = gpuDraw; }
 
 protected:
 	VulkanContext *GetContext() const { return VulkanContext::Instance(); }
@@ -94,10 +97,62 @@ protected:
 		return fragUniforms;
 	}
 
+	/* The frame's vertices and indices: in the main buffer, or the GPU's
+	 * decode's (pvrrc.gpu) */
+	void BindGeometry(const vk::CommandBuffer& cmdBuffer, vk::Buffer mainBuffer, vk::DeviceSize indexOffset) const
+	{
+		const vk::DeviceSize zero = 0;
+		if (pvrrc.gpu)
+		{
+			cmdBuffer.bindVertexBuffers(0, 1, &gpuDraw->vertices, &zero);
+			cmdBuffer.bindIndexBuffer(gpuDraw->indices, 0, vk::IndexType::eUint32);
+		}
+		else
+		{
+			cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, &zero);
+			cmdBuffer.bindIndexBuffer(mainBuffer, indexOffset, vk::IndexType::eUint32);
+		}
+	}
+	// ...the modifier volumes' triangles, as the vertex buffer
+	void BindModVolTriangles(const vk::CommandBuffer& cmdBuffer, vk::Buffer mainBuffer, vk::DeviceSize modVolOffset) const
+	{
+		const vk::DeviceSize zero = 0;
+		if (pvrrc.gpu)
+			cmdBuffer.bindVertexBuffers(0, 1, &gpuDraw->modtrig, &zero);
+		else
+			cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, &modVolOffset);
+	}
+	// ...and back to the vertices
+	void BindVertices(const vk::CommandBuffer& cmdBuffer, vk::Buffer mainBuffer) const
+	{
+		const vk::DeviceSize zero = 0;
+		cmdBuffer.bindVertexBuffers(0, 1, pvrrc.gpu ? &gpuDraw->vertices : &mainBuffer, &zero);
+	}
+	u32 ModVolTriangles() const { return pvrrc.gpu ? pvrrc.gpu_modtrig : (u32)pvrrc.modtrig.used(); }
+
+	/* A polygon parameter's indices drawn: @count from @first; or, of a
+	 * frame decoded on the GPU, a draw group's (PolyParam::first and count:
+	 * see TA_GPU_DRAW), by its command, or for a translucent one by its
+	 * draw records, with their count or all of its room */
+	void DrawIndices(const vk::CommandBuffer& cmdBuffer, u32 listType, u32 first, u32 count) const
+	{
+		const u32 stride = sizeof(VkDrawIndexedIndirectCommand);	// (rend/ta_gpu.h's records)
+		if (!pvrrc.gpu)
+			cmdBuffer.drawIndexed(count, 1, first, 0, 0);
+		else if (listType != ListType_Translucent)
+			cmdBuffer.drawIndexedIndirect(gpuDraw->commands, (vk::DeviceSize)first * stride, 1, stride);
+		else if (gpuDraw->drawCount != nullptr)
+			gpuDraw->drawCount((VkCommandBuffer)cmdBuffer, (VkBuffer)gpuDraw->trDraws, (VkDeviceSize)(first + 1) * stride,
+					(VkBuffer)gpuDraw->trDraws, (VkDeviceSize)first * stride, count, stride);
+		else
+			cmdBuffer.drawIndexedIndirect(gpuDraw->trDraws, (vk::DeviceSize)(first + 1) * stride, count, stride);
+	}
+
 	vk::Rect2D baseScissor;
 	vk::Rect2D currentScissor;
 	TransformMatrix<false> matrices;
 	CommandPool *commandPool = nullptr;
+	const TaGpuDraw *gpuDraw = nullptr;
 };
 
 class Drawer : public BaseDrawer

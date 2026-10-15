@@ -199,7 +199,7 @@ void Drawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 	if (poly.pcw.Texture)
 		GetCurrentDescSet().BindPerPolyDescriptorSets(cmdBuffer, poly.texid, poly.tsp);
 
-	cmdBuffer.drawIndexed(count, 1, first, 0, 0);
+	DrawIndices(cmdBuffer, listType, first, count);
 }
 
 // The polygons of a list that take shadows, drawn again where they are in a
@@ -209,7 +209,8 @@ void Drawer::DrawShadowed(const vk::CommandBuffer& cmdBuffer, u32 listType, cons
 {
 	const PolyParam *pp_end = polys.head() + last;
 	for (const PolyParam *pp = polys.head() + first; pp != pp_end; pp++)
-		if (CanDrawShadowed(listType, pp) && PolyOverlaps(pp, area))
+		// (where the vertices are is not known here for a frame decoded on the GPU: the stencil says it all)
+		if (CanDrawShadowed(listType, pp) && (pvrrc.gpu || PolyOverlaps(pp, area)))
 			DrawPoly(cmdBuffer, listType, false, *pp, pp->first, pp->count,
 					ShadowLaterWins(listType, pp) ? PipelineManager::ShadowPass::LaterWins : PipelineManager::ShadowPass::EarlierWins,
 					&scissor);
@@ -248,14 +249,15 @@ void Drawer::DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sor
 
 void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
 {
-	if (count == 0 || pvrrc.modtrig.used() == 0)
+	if (count == 0 || ModVolTriangles() == 0)
 		return;
 
 	vk::Buffer buffer = GetMainBuffer(0)->buffer.get();
-	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offsets.modVolOffset);
+	BindModVolTriangles(cmdBuffer, buffer, offsets.modVolOffset);
 	SetScissor(cmdBuffer, baseScissor);
 
 	ModifierVolumeParam* params = &pvrrc.global_param_mvo.head()[first];
+	bool any = false;
 
 	int mod_base = -1;
 	vk::Pipeline pipeline;
@@ -266,6 +268,7 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 
 		if (param.count == 0)
 			continue;
+		any = true;
 
 		u32 mv_mode = param.isp.DepthMode;
 
@@ -298,16 +301,17 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 		}
 	}
 	SetScissor(cmdBuffer, baseScissor);
-	const vk::DeviceSize offset = 0;
-	cmdBuffer.bindVertexBuffers(0, 1, &buffer, &offset);
+	BindVertices(cmdBuffer, buffer);
 
-	// The polygons that take shadows, again, where they are in a volume
-	const ScreenBounds area = ModVolBounds(first, count);
-	if (!area.empty())
+	/* The polygons that take shadows, again, where they are in a volume. Of
+	 * a frame decoded on the GPU the volumes' triangles are not here: all
+	 * of them, all over, which the stencil makes the same */
+	const ScreenBounds area = pvrrc.gpu ? ScreenBounds{ -1e30f, -1e30f, 1e30f, 1e30f } : ModVolBounds(first, count);
+	if (!area.empty() && (any || !pvrrc.gpu))
 	{
 		int rect[4];
 		BoundsToScissor(area, matrices.GetViewportMatrix(), rect);
-		const vk::Rect2D scissor(vk::Offset2D(rect[0], rect[1]), vk::Extent2D(rect[2], rect[3]));
+		const vk::Rect2D scissor = pvrrc.gpu ? baseScissor : vk::Rect2D(vk::Offset2D(rect[0], rect[1]), vk::Extent2D(rect[2], rect[3]));
 		DrawShadowed(cmdBuffer, ListType_Opaque, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count, area, scissor);
 		DrawShadowed(cmdBuffer, ListType_Punch_Through, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count, area, scissor);
 		SetScissor(cmdBuffer, baseScissor);
@@ -329,26 +333,31 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 	std::vector<const void *> chunks;
 	std::vector<u32> chunkSizes;
 
+	// (a frame decoded on the GPU has its geometry there)
+	const u32 vertexBytes = pvrrc.gpu ? 0 : pvrrc.verts.bytes();
+	const u32 modVolBytes = pvrrc.gpu ? 0 : pvrrc.modtrig.bytes();
+	const u32 indexBytes = pvrrc.gpu ? 0 : pvrrc.idx.bytes();
+
 	// Vertex
 	chunks.push_back(pvrrc.verts.head());
-	chunkSizes.push_back(pvrrc.verts.bytes());
+	chunkSizes.push_back(vertexBytes);
 
-	u32 padding = align(pvrrc.verts.bytes(), 4);
-	offsets.modVolOffset = pvrrc.verts.bytes() + padding;
+	u32 padding = align(vertexBytes, 4);
+	offsets.modVolOffset = vertexBytes + padding;
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
 	// Modifier Volumes
 	chunks.push_back(pvrrc.modtrig.head());
-	chunkSizes.push_back(pvrrc.modtrig.bytes());
-	padding = align(offsets.modVolOffset + pvrrc.modtrig.bytes(), 4);
-	offsets.indexOffset = offsets.modVolOffset + pvrrc.modtrig.bytes() + padding;
+	chunkSizes.push_back(modVolBytes);
+	padding = align(offsets.modVolOffset + modVolBytes, 4);
+	offsets.indexOffset = offsets.modVolOffset + modVolBytes + padding;
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
 	// Index
 	chunks.push_back(pvrrc.idx.head());
-	chunkSizes.push_back(pvrrc.idx.bytes());
+	chunkSizes.push_back(indexBytes);
 	for (const std::vector<u32>& idx : sortedIndexes)
 	{
 		if (!idx.empty())
@@ -358,7 +367,7 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 		}
 	}
 	// Uniform buffers
-	u32 indexSize = pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
+	u32 indexSize = indexBytes + sortedIndexCount * sizeof(u32);
 	padding = align(offsets.indexOffset + indexSize, std::max(4, (int)GetContext()->GetUniformBufferAlignment()));
 	offsets.vertexUniformOffset = offsets.indexOffset + indexSize + padding;
 	chunks.push_back(nullptr);
@@ -381,7 +390,16 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 
 bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 {
-	SortTriangles();
+	/* (a frame decoded on the GPU has no sorted pass, and no vertices here
+	 * to sort: see TA_GPU_NO_SORT) */
+	if (!pvrrc.gpu)
+		SortTriangles();
+	else
+	{
+		for (std::vector<u32>& idx : sortedIndexes)
+			idx.clear();
+		sortedIndexCount = 0;
+	}
 	currentScissor = vk::Rect2D();
 
 	vk::CommandBuffer cmdBuffer = BeginRenderPass();
@@ -397,7 +415,9 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<FragmentShaderUniforms>();
 	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
 
-	SetProvokingVertices();
+	// (the GPU's decode has done it to a frame it made)
+	if (!pvrrc.gpu)
+		SetProvokingVertices();
 
 	// Upload vertex and index buffers
 	UploadMainBuffer(vtxUniforms, fragUniforms);
@@ -410,10 +430,7 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	GetCurrentDescSet().Reset();
 
 	// Bind vertex and index buffers
-	const vk::DeviceSize zeroOffset[] = { 0 };
-	const vk::Buffer buffer = GetMainBuffer(0)->buffer.get();
-	cmdBuffer.bindVertexBuffers(0, 1, &buffer, zeroOffset);
-	cmdBuffer.bindIndexBuffer(buffer, offsets.indexOffset, vk::IndexType::eUint32);
+	BindGeometry(cmdBuffer, GetMainBuffer(0)->buffer.get(), offsets.indexOffset);
 
 	// Make sure to push constants even if not used
 	const std::array<float, 6> pushConstants = { 0, 0, 0, 0, 0, 0 };

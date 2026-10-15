@@ -82,7 +82,8 @@ public:
 	// FIXME way too many params
 	void UpdateUniforms(vk::Buffer buffer, u32 vertexUniformOffset, u32 fragmentUniformOffset, vk::ImageView fogImageView,
 			u32 polyParamsOffset, u32 polyParamsSize, vk::ImageView stencilImageView, vk::ImageView depthImageView,
-			vk::ImageView paletteImageView, vk::ImageLayout depthInputLayout)
+			vk::ImageView paletteImageView, vk::ImageLayout depthInputLayout,
+			vk::Buffer gpuPolyParams = vk::Buffer(), vk::DeviceSize gpuPolyParamsSize = 0)
 	{
 		if (!perFrameDescSet)
 		{
@@ -122,7 +123,10 @@ public:
 		if (polyParamsSize > 0)
 		{
 			static vk::DescriptorBufferInfo polyParamsBufferInfo;
-			polyParamsBufferInfo = vk::DescriptorBufferInfo(buffer, polyParamsOffset, polyParamsSize);
+			/* (of a frame decoded on the GPU, the translucent polygon
+			 * parameters are the GPU's: see TaGpuDraw) */
+			polyParamsBufferInfo = gpuPolyParams ? vk::DescriptorBufferInfo(gpuPolyParams, 0, gpuPolyParamsSize)
+					: vk::DescriptorBufferInfo(buffer, polyParamsOffset, polyParamsSize);
 			writeDescriptorSets.push_back(vk::WriteDescriptorSet(*perFrameDescSet, 3, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &polyParamsBufferInfo, nullptr));
 		}
 		vk::DescriptorImageInfo stencilImageInfo(vk::Sampler(), stencilImageView, depthInputLayout);
