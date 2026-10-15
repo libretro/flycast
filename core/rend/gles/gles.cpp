@@ -659,10 +659,14 @@ void UsePipelineShader(PipelineShader *s)
 	}
 }
 
-/* The keys most games draw with (glprogram_cache.h): made at the start
- * with those of earlier runs */
+/* The keys more than one game draws with (glprogram_cache.h), of Jet Grind
+ * Radio, Dead or Alive 2, Sega Rally 2 and Virtua Fighter 4: made at the
+ * start with those of earlier runs. (The general program draws the
+ * others the first time.) */
 static const u16 CommonKeys[] = {
-	0
+	0x00a0,	// Gouraud, untextured, no alpha, no fog
+	0x0aa0,	// ...the same, with texture bits a polygon without a texture leaves
+	0x37a0,	// Gouraud, textured, alpha, modulated alpha, offset, no fog
 };
 
 /* At the renderer's start: the general programs, and the programs of the

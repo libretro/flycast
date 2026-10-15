@@ -149,10 +149,12 @@ static gl4PipelineShader *gl4GetProgram(bool cp_AlphaTest, bool pp_InsideClippin
 	return shader;
 }
 
-/* The keys most games draw with (glprogram_cache.h): made at the start
- * with those of earlier runs */
+/* The keys more than one game draws with (glprogram_cache.h), of Jet Grind
+ * Radio, Dead or Alive 2, Sega Rally 2 and Virtua Fighter 4: made at the
+ * start with those of earlier runs. (The general programs draw the
+ * others the first time.) */
 static const u32 CommonKeys[] = {
-	0
+	0x0121, 0x1521, 0x2100, 0x3100, 0x5101, 0x6f22,
 };
 
 void gl4MakePrograms()
