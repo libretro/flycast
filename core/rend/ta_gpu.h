@@ -94,8 +94,30 @@
 #define TAG_K_SHADOW   14
 #define TAG_KERNELS    14
 
+/* OpenGL's binding of the first of the kernels' buffers (TAG_SHADER_GL):
+ * the others follow it in order */
+#define TAG_GL_BINDING 2
+
 #if defined(TAG_SHADER_GLSL)
 
+#if defined(TAG_SHADER_GL)
+/* OpenGL (TAG_SHADER_GL, with #version 430): no descriptor sets, and the
+ * buffers in the same order from binding TAG_GL_BINDING on, past the
+ * per-pixel renderer's own (rend/gl4: its fragments and polygon words at
+ * 0 and 1), so that neither has to bind the other's again. (The bindings
+ * are written out: a GLSL layout takes no expression.) */
+layout(std430, binding = 2) readonly buffer TaData { uint w[]; } ta;
+layout(std430, binding = 3) readonly buffer Tables { uint w[]; } tab;
+layout(std430, binding = 4) buffer Verts { uint w[]; } vtx;
+layout(std430, binding = 5) buffer ModTrig { uint w[]; } mtr;
+layout(std430, binding = 6) buffer Indices { uint w[]; } idx;
+layout(std430, binding = 7) buffer Work { uint w[]; } work;
+layout(std430, binding = 8) buffer Records { uint w[]; } rec;
+layout(std430, binding = 9) buffer Commands { uint w[]; } cmd;
+layout(std430, binding = 10) buffer Frame { uint w[]; } frm;
+layout(std430, binding = 11) buffer TrDraws { uint w[]; } trd;
+layout(std430, binding = 12) buffer TrParams { uint w[]; } trp;
+#else
 layout(std430, set = 0, binding = 0) readonly buffer TaData { uint w[]; } ta;
 layout(std430, set = 1, binding = 0) readonly buffer Tables { uint w[]; } tab;
 layout(std430, set = 1, binding = 1) buffer Verts { uint w[]; } vtx;
@@ -107,6 +129,7 @@ layout(std430, set = 1, binding = 6) buffer Commands { uint w[]; } cmd;
 layout(std430, set = 1, binding = 7) buffer Frame { uint w[]; } frm;
 layout(std430, set = 1, binding = 8) buffer TrDraws { uint w[]; } trd;
 layout(std430, set = 1, binding = 9) buffer TrParams { uint w[]; } trp;
+#endif
 
 #define TAG_TA(i) ta.w[i]
 #define TAG_TAB(i) tab.w[i]
@@ -307,8 +330,11 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
  * zeroes (a vkCmdDrawIndexedIndirect() of all of it draws nothing more) */
 
 /* A translucent polygon parameter's words for the per-pixel renderer, as
- * OITDrawer::UploadMainBuffer() makes them */
+ * OITDrawer::UploadMainBuffer() makes them; and in bit 1 of the first,
+ * which no renderer read before, whether it has two volumes - its second
+ * TSP or TCW word not all ones - which the OpenGL one goes by (TAG_P_TWOVOL) */
 #define TAG_P_WORDS  2
+#define TAG_P_TWOVOL 2u
 
 /* What a strip's summary and state take, in the work buffer */
 #define TAG_SS_WORDS 6     /* n[3], last kept vertex | 0x80000000 if any, header, first vertex */
@@ -1866,7 +1892,8 @@ void main()
    uint li = (r - tab.w[TAG_T_REC_TR]) / TAG_C_WORDS;
    uint st = hdr + TAG_H_STATE;
    trp.w[li * TAG_P_WORDS] = (tab.w[st + TAG_S_TSP] & 0xFFFF00C0u) | ((tab.w[st + TAG_S_ISP] >> 16) & 0xE400u)
-         | ((tab.w[st + TAG_S_PCW] >> 7) & 1u);
+         | ((tab.w[st + TAG_S_PCW] >> 7) & 1u)
+         | (tab.w[st + TAG_S_TSP1] != 0xFFFFFFFFu || tab.w[st + TAG_S_TCW1] != 0xFFFFFFFFu ? TAG_P_TWOVOL : 0u);
    trp.w[li * TAG_P_WORDS + 1u] = tab.w[st + TAG_S_TSP1];
    if (frm.w[TAG_O_OVERRUN] != 0u)
       return;

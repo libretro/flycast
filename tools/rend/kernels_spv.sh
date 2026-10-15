@@ -11,8 +11,16 @@
 #                                the raster renderers' shaders
 #                                (vulkan/shaders/; vulkan/shaders.cpp)
 #
-#   sh tools/rend/kernels_spv.sh update   all three made again from their sources
-#   sh tools/rend/kernels_spv.sh check    whether all three are their sources' still
+#
+# and the OpenGL renderers' (gles/ta_decoder_gl.cpp), whose OpenGL takes
+# SPIR-V (4.6, ARB_gl_spirv) or else compiles the text once:
+#
+#   core/rend/ta_gpu_gl_spv.inc  the decode's kernels for OpenGL
+#                                (TAG_SHADER_GL: --target-env opengl)
+#   core/rend/ta_gpu_glsl.inc    rend/ta_gpu.h itself as text, a line a string
+#
+#   sh tools/rend/kernels_spv.sh update   all made again from their sources
+#   sh tools/rend/kernels_spv.sh check    whether all are their sources' still
 #
 # The raster shaders are modules of a few #defines each: what changes what
 # a shader declares (interpolation, the sample rate, the per-pixel
@@ -31,6 +39,8 @@ set -e
 cd "$(dirname "$0")/../.."
 TA_INC=core/rend/ta_gpu_spv.inc
 TEXD_INC=core/rend/texdecode_spv.inc
+TA_GL_INC=core/rend/ta_gpu_gl_spv.inc
+TA_GLSL_INC=core/rend/ta_gpu_glsl.inc
 TAG_KERNELS=$(awk '$1 == "#define" && $2 == "TAG_KERNELS" { print $3 }' core/rend/ta_gpu.h)
 TEXD_FORMATS="r8ui r16ui r32ui"
 RASTER_INC=core/rend/vulkan/raster_spv.inc
@@ -48,24 +58,32 @@ ta_source() {
    echo "#version 450"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_KERNEL $1"; cat core/rend/ta_gpu.h
 }
 
+ta_gl_source() {
+   echo "#version 430"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_SHADER_GL"; echo "#define TAG_KERNEL $1"; cat core/rend/ta_gpu.h
+}
+
 texd_source() {
    echo "#version 450"; echo "#define TEXD_SHADER_GLSL"; echo "#define TEXD_KERNEL_FORMAT $1"; cat core/rend/texdecode.h
 }
 
-# one array: @1 its name, @2 the kernel's text
+# one array: @1 its name, @2 the kernel's text (@3: opengl, for OpenGL's SPIR-V)
 spv_array() {
-   glslangValidator -V -g0 --target-env vulkan1.0 -S comp -o "$WORK/k.spv" "$2" > "$WORK/log" || { cat "$WORK/log" >&2; exit 1; }
+   if [ "$3" = opengl ]; then
+      glslangValidator -G -g0 --target-env opengl -S comp -o "$WORK/k.spv" "$2" > "$WORK/log" || { cat "$WORK/log" >&2; exit 1; }
+   else
+      glslangValidator -V -g0 --target-env vulkan1.0 -S comp -o "$WORK/k.spv" "$2" > "$WORK/log" || { cat "$WORK/log" >&2; exit 1; }
+   fi
    echo "static const u32 $1[] = {"
    od -An -v -w32 -tx4 --endian=little "$WORK/k.spv" | awk '{ s = ""; for (i = 1; i <= NF; i++) s = s "0x" $i ","; print s }'
    echo "};"
 }
 
 sums() {
-   # @1: ta or texd
-   if [ "$1" = ta ]; then
+   # @1: ta, tagl or texd
+   if [ "$1" = ta ] || [ "$1" = tagl ]; then
       k=1
       while [ $k -le "$TAG_KERNELS" ]; do
-         ta_source $k > "$WORK/s.comp"
+         if [ "$1" = ta ]; then ta_source $k > "$WORK/s.comp"; else ta_gl_source $k > "$WORK/s.comp"; fi
          echo " * kernel $k $(sha1sum < "$WORK/s.comp" | cut -c1-40)"
          k=$((k + 1))
       done
@@ -97,6 +115,43 @@ make_ta() {
    printf 'static const size_t ta_gpu_spv_size[] = { 0'
    k=1; while [ $k -le "$TAG_KERNELS" ]; do printf ', sizeof(ta_gpu_spv_%d)' $k; k=$((k + 1)); done
    echo ' };'
+}
+
+make_ta_gl() {
+   echo "/* SPIR-V for OpenGL (ARB_gl_spirv) of GPU-side TA processing's kernels"
+   echo " * (rend/ta_gpu.h, each with TAG_SHADER_GLSL, TAG_SHADER_GL and its"
+   echo " * TAG_KERNEL): made by tools/rend/kernels_spv.sh update from it. Not to be"
+   echo " * edited."
+   echo " * glslang $(glslang_version)"
+   sums tagl
+   echo " */"
+   k=1
+   while [ $k -le "$TAG_KERNELS" ]; do
+      ta_gl_source $k > "$WORK/s.comp"
+      spv_array ta_gpu_gl_spv_$k "$WORK/s.comp" opengl
+      k=$((k + 1))
+   done
+   echo "// by TAG_K_*: the words, and their size in bytes"
+   printf 'static const u32 * const ta_gpu_gl_spv[] = { nullptr'
+   k=1; while [ $k -le "$TAG_KERNELS" ]; do printf ', ta_gpu_gl_spv_%d' $k; k=$((k + 1)); done
+   echo ' };'
+   printf 'static const size_t ta_gpu_gl_spv_size[] = { 0'
+   k=1; while [ $k -le "$TAG_KERNELS" ]; do printf ', sizeof(ta_gpu_gl_spv_%d)' $k; k=$((k + 1)); done
+   echo ' };'
+}
+
+# rend/ta_gpu.h as text, for an OpenGL without SPIR-V to compile: a line a
+# string (no one string too long for any compiler), each ending in its new line
+make_ta_glsl() {
+   echo "/* rend/ta_gpu.h as text, a line a string, for the OpenGL renderers to"
+   echo " * compile the kernels from where OpenGL takes no SPIR-V (the lines that"
+   echo " * go in front: gles/ta_decoder_gl.cpp). Made by tools/rend/kernels_spv.sh"
+   echo " * update from it. Not to be edited."
+   echo " * header $(sha1sum < core/rend/ta_gpu.h | cut -c1-40)"
+   echo " */"
+   echo "static const char * const ta_gpu_glsl[] = {"
+   sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/?/\\?/g' -e 's/^/"/' -e 's/$/\\n",/' core/rend/ta_gpu.h
+   echo "};"
 }
 
 make_texd() {
@@ -209,15 +264,26 @@ update)
    make_ta > "$WORK/ta.inc"
    make_texd > "$WORK/texd.inc"
    make_raster > "$WORK/raster.inc"
+   make_ta_gl > "$WORK/tagl.inc"
+   make_ta_glsl > "$WORK/taglsl.inc"
    cp "$WORK/ta.inc" $TA_INC
    cp "$WORK/texd.inc" $TEXD_INC
    cp "$WORK/raster.inc" $RASTER_INC
-   echo "made $TA_INC, $TEXD_INC and $RASTER_INC"
+   cp "$WORK/tagl.inc" $TA_GL_INC
+   cp "$WORK/taglsl.inc" $TA_GLSL_INC
+   echo "made $TA_INC, $TEXD_INC, $RASTER_INC, $TA_GL_INC and $TA_GLSL_INC"
    ;;
 check)
    rc=0
-   for t in ta texd raster; do
-      case $t in ta) inc=$TA_INC ;; texd) inc=$TEXD_INC ;; raster) inc=$RASTER_INC ;; esac
+   make_ta_glsl > "$WORK/taglsl.inc"
+   if cmp -s "$WORK/taglsl.inc" $TA_GLSL_INC; then
+      echo "kernels_spv: $TA_GLSL_INC is its header's text"
+   else
+      echo "FAIL: $TA_GLSL_INC is not its header's text as it is: run '$0 update'" >&2
+      rc=1
+   fi
+   for t in ta texd raster tagl; do
+      case $t in ta) inc=$TA_INC ;; texd) inc=$TEXD_INC ;; raster) inc=$RASTER_INC ;; tagl) inc=$TA_GL_INC ;; esac
       if [ $t = raster ]; then
          raster_sums > "$WORK/sums"
          grep '^ \* module ' $inc > "$WORK/had" || true
@@ -232,7 +298,7 @@ check)
       fi
       v=$(glslang_version)
       if [ -n "$v" ] && grep -q "^ \* glslang $v\$" $inc; then
-         case $t in ta) make_ta > "$WORK/new.inc" ;; texd) make_texd > "$WORK/new.inc" ;; raster) make_raster > "$WORK/new.inc" ;; esac
+         case $t in ta) make_ta > "$WORK/new.inc" ;; texd) make_texd > "$WORK/new.inc" ;; raster) make_raster > "$WORK/new.inc" ;; tagl) make_ta_gl > "$WORK/new.inc" ;; esac
          if ! cmp -s "$WORK/new.inc" $inc; then
             echo "FAIL: $inc is not what glslangValidator $v makes of its header: run '$0 update'" >&2
             rc=1
