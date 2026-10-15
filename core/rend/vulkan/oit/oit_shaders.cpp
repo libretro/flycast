@@ -51,9 +51,12 @@ layout (location = 2)               out vec2 vtx_uv;
 layout (location = 3) INTERPOLATION out lowp vec4 vtx_base1;		// New for OIT, only for OP/PT with 2-volume
 layout (location = 4) INTERPOLATION out lowp vec4 vtx_offs1;
 layout (location = 5)               out vec2 vtx_uv1;
+// a translucent polygon's number, of a frame decoded on the GPU (TA_GPU_INSTANCE); 0 for the others
+layout (location = 6) flat          out uint vtx_pp;
 
 void main()
 {
+	vtx_pp = uint(gl_InstanceIndex);
 	vtx_base = vec4(in_base) / 255.0;
 	vtx_offs = vec4(in_offs) / 255.0;
 	vtx_uv = in_uv;
@@ -304,6 +307,7 @@ layout (location = 2)               in vec2 vtx_uv;
 layout (location = 3) INTERPOLATION in lowp vec4 vtx_base1;			// new for OIT. Only if 2 vol
 layout (location = 4) INTERPOLATION in lowp vec4 vtx_offs1;
 layout (location = 5)               in vec2 vtx_uv1;
+layout (location = 6) flat          in uint vtx_pp;
 
 #if pp_FogCtrl != 2 || pp_TwoVolumes == 1
 layout (set = 0, binding = 2) uniform sampler2D fog_table;
@@ -582,7 +586,7 @@ void main()
 		Pixel pixel;
 		pixel.color = packColors(clamp(color, vec4(0.0), vec4(1.0)));
 		pixel.depth = gl_FragDepth;
-		pixel.seq_num = uint(pushConstants.pp_Number);
+		pixel.seq_num = uint(pushConstants.pp_Number) + vtx_pp;
 		pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);
 		PixelBuffer.pixels[idx] = pixel;
 		
