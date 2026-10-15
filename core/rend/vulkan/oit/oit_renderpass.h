@@ -43,6 +43,14 @@ public:
 			renderPasses[index] = MakeRenderPass(initial, last, depthWrites, resumed);
 		return *renderPasses[index];
 	}
+	/* Every kind of render pass made now, when the renderer starts or the
+	 * picture changes size: the ones for drawing in bands (@resumed) are
+	 * first needed while a game runs, and nothing is made then */
+	void MakeAll()
+	{
+		for (size_t index = 0; index < renderPasses.size(); index++)
+			GetRenderPass(index & 1, index & 2, index & 4, index & 8);
+	}
 	// The layout the depth buffer is in while the colour subpass reads it
 	static vk::ImageLayout DepthInputLayout(bool depthWrites)
 	{

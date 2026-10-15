@@ -242,6 +242,7 @@ public:
 			finalPerSamplePipeline.reset();
 			clearPipeline.reset();
 		}
+		renderPasses->MakeAll();
 
 		if (!perFrameLayout)
 		{
