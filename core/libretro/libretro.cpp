@@ -1108,6 +1108,12 @@ static void update_variables(bool first_startup)
    settings.rend.GpuTextureDecode = !(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
          && !strcmp("disabled", var.value));
 
+   /* GPU-side TA processing: taken up by a renderer that has it at its
+    * next frame */
+   var.key = CORE_OPTION_NAME "_ta_processing";
+   ta_set_gpu_wanted(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp("gpu", var.value));
+
 #ifdef HAVE_TEXUPSCALE
    var.key = CORE_OPTION_NAME "_texupscale";
 

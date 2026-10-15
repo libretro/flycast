@@ -117,6 +117,18 @@ public:
 		return *fences[index];
 	}
 
+	/* Whether the GPU is done with what was last submitted for @slot:
+	 * its fence, polled */
+	bool IsDone(int slot) const
+	{
+		return VulkanContext::Instance()->GetDevice().getFenceStatus(*fences[slot]) == vk::Result::eSuccess;
+	}
+
+	int GetSize() const
+	{
+		return (int)fences.size();
+	}
+
 	int GetIndex() const
 	{
 		return index;

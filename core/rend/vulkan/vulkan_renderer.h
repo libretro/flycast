@@ -25,6 +25,7 @@
 
 #include "rtt_read.h"
 #include "tex_decoder.h"
+#include "ta_decoder.h"
 #include "rend/rtt_watch.h"
 #include "rend/last_picture.h"
 #include <memory>
@@ -42,6 +43,7 @@ public:
 		textureCache.Clear();
 		Texture::SetDecoder(nullptr);
 		texDecoder.Term();
+		taDecoder.Term();
 		keptPicture = nullptr;
 		fogTexture = nullptr;
 		paletteTexture = nullptr;
@@ -89,6 +91,7 @@ public:
 		texCommandPool.BeginFrame();
 		textureCache.SetCurrentIndex(texCommandPool.GetIndex());
 		texDecoder.BeginFrame(texCommandPool.GetIndex());
+		taDecoder.BeginFrame(texCommandPool, ta_gpu_wanted());
 
       if (!ctx->rend.isRTT)
          vmus->PrepareOSD(&texCommandPool);
@@ -105,7 +108,12 @@ public:
 			textureCache.ClearLater();
 		}
 
+		/* GPU-side TA processing: the header pass and the decode, while the
+		 * frame is still parsed on the CPU as well and drawn from that */
+		const bool gpuTa = taDecoder.Ready() && taDecoder.Prepare(ctx);
 		bool result = ta_parse_vdrc(ctx);
+		if (gpuTa && result)
+			taDecoder.Record(ctx, texCommandPool);
 		// the textures the frame's polygons asked for that are made on the GPU, before the draws
 		texDecoder.Flush(texCommandPool);
 
@@ -252,6 +260,7 @@ protected:
 	CommandPool texCommandPool;
 	std::vector<std::unique_ptr<Texture>> framebufferTextures;
 	TexDecoder texDecoder;		// (before the cache: textures going away tell it)
+	TaDecoder taDecoder;
 	TextureCache textureCache;
 	std::unique_ptr<Texture> keptPicture;
 	QuadPipeline quadPipeline;

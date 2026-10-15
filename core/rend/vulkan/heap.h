@@ -52,6 +52,10 @@ public:
 	void *MapMemory() const {
 		return heap != nullptr ? alloc.mapped : nullptr;
 	}
+	// What kind of memory it is (VkMemoryPropertyFlags)
+	VkMemoryPropertyFlags PropertyFlags() const {
+		return heap != nullptr ? heap->props.memoryTypes[heap->blocks[alloc.block].type].propertyFlags : 0;
+	}
 
 private:
 	Allocation(vk_heap_t *heap, const vk_heap_alloc_t& alloc) : heap(heap), alloc(alloc) {}
