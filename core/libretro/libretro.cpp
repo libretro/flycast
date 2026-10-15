@@ -47,6 +47,7 @@ char* strdup(const char *str)
 #include "rend/vulkan/vulkan_context.h"
 #endif
 #include "rend/rtt_watch.h"
+#include "rend/gles/ta_decoder_gl.h"
 #include "rend/last_picture.h"
 #include <retro_atomic.h>
 #include <retro_timers.h>
@@ -567,6 +568,10 @@ static int    pending_av_fps_count = 0;
 extern int GDROM_TICK;
 static bool rotate_screen = false;
 
+/* Whether the OpenGL context can have GPU-side TA processing (OpenGL 4.3,
+ * persistently mapped buffers): -1 until there is one (context_reset()) */
+static int gl_ta_possible = -1;
+
 static void set_variable_visibility(void)
 {
    struct retro_core_option_display option_display;
@@ -631,6 +636,15 @@ static void set_variable_visibility(void)
    option_display.visible = settings.rend.TextureUpscale > 1;
    option_display.key = CORE_OPTION_NAME "_texupscale_max_filtered_texture_size";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+
+#if defined(HAVE_VULKAN) || defined(HAVE_GL4)
+   /* GPU-side TA processing: with the Vulkan renderers, and the OpenGL ones
+    * where the context can have it (shown until it is known) */
+   option_display.visible = settings.pvr.rend == 4 || settings.pvr.rend == 5
+         || ((settings.pvr.rend == 0 || settings.pvr.rend == 3) && gl_ta_possible != 0);
+   option_display.key = CORE_OPTION_NAME "_ta_processing";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+#endif
 
    // Only for Vulkan. TODO Unfortunately, at startup the graphic context hasn't been determined yet.
    //option_display.visible = settings.pvr.rend == 4 || settings.pvr.rend == 5;
@@ -1521,6 +1535,16 @@ void retro_run (void)
          renderer->OptionsChanged();
       }
 #endif
+#ifdef HAVE_GL4
+      /* ...and so with OpenGL, its state bound for it */
+      if (renderer != NULL && (settings.pvr.rend == 0 || settings.pvr.rend == 3))
+      {
+         glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
+         rend_prepare_renderer();
+         renderer->OptionsChanged();
+         glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+      }
+#endif
    }
    if (resize_pending)
       apply_new_size();
@@ -1664,6 +1688,16 @@ static void context_reset(void)
    gl_ctx_resetting = false;
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
    glsm_ctl(GLSM_CTL_STATE_SETUP, NULL);
+#ifdef HAVE_GL4
+   /* The renderer is set up now, with the context, and not in the first
+    * frame after it: GPU-side TA processing's kernels and buffers are
+    * made with it, when that is on. The machine is not running here. */
+   glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
+   rend_prepare_renderer();
+   gl_ta_possible = GlTaDecoder::ContextCanDo() ? 1 : 0;
+   glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+   set_variable_visibility();
+#endif
 }
 
 static void context_destroy(void)
@@ -1673,6 +1707,14 @@ static void context_destroy(void)
    rtt_watch_flush();
    /* ...and the screen's last picture is kept for the context that comes after */
    rend_keep_picture();
+#ifdef HAVE_GL4
+   /* The renderer goes with its context, while it is there: what it made
+    * is the context's (GPU-side TA processing's contexts' data is in a
+    * buffer of it, and is copied out first). */
+   glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
+   rend_term_renderer();
+   glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+#endif
    gl_ctx_resetting = true;
    renderer_changed = true;
    glsm_ctl(GLSM_CTL_STATE_CONTEXT_DESTROY, NULL);

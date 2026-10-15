@@ -516,12 +516,12 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "enabled",
    },
-#ifdef HAVE_VULKAN
+#if defined(HAVE_VULKAN) || defined(HAVE_GL4)
    {
       CORE_OPTION_NAME "_ta_processing",
       "TA Processing",
       NULL,
-      "Where the lists the game sends the tile accelerator are made into vertices and indices. GPU does it with compute shaders, straight from the data as the game sent it, into the GPU's own buffers, the same to the byte. Vulkan only. For testing for now: until the renderers draw from those buffers, every frame is still made on the CPU as well.",
+      "Where the lists the game sends the tile accelerator are made into vertices and indices. GPU does it with compute shaders, straight from the data as the game sent it, into the GPU's own buffers, the same to the byte, and the frame is drawn from them. Vulkan, and OpenGL 4.3 or later with persistently mapped buffers (4.4, or ARB_buffer_storage).",
       NULL,
       "video",
       {
