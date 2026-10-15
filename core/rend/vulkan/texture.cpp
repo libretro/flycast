@@ -198,7 +198,7 @@ void TexturePool::Init(const TexDecoder *decoder)
 
 	static const u32 texel[FORMATS] = { 2, 2, 2, 4, 1, 2, 2, 4 };
 	// how much games use them, in eighths of what they use 565
-	static const u32 use[FORMATS] = { 4, 8, 4, 4, 2, 1, 1, 0 };
+	static const u32 use[FORMATS] = { 6, 8, 6, 4, 2, 1, 1, 0 };
 	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, 0, 0, TexPoolBook::TARGETS };
 	u32 have[FORMATS];
 	for (int f = 0; f < FORMATS; f++)

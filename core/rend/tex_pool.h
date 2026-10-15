@@ -20,9 +20,10 @@
  * it to the rectangles, by fixed shares - the smaller the shape and the
  * nearer to square, the more. Pictures rendered to (a format of the kind
  * TARGETS) are a fixed few of the shapes renders come in, from 64x64 to
- * 1024x1024 (half as many where the share is the least). A class that has none left when one is asked for has one made
- * then - which means the share was too small for the game - and it stays in
- * the pool after: it is counted, and said once for each class.
+ * 1024x1024 (half as many where the share is the least). A class that has
+ * none left when one is asked for has one made then - which means the
+ * share was too small for the game - and it stays in the pool after: it is
+ * counted, and said once for each class.
  *
  * The lists are threaded through the images' own entries, and nothing is
  * allocated to take an image or to give one back. Only the thread that
@@ -108,7 +109,7 @@ public:
 	 * all TEXTURES if null) and the given relative use (@use, in eighths:
 	 * 8 for a format games use as much as 565). What the textures take is
 	 * a sixteenth of what the budget has left, but no less than 16 MB and
-	 * no more than 64 MB: three quarters of it the square ones, a quarter
+	 * no more than 128 MB: three quarters of it the square ones, a quarter
 	 * the rectangles. Returns the bytes, the targets' too. */
 	static u64 Plan(const VramBudget& budget, const u32 *texel, const u32 *use, const u8 *kind, u32 formats, u32 *counts)
 	{
@@ -135,8 +136,8 @@ public:
 		want = (u64)budget.available_kib() * 1024 / 16;
 		if (want < 16ull << 20)
 			want = 16ull << 20;
-		if (want > 64ull << 20)
-			want = 64ull << 20;
+		if (want > 128ull << 20)
+			want = 128ull << 20;
 		// the tables above times their part of want / unit, rounded up (the units are in eighths)
 		const u64 squares = want * 8 * 3 / 4, rects = want * 8 / 4;
 		for (f = 0; f < formats && f < MAX_FORMATS; f++)

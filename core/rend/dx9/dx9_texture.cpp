@@ -54,8 +54,8 @@ void DX9TexturePool::Init(DX9Context *context, const DX9TexDecoder *decoder)
 	book.Reset(1);
 	/* how much games use them, in eighths of what they use 565: the ones
 	 * the processor writes fewer when the pixel shader draws most */
-	static const u32 written[FORMATS] = { 8, 4, 4, 4, 2, 0, 0, 0, 0, 0, 0 };
-	static const u32 shared[FORMATS] = { 4, 2, 2, 2, 1, 8, 4, 4, 4, 2, 0 };
+	static const u32 written[FORMATS] = { 8, 6, 6, 4, 2, 0, 0, 0, 0, 0, 0 };
+	static const u32 shared[FORMATS] = { 4, 3, 3, 2, 1, 8, 6, 6, 4, 2, 0 };
 	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, TexPoolBook::TARGETS };
 	u32 have[FORMATS];
 	for (u32 f = 0; f < FORMATS; f++)

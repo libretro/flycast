@@ -90,10 +90,21 @@ void GLTexturePool::Init()
 	storage = gl.gl_major > 4 || (gl.gl_major == 4 && gl.gl_minor >= 2);
 	book.Reset(1);
 	// how much games use them, in eighths of what they use 565
-	static const u32 use[FORMATS] = { 8, 4, 4, 4, 2, 0, 0 };
+	static const u32 use[FORMATS] = { 8, 6, 6, 4, 2, 0, 0 };
 	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, TexPoolBook::TARGETS, TexPoolBook::TARGETS };
 	u32 counts[TexPoolBook::CLASSES];
-	const u64 bytes = TexPoolBook::Plan(gl.vram_budget, poolTexel, use, kind, FORMATS, counts);
+	/* (A driver that does not say what video memory there is - neither
+	 * GL_NVX_gpu_memory_info nor GL_ATI_meminfo, which is most of them - has
+	 * a budget that is a guess, and a low one: the pool is made as for a
+	 * card with 1.5 GB to spare, 96 MB of textures, which Jet Grind Radio's
+	 * scenes need.) */
+	VramBudget budget = gl.vram_budget;
+	if (!budget.exact && budget.available_kib() < (1536u << 10))
+	{
+		budget.budget_kib = 1536u << 10;
+		budget.usage_kib = 0;
+	}
+	const u64 bytes = TexPoolBook::Plan(budget, poolTexel, use, kind, FORMATS, counts);
 	ready = true;
 	while (glGetError() != GL_NO_ERROR)
 		;

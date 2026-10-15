@@ -46,7 +46,7 @@ void DX11TexturePool::Init(ID3D11Device *device, const VramBudget& budget, const
 	this->device = device;
 	book.Reset(1);
 	// how much games use them, in eighths of what they use 565
-	static const u32 use[FORMATS] = { 8, 4, 4, 4, 2, 0 };
+	static const u32 use[FORMATS] = { 8, 6, 6, 4, 2, 0 };
 	static const u8 kind[FORMATS] = { 0, 0, 0, 0, 0, TexPoolBook::TARGETS };
 	u32 have[FORMATS];
 	for (int f = 0; f < FORMATS; f++)
