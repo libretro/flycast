@@ -1,7 +1,8 @@
 /* GPU-side TA processing, its decode (core/rend/ta_gpu.h): the kernels run
- * on a Vulkan device, and the same steps run one after the other on the
- * CPU (the model), for ta_gpu_test_cpu.cpp to compare with the core's own
- * parse of each frame. See ta_gpu_test.sh.
+ * on a Vulkan device - or, built with TGT_GL, in OpenGL (ta_gpu_test_gl.c) -
+ * and the same steps run one after the other on the CPU (the model), for
+ * ta_gpu_test_cpu.cpp to compare with the core's own parse of each frame.
+ * See ta_gpu_test.sh.
  *
  * The device is Mesa's software one where it is installed (lavapipe); the
  * validation layer is on with TAG_VALIDATE=1, and any error it reports
@@ -14,7 +15,9 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#ifndef TGT_GL
 #include <vulkan/vulkan.h>
+#endif
 
 /* the model's indices (before the header, which takes them as given) */
 static unsigned *m_idx;
@@ -104,6 +107,69 @@ int tgt_softfloat_test(void)
    return bad == 0;
 }
 
+/* ---- What both devices and the model share ---- */
+
+static struct tgt_sizes sizes;
+static unsigned layout_words[13];
+static unsigned work_words;
+
+/* the model's own */
+static unsigned *m_vtx, *m_mod, *m_work, *m_rec, *m_cmd, *m_frm, *m_trd, *m_trp;
+
+/* The layout, as the renderers make it (the data from word 0), and the
+ * model's buffers */
+static void model_init(const struct tgt_sizes *sz, unsigned *layout)
+{
+   unsigned i, strips, w[9];
+   sizes = *sz;
+   strips = sz->list[0] + sz->list[1] + sz->list[2];
+   work_words = tag_work_layout(sz->verts, strips, sz->headers, w);
+   layout[0] = 0;
+   for (i = 0; i < 9; i++)
+      layout[1 + i] = w[i];
+   layout[10] = 0;
+   layout[11] = sz->list[0] * TAG_C_WORDS;
+   layout[12] = (sz->list[0] + sz->list[1]) * TAG_C_WORDS;
+   memcpy(layout_words, layout, sizeof(layout_words));
+
+   m_vtx = (unsigned *)calloc((size_t)sz->verts * TAG_V_WORDS, 4);
+   m_mod = (unsigned *)calloc((size_t)sz->modtrig * 9 + 1, 4);
+   m_idx = (unsigned *)calloc(sz->idx, 4);
+   m_room_idx = sz->idx;
+   m_work = (unsigned *)calloc(work_words, 4);
+   m_rec = (unsigned *)calloc((size_t)strips * TAG_C_WORDS, 4);
+   m_cmd = (unsigned *)calloc((size_t)sz->headers * 2 * TAG_C_WORDS, 4);
+   m_frm = (unsigned *)calloc(TAG_O_WORDS, 4);
+   m_trd = (unsigned *)calloc((size_t)(sz->verts + sz->headers) * TAG_C_WORDS, 4);
+   m_trp = (unsigned *)calloc((size_t)sz->list[2] * TAG_P_WORDS, 4);
+}
+
+static double now_ms(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+
+static unsigned char *read_file(const char *path, size_t *size)
+{
+   FILE *f = fopen(path, "rb");
+   unsigned char *p;
+   long n;
+   if (!f) { printf("no %s\n", path); exit(2); }
+   fseek(f, 0, SEEK_END);
+   n = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   p = (unsigned char *)malloc((size_t)n);
+   if (fread(p, 1, (size_t)n, f) != (size_t)n) exit(2);
+   fclose(f);
+   *size = (size_t)n;
+   return p;
+}
+
+#ifdef TGT_GL
+#include "ta_gpu_test_gl.c"
+#else
 /* ---- Vulkan ---- */
 
 static int validation_errors;
@@ -133,22 +199,6 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL on_message(VkDebugUtilsMessageSeverityFlag
          printf("validation: %s\n", data->pMessage);
    }
    return VK_FALSE;
-}
-
-static unsigned char *read_file(const char *path, size_t *size)
-{
-   FILE *f = fopen(path, "rb");
-   unsigned char *p;
-   long n;
-   if (!f) { printf("no %s\n", path); exit(2); }
-   fseek(f, 0, SEEK_END);
-   n = ftell(f);
-   fseek(f, 0, SEEK_SET);
-   p = (unsigned char *)malloc((size_t)n);
-   if (fread(p, 1, (size_t)n, f) != (size_t)n) exit(2);
-   fclose(f);
-   *size = (size_t)n;
-   return p;
 }
 
 static VkPipeline make_pipeline(const char *path)
@@ -227,12 +277,6 @@ static struct buffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage)
 /* the buffers, in the kernels' bindings' order: the data, then set 1's */
 enum { B_TA, B_TAB, B_VTX, B_MOD, B_IDX, B_WORK, B_REC, B_CMD, B_FRM, B_TRD, B_TRP, B_COUNT };
 static struct buffer bufs[B_COUNT];
-static struct tgt_sizes sizes;
-static unsigned layout_words[13];
-static unsigned work_words;
-
-/* the model's own */
-static unsigned *m_vtx, *m_mod, *m_work, *m_rec, *m_cmd, *m_frm, *m_trd, *m_trp;
 
 int tgt_validation_errors(void)
 {
@@ -260,7 +304,7 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    VkDescriptorBufferInfo infos[B_COUNT];
    VkWriteDescriptorSet writes[2];
    char path[1024];
-   unsigned i, strips, w[9];
+   unsigned i, strips;
 
    sizes = *sz;
    app.apiVersion = VK_API_VERSION_1_1;
@@ -315,16 +359,8 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
       pipelines[i] = make_pipeline(path);
    }
 
-   /* the layout, as the renderer makes it: the data from word 0 */
+   model_init(sz, layout);
    strips = sz->list[0] + sz->list[1] + sz->list[2];
-   work_words = tag_work_layout(sz->verts, strips, sz->headers, w);
-   layout[0] = 0;
-   for (i = 0; i < 9; i++)
-      layout[1 + i] = w[i];
-   layout[10] = 0;
-   layout[11] = sz->list[0] * TAG_C_WORDS;
-   layout[12] = (sz->list[0] + sz->list[1]) * TAG_C_WORDS;
-   memcpy(layout_words, layout, sizeof(layout_words));
 
    bufs[B_TA] = make_buffer((VkDeviceSize)sz->ta_words * 4, 0);
    bufs[B_TAB] = make_buffer((VkDeviceSize)sz->table_words * 4, 0);
@@ -364,17 +400,6 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
    writes[1].pBufferInfo = &infos[B_TAB];
    vkUpdateDescriptorSets(device, 2, writes, 0, NULL);
-
-   m_vtx = (unsigned *)calloc((size_t)sz->verts * TAG_V_WORDS, 4);
-   m_mod = (unsigned *)calloc((size_t)sz->modtrig * 9 + 1, 4);
-   m_idx = (unsigned *)calloc(sz->idx, 4);
-   m_room_idx = sz->idx;
-   m_work = (unsigned *)calloc(work_words, 4);
-   m_rec = (unsigned *)calloc((size_t)strips * TAG_C_WORDS, 4);
-   m_cmd = (unsigned *)calloc((size_t)sz->headers * 2 * TAG_C_WORDS, 4);
-   m_frm = (unsigned *)calloc(TAG_O_WORDS, 4);
-   m_trd = (unsigned *)calloc((size_t)(sz->verts + sz->headers) * TAG_C_WORDS, 4);
-   m_trp = (unsigned *)calloc((size_t)sz->list[2] * TAG_P_WORDS, 4);
 }
 
 static void barrier(VkAccessFlags src, VkPipelineStageFlags src_stage, VkAccessFlags dst, VkPipelineStageFlags dst_stage)
@@ -405,13 +430,6 @@ static void dispatch_indirect(unsigned k, unsigned at)
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[k]);
    vkCmdDispatchIndirect(cmd, bufs[B_FRM].buffer, (VkDeviceSize)at * 4);
    compute_barrier();
-}
-
-static double now_ms(void)
-{
-   struct timespec ts;
-   clock_gettime(CLOCK_MONOTONIC, &ts);
-   return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
 void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned table_words, unsigned trd, struct tgt_out *o, double *ms)
@@ -476,6 +494,8 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    o->trd = (const unsigned *)bufs[B_TRD].mapped;
    o->trp = (const unsigned *)bufs[B_TRP].mapped;
 }
+
+#endif
 
 /* ---- The model: the kernels' steps, one after the other ---- */
 
@@ -750,7 +770,8 @@ int tgt_model(const void *ta, const unsigned *table, unsigned trd, struct tgt_ou
          continue;
       li = (r - table[TAG_T_REC_TR]) / TAG_C_WORDS;
       m_trp[li * TAG_P_WORDS] = (table[hdr + TAG_H_STATE + TAG_S_TSP] & 0xFFFF00C0u)
-            | ((table[hdr + TAG_H_STATE + TAG_S_ISP] >> 16) & 0xE400u) | ((table[hdr + TAG_H_STATE + TAG_S_PCW] >> 7) & 1u);
+            | ((table[hdr + TAG_H_STATE + TAG_S_ISP] >> 16) & 0xE400u) | ((table[hdr + TAG_H_STATE + TAG_S_PCW] >> 7) & 1u)
+            | (table[hdr + TAG_H_STATE + TAG_S_TSP1] != 0xFFFFFFFFu || table[hdr + TAG_H_STATE + TAG_S_TCW1] != 0xFFFFFFFFu ? TAG_P_TWOVOL : 0u);
       m_trp[li * TAG_P_WORDS + 1] = table[hdr + TAG_H_STATE + TAG_S_TSP1];
       if (m_frm[TAG_O_OVERRUN] != 0)
          continue;

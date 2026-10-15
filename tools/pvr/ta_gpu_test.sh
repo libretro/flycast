@@ -17,7 +17,12 @@
 # be built for this machine first (make platform=unix). Needs
 # glslangValidator, and a Vulkan device: Mesa's software one (lavapipe,
 # mesa-vulkan-drivers) is used where it is installed. The validation layer
-# is on where it is installed; TAG_VALIDATE=0 turns it off. TAG_FLAT=1 looks
+# is on where it is installed; TAG_VALIDATE=0 turns it off. TAG_GL=1 runs
+# the kernels in OpenGL 4.3 instead, as the OpenGL renderers do (EGL with no
+# surface: Mesa's llvmpipe without a GPU), from their SPIR-V for OpenGL or,
+# with TAG_GL_SPIRV=0, from their text; the frames are then made as those
+# renderers draw them, and TAG_VALIDATE=1 is a debug context whose errors
+# fail the test. TAG_FLAT=1 looks
 # for flat strips (as SSAA does) and compares the draw groups' single-rate
 # bits as well. The program and
 # the kernels are made in $WORK (default: a new directory in $TMPDIR),
@@ -53,6 +58,21 @@ while [ $k -le 14 ]; do
    k=$((k + 1))
 done
 echo "ta_gpu: the C89 and C++ header and the 14 kernels compile"
+if [ -n "$TAG_GL" ] && [ "$TAG_GL" != 0 ]; then
+   # ...for OpenGL as well, as SPIR-V and as the text the renderers compile (tools/rend/kernels_spv.sh's)
+   k=1
+   while [ $k -le 14 ]; do
+      { echo "#version 430"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_SHADER_GL"; echo "#define TAG_KERNEL $k"; cat core/rend/ta_gpu.h; } > "$WORK/k$k.gl.comp"
+      glslangValidator -G -g0 --target-env opengl -S comp -o "$WORK/k$k.gl.spv" "$WORK/k$k.gl.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
+      k=$((k + 1))
+   done
+   DEVICE_FLAGS=-DTGT_GL
+   DEVICE_LIBS=-lEGL
+   echo "ta_gpu: ...and for OpenGL"
+else
+   DEVICE_FLAGS=
+   DEVICE_LIBS=-lvulkan
+fi
 
 # the program: the frontend, the comparison, and the core's objects, with
 # ta_parse_vdrc() and the frontend's dlopen() wrapped
@@ -60,10 +80,10 @@ CORE_FLAGS=$(make -n platform=unix -W core/hw/pvr/ta_vtx.cpp core/hw/pvr/ta_vtx.
    | sed -e 's/^g++ //' -e 's/ -c / /' -e 's/ -MMD -MP .*$//' -e 's/-DGIT_VERSION=[^ ]* [^ ]*//')
 OBJS=$(make -n platform=unix -W core/hw/pvr/ta_vtx.cpp 2>/dev/null | tail -1 | tr ' ' '\n' | grep '\.o$' | grep -v 'glslang.js.o')
 ${CC:-cc} -O1 -c -o "$WORK/headless.o" tools/threads/headless.c
-${CC:-cc} -std=c99 -O2 -Wall -iquote core/rend -Icore/libretro-common/include -iquote tools/pvr -c -o "$WORK/test.o" tools/pvr/ta_gpu_test.c
+${CC:-cc} -std=c99 -O2 -Wall $DEVICE_FLAGS -iquote core/rend -Icore/libretro-common/include -iquote tools/pvr -c -o "$WORK/test.o" tools/pvr/ta_gpu_test.c
 ${CXX:-g++} $CORE_FLAGS -Itools/pvr -w -c -o "$WORK/cpu.o" tools/pvr/ta_gpu_test_cpu.cpp
 ${CXX:-g++} -fopenmp -rdynamic -o "$WORK/ta_gpu_test" "$WORK/headless.o" "$WORK/test.o" "$WORK/cpu.o" $OBJS \
-   -Wl,--wrap=dlopen -Wl,--wrap=_Z13ta_parse_vdrcP10TA_context -lvulkan -lGL -lrt -lpthread -lm -ldl
+   -Wl,--wrap=dlopen -Wl,--wrap=_Z13ta_parse_vdrcP10TA_context $DEVICE_LIBS -lGL -lrt -lpthread -lm -ldl
 # an OpenGL that does nothing, for the core's renderer (headless.sh's)
 nm -D --undefined-only "$WORK/ta_gpu_test" | awk '{print $NF}' | sed 's/@.*//' | grep '^gl' \
    | python3 tools/threads/headless_gl.py > "$WORK/nogl.c" || true

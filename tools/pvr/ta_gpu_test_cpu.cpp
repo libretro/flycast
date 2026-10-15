@@ -63,6 +63,10 @@ static TaGpuLayout layout;
 static u32 *table;
 static u32 table_room;
 static bool ready;
+/* The device is OpenGL (TAG_GL=1, ta_gpu_test_gl.c): its renderers take a flat
+ * triangle's colours from its last vertex, so the frames are made without
+ * TA_GPU_PROVOKE, and GenSorted() and the GPU sort wind as for OpenGL */
+static bool gl_device;
 // the frame as the header pass takes it, before the parse
 static PolyParam saved_bg;
 static FB_X_CLIP_type saved_x_clip;
@@ -125,6 +129,8 @@ static void report(void)
 
 static void setup(void)
 {
+	// (TAG_GL=1: the device is OpenGL, and the frames are made as its renderers draw them: see gl_device)
+	gl_device = getenv("TAG_GL") != NULL && atoi(getenv("TAG_GL")) != 0;
 	TaGpuSizes sz;
 	struct tgt_sizes ts;
 	unsigned words[13];
@@ -163,10 +169,11 @@ static const char *compare(TA_context *ctx, const TaGpuFrame &gf, const tgt_out 
 	const u32 nv = (u32)rc.verts.used();
 
 	/* the vertices as the Vulkan renderers draw them: the parse's, with the
-	 * provoking vertex's colours moved (BaseDrawer::SetProvokingVertices()) */
+	 * provoking vertex's colours moved (BaseDrawer::SetProvokingVertices());
+	 * as the OpenGL ones do (TAG_GL), the parse's */
 	static std::vector<Vertex> drawn;
 	drawn.assign(rc.verts.head(), rc.verts.head() + nv);
-	for (u32 l = 0; l < 3; l++)
+	for (u32 l = 0; l < (gl_device ? 0u : 3u); l++)
 		for (int i = 0; i < lists[l]->used(); i++)
 		{
 			const PolyParam &pp = lists[l]->head()[i];
@@ -291,7 +298,8 @@ static const char *compare(TA_context *ctx, const TaGpuFrame &gf, const tgt_out 
 		for (int i = 0; i < tr.used(); i++)
 		{
 			const PolyParam &pp = tr.head()[i];
-			if (o.trp[i * TAG_P_WORDS] != ((pp.tsp.full & 0xffff00c0) | ((pp.isp.full >> 16) & 0xe400) | ((pp.pcw.full >> 7) & 1))
+			if (o.trp[i * TAG_P_WORDS] != ((pp.tsp.full & 0xffff00c0) | ((pp.isp.full >> 16) & 0xe400) | ((pp.pcw.full >> 7) & 1)
+					| (pp.tsp1.full != (u32)-1 || pp.tcw1.full != (u32)-1 ? TAG_P_TWOVOL : 0u))
 					|| o.trp[i * TAG_P_WORDS + 1] != pp.tsp1.full)
 			{
 				snprintf(why, room, "translucent polygon parameter words %d", i);
@@ -538,7 +546,7 @@ static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
 		{
 			idx.clear();
 			const clk::time_point t0 = clk::now();
-			GenSorted(prev.tr_count, cur.tr_count - prev.tr_count, polys, idx, true);
+			GenSorted(prev.tr_count, cur.tr_count - prev.tr_count, polys, idx, !gl_device);
 			*us += std::chrono::duration<double, std::micro>(clk::now() - t0).count();
 			for (const SortTrigDrawParam &r : polys)
 			{
@@ -553,7 +561,7 @@ static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
 			const size_t sorted = idx.size();
 			polys.clear();
 			GenPrepass(prev.tr_count, cur.tr_count - prev.tr_count,
-					p == rc.render_passes.used() - 1, polys, idx, true);
+					p == rc.render_passes.used() - 1, polys, idx, !gl_device);
 			for (const SortTrigDrawParam &r : polys)
 			{
 				SortTrigDrawParam q = r;
@@ -960,7 +968,7 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 	const bool table_ok = ctx->walk_count != TA_WALK_INVALID || ctx->tad.End() == ctx->tad.thd_root;
 	/* (once untimed: the textures the frame asks for are converted, and the
 	 * pass timed below finds them made, as the parse after it does) */
-	const u32 flags = TA_GPU_PROVOKE | TA_GPU_INSTANCE;
+	const u32 flags = (gl_device ? 0 : TA_GPU_PROVOKE) | TA_GPU_INSTANCE;
 	snap_pre(ctx);
 	saved_bg = *ctx->rend.global_param_op.head();
 	saved_x_clip = ctx->rend.fb_X_CLIP;
