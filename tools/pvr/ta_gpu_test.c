@@ -333,7 +333,8 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    bufs[B_IDX] = make_buffer((VkDeviceSize)sz->idx * 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
    bufs[B_WORK] = make_buffer((VkDeviceSize)work_words * 4, 0);
    bufs[B_REC] = make_buffer((VkDeviceSize)strips * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-   bufs[B_CMD] = make_buffer((VkDeviceSize)sz->headers * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+   /* (and the second commands for shadows, TAG_T_SHD_CMD) */
+   bufs[B_CMD] = make_buffer((VkDeviceSize)sz->headers * 2 * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_FRM] = make_buffer(TAG_O_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_TRD] = make_buffer((VkDeviceSize)(sz->verts + sz->headers) * TAG_C_WORDS * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
    bufs[B_TRP] = make_buffer((VkDeviceSize)sz->list[2] * TAG_P_WORDS * 4, 0);
@@ -370,7 +371,7 @@ void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, uns
    m_room_idx = sz->idx;
    m_work = (unsigned *)calloc(work_words, 4);
    m_rec = (unsigned *)calloc((size_t)strips * TAG_C_WORDS, 4);
-   m_cmd = (unsigned *)calloc((size_t)sz->headers * TAG_C_WORDS, 4);
+   m_cmd = (unsigned *)calloc((size_t)sz->headers * 2 * TAG_C_WORDS, 4);
    m_frm = (unsigned *)calloc(TAG_O_WORDS, 4);
    m_trd = (unsigned *)calloc((size_t)(sz->verts + sz->headers) * TAG_C_WORDS, 4);
    m_trp = (unsigned *)calloc((size_t)sz->list[2] * TAG_P_WORDS, 4);
@@ -447,6 +448,8 @@ void tgt_gpu(const void *ta, unsigned ta_bytes, const unsigned *table, unsigned 
    dispatch_indirect(TAG_K_STATES, TAG_O_ARGSCH);
    dispatch_indirect(TAG_K_EMIT, TAG_O_ARGS64);
    dispatch(TAG_K_FINISH, (nslot + 63u) / 64u);
+   if (table[TAG_T_NSHD] != 0)
+      dispatch(TAG_K_SHADOW, table[TAG_T_NSHD] < 65535u ? table[TAG_T_NSHD] : 65535u);
    if (trd != 0)
       dispatch_indirect(TAG_K_TRDRAW, TAG_O_ARGS64);
    if (table[TAG_T_FLAGS] & TAG_FLAG_BLEED)
@@ -679,6 +682,27 @@ int tgt_model(const void *ta, const unsigned *table, unsigned trd, struct tgt_ou
       m_cmd[i * TAG_C_WORDS + 2] = first;
       m_cmd[i * TAG_C_WORDS + 3] = 0;
       m_cmd[i * TAG_C_WORDS + 4] = 0;
+   }
+
+   /* the draw groups for shadows: each one's rectangle, one index after
+    * the other, against its render pass's */
+   for (i = 0; i < table[TAG_T_NSHD]; i++)
+   {
+      unsigned base = table[TAG_T_OFF_SHD], w = table[base + TAG_SH_ENTRY + i];
+      unsigned at = TAG_SH_SLOT(w) * TAG_C_WORDS, a = base + TAG_SH_AREA + TAG_SH_PASS(w) * 4u;
+      unsigned count = m_cmd[at + TAG_C_COUNT], first = m_cmd[at + TAG_C_FIRST], o;
+      tag_bounds b = tag_bounds_none();
+      for (k = 0; k < count; k++)
+      {
+         const unsigned *x = &m_vtx[m_idx[first + k] * TAG_V_WORDS];
+         b = tag_bounds_add(b, x[TAG_V_X], x[TAG_V_Y]);
+      }
+      o = (table[TAG_T_SHD_CMD] + TAG_SH_SLOT(w)) * TAG_C_WORDS;
+      m_cmd[o + TAG_C_COUNT] = count != 0 && tag_bounds_meet(b, table[a], table[a + 1], table[a + 2], table[a + 3]) ? count : 0;
+      m_cmd[o + TAG_C_INST] = 1;
+      m_cmd[o + TAG_C_FIRST] = first;
+      m_cmd[o + 3] = 0;
+      m_cmd[o + 4] = 0;
    }
 
    if ((table[TAG_T_FLAGS] & TAG_FLAG_BLEED) && m_frm[TAG_O_OVERRUN] == 0)

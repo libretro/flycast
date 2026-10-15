@@ -52,12 +52,12 @@ ${CXX:-c++} -x c++ -std=c++11 -Wall -Wextra -Werror -Wno-unused-function -Icore/
 
 # the kernels, as the renderer makes them (vulkan/ta_decoder.cpp)
 k=1
-while [ $k -le 13 ]; do
+while [ $k -le 14 ]; do
    { echo "#version 450"; echo "#define TAG_SHADER_GLSL"; echo "#define TAG_KERNEL $k"; cat core/rend/ta_gpu.h; } > "$WORK/k$k.comp"
    glslangValidator -V --target-env vulkan1.1 -o "$WORK/k$k.spv" "$WORK/k$k.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
    k=$((k + 1))
 done
-echo "ta_gpu: the C89 and C++ header and the 13 kernels compile"
+echo "ta_gpu: the C89 and C++ header and the 14 kernels compile"
 
 # the program: the frontend, the comparison, and the core's objects, with
 # ta_parse_vdrc() and the frontend's dlopen() wrapped

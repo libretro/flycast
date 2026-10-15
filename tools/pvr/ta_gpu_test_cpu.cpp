@@ -16,6 +16,8 @@
 #include "hw/pvr/ta.h"
 #include "hw/pvr/Renderer_if.h"
 #include "rend/ta_gpu.h"
+#include "rend/sorter.h"
+#include "rend/shadows.h"
 #include "ta_gpu_test.h"
 
 #include <dlfcn.h>
@@ -34,6 +36,8 @@ extern "C" void *__wrap_dlopen(const char *file, int mode)
 
 extern "C" bool __real__Z13ta_parse_vdrcP10TA_context(TA_context *ctx);
 
+typedef std::chrono::steady_clock clk;
+
 static struct
 {
 	u32 seen, prepared, compared, same, differ, model_differ, scan_differ;
@@ -44,6 +48,13 @@ static struct
 	u32 verts, idx, strips;
 	std::vector<double> prep_us, parse_us;
 	double gpu_ms;
+	// the translucent triangles sorted from the frame's depths (TA_GPU_SORT), against GenSorted()
+	u32 sort_frames, sort_same, sort_differ;
+	u64 sort_tris, sort_runs;
+	std::vector<double> sort_us, gensorted_us;
+	// the draw groups drawn again for shadows (TA_GPU_SHADOWS), against PolyOverlaps()
+	u32 shadow_frames, shadow_same, shadow_differ;
+	u64 shadow_groups, shadow_drawn;
 } st;
 
 static TaGpuLayout layout;
@@ -90,9 +101,17 @@ static void report(void)
 			st.drawn, st.draw_same, st.draw_differ, st.draw_left, st.draw_why[TA_GPU_WHY_PARSE], st.draw_why[TA_GPU_WHY_ROOM]);
 	printf("ta_gpu_test: overrun at the exact room: %u frames, %u trials, the parse and the GPU agree on %u\n",
 			st.edge_frames, st.edge_trials, st.edge_agree);
+	printf("ta_gpu_test: sorted from the frame's depths: %u frames, %u the same as GenSorted(), %u different; per frame %.0f triangles, %.0f draws; "
+			"the sort mean %.1f us, p99 %.1f us, max %.1f us; GenSorted() mean %.1f us, p99 %.1f us, max %.1f us\n",
+			st.sort_frames, st.sort_same, st.sort_differ, st.sort_frames ? (double)st.sort_tris / st.sort_frames : 0.0,
+			st.sort_frames ? (double)st.sort_runs / st.sort_frames : 0.0,
+			mean(st.sort_us), pct(st.sort_us, 0.99), pct(st.sort_us, 1.0), mean(st.gensorted_us), pct(st.gensorted_us, 0.99), pct(st.gensorted_us, 1.0));
+	printf("ta_gpu_test: shadows the GPU decides: %u frames, %u the same as the parse's, %u different; %llu groups named, %llu drawn again\n",
+			st.shadow_frames, st.shadow_same, st.shadow_differ, (unsigned long long)st.shadow_groups, (unsigned long long)st.shadow_drawn);
 	printf("ta_gpu_test: validation errors: %d\n", tgt_validation_errors());
 	printf("ta_gpu_test: %s\n", st.differ == 0 && st.model_differ == 0 && st.scan_differ == 0 && tgt_validation_errors() == 0
-			&& st.overrun == st.overrun_agree && st.compared > 0 && st.draw_differ == 0 && st.edge_agree == st.edge_trials ? "PASS" : "FAIL");
+			&& st.overrun == st.overrun_agree && st.compared > 0 && st.draw_differ == 0 && st.edge_agree == st.edge_trials
+			&& st.sort_differ == 0 && st.shadow_differ == 0 ? "PASS" : "FAIL");
 	fflush(stdout);
 }
 
@@ -103,6 +122,7 @@ static void setup(void)
 	unsigned words[13];
 
 	ta_set_gpu_processing(true);
+	ta_gpu_sort_reserve(true);
 	ta_gpu_sizes(&sz);
 	ts.ta_words = ta_data_size() / 4;
 	ts.table_words = sz.table_words;
@@ -437,6 +457,186 @@ static void edge_check(TA_context *ctx, const TaGpuFrame &gf, const tgt_out &o)
 	parse_again(ctx, -1, 0);
 }
 
+/* Whether two polygon parameters are drawn the same way, texture and all */
+static bool same_draw_state(const PolyParam &a, const PolyParam &b)
+{
+	return a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full && ((a.pcw.full ^ b.pcw.full) & ~0x100u) == 0
+			&& a.isp.full == b.isp.full && a.tsp1.full == b.tsp1.full && a.tcw1.full == b.tcw1.full
+			&& a.tileclip == b.tileclip && a.texid == b.texid && a.texid1 == b.texid1;
+}
+
+/* GenSorted() of the parse's frame, each sorted render pass, the draws'
+ * first counting from the first pass's first index, as the Vulkan
+ * per-triangle renderer has them (Drawer::SortTriangles()); the polygon
+ * parameters' words kept, which the header pass's lists then replace */
+struct SortRef
+{
+	std::vector<SortTrigDrawParam> runs;
+	std::vector<PolyParam> pp;
+	std::vector<u32> idx;
+};
+
+static void gensorted_ref(TA_context *ctx, SortRef &ref, double *us)
+{
+	static std::vector<SortTrigDrawParam> polys;
+	static std::vector<u32> idx;
+	TA_context *const saved = _pvrrc;
+	const rend_context &rc = ctx->rend;
+	RenderPass prev = {};
+	_pvrrc = ctx;
+	ref.runs.clear();
+	ref.pp.clear();
+	ref.idx.clear();
+	*us = 0;
+	for (int p = 0; p < rc.render_passes.used(); p++)
+	{
+		const RenderPass &cur = rc.render_passes.head()[p];
+		if (cur.autosort)
+		{
+			idx.clear();
+			const clk::time_point t0 = clk::now();
+			GenSorted(prev.tr_count, cur.tr_count - prev.tr_count, polys, idx, true);
+			*us += std::chrono::duration<double, std::micro>(clk::now() - t0).count();
+			for (const SortTrigDrawParam &r : polys)
+			{
+				SortTrigDrawParam q = r;
+				q.first += (u32)ref.idx.size();
+				ref.runs.push_back(q);
+				ref.pp.push_back(*r.ppid);
+			}
+			ref.idx.insert(ref.idx.end(), idx.begin(), idx.end());
+		}
+		prev = cur;
+	}
+	_pvrrc = saved;
+}
+
+/* The header pass's sort (TA_GPU_SORT) against GenSorted()'s: the same
+ * indices, and the same draws of them, drawn the same way */
+static const char *compare_sorted(const SortRef &ref, const TaGpuFrame &gf, char *why, size_t room)
+{
+	static std::vector<u32> idx;
+	idx.assign(ta_gpu_sorted_indices(), 0);
+	if (!idx.empty())
+		ta_gpu_sorted_write(idx.data());
+	if (idx.size() != ref.idx.size())
+	{
+		snprintf(why, room, "sorted indices: %zu, GenSorted() %zu", idx.size(), ref.idx.size());
+		return why;
+	}
+	for (size_t i = 0; i < idx.size(); i++)
+		if (idx[i] != ref.idx[i])
+		{
+			snprintf(why, room, "sorted index %zu of %zu: %u, GenSorted() %u", i, idx.size(), idx[i], ref.idx[i]);
+			return why;
+		}
+	size_t k = 0;
+	for (u32 p = 0; p < gf.passes; p++)
+	{
+		u32 n;
+		const SortTrigDrawParam *r = ta_gpu_sorted(p, &n);
+		for (u32 j = 0; j < n; j++, k++)
+			if (k >= ref.runs.size() || r[j].first != ref.runs[k].first || r[j].count != ref.runs[k].count
+					|| !same_draw_state(*r[j].ppid, ref.pp[k]))
+			{
+				snprintf(why, room, "sorted draw %zu (pass %u): first %u count %u, GenSorted() %s", k, p, r[j].first, r[j].count,
+						k >= ref.runs.size() ? "has fewer" : "differs");
+				return why;
+			}
+	}
+	if (k != ref.runs.size())
+	{
+		snprintf(why, room, "sorted draws: %zu, GenSorted() %zu", k, ref.runs.size());
+		return why;
+	}
+	return NULL;
+}
+
+/* The draw groups drawn again for shadows (TA_GPU_SHADOWS): each render
+ * pass's volumes' bounds against ModVolBounds() of the parse's triangles,
+ * and the groups whose second commands the GPU (and the model) gives
+ * indices against those the CPU draws again (CanDrawShadowed() and
+ * PolyOverlaps() of the parse's groups), with the header pass's frame in
+ * the context and the parse's vertices, indices and triangles */
+static const char *compare_shadows(TA_context *ctx, const TaGpuFrame &gf, const std::vector<PolyParam> *parse, char *why, size_t room)
+{
+	rend_context &rc = ctx->rend;
+	TA_context *const saved = _pvrrc;
+	const char *d = NULL;
+	tgt_out g, m;
+	double ms;
+	const u32 bytes = (u32)(ctx->tad.End() - ctx->tad.thd_root);
+	tgt_model(ctx->tad.thd_root, table, gf.trd, &m);
+	tgt_gpu(ctx->tad.thd_root, bytes, table, gf.table_words, gf.trd, &g, &ms);
+	const u32 base = table[TAG_T_OFF_SHD], n = table[TAG_T_NSHD], sc = table[TAG_T_SHD_CMD];
+	std::vector<std::pair<u32, u32>> gpu, cpu;
+	for (u32 e = 0; e < n && d == NULL; e++)
+	{
+		const u32 at = (sc + TAG_SH_SLOT(table[base + TAG_SH_ENTRY + e])) * TAG_C_WORDS;
+		if (memcmp(&g.cmd[at], &m.cmd[at], TAG_C_WORDS * 4) != 0)
+		{
+			snprintf(why, room, "shadow entry %u: the GPU and the model differ", e);
+			d = why;
+		}
+		else if (g.cmd[at + TAG_C_COUNT] > 2)
+			gpu.push_back(std::make_pair(g.cmd[at + TAG_C_FIRST], g.cmd[at + TAG_C_COUNT]));
+	}
+	st.shadow_groups += n;
+	st.shadow_drawn += gpu.size();
+	_pvrrc = ctx;
+	RenderPass prev = {};
+	List<PolyParam> *lists[2] = { &rc.global_param_op, &rc.global_param_pt };
+	for (int p = 0; p < rc.render_passes.used() && d == NULL; p++)
+	{
+		const RenderPass &cur = rc.render_passes.head()[p];
+		const ScreenBounds area = ModVolBounds(prev.mvo_count, cur.mvo_count - prev.mvo_count);
+		if (memcmp(&area, rc.gpu_shadow_area[p], sizeof(area)) != 0 || memcmp(&area, &table[base + TAG_SH_AREA + p * 4], sizeof(area)) != 0)
+		{
+			snprintf(why, room, "render pass %d: the volumes' bounds", p);
+			d = why;
+			break;
+		}
+		const u32 from[2] = { prev.op_count, prev.pt_count }, to[2] = { cur.op_count, cur.pt_count };
+		for (u32 l = 0; l < 2 && !area.empty(); l++)
+			for (u32 i = from[l]; i < to[l]; i++)
+			{
+				// the parse's group of the header pass's (by its command), and what the CPU does with it
+				const PolyParam &gp = lists[l]->head()[i];
+				const u32 *c = &g.cmd[gp.first * TAG_C_WORDS];
+				if (c[TAG_C_COUNT] == 0)
+					continue;
+				const PolyParam *pp = NULL;
+				for (const PolyParam &q : parse[l])
+					if (q.count == c[TAG_C_COUNT] && q.first == c[TAG_C_FIRST])
+					{
+						pp = &q;
+						break;
+					}
+				if (pp == NULL)
+				{
+					snprintf(why, room, "render pass %d: no group of the parse's at %u", p, c[TAG_C_FIRST]);
+					d = why;
+					break;
+				}
+				/* (a group of two vertices, which the header pass's count is,
+				 * makes only triangles of no area, whatever its indices: the
+				 * renderer leaves it) */
+				if (CanDrawShadowed(l == 0 ? ListType_Opaque : ListType_Punch_Through, pp) && gp.count > 2 && PolyOverlaps(pp, area))
+					cpu.push_back(std::make_pair(pp->first, pp->count));
+			}
+		prev = cur;
+	}
+	_pvrrc = saved;
+	std::sort(gpu.begin(), gpu.end());
+	std::sort(cpu.begin(), cpu.end());
+	if (d == NULL && gpu != cpu)
+	{
+		snprintf(why, room, "the groups drawn again for shadows: %zu, the parse's %zu", gpu.size(), cpu.size());
+		d = why;
+	}
+	return d;
+}
+
 /* The frame made ready to draw from the GPU, as the Vulkan renderers have
  * it (TA_GPU_DRAW), against the parse's: each opaque and punch-through
  * draw group's command, in the lists' order, and each translucent one's
@@ -464,6 +664,11 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 	rc.fb_X_CLIP = saved_x_clip;
 	rc.fb_Y_CLIP = saved_y_clip;
 
+	static SortRef ref;
+	double gensorted_us = 0;
+	if (flags & TA_GPU_SORT)
+		gensorted_ref(ctx, ref, &gensorted_us);
+
 	TaGpuFrame gf;
 	const int cnt = ta_parse_cnt;
 	const bool ok = ta_gpu_prepare(ctx, &layout, table, table_room, &gf, flags | TA_GPU_DRAW);
@@ -476,11 +681,7 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 	else
 	{
 		ta_parse_cnt = cnt;
-		auto same_state = [](const PolyParam &a, const PolyParam &b) {
-			return a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full && ((a.pcw.full ^ b.pcw.full) & ~0x100u) == 0
-					&& a.isp.full == b.isp.full && a.tsp1.full == b.tsp1.full && a.tcw1.full == b.tcw1.full
-					&& a.tileclip == b.tileclip && a.texid == b.texid && a.texid1 == b.texid1;
-		};
+		auto same_state = same_draw_state;
 		for (u32 l = 0; l < 3 && d == NULL; l++)
 		{
 			size_t next = 0;
@@ -551,6 +752,33 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 			d = "the clipping rectangle";
 		if (d == NULL && (!rc.gpu || rc.gpu_modtrig != (u32)saved.modtrig.used()))
 			d = "the modifier volume triangles";
+		if (d == NULL && (flags & TA_GPU_SORT) && !ref.idx.empty())
+		{
+			st.sort_frames++;
+			st.sort_tris += ref.idx.size() / 3;
+			st.sort_runs += ref.runs.size();
+			st.sort_us.push_back(ta_gpu_sorted_ns() / 1e3);
+			st.gensorted_us.push_back(gensorted_us);
+			d = compare_sorted(ref, gf, why, room);
+			if (d == NULL)
+				st.sort_same++;
+			else
+				st.sort_differ++;
+		}
+		else if (d == NULL && (flags & TA_GPU_SORT) && ta_gpu_sorted_indices() != 0)
+		{
+			st.sort_differ++;
+			d = "sorted triangles where GenSorted() has none";
+		}
+		if (d == NULL && gf.shadows != 0)
+		{
+			st.shadow_frames++;
+			d = compare_shadows(ctx, gf, parse, why, room);
+			if (d == NULL)
+				st.shadow_same++;
+			else
+				st.shadow_differ++;
+		}
 	}
 	// the parse's frame, back
 	for (u32 l = 0; l < 3; l++)
@@ -574,8 +802,6 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 	rc.gpu_modtrig = 0;
 	return d;
 }
-
-typedef std::chrono::steady_clock clk;
 
 extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 {
@@ -654,7 +880,7 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 		printf("ta_gpu_test: frame %u differs from the parse: %s\n", st.seen, d);
 	/* and as the renderers draw it: its draw groups, by the device's
 	 * commands and records (the frame's tables made again, the same) */
-	d = compare_draw(ctx, g, flags, why, sizeof(why));
+	d = compare_draw(ctx, g, flags | TA_GPU_SORT | TA_GPU_SHADOWS, why, sizeof(why));
 	if (d != NULL && *d == 0)
 		st.draw_left++;
 	else

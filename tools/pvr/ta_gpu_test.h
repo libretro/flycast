@@ -21,7 +21,7 @@ struct tgt_out
    const unsigned *vtx, *mod, *idx, *rec, *cmd, *frm, *work, *trd, *trp;
 };
 
-/* The device and its kernels from @spv_dir (k1.spv to k13.spv), buffers
+/* The device and its kernels from @spv_dir (k1.spv to k14.spv), buffers
  * for @sz; @layout[13] gets the places, as TaGpuLayout has them */
 void tgt_init(const char *spv_dir, int validate, const struct tgt_sizes *sz, unsigned *layout);
 int tgt_validation_errors(void);
