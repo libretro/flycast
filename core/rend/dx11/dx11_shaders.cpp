@@ -178,6 +178,7 @@ cbuffer PolyConstants : register(b1)
 	float4 clipTest;
 	float trilinearAlpha;
 	float palette_index;
+	float prepassAlpha;
 };
 
 Texture2D tex : register(t0);
@@ -308,6 +309,10 @@ PSO main(in Pixel inpix)
 		discard;
 	color.a = 1.0;
 #endif
+	// The depth prepass of sorted translucent polygons (rend/sorter.h): the
+	// pixels that hide what is behind them. (0 for the colours.)
+	if (color.a < prepassAlpha)
+		discard;
 
 	PSO pso;
 	pso.depth = fragDepth(w);

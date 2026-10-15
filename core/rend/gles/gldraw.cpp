@@ -1,6 +1,7 @@
 #define PVR_REGS_FOR_RENDERER	// see hw/pvr/pvr_regs.h
 #include "gles.h"
 #include "rend/shadows.h"
+#include <cstring>
 
 /*
 
@@ -299,14 +300,32 @@ static void DrawList(const List<PolyParam>& gply, int first, int count)
 }
 
 static std::vector<SortTrigDrawParam> pidx_sort;
+// The depth prepass of the sorted list (rend/sorter.h), its indices after the sorted ones
+static std::vector<SortTrigDrawParam> pidx_prepass;
 
-static void SortTriangles(int first, int count)
+// (where the shaders write the depth: OpenGL ES 2 has them leave it, and a discard there would cost every polygon)
+static bool PrepassSupported()
 {
-	std::vector<u32> vidx_sort;
-	GenSorted(first, count, pidx_sort, vidx_sort);
+	return strcmp(gl.gl_version, "GLES2") != 0;
+}
+
+/* The sorted triangles of the render pass's translucent list, when they
+ * are drawn by triangle, and its depth prepass's: both uploaded */
+static void SortTriangles(int first, int count, bool sortTriangles, bool lastPass)
+{
+	// (kept from one frame to the next: no allocation once it has grown)
+	static std::vector<u32> vidx_sort;
+	vidx_sort.clear();
+	if (sortTriangles)
+		GenSorted(first, count, pidx_sort, vidx_sort);
+	else
+		pidx_sort.clear();
+	pidx_prepass.clear();
+	if (PrepassSupported())
+		GenPrepass(first, count, lastPass, pidx_prepass, vidx_sort);
 
 	//Upload to GPU if needed
-	if (!pidx_sort.empty())
+	if (!vidx_sort.empty())
 	{
 		//Bind and upload sorted index buffer
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs2); glCheck();
@@ -324,6 +343,30 @@ static void SortTriangles(int first, int count)
 		else
 			glBufferData(GL_ELEMENT_ARRAY_BUFFER, vidx_sort.size() * sizeof(u32), &vidx_sort[0], GL_STREAM_DRAW);
 	}
+}
+
+// The depth prepass of a sorted list: rend/sorter.h (with the sorted indices bound)
+static void DrawPrepass()
+{
+	if (pidx_prepass.empty())
+		return;
+	glcache.Enable(GL_STENCIL_TEST);
+	glcache.StencilFunc(GL_ALWAYS, 0, 0);
+	glcache.StencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	glcache.StencilMask(0);
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	for (const SortTrigDrawParam& d : pidx_prepass)
+	{
+		SetGPState<ListType_Translucent, true>(d.ppid);
+		glcache.DepthMask(GL_TRUE);
+		glcache.Disable(GL_BLEND);
+		glUniform1f(CurrentShader->prepass_alpha, PrepassAlwaysHides(d.ppid) ? -1.f : PREPASS_ALPHA_MIN);
+		glDrawElements(GL_TRIANGLES, d.count, gl.index_type, (GLvoid*)(gl.get_index_size() * d.first));
+		// (the colour pass draws with the same program)
+		glUniform1f(CurrentShader->prepass_alpha, 0.f);
+	}
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glcache.StencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 }
 
 void DrawSorted(bool multipass)
@@ -746,13 +789,24 @@ void DrawStrips()
 		{
 			if (current_pass.autosort)
 			{
+				const bool lastPass = render_pass == pvrrc.render_passes.used() - 1;
 				if (settings.pvr.Emulation.AlphaSortMode == 0)
 				{
-					SortTriangles(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count);
-					DrawSorted(render_pass < pvrrc.render_passes.used() - 1);
+					SortTriangles(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count, true, lastPass);
+					DrawPrepass();
+					DrawSorted(!lastPass);
+					// (DrawSorted() binds the main indices again only after sorted triangles)
+					if (pidx_sort.empty() && !pidx_prepass.empty())
+						glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
 				}
 				else
 				{
+					SortTriangles(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count, false, lastPass);
+					if (!pidx_prepass.empty())
+					{
+						DrawPrepass();
+						glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gl.vbo.idxs);
+					}
 					SortPParams(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count);
 					DrawList<ListType_Translucent, true>(pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count );
 				}

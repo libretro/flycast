@@ -164,6 +164,10 @@ uniform mediump vec4 fog_clamp_min;
 uniform mediump vec4 fog_clamp_max;
 uniform mediump sampler2D palette;
 uniform mediump int palette_index;
+#if TARGET_GL != GLES2
+// The depth prepass of sorted translucent polygons (rend/sorter.h): its least alpha, 0 for the colours
+uniform highp float prepass_alpha;
+#endif
 #if pp_Shadowed == 1
 uniform lowp float shade_scale_factor;
 #endif
@@ -358,6 +362,9 @@ void main()
 	#endif 
 	//color.rgb=vec3(gl_FragCoord.w * sp_FOG_DENSITY / 128.0);
 #if TARGET_GL != GLES2
+	// (only where the shader writes the depth anyway: a discard there costs nothing more)
+	if (color.a < prepass_alpha)
+		discard;
 	highp float w = gl_FragCoord.w * 100000.0;
 	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 #endif
@@ -681,7 +688,7 @@ bool CompilePipelineShader(	PipelineShader* s)
 	int rc = sprintf(vshader, VertexShaderSource, gl.glsl_version_header, gl.gl_version, s->pp_Gouraud);
 	verify(rc + 1 <= (int)sizeof(vshader));
 
-	char pshader[8192];
+	char pshader[16384];
 
 	rc = sprintf(pshader,PixelPipelineShader, gl.glsl_version_header, gl.gl_version,
                 s->cp_AlphaTest,s->pp_InsideClipping,s->pp_UseAlpha,
@@ -743,6 +750,7 @@ bool CompilePipelineShader(	PipelineShader* s)
 	}
 	s->normal_matrix = glGetUniformLocation(s->program, "normal_matrix");
 	s->shade_scale_factor = glGetUniformLocation(s->program, "shade_scale_factor");
+	s->prepass_alpha = glGetUniformLocation(s->program, "prepass_alpha");
 
 	ShaderUniforms.Set(s);
 

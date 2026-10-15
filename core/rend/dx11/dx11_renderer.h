@@ -75,7 +75,8 @@ protected:
 		float clipTest[4];
 		float trilinearAlpha;
 		float paletteIndex;
-		float padding[2];
+		float prepassAlpha;	// the depth prepass's least alpha (rend/sorter.h), 0 for the colour
+		float padding;
 	};
 	struct ScreenTarget
 	{
@@ -244,7 +245,12 @@ protected:
 	std::vector<std::vector<SortTrigDrawParam>> sortedPolys;
 	std::vector<std::vector<u32>> sortedIndexes;
 	u32 sortedIndexCount = 0;
+	// ...and the depth prepasses of the sorted lists (rend/sorter.h), their indexes after each pass's sorted ones
+	std::vector<std::vector<SortTrigDrawParam>> prepassPolys;
 	void SortTriangles();
+	/* Whether the sorted lists are drawn as sorted (and have a prepass):
+	 * not by the per-pixel renderer */
+	virtual bool DrawsSorted() const { return true; }
 
 private:
 	bool ProcessLocked(TA_context* ctx);
@@ -265,6 +271,8 @@ private:
 	void DrawShadowed(u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 			const ScreenBounds& area, const D3D11_RECT& scissor);
 	void DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool multipass);
+	void DrawPrepass(const std::vector<SortTrigDrawParam>& polys);
+	bool prepassDraw = false;	// DrawPoly() draws for the depth prepass
 	void DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass);
 

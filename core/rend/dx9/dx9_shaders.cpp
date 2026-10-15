@@ -181,7 +181,8 @@ static const char PixelShaderSource[] = R"(
 #define PI 3.1415926
 
 float4 clipTest : register(c5);
-// the trilinear pass's alpha, where in the palette's row the first colour is
+// the trilinear pass's alpha, where in the palette's row the first colour
+// is, the depth prepass's least alpha (0 for the colour: rend/sorter.h)
 float4 polyParams : register(c6);
 
 // What the other renderers make a shader for: flags, 0 or 1, in c8 to c11
@@ -337,6 +338,10 @@ PSO main(in Pixel inpix)
 			discard;
 		color.a = 1.0;
 	}
+	// The depth prepass of sorted translucent polygons: the pixels that
+	// hide what is behind them
+	if (color.a < polyParams.z)
+		discard;
 
 	PSO pso;
 	pso.depth = fragDepth(w);

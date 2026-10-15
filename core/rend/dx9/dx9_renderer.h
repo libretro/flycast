@@ -148,7 +148,7 @@ private:
 	struct PolyConstants
 	{
 		float clipTest[4];
-		float params[4];		// trilinear alpha, palette index
+		float params[4];		// trilinear alpha, palette index, the depth prepass's least alpha (rend/sorter.h; 0 for the colour)
 	};
 	PolyConstants polyUploaded;
 	u32 polyEpoch = 0;			// the context's epoch they were uploaded in, or not (0)
@@ -167,6 +167,8 @@ private:
 	std::vector<std::vector<SortTrigDrawParam>> sortedPolys;
 	std::vector<std::vector<u32>> sortedIndexes;
 	u32 sortedIndexCount = 0;
+	// ...and the depth prepasses of the sorted lists (rend/sorter.h), their indexes after each pass's sorted ones
+	std::vector<std::vector<SortTrigDrawParam>> prepassPolys;
 	void SortTriangles();
 
 	bool ProcessLocked(TA_context* ctx);
@@ -188,6 +190,8 @@ private:
 	void DrawShadowed(u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 			const ScreenBounds& area, const RECT& scissor);
 	void DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool multipass);
+	void DrawPrepass(const std::vector<SortTrigDrawParam>& polys);
+	bool prepassDraw = false;	// DrawPoly() draws for the depth prepass
 	void DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass);
 	void SetCullMode(int mode);

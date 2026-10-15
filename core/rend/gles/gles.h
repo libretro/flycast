@@ -56,6 +56,7 @@ struct PipelineShader
 	GLint normal_matrix;
 	GLint palette_index;
 	GLint shade_scale_factor;
+	GLint prepass_alpha;	// -1 where there is no depth prepass (GLES2): rend/sorter.h
 
 	//
 	bool cp_AlphaTest;

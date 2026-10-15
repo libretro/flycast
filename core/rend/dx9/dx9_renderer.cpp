@@ -374,6 +374,7 @@ void DX9Renderer::SortTriangles()
 {
 	sortedPolys.resize(pvrrc.render_passes.used());
 	sortedIndexes.resize(pvrrc.render_passes.used());
+	prepassPolys.resize(pvrrc.render_passes.used());
 	sortedIndexCount = 0;
 	RenderPass previousPass = {};
 
@@ -381,10 +382,15 @@ void DX9Renderer::SortTriangles()
 	{
 		const RenderPass& current_pass = pvrrc.render_passes.head()[render_pass];
 		sortedIndexes[render_pass].clear();
+		prepassPolys[render_pass].clear();
 		if (current_pass.autosort)
 		{
 			GenSorted(previousPass.tr_count, current_pass.tr_count - previousPass.tr_count, sortedPolys[render_pass], sortedIndexes[render_pass], true);
+			GenPrepass(previousPass.tr_count, current_pass.tr_count - previousPass.tr_count,
+					render_pass == pvrrc.render_passes.used() - 1, prepassPolys[render_pass], sortedIndexes[render_pass], true);
 			for (auto& poly : sortedPolys[render_pass])
+				poly.first += sortedIndexCount;
+			for (auto& poly : prepassPolys[render_pass])
 				poly.first += sortedIndexCount;
 			sortedIndexCount += sortedIndexes[render_pass].size();
 		}
@@ -941,11 +947,11 @@ void DX9Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& po
 		else
 			palette_index = (float((poly.tcw.PalSelect >> 4) << 8) + 0.5f) / 1024.f;
 	}
-	if (tileClip == TileClipping::Inside || trilinearAlpha != 1.f || palette)
+	if (tileClip == TileClipping::Inside || trilinearAlpha != 1.f || palette || prepassDraw)
 	{
 		const PolyConstants constants = {
 			{ (float)scissorRect.left, (float)scissorRect.top, (float)scissorRect.right, (float)scissorRect.bottom },
-			{ trilinearAlpha, palette_index, 0.f, 0.f }
+			{ trilinearAlpha, palette_index, prepassDraw ? (PrepassAlwaysHides(&poly) ? -1.f : PREPASS_ALPHA_MIN) : 0.f, 0.f }
 		};
 		SetPolyConstants(constants);
 	}
@@ -994,7 +1000,10 @@ void DX9Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& po
 	bool depthWrite;
 	// Sorted translucent polygons, per triangle or per strip, do not write
 	// depth: a strip drawn in sorted order would hide parts of the ones after it.
-	if (sortTriangles)
+	// Their depth prepass does.
+	if (prepassDraw)
+		depthWrite = true;
+	else if (sortTriangles)
 		depthWrite = false;
 	// Z Write Disable seems to be ignored for punch-through.
 	// Fixes Worms World Party, Bust-a-Move 4 and Re-Volt
@@ -1024,7 +1033,9 @@ void DX9Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& po
 	// An opaque polygon is blended by its instructions too when it is in a
 	// list continuation; the ones of the first render pass have had theirs
 	// set to source x 1 and destination x 0 when the list was read.
-	if (shadowPass == ShadowPass::None
+	if (prepassDraw)
+		context->SetBlend(false, 1, 0, false);
+	else if (shadowPass == ShadowPass::None
 			&& (listType == ListType_Translucent || listType == ListType_Punch_Through
 				|| poly.tsp.SrcInstr != 1 || poly.tsp.DstInstr != 0))
 		context->SetBlend(true, poly.tsp.SrcInstr, poly.tsp.DstInstr);
@@ -1032,7 +1043,7 @@ void DX9Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& po
 		context->SetBlend(false);
 
 	SetCullMode(poly.isp.CullMode);
-	Draw(sortTriangles && !settings.pvr.Emulation.AlphaSortMode ? D3DPT_TRIANGLELIST : D3DPT_TRIANGLESTRIP, first, count);
+	Draw(prepassDraw || (sortTriangles && !settings.pvr.Emulation.AlphaSortMode) ? D3DPT_TRIANGLELIST : D3DPT_TRIANGLESTRIP, first, count);
 }
 
 // The polygons of a list that take shadows, drawn again where they are in a
@@ -1076,6 +1087,24 @@ void DX9Renderer::DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool m
 		context->SetDecl(mainDecl);
 		context->SetVS(shaders->GetVS(DX9VS_Main));
 	}
+}
+
+// The depth prepass of a sorted list: rend/sorter.h
+void DX9Renderer::DrawPrepass(const std::vector<SortTrigDrawParam>& polys)
+{
+	if (polys.empty())
+		return;
+	// (the colour pass's polygons that do not set their constants find what they found before)
+	const PolyConstants saved = polyUploaded;
+	const bool savedValid = polyEpoch == context->Epoch();
+	prepassDraw = true;
+	for (const SortTrigDrawParam& param : polys)
+		DrawPoly(ListType_Translucent, true, *param.ppid, pvrrc.idx.used() + param.first, param.count);
+	prepassDraw = false;
+	if (savedValid)
+		SetPolyConstants(saved);
+	else
+		SetPolyConstants(PolyConstants{});
 }
 
 void DX9Renderer::DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last)
@@ -1192,6 +1221,7 @@ void DX9Renderer::DrawFrame()
 		DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, previous_pass, current_pass);
 		if (current_pass.autosort)
 		{
+			DrawPrepass(prepassPolys[render_pass]);
 			if (!settings.pvr.Emulation.AlphaSortMode)
 				DrawSorted(sortedPolys[render_pass], render_pass < pvrrc.render_passes.used() - 1);
 			else

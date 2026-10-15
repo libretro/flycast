@@ -389,3 +389,124 @@ void GenSorted(int first, int count, std::vector<SortTrigDrawParam>& pidx_sort, 
 
 	if (tess_gen) DEBUG_LOG(RENDERER, "Generated %.2fK Triangles !", tess_gen / 1000.0);
 }
+
+/* Whether a polygon that blends with one minus its alpha can have a pixel
+ * at alpha 1, as far as its vertices say: not if its alpha is theirs (or
+ * theirs times the texture's) and no vertex has 255 */
+static bool PrepassVerticesOpaque(const PolyParam *pp, const Vertex *vtx_base, const u32 *idx_base)
+{
+	// (fog in the alpha, or a clamp that may raise it, and the vertices say nothing)
+	if (pp->tsp.DstInstr == 0 || pp->tsp.FogCtrl == 3 || pp->tsp.ColorClamp || !pp->tsp.UseAlpha
+			|| (pp->pcw.Texture && pp->tsp.ShadInstr < 2))
+		return true;
+	const u32 *idx = idx_base + pp->first;
+	for (u32 i = 0; i < pp->count; i++)
+		if (vtx_base[idx[i]].col[3] == 255)
+			return true;
+	return false;
+}
+
+void GenPrepass(int first, int count, bool lastPass, std::vector<SortTrigDrawParam>& draws, std::vector<u32>& vidx,
+		bool firstProvoking)
+{
+	/* The polygons that can hide, in their order (order), in runs of
+	 * neighbours drawn alike (runs): a model's polygons come one after the
+	 * other, so it is the runs that are sorted, few of them. (Kept from one
+	 * frame to the next: no allocation once they have grown.) */
+	struct Run
+	{
+		PrepassKey key;
+		u32 start, count;	// in order
+		u32 tris;		// the most triangles they make
+	};
+	static std::vector<u32> order;
+	static std::vector<Run> runs;
+
+	if (count <= 0 || pvrrc.verts.used() == 0 || !PrepassWanted(lastPass))
+		return;
+	const Vertex * const vtx_base = pvrrc.verts.head();
+	const u32 * const idx_base = pvrrc.idx.head();
+	const PolyParam * const pp_base = pvrrc.global_param_tr.head();
+
+	order.clear();
+	runs.clear();
+	u32 tris = 0;
+	for (int n = first; n < first + count; n++)
+	{
+		const PolyParam *pp = pp_base + n;
+		if (!PrepassCandidate(pp, lastPass) || !PrepassVerticesOpaque(pp, vtx_base, idx_base))
+			continue;
+		const PrepassKey key = PrepassMakeKey(pp, pp->texid);
+		if (!runs.empty() && runs.back().start + runs.back().count == order.size() && runs.back().key == key)
+		{
+			runs.back().count++;
+			runs.back().tris += pp->count - 2;
+		}
+		else
+		{
+			const Run r = { key, (u32)order.size(), 1, pp->count - 2 };
+			runs.push_back(r);
+		}
+		order.push_back((u32)n);
+		tris += pp->count - 2;
+	}
+	if (runs.empty())
+		return;
+	std::sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) {
+		return a.key < b.key || (a.key == b.key && a.start < b.start);
+	});
+
+	// the triangles, as GenSorted() makes them of a strip, written in place
+	const size_t base = vidx.size();
+	vidx.resize(base + (size_t)tris * 3);
+	u32 *out = vidx.data() + base;
+	u32 *dst = out;
+	for (size_t k = 0; k < runs.size(); k++)
+	{
+		const Run& r = runs[k];
+		if (k == 0 || !(r.key == runs[k - 1].key))
+		{
+			// (a group before it all of whose triangles drew nothing is not kept)
+			if (k != 0 && draws.back().count == 0)
+				draws.pop_back();
+			const SortTrigDrawParam d = { pp_base + order[r.start], (u32)(base + (dst - out)), 0 };
+			draws.push_back(d);
+		}
+		u32 * const runStart = dst;
+		for (u32 j = r.start; j < r.start + r.count; j++)
+		{
+			const PolyParam *pp = pp_base + order[j];
+			const u32 *idx = idx_base + pp->first;
+			u32 flip = 0;
+			for (u32 i = 0; i + 2 < pp->count; i++, flip ^= 1)
+			{
+				const u32 a = idx[i], b = idx[i + 1], c = idx[i + 2];
+				// (a triangle with two corners the same draws nothing)
+				if (a == b || b == c || a == c)
+					continue;
+				dst[0] = a;
+				if (flip && firstProvoking)
+				{
+					dst[1] = c;
+					dst[2] = b;
+				}
+				else if (flip)
+				{
+					dst[0] = b;
+					dst[1] = a;
+					dst[2] = c;
+				}
+				else
+				{
+					dst[1] = b;
+					dst[2] = c;
+				}
+				dst += 3;
+			}
+		}
+		draws.back().count += (u32)(dst - runStart);
+	}
+	if (draws.back().count == 0)
+		draws.pop_back();
+	vidx.resize(base + (dst - out));
+}

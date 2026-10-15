@@ -114,6 +114,7 @@ public:
 
 protected:
 	bool BindsScreen() const override { return false; }
+	bool DrawsSorted() const override { return false; }
 	ID3D11InputLayout *PolyInputLayout() const override { return oitInputLayout; }
 	ID3D11Buffer *PolyConstantsBuffer() const override { return oitConstants; }
 	void DrawFrame() override;
