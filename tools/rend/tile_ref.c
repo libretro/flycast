@@ -30,6 +30,11 @@ static unsigned fu(float f)
    return u;
 }
 
+/* The kernels' 64-bit integers, for the edges (C89 has no long long: this
+ * is for the machines the test runs on, whose long is 64 bits) */
+typedef long ref_s64;
+typedef char ref_s64_is_64_bits[sizeof(ref_s64) >= 8 ? 1 : -1];
+
 /* ---- Setup, as the setup kernel does it ---- */
 
 typedef struct
@@ -38,6 +43,7 @@ typedef struct
    float q[3];
    unsigned vi[3];
    unsigned src, extra;
+   unsigned shift;	/* x and y divided by 2^shift (pvrc_xy_shift()) */
    int bx0, by0, bx1, by1;
    int live;
 } Rec;
@@ -51,7 +57,9 @@ static void setup(unsigned prim, Rec *r)
    unsigned osrc = F[PVRC_F_O_SRC], lo = 0, hi = F[PVRC_F_SOURCES], i, src, index, k, isp, rect0, rect1, cull;
    int modvol, culledOwn, front, empty, bad = 0;
    float vx[3], vy[3], vz[3];
-   double cross;
+   ref_s64 cross;
+   float px[3], py[3], most = 0.0f, down;
+   unsigned shift;
    while (hi - lo > 1)
    {
       unsigned mid = (lo + hi) >> 1;
@@ -100,15 +108,25 @@ static void setup(unsigned prim, Rec *r)
    }
    for (k = 0; k < 3; k++)
    {
-      float px = ff(PVRC_F_XFORM) * vx[k] + ff(PVRC_F_XFORM + 2);
-      float py = ff(PVRC_F_XFORM + 1) * vy[k] + ff(PVRC_F_XFORM + 3);
-      r->x[k] = pvrc_fixed(px);
-      r->y[k] = pvrc_fixed(py);
+      px[k] = ff(PVRC_F_XFORM) * vx[k] + ff(PVRC_F_XFORM + 2);
+      py[k] = ff(PVRC_F_XFORM + 1) * vy[k] + ff(PVRC_F_XFORM + 3);
+      if (!(fabs(px[k]) <= most))
+         most = (float)fabs(px[k]);
+      if (!(fabs(py[k]) <= most))
+         most = (float)fabs(py[k]);
+   }
+   shift = pvrc_xy_shift(most);
+   down = 1.0f / (float)(1u << shift);
+   for (k = 0; k < 3; k++)
+   {
+      r->x[k] = pvrc_fixed(px[k] * down);
+      r->y[k] = pvrc_fixed(py[k] * down);
       r->q[k] = ff(PVRC_F_XFORM + 4) * vz[k];
-      if (!(r->q[k] > 0.0f) || r->q[k] > 3.4e37f || px != px || py != py)
+      if (!(r->q[k] > 0.0f) || r->q[k] > 3.4e37f || px[k] != px[k] || py[k] != py[k])
          bad = 1;
    }
-   cross = (double)(r->x[1] - r->x[0]) * (double)(r->y[2] - r->y[0]) - (double)(r->x[2] - r->x[0]) * (double)(r->y[1] - r->y[0]);
+   r->shift = shift;
+   cross = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(r->y[2] - r->y[0]) - (ref_s64)(r->x[2] - r->x[0]) * (ref_s64)(r->y[1] - r->y[0]);
    front = cross < 0;
    cull = (isp >> 27) & 3;
    culledOwn = (cull == 3 && !front) || (cull == 2 && front);
@@ -142,11 +160,15 @@ static void setup(unsigned prim, Rec *r)
       if (r->y[2] < mny) mny = r->y[2];
       if (r->x[2] > mxx) mxx = r->x[2];
       if (r->y[2] > mxy) mxy = r->y[2];
-      /* (an arithmetic shift, as the kernel's) */
-      bx0 = (mnx - 255) >= 0 ? (mnx - 255) / 256 : -((-(mnx - 255) + 255) / 256);
-      by0 = (mny - 255) >= 0 ? (mny - 255) / 256 : -((-(mny - 255) + 255) / 256);
-      bx1 = mxx >= 0 ? mxx / 256 : -((-mxx + 255) / 256);
-      by1 = mxy >= 0 ? mxy / 256 : -((-mxy + 255) / 256);
+      /* (an arithmetic shift, as the kernel's, of x and y at full size) */
+      {
+         const ref_s64 m = (ref_s64)1 << shift;
+         const ref_s64 ax0 = (ref_s64)mnx * m - 255, ay0 = (ref_s64)mny * m - 255, ax1 = (ref_s64)mxx * m, ay1 = (ref_s64)mxy * m;
+         bx0 = (int)(ax0 >= 0 ? ax0 / 256 : -((-ax0 + 255) / 256));
+         by0 = (int)(ay0 >= 0 ? ay0 / 256 : -((-ay0 + 255) / 256));
+         bx1 = (int)(ax1 >= 0 ? ax1 / 256 : -((-ax1 + 255) / 256));
+         by1 = (int)(ay1 >= 0 ? ay1 / 256 : -((-ay1 + 255) / 256));
+      }
       if (bx0 < (int)(rect0 & 0xffff)) bx0 = (int)(rect0 & 0xffff);
       if (by0 < (int)(rect0 >> 16)) by0 = (int)(rect0 >> 16);
       if (bx1 > (int)(rect1 & 0xffff) - 1) bx1 = (int)(rect1 & 0xffff) - 1;
@@ -173,19 +195,22 @@ static int in_rect(unsigned r0, unsigned r1)
    return g_in && g_px >= (int)(r0 & 0xffff) && g_py >= (int)(r0 >> 16) && g_px < (int)(r1 & 0xffff) && g_py < (int)(r1 >> 16);
 }
 
-static int edge_in(double e, int dx, int dy)
+static int edge_in(ref_s64 e, int dx, int dy)
 {
    return e > 0 || (e == 0 && (dy < 0 || (dy == 0 && dx > 0)));
 }
 
-static void rec_edges(const Rec *r, int px, int py, double *e)
+static void rec_edges(const Rec *r, int px, int py, ref_s64 *e)
 {
-   e[0] = (double)(r->x[2] - r->x[1]) * (double)(py - r->y[1]) - (double)(r->y[2] - r->y[1]) * (double)(px - r->x[1]);
-   e[1] = (double)(r->x[0] - r->x[2]) * (double)(py - r->y[2]) - (double)(r->y[0] - r->y[2]) * (double)(px - r->x[2]);
-   e[2] = (double)(r->x[1] - r->x[0]) * (double)(py - r->y[0]) - (double)(r->y[1] - r->y[0]) * (double)(px - r->x[0]);
+   /* (at its shift; a sample's place is not negative and divides exactly) */
+   px >>= r->shift;
+   py >>= r->shift;
+   e[0] = (ref_s64)(r->x[2] - r->x[1]) * (ref_s64)(py - r->y[1]) - (ref_s64)(r->y[2] - r->y[1]) * (ref_s64)(px - r->x[1]);
+   e[1] = (ref_s64)(r->x[0] - r->x[2]) * (ref_s64)(py - r->y[2]) - (ref_s64)(r->y[0] - r->y[2]) * (ref_s64)(px - r->x[2]);
+   e[2] = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(py - r->y[0]) - (ref_s64)(r->y[1] - r->y[0]) * (ref_s64)(px - r->x[0]);
 }
 
-static int rec_inside(const Rec *r, const double *e)
+static int rec_inside(const Rec *r, const ref_s64 *e)
 {
    return edge_in(e[0], r->x[2] - r->x[1], r->y[2] - r->y[1]) && edge_in(e[1], r->x[0] - r->x[2], r->y[0] - r->y[2])
          && edge_in(e[2], r->x[1] - r->x[0], r->y[1] - r->y[0]);
@@ -193,14 +218,14 @@ static int rec_inside(const Rec *r, const double *e)
 
 static int rec_covers(const Rec *r, int px, int py)
 {
-   double e[3];
+   ref_s64 e[3];
    rec_edges(r, px, py, e);
    return rec_inside(r, e);
 }
 
 typedef struct { float f0, f1, f2, s, w; } Bary;
 
-static Bary rec_bary(const Rec *r, const double *e)
+static Bary rec_bary(const Rec *r, const ref_s64 *e)
 {
    Bary b;
    float b0 = (float)e[0], b1 = (float)e[1], b2 = (float)e[2];
@@ -261,7 +286,7 @@ static float frag_mix1(const Rec *r, const Bary *b, unsigned k)
    return bary_mix(b, a0, a1, a2);
 }
 
-static void rec_frag(const Rec *r, unsigned pp, const double *e, int px, int py, Frag *f)
+static void rec_frag(const Rec *r, unsigned pp, const ref_s64 *e, int px, int py, Frag *f)
 {
    Bary b = rec_bary(r, e);
    unsigned flags = F[pp + PVRC_Q_FLAGS];
@@ -484,7 +509,7 @@ static unsigned rec_poly(const Rec *r)
  * covers (the device's centroid, Mesa's choice) */
 static void rate_pos(const Rec *r, int *x, int *y)
 {
-   double e[3];
+   ref_s64 e[3];
    unsigned s, first = g_samples;
    int all = 1;
    *x = g_cx;
@@ -515,7 +540,7 @@ static void rate_pos(const Rec *r, int *x, int *y)
  * fog) at the centre */
 static void rate_frag(const Rec *r, unsigned pp, Frag *f)
 {
-   double e[3];
+   ref_s64 e[3];
    int x, y;
    rate_pos(r, &x, &y);
    rec_edges(r, x, y, e);
@@ -533,7 +558,7 @@ static void rate_frag(const Rec *r, unsigned pp, Frag *f)
 
 static int lane_frag(const Rec *r, unsigned pp, int centre, Frag *f)
 {
-   double e[3];
+   ref_s64 e[3];
    if (!in_rect(F[pp + PVRC_Q_RECT], F[pp + PVRC_Q_RECT + 1]))
       return 0;
    rec_edges(r, g_sx, g_sy, e);
@@ -548,7 +573,7 @@ static int lane_frag(const Rec *r, unsigned pp, int centre, Frag *f)
 
 static float vol_w(const Rec *r)
 {
-   double e[3];
+   ref_s64 e[3];
    Bary b;
    rec_edges(r, g_cx, g_cy, e);
    b = rec_bary(r, e);
