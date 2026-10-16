@@ -19,6 +19,7 @@
 #include "dx11context_lr.h"
 #include <dxgi.h>
 #include <dxgi1_4.h>
+#include "rend/dxgi_budget.h"
 
 DX11Context DX11Context::instance;
 
@@ -29,31 +30,6 @@ static const DXGI_FORMAT textureFormats[5] = {
 	DXGI_FORMAT_R8G8B8A8_UNORM,		// TextureType::_8888
 	DXGI_FORMAT_R8_UNORM,			// TextureType::_8
 };
-
-/* The adapter's budget for its local memory, by QueryVideoMemoryInfo()
- * (DXGI 1.4, Windows 10); before that, its dedicated memory, or half its
- * shared memory for one that has none. (A Direct3D 12 renderer asks the
- * same of its adapter.) */
-static VramBudget dxgiVramBudget(IDXGIAdapter *adapter, const DXGI_ADAPTER_DESC *desc)
-{
-	VramBudget budget;
-	IDXGIAdapter3 *adapter3 = nullptr;
-	if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), (void **)&adapter3)))
-	{
-		DXGI_QUERY_VIDEO_MEMORY_INFO info;
-		if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)) && info.Budget != 0)
-		{
-			budget.budget_kib = vram_kib(info.Budget);
-			budget.usage_kib = vram_kib(info.CurrentUsage);
-			budget.exact = true;
-		}
-		adapter3->Release();
-	}
-	if (!budget.exact && desc != nullptr)
-		budget.budget_kib = vram_kib(desc->DedicatedVideoMemory != 0 ? (u64)desc->DedicatedVideoMemory
-				: (u64)desc->SharedSystemMemory / 2);
-	return budget;
-}
 
 bool DX11Context::Init(const struct retro_hw_render_interface_d3d11 *iface)
 {
@@ -110,7 +86,7 @@ bool DX11Context::Init(const struct retro_hw_render_interface_d3d11 *iface)
 				const bool haveDesc = SUCCEEDED(adapter->GetDesc(&desc));
 				if (haveDesc)
 					vendor = desc.VendorId;
-				vramBudget = dxgiVramBudget(adapter, haveDesc ? &desc : nullptr);
+				vramBudget = dxgi_vram_budget(adapter, haveDesc ? &desc : nullptr);
 				adapter->Release();
 			}
 			dxgiDevice->Release();
