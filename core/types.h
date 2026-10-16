@@ -579,6 +579,7 @@ struct settings_t
 		bool ThreadedRendering;
 		bool CustomTextures;
 		bool DumpTextures;
+		bool TextureDebug;	// Vulkan: what each texture drawn is, and its levels read back, in the log now and then
 		bool WidescreenGameHacks;
 		int AnisotropicFiltering;
 		bool PowerVR2Filter;

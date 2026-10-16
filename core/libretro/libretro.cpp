@@ -1347,6 +1347,10 @@ static void update_variables(bool first_startup)
    else
 	  settings.rend.DumpTextures = false;
 
+   var.key = CORE_OPTION_NAME "_texture_debug";
+   settings.rend.TextureDebug = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+         && !strcmp(var.value, "enabled");
+
    key[0] = '\0' ;
 
    var.key = key ;

@@ -354,6 +354,8 @@ void Texture::CreateRenderTarget(const vk::ImageUsageFlags& usage)
 	imageUsage = pi->usage;
 	storage = false;
 	fresh = true;
+	debugPath = DBG_TARGET;
+	debugLevels = 0;
 }
 
 bool Texture::TakePooled(u32 width, u32 height, bool mipmapped)
@@ -599,6 +601,8 @@ bool Texture::GpuDecode(const texd_plan& plan)
 	}
 	decodeSerial = decoder->Serial();
 	fresh = false;
+	debugPath = copy ? DBG_COPY : DBG_KERNEL;
+	debugLevels = 0;
 	return true;
 }
 
@@ -757,12 +761,22 @@ void Texture::Defer(bool isNew)
 		dirty = FrameCount != 0 ? FrameCount : 1;
 }
 
+/* The texture debug log's checksum of @size bytes (FNV-1a) */
+static u32 DebugSum(const u8 *p, u32 size)
+{
+	u32 h = 2166136261u;
+	for (u32 i = 0; i < size; i++)
+		h = (h ^ p[i]) * 16777619u;
+	return h;
+}
+
 void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 {
 	if (!commandBuffer && commandPool != nullptr)
 		commandBuffer = commandPool->Allocate();
 	verify((bool)commandBuffer);
 	isNew = isNew || fresh;
+	debugLevels = 0;
 	if (needsStaging)
 	{
 		const u32 pixel = texel_bytes(tex_type);
@@ -809,10 +823,18 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 						vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, mipmapLevels - i - 1, 0, 1),
 						vk::Offset3D(0, 0, 0), vk::Extent3D(1 << i, 1 << i, 1));
 				commandBuffer.copyBufferToImage(slotBuffer, GetImage(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
+				if (settings.rend.TextureDebug)
+					debugSum[mipmapLevels - i - 1] = DebugSum(slot + upload_level_at(pixel, i), (1u << i) * (1u << i) * pixel);
 			}
+			debugLevels = settings.rend.TextureDebug ? mipmapLevels : 0;
 		}
 		else
 		{
+			if (settings.rend.TextureDebug)
+			{
+				debugSum[0] = DebugSum(slot, extent.width * extent.height * pixel);
+				debugLevels = 1;
+			}
 			vk::BufferImageCopy copyRegion(slotOffset, extent.width, extent.height, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
 					vk::Offset3D(0, 0, 0), vk::Extent3D(extent, 1));
 			commandBuffer.copyBufferToImage(slotBuffer, GetImage(), vk::ImageLayout::eTransferDstOptimal, copyRegion);
@@ -821,6 +843,7 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 		}
 		// Set the layout for the texture image from eTransferDstOptimal to SHADER_READ_ONLY
 		setImageLayout(commandBuffer, GetImage(), format, mipmapLevels, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+		debugPath = DBG_STAGED;
 	}
 	else
 	{
@@ -842,6 +865,8 @@ void Texture::SetImage(u32 srcSize, void *srcData, bool isNew, bool genMipmaps)
 		}
 		else
 			memcpy(data, srcData, srcSize);
+		debugPath = DBG_LINEAR;
+		debugLevels = 0;
 		if (mipmapLevels > 1)
 			GenerateMipmaps();
 		else
@@ -955,5 +980,140 @@ void TextureCache::Cleanup()
 	{
 		if (clearTexture(&cache[id]))
 			cache.erase(id);
+	}
+}
+
+/* Bytes a texel of a texture image's @format */
+static u32 DebugTexelBytes(vk::Format format)
+{
+	switch (format)
+	{
+	case vk::Format::eR8Unorm:
+		return 1;
+	case vk::Format::eR8G8B8A8Unorm:
+	case vk::Format::eB8G8R8A8Unorm:
+		return 4;
+	default:
+		return 2;
+	}
+}
+
+/* The texture debug log (settings.rend.TextureDebug), for finding out on a
+ * machine where a texture is drawn wrong what the textures and their
+ * samplers are there. About every ten seconds, a line for each texture of
+ * the frame drawn last: what the game asked for, the image made of it, how
+ * it was written, the sampler it is drawn with, and each level of the image
+ * read back from the GPU with its checksum, beside the checksum of what the
+ * CPU uploaded into that level (the GPU's own decode and generated levels
+ * have none). The read back waits for the GPU, and the buffer for it is made
+ * each time: this is a diagnostic, off unless asked for. */
+void TextureCache::DebugLog(const std::unordered_set<Texture *>& textures)
+{
+	static u32 lastFrame;
+	if (FrameCount < 300 || (lastFrame != 0 && FrameCount - lastFrame < 600) || textures.empty())
+		return;
+	lastFrame = FrameCount;
+	VulkanContext *context = VulkanContext::Instance();
+	const vk::Device device = context->GetDevice();
+	vk::PhysicalDeviceProperties props;
+	context->GetPhysicalDevice().getProperties(&props);
+	NOTICE_LOG(RENDERER, "TexDebug: frame %u, %u textures; %s (driver %08x); sub-pixel bits %u, sub-texel bits %u, mipmap bits %u, LOD bias max %.1f; force LOD0 %d, anisotropy %d, GPU decode %d, upscale %d",
+			FrameCount, (u32)textures.size(), (const char *)&props.deviceName[0], props.driverVersion, props.limits.subPixelPrecisionBits,
+			props.limits.subTexelPrecisionBits, props.limits.mipmapPrecisionBits, props.limits.maxSamplerLodBias,
+			settings.rend.ForceTextureLOD0, settings.rend.AnisotropicFiltering, settings.rend.GpuTextureDecode, settings.rend.TextureUpscale);
+
+	// what is read back, and where
+	struct Read { Texture *t; u32 level; u32 offset; u32 bytes; };
+	std::vector<Read> reads;
+	vk::DeviceSize total = 0;
+	for (Texture *t : textures)
+	{
+		if (t->format == vk::Format::eUndefined || t->fresh || t->decodeJob >= 0 || t->IsNew()
+				|| !(t->imageUsage & vk::ImageUsageFlagBits::eTransferSrc) || t->debugPath == Texture::DBG_TARGET)
+			continue;
+		const u32 texel = DebugTexelBytes(t->format);
+		for (u32 l = 0; l < t->mipmapLevels; l++)
+		{
+			const u32 w = std::max(t->extent.width >> l, 1u), h = std::max(t->extent.height >> l, 1u);
+			reads.push_back({ t, l, (u32)total, w * h * texel });
+			total = (total + w * h * texel + 3) & ~(vk::DeviceSize)3;
+		}
+	}
+	std::unique_ptr<BufferData> buffer;
+	if (total != 0)
+	{
+		buffer.reset(new BufferData(total, vk::BufferUsageFlagBits::eTransferDst,
+				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent));
+		vk::UniqueCommandPool pool = device.createCommandPoolUnique(vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eTransient,
+				context->GetGraphicsQueueFamilyIndex()));
+		vk::CommandBuffer cmd = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 1)).front();
+		cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+		Texture *last = nullptr;
+		for (const Read& r : reads)
+		{
+			Texture *t = r.t;
+			const vk::ImageSubresourceRange all(vk::ImageAspectFlagBits::eColor, 0, t->mipmapLevels, 0, 1);
+			if (t != last)
+			{
+				// (after everything sent before, which wrote it or drew with it)
+				const vk::ImageMemoryBarrier toSrc(vk::AccessFlagBits::eMemoryWrite, vk::AccessFlagBits::eTransferRead,
+						vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+						t->GetImage(), all);
+				cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, nullptr, nullptr, toSrc);
+			}
+			const u32 w = std::max(t->extent.width >> r.level, 1u), h = std::max(t->extent.height >> r.level, 1u);
+			cmd.copyImageToBuffer(t->GetImage(), vk::ImageLayout::eTransferSrcOptimal, *buffer->buffer,
+					vk::BufferImageCopy(r.offset, 0, 0, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, r.level, 0, 1),
+							vk::Offset3D(0, 0, 0), vk::Extent3D(w, h, 1)));
+			if (r.level + 1 == t->mipmapLevels)
+			{
+				const vk::ImageMemoryBarrier back(vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
+						vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+						t->GetImage(), all);
+				cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, nullptr, nullptr, back);
+			}
+			last = t;
+		}
+		const vk::MemoryBarrier toHost(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead);
+		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, toHost, nullptr, nullptr);
+		cmd.end();
+		vk::UniqueFence fence = device.createFenceUnique(vk::FenceCreateInfo());
+		context->SubmitCommandBuffers(1, &cmd, *fence);
+		if (device.waitForFences(1, &fence.get(), true, UINT64_MAX) != vk::Result::eSuccess)
+			reads.clear();
+	}
+	const u8 *mem = buffer ? (const u8 *)buffer->MapMemory() : nullptr;
+
+	static const char * const paths[] = { "none", "cpu-staged", "cpu-linear", "gpu-kernel", "gpu-copy", "render-target" };
+	static const char * const filters[] = { "point", "bilinear", "trilinear-a", "trilinear-b" };
+	for (Texture *t : textures)
+	{
+		char line[1024];
+		const TSP tsp = t->tsp;
+		const char *addr = tsp.ClampU ? "clamp" : tsp.FlipU ? "mirror" : "repeat";
+		const char *addv = tsp.ClampV ? "clamp" : tsp.FlipV ? "mirror" : "repeat";
+		int n = snprintf(line, sizeof(line), "TexDebug: %08x tcw %08x tsp %08x %ux%u %s%s%s%s image %ux%u vk-format %d levels %u %s%s path %s; sampler %s u %s v %s bias %.2f aniso %d lod 0-256 mip nearest;",
+				t->sa_tex, t->tcw.full, tsp.full, t->w, t->h, t->GetPixelFormatName(), t->tcw.VQ_Comp ? " vq" : "",
+				t->tcw.MipMapped ? " mip-bit" : "", t->tcw.ScanOrder && !t->IsPaletted() ? " planar" : "",
+				t->extent.width, t->extent.height, (int)t->format, t->mipmapLevels, t->pooled != nullptr ? "pooled" : "own",
+				t->storage ? " storage" : "", paths[t->debugPath < 6 ? t->debugPath : 0],
+				filters[tsp.FilterMode], addr, addv, D_Adjust_LoD_Bias[tsp.MipMapD],
+				tsp.FilterMode != 0 && settings.rend.AnisotropicFiltering > 1 && context->SupportsSamplerAnisotropy() ? settings.rend.AnisotropicFiltering : 0);
+		bool any = false;
+		for (const Read& r : reads)
+		{
+			if (r.t != t || n >= (int)sizeof(line) - 48)
+				continue;
+			any = true;
+			const u32 gpu = DebugSum(mem + r.offset, r.bytes);
+			if (r.level < t->debugLevels)
+				n += snprintf(line + n, sizeof(line) - n, " L%u %08x/%08x %s", r.level, gpu, t->debugSum[r.level],
+						gpu == t->debugSum[r.level] ? "ok" : "DIFF");
+			else
+				n += snprintf(line + n, sizeof(line) - n, " L%u %08x", r.level, gpu);
+		}
+		if (!any)
+			snprintf(line + n, sizeof(line) - n, " not read back");
+		NOTICE_LOG(RENDERER, "%s", line);
 	}
 }

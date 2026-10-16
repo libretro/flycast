@@ -222,6 +222,13 @@ private:
 	vk::UniqueImageView storageViews[TEXD_MAX_LEVELS];
 	int decodeJob = -1;
 	u32 decodeSerial = 0;
+	/* For the texture debug log (settings.rend.TextureDebug): how the image
+	 * was last written (DebugPath), and the checksums of what was uploaded,
+	 * by image level, where the CPU made it */
+	enum DebugPath : u8 { DBG_NONE, DBG_STAGED, DBG_LINEAR, DBG_KERNEL, DBG_COPY, DBG_TARGET };
+	u8 debugPath = DBG_NONE;
+	u8 debugLevels = 0;	// how many levels debugSum has, from level 0
+	u32 debugSum[TEXD_MAX_LEVELS];
 	static TexDecoder *decoder;
 	static TexturePool *pool;
 	PooledImage *pooled = nullptr;
@@ -311,6 +318,8 @@ class TextureCache : public BaseTextureCache<Texture>
 {
 public:
 	void SetCurrentIndex(int index) {
+		if (settings.rend.TextureDebug && currentIndex < inFlightTextures.size())
+			DebugLog(inFlightTextures[currentIndex]);
 		if (currentIndex < inFlightTextures.size())
 			std::for_each(inFlightTextures[currentIndex].begin(), inFlightTextures[currentIndex].end(),
 				[](Texture *texture) { texture->readOnlyImageView = vk::ImageView(); });
@@ -391,6 +400,9 @@ public:
 	}
 
 private:
+	/* The texture debug log (texture.cpp): the textures of the frame drawn
+	 * last, now and then */
+	void DebugLog(const std::unordered_set<Texture *>& textures);
 	bool clearTexture(Texture *tex)
 	{
 		for (auto& set : inFlightTextures)

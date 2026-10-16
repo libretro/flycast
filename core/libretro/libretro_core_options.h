@@ -745,6 +745,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled",
    },
    {
+      CORE_OPTION_NAME "_texture_debug",
+      "Texture Debug Log (Vulkan)",
+      NULL,
+      "For finding faults in how textures are drawn. Every 10 seconds, writes to the log a line for each texture the last frame drew: its format, size, levels, how it was made and the sampler it is drawn with, and each level read back from the GPU with a checksum, beside the checksum of what was uploaded. Slow while it reads back; leave it disabled.",
+      NULL,
+      "video",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled",
+   },
+   {
       CORE_OPTION_NAME "_per_content_vmus",
       "Per-Game Visual Memory Units/Systems (VMU)",
       "Per-Game VMUs",
