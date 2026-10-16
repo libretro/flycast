@@ -37,8 +37,10 @@ WORK=${TMPDIR:-/tmp}/texdecode_test.$$
 mkdir -p "$WORK"
 [ -n "$KEEP" ] || trap 'rm -rf "$WORK"' EXIT
 # the SPIR-V the renderer has of the kernels is theirs (and the TA decode's), and so is the DXBC
+# (the Direct3D 11 kernels', and the Direct3D 12 renderer's shaders')
 sh tools/rend/kernels_spv.sh check
 sh tools/rend/kernels_dxbc.sh check
+sh tools/rend/kernels_dx12.sh check
 [ -f core/rend/TexCache.o ] || { echo "build the core first: core/rend/TexCache.o is not there" >&2; exit 1; }
 
 # the header as C89 and as C++

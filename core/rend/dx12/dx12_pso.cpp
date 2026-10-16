@@ -263,7 +263,7 @@ ID3D12PipelineState *DX12Pipelines::Make(u64 key, u32 slot, bool inFrame)
 	if (inFrame && started)
 	{
 		statMadeInFrame++;
-		DEBUG_LOG(RENDERER, "DX12: pipeline %016llx made in a frame", (unsigned long long)key);
+		NOTICE_LOG(RENDERER, "DX12: pipeline %016llx made in a frame", (unsigned long long)key);
 	}
 	if (keys.size() < MaxKeys)
 		keys.push_back(key);
@@ -307,6 +307,7 @@ bool DX12Pipelines::Init(ID3D12Device *device, ID3D12RootSignature *root)
 void DX12Pipelines::MakeAtStart()
 {
 	started = false;
+	const size_t fromFile = keys.size();
 	DX12PsoKey k{};
 	k.depthBound = true;
 	// the modifier volumes: the volumes themselves, the area summed, what is left darkened
@@ -370,8 +371,7 @@ void DX12Pipelines::MakeAtStart()
 			Add(k.Pack());
 		}
 	// what earlier runs made
-	const size_t fromFile = keys.size();
-	std::vector<u64> kept(keys.begin(), keys.end());
+	std::vector<u64> kept(keys.begin(), keys.begin() + fromFile);
 	for (u64 key : kept)
 		if (DX12PsoKey::Valid(key))
 			Add(key);

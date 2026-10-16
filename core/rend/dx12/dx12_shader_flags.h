@@ -26,13 +26,16 @@
 #define DX12_QF_LINEAR           0x0001u
 
 /* The bindless table (t0 to DX12_SRV_TABLE_SIZE - 1, space 1): the fog
- * table and the palette at these places, everything else after them */
+ * table, the palette and a view of nothing (sampled as zero) at these
+ * places, everything else after them */
 #define DX12_SRV_FOG             0
 #define DX12_SRV_PALETTE         1
-#define DX12_SRV_FIRST_FREE      2
-#define DX12_SRV_TABLE_SIZE      8192
+#define DX12_SRV_NONE            2
+#define DX12_SRV_FIRST_FREE      3
+#define DX12_SRV_TABLE_SIZE      16384
 /* The polygons' samplers (s0 to DX12_SAMPLER_TABLE_SIZE - 1, space 1), by
- * the TSP's MipMapD, filtering, clamp and flip bits (DX12Samplers::Index()) */
-#define DX12_SAMPLER_TABLE_SIZE  512
+ * the TSP's MipMapD, filtering, clamp and flip bits, ten of them
+ * (dx12_sampler_index() in dx12_texture.h) */
+#define DX12_SAMPLER_TABLE_SIZE  1024
 
 #endif

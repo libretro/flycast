@@ -244,7 +244,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 		ok = ok && SUCCEEDED(ring->Map(0, &none, &p));
 		ringCpu = (u8 *)p;
 		ringGpu = ok ? ring->GetGPUVirtualAddress() : 0;
-		ringHead = ringTail = 0;
+		ringHead = ringTail = ringSubmitHead = 0;
 		ringMarkFirst = ringMarkCount = 0;
 	}
 	releasedFirst = releasedCount = 0;
@@ -255,7 +255,8 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 		// (the table's own; the UAVs' are handed out by DX12TexDecoder from UavFirst on)
 		srvHeap.Range(DX12_SRV_FIRST_FREE, UavFirst);
 	ok = ok && samplerHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, DX12_SAMPLER_TABLE_SIZE, true, DX12_SAMPLER_TABLE_SIZE);
-	ok = ok && rtvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 16384, false);
+	ok = ok && rtvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1024, false, TRANSIENT_RTVS);
+	transientRtv = 0;
 	ok = ok && dsvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 4, false);
 	if (ok)
 	{
@@ -277,7 +278,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 	}
 	pipelines.Init(device, rasterRoot);
 	pipelines.MakeAtStart();
-	frameImage = nullptr;
+	frameResource.reset();
 	handedOver = false;
 	statStalls = statSubmits = 0;
 	return true;
@@ -419,6 +420,8 @@ void DX12Context::Term()
 	ring.reset();
 	ringSize = ringHead = ringTail = 0;
 	ringMarkFirst = ringMarkCount = 0;
+	readback.reset();
+	readbackSize = 0;
 	cmdList.reset();
 	for (auto& a : allocators)
 		a.reset();
@@ -433,7 +436,7 @@ void DX12Context::Term()
 	if (d3d12Module != nullptr)
 		FreeLibrary(d3d12Module);
 	d3d12Module = nullptr;
-	frameImage = nullptr;
+	frameResource.reset();
 	handedOver = false;
 	v2 = false;
 	handle = nullptr;
@@ -453,6 +456,8 @@ void DX12Context::ResetBound()
 	memset(&bound, 0, sizeof(bound));
 	bound.topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	bound.rtv = bound.dsv = ~0u - 1;
+	bound.vertexBuffer.BufferLocation = ~0ull;
+	bound.indexBuffer.BufferLocation = ~0ull;
 }
 
 ID3D12GraphicsCommandList *DX12Context::Cmd()
@@ -479,6 +484,9 @@ ID3D12GraphicsCommandList *DX12Context::Cmd()
 void DX12Context::BindRaster()
 {
 	ID3D12GraphicsCommandList *cmd = Cmd();
+	if (bound.rasterBound)
+		return;
+	bound.rasterBound = true;
 	cmd->SetGraphicsRootSignature(rasterRoot);
 	cmd->SetGraphicsRootDescriptorTable(3, srvHeap.Gpu(0));
 	cmd->SetGraphicsRootDescriptorTable(4, samplerHeap.Gpu(0));
@@ -501,15 +509,21 @@ u64 DX12Context::Submit()
 	queue->Signal(fence, fenceValue);
 	allocatorFence[allocatorNext % ALLOCATORS] = fenceValue;
 	allocatorNext++;
-	// what the ring has up to here is the GPU's until this list is done
+	/* What the ring had when the list before this one was submitted is
+	 * the GPU's until this list is done: a piece written for this list
+	 * may be read by the next one as well (a texture converted into the
+	 * ring before its copy is recorded; the decoder's bytes, when a
+	 * readback submits the list between the two), so a piece is let go of
+	 * one list later than the one it was written for. */
 	if (ringMarkCount == RING_MARKS)
 	{
 		// (the oldest mark merged into the next: its place freed later, not sooner)
 		ringMarkFirst = (ringMarkFirst + 1) % RING_MARKS;
 		ringMarkCount--;
 	}
-	ringMarks[(ringMarkFirst + ringMarkCount) % RING_MARKS] = { fenceValue, ringHead };
+	ringMarks[(ringMarkFirst + ringMarkCount) % RING_MARKS] = { fenceValue, ringSubmitHead };
 	ringMarkCount++;
+	ringSubmitHead = ringHead;
 	statSubmits++;
 	Completed();
 	return fenceValue;
@@ -528,6 +542,9 @@ u64 DX12Context::Completed()
 		ringMarkFirst = (ringMarkFirst + 1) % RING_MARKS;
 		ringMarkCount--;
 	}
+	// (everything submitted done: the last list's pieces too)
+	if (ringMarkCount == 0 && completed == fenceValue)
+		ringTail = ringSubmitHead;
 	ReclaimReleased(completed);
 	return completed;
 }
@@ -592,7 +609,27 @@ void DX12Context::Release(IUnknown *object)
 		WaitFor(released[releasedFirst].fence);
 		ReclaimReleased(completed);
 	}
-	released[(releasedFirst + releasedCount) % RELEASES] = { object, last };
+	released[(releasedFirst + releasedCount) % RELEASES] = { object, ~0u, last };
+	releasedCount++;
+}
+
+void DX12Context::ReleaseSrv(u32 index)
+{
+	if (index < DX12_SRV_FIRST_FREE || index >= UavFirst)
+		return;
+	const u64 last = recording ? fenceValue + 1 : fenceValue;
+	if (last <= Completed())
+	{
+		srvHeap.Free(index);
+		return;
+	}
+	if (releasedCount == RELEASES)
+	{
+		statStalls++;
+		WaitFor(released[releasedFirst].fence);
+		ReclaimReleased(completed);
+	}
+	released[(releasedFirst + releasedCount) % RELEASES] = { nullptr, index, last };
 	releasedCount++;
 }
 
@@ -600,10 +637,47 @@ void DX12Context::ReclaimReleased(u64 done)
 {
 	while (releasedCount != 0 && released[releasedFirst].fence <= done)
 	{
-		released[releasedFirst].object->Release();
+		Released& r = released[releasedFirst];
+		if (r.object != nullptr)
+			r.object->Release();
+		else
+			srvHeap.Free(r.srv);
 		releasedFirst = (releasedFirst + 1) % RELEASES;
 		releasedCount--;
 	}
+}
+
+ID3D12Resource *DX12Context::ReadbackBuffer(u64 bytes)
+{
+	if (readback && readbackSize >= bytes)
+		return readback;
+	// (the one there is may be being read into: a readback waits anyway)
+	if (readback)
+	{
+		Submit();
+		WaitFor(fenceValue);
+		readback.reset();
+	}
+	readbackSize = 0;
+	D3D12_HEAP_PROPERTIES heap{};
+	heap.Type = D3D12_HEAP_TYPE_READBACK;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = (bytes + 0xffff) & ~0xffffull;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr, __uuidof(ID3D12Resource), (void **)readback.put())))
+	{
+		WARN_LOG(RENDERER, "DX12: readback buffer creation failed (%u KB)", (u32)(bytes / 1024));
+		readback.reset();
+		return nullptr;
+	}
+	readbackSize = desc.Width;
+	return readback;
 }
 
 void DX12Context::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES& current, D3D12_RESOURCE_STATES state)
@@ -627,7 +701,7 @@ void DX12Context::Transition(DX12Image& image, D3D12_RESOURCE_STATES state)
 
 void DX12Context::SetTargets(u32 rtv, u32 dsv)
 {
-	if (rtv == bound.rtv && dsv == bound.dsv)
+	if (rtv == bound.rtv && dsv == bound.dsv && rtv >= TRANSIENT_RTVS)
 		return;
 	const D3D12_CPU_DESCRIPTOR_HANDLE r = rtvHeap.Cpu(rtv);
 	const D3D12_CPU_DESCRIPTOR_HANDLE d = dsvHeap.Cpu(dsv);
@@ -638,30 +712,35 @@ void DX12Context::SetTargets(u32 rtv, u32 dsv)
 
 /* ---- The frame ---- */
 
-void DX12Context::SetFrame(DX12Image *image)
+void DX12Context::SetFrame(const DX12Image *image)
 {
-	frameImage = image;
+	frameResource.reset();
+	if (image != nullptr && image->resource)
+	{
+		image->resource->AddRef();
+		frameResource.reset(image->resource.get());
+	}
 	frameFence = fenceValue;
-	handedOver = v2 && image != nullptr;
+	handedOver = v2 && frameResource;
 	if (handedOver)
-		set_texture_fenced(handle, image->resource, DX12FrameFormat, fence, frameFence);
+		set_texture_fenced(handle, frameResource, DX12FrameFormat, fence, frameFence);
 }
 
 void DX12Context::Present()
 {
-	if (!device || frameImage == nullptr)
+	if (!device || !frameResource)
 		return;
 	if (v2)
 	{
 		/* (a frame with no render to the screen in it shows the last one again) */
 		if (!handedOver)
-			set_texture_fenced(handle, frameImage->resource, DX12FrameFormat, fence, frameFence);
+			set_texture_fenced(handle, frameResource, DX12FrameFormat, fence, frameFence);
 		handedOver = false;
 	}
 	else
 		/* the frontend copies it in video_refresh, on the same queue, after
 		 * the render that drew it */
-		set_texture(handle, frameImage->resource, DX12FrameFormat);
+		set_texture(handle, frameResource, DX12FrameFormat);
 }
 
 unsigned DX12Context::GetPresentCount() const

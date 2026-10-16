@@ -137,9 +137,15 @@ public:
 	 * then. False if it can never be had (larger than the ring). */
 	bool Upload(u32 bytes, u32 align, DX12Upload& out);
 	u64 UploadRingSize() const { return ringSize; }
+	D3D12_GPU_VIRTUAL_ADDRESS UploadRingGpu() const { return ringGpu; }
 
 	/* An object the GPU may still use, released once it is done with it */
 	void Release(IUnknown *object);
+	/* A place in the bindless table the GPU may still read, free again once it is done with it */
+	void ReleaseSrv(u32 index);
+	/* A readback buffer of at least @bytes (made larger if it is not;
+	 * waits for the GPU then), mapped; null if it cannot be had */
+	ID3D12Resource *ReadbackBuffer(u64 bytes);
 
 	/* A transition, if the image is not in that state already */
 	void Transition(DX12Image& image, D3D12_RESOURCE_STATES state);
@@ -152,8 +158,14 @@ public:
 	DX12DescriptorHeap& Dsv() { return dsvHeap; }
 	/* A view of a 2D texture into the table, at @index */
 	void MakeSrv(ID3D12Resource *resource, DXGI_FORMAT format, u32 levels, u32 index);
-	/* The heaps, the root signature, the table and the samplers bound */
+	/* The polygons' root signature, the table and the samplers bound, if
+	 * they are not; ForgetRaster() when another root signature was set */
 	void BindRaster();
+	void ForgetRaster() { bound.rasterBound = false; }
+	/* A place in the render target heap for a view read when a command
+	 * is recorded and not after: the next of a ring of them */
+	u32 TransientRtv() { return transientRtv = (transientRtv + 1) % TRANSIENT_RTVS; }
+	static const u32 TRANSIENT_RTVS = 64;
 	/* The bindless table starts here; the UAVs after it */
 	static const u32 UavFirst = DX12_SRV_TABLE_SIZE;
 	static const u32 UavCount = 4096;
@@ -175,6 +187,8 @@ public:
 			bound.pso = pso;
 		}
 	}
+	/* (a pipeline was set that is not one of the table's) */
+	void ForgetPipeline() { bound.pso = nullptr; }
 	void SetTopology(D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
 		if (topology != bound.topology)
@@ -212,6 +226,31 @@ public:
 			bound.stencilRefSet = true;
 		}
 	}
+	void SetVertexBuffer(const D3D12_VERTEX_BUFFER_VIEW& view)
+	{
+		if (memcmp(&view, &bound.vertexBuffer, sizeof(view)))
+		{
+			cmdList->IASetVertexBuffers(0, 1, &view);
+			bound.vertexBuffer = view;
+		}
+	}
+	void SetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW& view)
+	{
+		if (memcmp(&view, &bound.indexBuffer, sizeof(view)))
+		{
+			cmdList->IASetIndexBuffer(&view);
+			bound.indexBuffer = view;
+		}
+	}
+	void SetBlendFactor(const float factor[4])
+	{
+		if (!bound.blendFactorSet || memcmp(factor, bound.blendFactor, sizeof(bound.blendFactor)))
+		{
+			cmdList->OMSetBlendFactor(factor);
+			memcpy(bound.blendFactor, factor, sizeof(bound.blendFactor));
+			bound.blendFactorSet = true;
+		}
+	}
 	/* (what an ExecuteIndirect changed is not known after it) */
 	void ForgetRootConstants() { bound.rootConstantsSet = false; }
 	void SetRootConstants(const u32 *values, u32 count)
@@ -223,9 +262,11 @@ public:
 			bound.rootConstantsSet = true;
 		}
 	}
-	/* The render target and depth (or none), each with a view in its heap */
+	/* The render target and depth (or none), each with a view in its heap
+	 * (a transient render target view is set whatever was bound) */
 	void SetTargets(u32 rtv, u32 dsv);
-	bool HasDepthBound() const { return bound.dsv != ~0u; }
+	void ForgetTargets() { bound.rtv = bound.dsv = ~0u - 1; }
+	bool HasDepthBound() const { return bound.dsv != ~0u && bound.dsv != ~0u - 1; }
 
 	/* ---- The frame ---- */
 
@@ -233,8 +274,8 @@ public:
 	 * required_state by a render that has been submitted: with version 2 it
 	 * is handed over here, and is the frontend's (IsHandedOver()) until the
 	 * frame has been shown */
-	void SetFrame(DX12Image *image);
-	bool IsHandedOver(const DX12Image *image) const { return v2 && handedOver && image == frameImage; }
+	void SetFrame(const DX12Image *image);
+	bool IsHandedOver(const DX12Image *image) const { return v2 && handedOver && image != nullptr && image->resource.get() == frameResource.get(); }
 	/* Just before video_refresh(RETRO_HW_FRAME_BUFFER_VALID) */
 	void Present();
 	/* How many pictures the screen is drawn in turn into, and which of them
@@ -292,10 +333,11 @@ private:
 	RingMark ringMarks[RING_MARKS];
 	u32 ringMarkFirst = 0, ringMarkCount = 0;
 	u64 ringTail = 0;
+	u64 ringSubmitHead = 0;		// the head when the last list was submitted
 
-	// released once the GPU is done
+	// released once the GPU is done: an object, or a place in the bindless table
 	enum { RELEASES = 1024 };
-	struct Released { IUnknown *object; u64 fence; };
+	struct Released { IUnknown *object; u32 srv; u64 fence; };
 	Released released[RELEASES];
 	u32 releasedFirst = 0, releasedCount = 0;
 
@@ -318,10 +360,20 @@ private:
 		u32 rootConstants[16];
 		bool rootConstantsSet;
 		u32 rtv, dsv;
+		D3D12_VERTEX_BUFFER_VIEW vertexBuffer;
+		D3D12_INDEX_BUFFER_VIEW indexBuffer;
+		float blendFactor[4];
+		bool blendFactorSet;
+		bool rasterBound;
 	} bound;
+	u32 transientRtv = 0;
 
-	// the frame
-	DX12Image *frameImage = nullptr;
+	// a picture read back, through this buffer, mapped
+	ComPtr<ID3D12Resource> readback;
+	u64 readbackSize = 0;
+
+	// the frame: a reference to its picture, which stays whatever the renderer does with its own
+	ComPtr<ID3D12Resource> frameResource;
 	u64 frameFence = 0;
 	bool handedOver = false;
 	D3D12_RESOURCE_STATES requiredState = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -339,6 +391,9 @@ private:
 /* What a render's draw calls and the format of every picture are */
 static const DXGI_FORMAT DX12FrameFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 static const DXGI_FORMAT DX12DepthFormat = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+
+/* The depth and stencil: a float for the depth, as the Vulkan renderers have it */
+static const DXGI_FORMAT DX12DepthResourceFormat = DXGI_FORMAT_R32G8X24_TYPELESS;
 
 /* A committed 2D texture in the default heap */
 bool dx12_make_texture(ID3D12Device *device, u32 width, u32 height, u32 levels, DXGI_FORMAT format,
