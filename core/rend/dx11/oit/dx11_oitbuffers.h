@@ -32,10 +32,20 @@
 
 /* The per-pixel lists: every translucent pixel drawn, in one large buffer
  * (PlannedSize(), or as large as the card will make it), and for each
- * screen pixel the first of its list. */
+ * screen pixel the first of its list.
+ *
+ * How many a frame asked for is counted by the shaders (the counter goes
+ * up for a pixel that finds no room too) and read back without waiting:
+ * after each band's render pass the counter is copied, on the GPU, into a
+ * word of the frame's slot of a small ring of staging buffers, and the
+ * oldest slot is mapped without waiting (D3D11_MAP_FLAG_DO_NOT_WAIT)
+ * before a frame is drawn: a slot the GPU is still copying into is left
+ * for later. Three frames back is the earliest a count is seen. */
 class DX11OITBuffers
 {
 public:
+	enum { COUNT_SLOTS = 4, COUNT_WORDS = 256 };
+
 	/* For a screen of @width x @height: rend/oit_size.h, and no more than
 	 * a resource can be (2 GB) */
 	static u64 PlannedSize(int width, int height)
@@ -53,6 +63,12 @@ public:
 		counterView.reset();
 		counter.reset();
 		constants.reset();
+		for (u32 i = 0; i < COUNT_SLOTS; i++)
+		{
+			countStaging[i].reset();
+			countWords[i] = 0;
+		}
+		room = 0;
 		size = wanted;
 
 		/* (the most a resource can be is a quarter of the card's memory, but
@@ -66,7 +82,9 @@ public:
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
 		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-		desc.StructureByteStride = 16;	// sizeof(struct Pixel)
+		// sizeof(struct Pixel) of the shaders: an RGBA8 colour, the depth,
+		// the polygon's number and the next pixel, a uint each (OIT_FRAGMENT_BYTES)
+		desc.StructureByteStride = OIT_FRAGMENT_BYTES;
 		HRESULT hr = device->CreateBuffer(&desc, nullptr, pixels.put());
 		while (FAILED(hr) && desc.ByteWidth > smallest)
 		{
@@ -123,8 +141,69 @@ public:
 			Term();
 			return false;
 		}
+		room = uav.Buffer.NumElements;
+
+		// the ring the counts are read back through
+		D3D11_BUFFER_DESC stagingDesc{};
+		stagingDesc.ByteWidth = COUNT_WORDS * sizeof(u32);
+		stagingDesc.Usage = D3D11_USAGE_STAGING;
+		stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		for (u32 i = 0; i < COUNT_SLOTS; i++)
+			if (FAILED(device->CreateBuffer(&stagingDesc, nullptr, countStaging[i].put())))
+			{
+				WARN_LOG(RENDERER, "DX11: pixel count staging buffer creation failed");
+				Term();
+				return false;
+			}
 		return true;
 	}
+
+	/* The counter, as the draws before left it, copied on the GPU into
+	 * @word of @slot: nothing waits for it */
+	void CopyCount(ID3D11DeviceContext *deviceContext, u32 slot, u32 word)
+	{
+		if (slot >= COUNT_SLOTS || word >= COUNT_WORDS)
+			return;
+		const D3D11_BOX box = { 0, 0, 0, sizeof(u32), 1, 1 };
+		deviceContext->CopySubresourceRegion(countStaging[slot], 0, word * sizeof(u32), 0, 0, counter, 0, &box);
+		if (word >= countWords[slot])
+			countWords[slot] = word + 1;
+	}
+	/* The slot a frame is to copy its counts into: what the frame before
+	 * it copied there, if it was not read, is forgotten */
+	void OpenSlot(u32 slot)
+	{
+		if (slot < COUNT_SLOTS)
+			countWords[slot] = 0;
+	}
+	/* The counts @slot holds, read if the GPU is done copying them, and
+	 * the largest of them in @largest: false when it is not done, or when
+	 * nothing was copied there. Never waits. */
+	bool ReadCount(ID3D11DeviceContext *deviceContext, u32 slot, u32& largest)
+	{
+		if (slot >= COUNT_SLOTS || countWords[slot] == 0 || !countStaging[slot])
+			return false;
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		const HRESULT hr = deviceContext->Map(countStaging[slot], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+		if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+			return false;
+		if (FAILED(hr))
+		{
+			// (a slot that cannot be read is given up on, not waited for)
+			countWords[slot] = 0;
+			return false;
+		}
+		const u32 *words = (const u32 *)mapped.pData;
+		largest = 0;
+		for (u32 i = 0; i < countWords[slot]; i++)
+			largest = std::max(largest, words[i]);
+		deviceContext->Unmap(countStaging[slot], 0);
+		countWords[slot] = 0;
+		return true;
+	}
+	bool HasCount(u32 slot) const { return slot < COUNT_SLOTS && countWords[slot] != 0; }
+	/* How many pixels the lists have room for */
+	u32 GetRoom() const { return room; }
 
 	/* The first pixels of the lists, for a picture of at least this size.
 	 * They start as no list at all, and the pass that puts the lists
@@ -192,12 +271,21 @@ public:
 		counterView.reset();
 		counter.reset();
 		constants.reset();
+		for (u32 i = 0; i < COUNT_SLOTS; i++)
+		{
+			countStaging[i].reset();
+			countWords[i] = 0;
+		}
+		room = 0;
 		width = height = 0;
 	}
 
 private:
 	ID3D11Device *device = nullptr;
 	u64 size = 0;
+	u32 room = 0;
+	ComPtr<ID3D11Buffer> countStaging[COUNT_SLOTS];
+	u32 countWords[COUNT_SLOTS] = {};	// how many words of the slot were copied into
 	ComPtr<ID3D11Buffer> pixels;
 	ComPtr<ID3D11UnorderedAccessView> pixelsView;
 	ComPtr<ID3D11Buffer> counter;

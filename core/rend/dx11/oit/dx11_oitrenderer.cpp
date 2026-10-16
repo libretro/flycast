@@ -104,6 +104,10 @@ public:
 			for (auto& picture : pictures)
 				picture = Picture();
 			picturesWidth = picturesHeight = 0;
+			band = {};
+			countHead = 0;
+			oitBands[0] = oitBands[1] = 1;
+			oitRoomyFrames[0] = oitRoomyFrames[1] = 0;
 			buffers.Term();
 			oitConstants.reset();
 			oitInputLayout.reset();
@@ -162,6 +166,22 @@ private:
 	void DrawList(u32 listType, bool autosort, DX11OITShaders::Pass pass, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModifierVolumes(bool translucent, int first, int count, const ModifierVolumeParam *params);
 	void Resolve(ID3D11RenderTargetView *target, ID3D11ShaderResourceView *opaque);
+	/* Every scissor rectangle the frame's draws set, cut to the band being
+	 * drawn (in place of the base renderer's, which this one's draws all
+	 * call) */
+	void SetScissor(const D3D11_RECT& rect)
+	{
+		if (band.bottom != 0)
+		{
+			D3D11_RECT cut = rect;
+			cut.top = std::max(rect.top, band.top);
+			cut.bottom = std::max(std::min(rect.bottom, band.bottom), cut.top);
+			DX11Renderer::SetScissor(cut);
+		}
+		else
+			DX11Renderer::SetScissor(rect);
+	}
+	u32 ChooseBands(bool rtt);
 
 	DX11OITShaders oitShaders;
 	DX11OITBuffers buffers;
@@ -185,12 +205,78 @@ private:
 	Picture pictures[2];
 	u32 picturesWidth = 0;
 	u32 picturesHeight = 0;
+	/* A frame drawn in horizontal bands (DrawFrame()): the band being
+	 * drawn, in pixels of the target - from its top to its bottom, which is
+	 * 0 when the frame is drawn whole */
+	struct { LONG top, bottom; } band = {};
+	/* The counts (DX11OITBuffers) of the frames in flight: the slot the
+	 * frame being drawn copies into, and the bands each slot's frame was
+	 * drawn in and whether it was a render to a texture */
+	u32 countHead = 0;
+	u32 countBands[DX11OITBuffers::COUNT_SLOTS] = {};
+	bool countRtt[DX11OITBuffers::COUNT_SLOTS] = {};
+	// how many bands frames are drawn in: the screen's [0], renders to a texture [1]
+	u32 oitBands[2] = { 1, 1 };
+	u32 oitRoomyFrames[2] = {};
 };
+
+/* The bands this frame is drawn in, from the counts of the oldest frame
+ * whose copies the GPU is done with: never this frame's, which nothing
+ * waits for. More at once when that one had pixels that found no room;
+ * fewer when a second of frames in a row would have fitted in fewer. Each
+ * band is taken to need what the fullest one did, with a quarter more
+ * room. The screen's frames and renders to a texture are counted apart. */
+u32 DX11OITRenderer::ChooseBands(bool rtt)
+{
+	constexpr u32 MaxBands = 64;
+	const u32 oldest = (countHead + 1) % DX11OITBuffers::COUNT_SLOTS;	// when all are in flight
+	for (u32 k = 0; k < DX11OITBuffers::COUNT_SLOTS; k++)
+	{
+		const u32 slot = (oldest + k) % DX11OITBuffers::COUNT_SLOTS;
+		if (!buffers.HasCount(slot))
+			continue;
+		u32 fragments;
+		if (!buffers.ReadCount(deviceContext, slot, fragments))
+		{
+			if (buffers.HasCount(slot))
+				// (still being copied: the ones after it are younger)
+				break;
+			continue;
+		}
+		const u32 drawnIn = std::max<u32>(std::min<u32>(countBands[slot], MaxBands), 1);
+		const u64 room = std::max<u64>(buffers.GetRoom(), 1);
+		const u64 frame = (u64)fragments * drawnIn;
+		const u32 wanted = (u32)std::max<u64>(std::min<u64>((frame + frame / 4 + room - 1) / room, MaxBands), 1);
+		u32& bands = oitBands[countRtt[slot] ? 1 : 0];
+		u32& roomy = oitRoomyFrames[countRtt[slot] ? 1 : 0];
+		const u32 was = bands;
+		if (fragments > room)
+		{
+			bands = std::min<u32>(std::max({ bands, wanted, drawnIn + 1 }), MaxBands);
+			roomy = 0;
+		}
+		else if (wanted < bands)
+		{
+			if (++roomy >= 60)
+			{
+				bands = wanted;
+				roomy = 0;
+			}
+		}
+		else
+			roomy = 0;
+		if (bands != was)
+			NOTICE_LOG(RENDERER, "DX11 per-pixel renderer: %u translucent pixels in a band of %u%s, room for %u: %u band%s",
+					fragments, drawnIn, countRtt[slot] ? " (a render to a texture)" : "", (u32)room, bands, bands > 1 ? "s" : "");
+		break;
+	}
+	return oitBands[rtt ? 1 : 0];
+}
 
 bool DX11OITRenderer::MakePictures(u32 width, u32 height)
 {
 	/* (made again for another size of screen; a render to a texture is not
-	 * one, and a frame that wants more drops what finds no room) */
+	 * one, and a frame that wants more is drawn in bands) */
 	const u64 wanted = DX11OITBuffers::PlannedSize(screen_width, screen_height);
 	if (wanted != buffers.GetSize() && !buffers.Init(device, wanted))
 		return false;
@@ -573,16 +659,38 @@ void DX11OITRenderer::DrawFrame()
 		clear[1] = VO_BORDER_COL.Green / 255.f;
 		clear[2] = VO_BORDER_COL.Blue / 255.f;
 	}
-	int cur = 0;
-	deviceContext->ClearRenderTargetView(pictures[cur].target, clear);
+	deviceContext->ClearRenderTargetView(pictures[0].target, clear);
 	if (pvrrc.isRTT)
 		// (what is outside the pixel clip, as the per-triangle renderer leaves it)
 		deviceContext->ClearRenderTargetView(targetView, clear);
 	deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.f, 0);
 	SetT4(nullptr);
 
-	RenderPass previous_pass = {};
+	/* In bands, when the frames before had more translucent pixels than the
+	 * lists have room for (ChooseBands()): all of the frame's render passes
+	 * once a band, every draw cut to the band by the scissor (SetScissor()),
+	 * each band's lists starting empty and put on the picture before the
+	 * next band's. Nothing is dropped and nothing is allocated; the opaque
+	 * polygons are drawn once a band. (The clears above are of the whole
+	 * target: a band's draws touch its own pixels alone, so the others'
+	 * depth is still clear when their band comes. Between two draws,
+	 * Direct3D 11 orders what they do to the lists: a band's polygons do
+	 * not write the entries the band before is still reading, and its
+	 * lists are not linked from before the pass before set the heads back
+	 * to nothing - no barrier is needed, as it is in Vulkan and OpenGL.) */
+	const u32 bands = std::max<u32>(std::min<u32>(ChooseBands(pvrrc.isRTT), std::max<u32>(targetHeight, 1)), 1);
+	const u32 bandHeight = (targetHeight + bands - 1) / bands;
+	const u32 bandCount = std::max<u32>((targetHeight + bandHeight - 1) / bandHeight, 1);
+	buffers.OpenSlot(countHead);
+	u32 countWord = 0;
 	const int render_pass_count = pvrrc.render_passes.used();
+
+	for (u32 bandIndex = 0; bandIndex < bandCount; bandIndex++)
+	{
+	band.top = (LONG)(bandIndex * bandHeight);
+	band.bottom = bandCount > 1 ? (LONG)std::min<u32>((bandIndex + 1) * bandHeight, targetHeight) : 0;
+	int cur = 0;
+	RenderPass previous_pass = {};
 	for (int render_pass = 0; render_pass < render_pass_count; render_pass++)
 	{
 		const RenderPass& current_pass = pvrrc.render_passes.head()[render_pass];
@@ -616,6 +724,8 @@ void DX11OITRenderer::DrawFrame()
 		 * it was: the last picture goes in first, under everything */
 		if (render_pass == 0 && !pvrrc.isRTT && KeepsLastPicture())
 		{
+			// (the quad is drawn with the scissor that is set: the band's)
+			SetScissor(D3D11_RECT{ 0, 0, (LONG)targetWidth, (LONG)targetHeight });
 			DrawLastPicture(targetWidth, targetHeight);
 			// (the quad was drawn with its own)
 			context->SetViewport((float)targetWidth, (float)targetHeight);
@@ -638,6 +748,8 @@ void DX11OITRenderer::DrawFrame()
 			BindOIT(pictures[cur].target, depthViewReadOnly);
 			SetT4(depthSRV);
 			DrawList(ListType_Translucent, true, DX11OITShaders::OIT, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
+			// how many pixels this band's pass asked for, copied out
+			buffers.CopyCount(deviceContext, countHead, countWord++);
 		}
 		else
 			DrawList(ListType_Translucent, false, DX11OITShaders::Color, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
@@ -663,6 +775,14 @@ void DX11OITRenderer::DrawFrame()
 
 		previous_pass = current_pass;
 	}
+	}
+	band = {};
+	// (what is drawn on the picture after this is not cut to the last band)
+	SetScissor(D3D11_RECT{ 0, 0, (LONG)targetWidth, (LONG)targetHeight });
+	// the frame's counts are in its slot: the next frame's go in the next
+	countBands[countHead] = bandCount;
+	countRtt[countHead] = pvrrc.isRTT;
+	countHead = (countHead + 1) % DX11OITBuffers::COUNT_SLOTS;
 	/* (what is bound stays bound: the picture drawn into is unbound when
 	 * it is handed over, and nothing that reads one binds it before
 	 * binding another target) */
