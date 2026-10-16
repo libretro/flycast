@@ -282,6 +282,19 @@ ifeq ($(HAVE_D3D11), 1)
 					$(CORE_DIR)/core/rend/dx11/oit/dx11_oitshaders.cpp
 endif
 
+# Direct3D 12, on Windows: the frontend's device and queue, the shaders DXBC
+# made when the core is built (rend/dx12/dx12_dxbc.inc)
+ifeq ($(HAVE_D3D12), 1)
+	SOURCES_CXX += \
+					$(CORE_DIR)/core/rend/dx12/dx12context_lr.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_overlay.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_pso.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_renderer.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_shaders.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_texdecoder.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_texture.cpp
+endif
+
 # Direct3D 9, on Windows: the frontend's device, every shader compiled when
 # the renderer is first set up
 ifeq ($(HAVE_D3D9), 1)

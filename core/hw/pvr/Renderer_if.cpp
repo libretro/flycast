@@ -141,6 +141,12 @@ void rend_create_renderer()
 		renderer = rend_D3D9();
 		break;
 #endif
+#ifdef HAVE_D3D12
+	case 9:
+		NOTICE_LOG(PVR, "Creating Direct3D 12 per-triangle/strip renderer");
+		renderer = rend_D3D12();
+		break;
+#endif
 	}
 }
 

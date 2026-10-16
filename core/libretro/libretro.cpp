@@ -43,6 +43,9 @@ char* strdup(const char *str)
 #ifdef HAVE_D3D9
 #include "rend/dx9/dx9context_lr.h"
 #endif
+#ifdef HAVE_D3D12
+#include "rend/dx12/dx12context_lr.h"
+#endif
 #include "rend/rend_method.h"
 #ifdef HAVE_VULKAN
 #include "rend/vulkan/vulkan_context.h"
@@ -1535,7 +1538,7 @@ void retro_run (void)
       const bool was_changed = renderer_changed;
 
       update_variables(false);
-#if defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9)
+#if defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9) || defined(HAVE_D3D12)
       /* An option that has the renderer set up again - another renderer,
        * another size of buffer. The Vulkan renderers' pictures are their
        * own and go with them: the one on the screen is kept for the new
@@ -1544,7 +1547,7 @@ void retro_run (void)
        * is in the frontend's buffer, which stays.) So are the Direct3D
        * renderers'. */
       if (renderer_changed && !was_changed && (settings.pvr.rend == 4 || settings.pvr.rend == 5
-            || settings.pvr.rend == 6 || settings.pvr.rend == 7 || settings.pvr.rend == 8))
+            || settings.pvr.rend == 6 || settings.pvr.rend == 7 || settings.pvr.rend == 8 || settings.pvr.rend == 9))
          rend_keep_picture();
 #endif
 #ifdef HAVE_VULKAN
@@ -1676,7 +1679,12 @@ void retro_run (void)
    if (!is_dupe && settings.pvr.rend == 8 && !DX9Context::Instance()->Present())
       is_dupe = true;
 #endif
-#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9)
+#ifdef HAVE_D3D12
+   /* the frame is handed to the frontend as the Direct3D 12 interface has it */
+   if (!is_dupe && settings.pvr.rend == 9)
+      DX12Context::Instance()->Present();
+#endif
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9) || defined(HAVE_D3D12)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
 #endif
    is_dupe = true;
@@ -2431,6 +2439,84 @@ static bool set_dx9_hw_render(void)
 }
 #endif
 
+#ifdef HAVE_D3D12
+/* Direct3D 12: the frontend's device and queue, through its interface */
+static void dx12_context_reset(void)
+{
+	retro_hw_render_interface_d3d12 *iface = NULL;
+	if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&iface) || iface == NULL
+			|| iface->interface_type != RETRO_HW_RENDER_INTERFACE_D3D12)
+	{
+		ERROR_LOG(RENDERER, "Get DX12 HW interface failed");
+		return;
+	}
+	if (iface->interface_version != RETRO_HW_RENDER_INTERFACE_D3D12_VERSION
+			&& iface->interface_version != RETRO_HW_RENDER_INTERFACE_D3D12_VERSION_2)
+	{
+		ERROR_LOG(RENDERER, "Unsupported DX12 interface version %d", iface->interface_version);
+		return;
+	}
+	context_resets++;
+	take_pending_size();
+	if (!DX12Context::Instance()->Init(iface))
+		ERROR_LOG(RENDERER, "DX12 context initialization failed");
+	renderer_changed = true;
+}
+
+static void dx12_context_destroy(void)
+{
+	/* what was rendered to textures and video memory has not got yet, while it can still be fetched */
+	rtt_watch_flush();
+	rend_keep_picture();
+	rend_term_renderer();
+	renderer_changed = true;
+	DX12Context::Instance()->Term();
+}
+
+static bool set_dx12_hw_render(void)
+{
+	retro_hw_render_callback hw_render;
+	memset(&hw_render, 0, sizeof(hw_render));
+	hw_render.context_type = RETRO_HW_CONTEXT_D3D12;
+	hw_render.version_major = 12;
+	hw_render.version_minor = 0;
+	hw_render.context_reset = dx12_context_reset;
+	hw_render.context_destroy = dx12_context_destroy;
+
+	if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render))
+		return false;
+
+	/* Version 2 of the interface, where the frontend has it: the frame
+	 * handed over with the fence that says when it is drawn, and read by
+	 * the frontend where it is, with no copy, a picture for each of its
+	 * sync indexes. A frontend that does not know of it answers version 0,
+	 * and version 1 is what is given. */
+	static const struct retro_hw_render_context_negotiation_interface_d3d12 negotiation_interface = {
+		RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_D3D12,
+		RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_D3D12_VERSION,
+		RETRO_HW_RENDER_INTERFACE_D3D12_VERSION_2,
+	};
+	struct retro_hw_render_context_negotiation_interface probe;
+	memset(&probe, 0, sizeof(probe));
+	probe.interface_type = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_D3D12;
+	probe.interface_version = 0;
+	if (environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT, &probe)
+			&& probe.interface_version >= 1)
+		environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void *)&negotiation_interface);
+
+	/* (per triangle, or per strip: the per-pixel renderer is yet to come) */
+	if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
+		settings.pvr.rend = 9;
+	renderer_changed = true;
+	return true;
+}
+#else
+static bool set_dx12_hw_render(void)
+{
+	return false;
+}
+#endif
+
 static bool set_opengl_hw_render(u32 preferred)
 {
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
@@ -2835,6 +2921,10 @@ bool retro_load_game(const struct retro_game_info *game)
    {
       foundRenderApi = true;
    }
+   else if (preferred == RETRO_HW_CONTEXT_D3D12 && set_dx12_hw_render())
+   {
+      foundRenderApi = true;
+   }
    else
    {
       // fallback when not supported (or auto-switching disabled), let's try all supported drivers
@@ -2852,6 +2942,8 @@ bool retro_load_game(const struct retro_game_info *game)
 #endif
       if (!foundRenderApi)
          foundRenderApi = set_dx11_hw_render();
+      if (!foundRenderApi)
+         foundRenderApi = set_dx12_hw_render();
       if (!foundRenderApi)
          foundRenderApi = set_dx9_hw_render();
    }
