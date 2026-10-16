@@ -432,8 +432,11 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader,
 			vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader, {}, before, nullptr, nullptr);
 	const vk::Buffer frm = *r.buffers[B_FRM]->buffer;
-	cmd.fillBuffer(frm, 0, TAG_O_WORDS * 4, 0);
+	/* Two fills that do not overlap: two transfer writes to the same word
+	 * with no barrier between them can land in either order */
+	static_assert(TAG_O_ZMAX == 0, "fZ_max is the frame's first word");
 	cmd.fillBuffer(frm, TAG_O_ZMAX * 4, 4, 0x3F800000u);	// fZ_max starts at 1
+	cmd.fillBuffer(frm, 4, (TAG_O_WORDS - 1) * 4, 0);
 	if (frame.slots != 0)
 		cmd.fillBuffer(*r.buffers[B_WORK]->buffer, (vk::DeviceSize)r.layout.words[9] * 4, (vk::DeviceSize)frame.slots * 4, 0);
 	// the frame's translucent draw records: counts and room
