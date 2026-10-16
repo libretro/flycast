@@ -1,0 +1,146 @@
+refsw: the reference software renderer, as an oracle for the renderers
+=====================================================================
+
+What it is
+----------
+refsw is skmp's reference software renderer of the Dreamcast's PowerVR2
+(CLX2) CORE, from libswirl (github.com/skmp/reicast-emulator, branch alpha,
+libswirl/rend/soft). It models the chip at the level of its functional
+units: 32x32 tiles; the ISP rasterizing each triangle with half-edge
+functions at the pixel's sampling position and interpolating 1/w (the
+vertex z the game sends) with a plane equation in screen space, in 32-bit
+float, into a depth buffer and a tag buffer; the depth compare modes; the
+modifier volumes flipping a stencil bit where their faces pass the depth
+test and summarizing it per volume; the TSP shading each pixel's tag after
+the list (texture fetch with the hardware's clamp/flip/wrap and bilinear
+filter, the colour combiner's four shading instructions, offset colour,
+colour clamp, the fog look-up table and per-vertex fog, the blending unit
+with its eight factors and the two accumulation buffers); punch-through
+with the alpha test fed back into the depth write; and translucency as the
+chip's layer peeling: a pass a layer from the back, equal depths ordered
+by tag (submission order), which is the chip's per-pixel sort.
+
+It is a straight, slow, readable model, not a fast renderer: a frame
+takes a second or two. That is the point - it says what the chip draws at
+a pixel, and why, so the renderers can be held against it.
+
+Licence: libswirl is BSD 3-clause (license/bsd, which the files include as
+their header; the full text is there). Compatible with this core's GPL.
+
+Files
+-----
+From libswirl, kept as they are except where "Changes" says:
+  license/bsd          the licence header the files include
+  refrend_regs.h       the chip's region array / object list words
+  refrend_base.h       the renderer's interface (RefRendInterface) and
+                       parameter structures
+  refsw.h              tile buffer layout, plane-equation interpolators,
+                       the pixel pipeline's interface
+  refsw.cpp            tile buffer operations, layer peeling buffers,
+                       the triangle rasterizer (ISP)
+  refsw_pixel.cpp      the pixel operations: depth test per render mode,
+                       texture fetch, colour combiner, fog, blending
+  refsw_pixel.h, refsw_tsp_init.inl  the pipeline's function tables
+
+Written here:
+  refsw_port.h         what the files above took from the rest of libswirl,
+                       given from this core's headers (see its comment)
+  refsw_frame.cpp      the frame walk and the checker program
+  refsw_dump.h         the frame file tools/rend/tile_dump.cpp writes
+  ../refsw_test.sh     builds everything, runs a game to a frame, draws it
+
+libswirl's refrend_base.cpp - the front end that walked the chip's region
+array and object lists in video memory and drove the backend tile by tile
+- is not used: this core's TA parse keeps the polygons in its own lists
+and writes no object lists, so refsw_frame.cpp walks those lists instead,
+doing for each tile exactly the sequence refrend_base.cpp's RenderPVR()
+did for a region array entry (background tag, clear, opaque list,
+punch-through list, opaque modifier volumes, shade the tags, then the
+translucent list peeled a layer a pass with the translucent modifier
+volumes, until a pass draws nothing). Its decode of the background polygon
+from video memory is carried over as it was.
+
+Changes to libswirl's files (all of them)
+-----------------------------------------
+refsw.h
+  - #include "rend/gles/gles.h" replaced by #include "refsw_port.h", moved
+    above the other includes (it provides "using namespace std", the
+    register unions and text_info the files expect)
+  - Vertex::spc renamed to this core's Vertex::vtx_spc (6 places in
+    IPs3::Setup)
+refsw.cpp
+  - the registration with libswirl's frontend at the end (#if FEAT_TA ==
+    TA_LLE ... #endif: rend_refsw, rend_refsw_debug, RegisterRendererBackend)
+    replaced by a plain factory, refsw_create(vram), that makes the
+    refsw_impl the same way (placement new in 32-byte aligned memory)
+  - (cMutex texture_lock stays; refsw_port.h gives it as a do-nothing class:
+    one thread draws here)
+refrend_base.h
+  - DrawParameters gets a field: u32 shadow, the object's shadow bit
+refsw_pixel.cpp
+  - PixelFlush_tsp(): the stencil handed to InterpolateBase/InterpolateOffs
+    (which scale the colour by FPU_SHAD_SCALE where bit 0 is set) is the
+    pixel's stencil only when entry->params.shadow is set, else 0. libswirl
+    applied the modifier volumes' result to every object; the chip applies
+    it only to objects whose parameter control word has the shadow bit
+    (PCW bit 7), which the object list entry carries. Without this the
+    character on Jet Grind Radio's select screen, whose polygons do not
+    take shadows, is drawn half dark inside its own shadow volume.
+Everything else - the rasterizer, the depth tests, the peeling, the texture
+fetch, the colour combiner, fog, blending - is libswirl's text unchanged
+(diff the files against libswirl/rend/soft to see).
+
+What the walk takes from the parse, and the known departures
+------------------------------------------------------------
+- Polygons come from the parse's lists as index strips (make_index()
+  joins the TA's strips of one state with repeated indices, keeping each
+  triangle's parity): the triangles with a repeated index are the joins and
+  are left out; the i-th triangle of a strip is rasterized with vertex_offset
+  i & 1, as the chip culls by winding.
+- The ISP word's texture/offset/gouraud/16-bit-UV bits are taken from the
+  control word, as the TA writes them into the object's ISP word.
+- A triangle's tag is its ordinal in the frame, so that a triangle gets the
+  same tag each time the translucent list is walked (the peeling's
+  coplanar tie-break orders equal depths by tag, lower tag first).
+- Modifier volumes: each ModifierVolumeParam's triangles are rasterized in
+  RM_MODIFIER with its ISP word; the volume instruction (bits 31:29, which
+  refsw reads as isp.modvol.VolumeMode) summarizes the stencil after each
+  triangle that carries it, as refrend_base.cpp did.
+- A polygon sent under a user tile clip is drawn only in the tiles the clip
+  allows, as the TA bins it (tile_clipped()).
+- Textures are made by this core's texture cache (TexCache.o linked in),
+  so the texels are the ones the renderers get, laid out as libswirl's
+  software renderers want them (16 bytes a texel: the 2x2 block at
+  (u+1,v+1), (u,v+1), (u+1,v), (u,v) in BGRA, wrapping at the edges).
+  Largest level only: refsw has no mipmapping (nor trilinear, which it
+  refuses). Palettes come from the dumped registers (palette_update()).
+- Sprites are the two triangles the parse makes of them, not the chip's
+  quad with one plane.
+- The picture is the tile buffers' 8-bit BGRA; the chip's write-out to a
+  16-bit 565 framebuffer (and dithering) is not applied. The pixel clip
+  (FB_X_CLIP/FB_Y_CLIP) is.
+- The translucent list is always peeled (autosort); refsw does not model
+  the pre-sorted mode (ISP_FEED_CFG bit 0 / the region array's pre-sort
+  flag), nor a translucent polygon's own depth compare mode (it forces
+  less-or-equal for peeling and greater-or-equal for punch-through and
+  modifier volumes, as the comments in PixelFlush_isp say).
+- Render passes (several region array entries for a tile): walked in
+  order; the first clears the buffers, a later one when its RenderPass
+  says z_clear.
+
+Using it
+--------
+  sh tools/rend/refsw_test.sh -b                        build only
+  HEADLESS_DIR=sys HEADLESS_UNDUMP=20:game.raw REFSW_FROM=7 \
+     sh tools/rend/refsw_test.sh game.gdi 40 reicast_use_real_bios=disabled
+     a game run 40 frames with the state loaded before frame 20, the 7th
+     render after that dumped and drawn (REFSW_MAX more of them, REFSW_EVERY
+     apart). The state is the core's own (a RetroArch .state is that, or a
+     RASTATE container whose "MEM " block is it).
+  sh tools/rend/refsw_test.sh -f frame.bin 175,340 132,270
+     a frame drawn again, with two pixels probed: every triangle covering
+     the pixel is printed as it is rasterized with the 1/w refsw
+     interpolates for it (and its bits), its depth mode, blend and texture
+     words and its three vertex depths; and the depth, tag and stencil the
+     tile buffers hold after each list and each peeled layer.
+The frames are 9 MB each (video memory is in them). WORK=dir keeps them.
