@@ -420,7 +420,7 @@ void main()
       uint idx =  getNextPixelIndex();
       
       Pixel pixel;
-      pixel.color = color;
+      pixel.color = packUnorm4x8(color);
       pixel.depth = gl_FragDepth;
       pixel.seq_num = uint(pp_Number) + vtx_pp;
       pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);

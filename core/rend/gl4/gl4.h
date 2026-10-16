@@ -5,6 +5,49 @@
 
 void gl4DrawStrips(GLuint output_fbo, int width, int height);
 
+/* A frame drawn in horizontal bands (abuffer.cpp, gl4OitChooseBands()):
+ * the band being drawn, in pixels of the framebuffer; no height when the
+ * frame is drawn whole. Every scissor rectangle the frame's draws set is
+ * cut to it: gl4Scissor() in place of glcache.Scissor(), gl4ScissorOff()
+ * in place of turning the scissor test off. */
+struct gl4Band
+{
+	int y, height;
+};
+extern gl4Band gl4band;
+static inline void gl4Scissor(int x, int y, int width, int height)
+{
+	if (gl4band.height != 0)
+	{
+		const int top = y > gl4band.y ? y : gl4band.y;
+		const int bottom = y + height < gl4band.y + gl4band.height ? y + height : gl4band.y + gl4band.height;
+		y = top;
+		height = bottom > top ? bottom - top : 0;
+	}
+	glcache.Enable(GL_SCISSOR_TEST);
+	glcache.Scissor(x, y, width, height);
+}
+static inline void gl4ScissorOff()
+{
+	if (gl4band.height != 0)
+	{
+		glcache.Enable(GL_SCISSOR_TEST);
+		glcache.Scissor(0, gl4band.y, 0x7FFF, gl4band.height);
+	}
+	else
+		glcache.Disable(GL_SCISSOR_TEST);
+}
+/* The bands this frame (a render to a texture, or the screen's) is drawn
+ * in: from the fragment counts of frames before, which nothing waits for */
+u32 gl4OitChooseBands(bool rtt);
+/* A band starts: its lists empty, its count at nothing; not before the
+ * band before is on the picture */
+void gl4OitBandBegin();
+/* A band's translucent polygons are all drawn: its count copied out */
+void gl4OitBandEnd(u32 band);
+/* The frame's bands are drawn: a fence for their counts */
+void gl4OitFrameEnd(u32 bands, bool rtt);
+
 enum class Pass { Depth, Color, OIT };
 
 struct gl4PipelineShader
@@ -122,7 +165,7 @@ void gl4DrawGunCrosshair(u8 port);
 \n\
 layout(r32ui, binding = 4) uniform coherent restrict uimage2D abufferPointerImg; \n\
 struct Pixel { \n\
-	vec4 color; \n\
+	uint color;		// RGBA8, as the PowerVR keeps a fragment's colour \n\
 	float depth; \n\
 	uint seq_num; \n\
 	uint next; \n\

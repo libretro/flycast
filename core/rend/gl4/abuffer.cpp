@@ -18,6 +18,59 @@ static GLuint g_quadBuffer = 0;
 static GLuint g_quadVertexArray = 0;
 
 #include "rend/oit_size.h"
+#include <algorithm>
+
+#ifndef GL_COPY_READ_BUFFER
+#define GL_COPY_READ_BUFFER 0x8F36
+#endif
+#ifndef GL_COPY_WRITE_BUFFER
+#define GL_COPY_WRITE_BUFFER 0x8F37
+#endif
+#ifndef GL_R32UI
+#define GL_R32UI 0x8236
+#endif
+#ifndef GL_RED_INTEGER
+#define GL_RED_INTEGER 0x8D94
+#endif
+#ifndef GL_SYNC_GPU_COMMANDS_COMPLETE
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#endif
+#ifndef GL_ALREADY_SIGNALED
+#define GL_ALREADY_SIGNALED 0x911A
+#endif
+#ifndef GL_CONDITION_SATISFIED
+#define GL_CONDITION_SATISFIED 0x911C
+#endif
+
+#ifndef APIENTRY
+#define APIENTRY
+#endif
+/* What glsm does not wrap: the entry points the frontend's loader
+ * (glsym/glsym_gl.c) has made, which the glsm header does not name */
+extern "C" {
+extern void (APIENTRY *__rglgen_glClearBufferSubData)(GLenum, GLenum, GLintptr, GLsizeiptr, GLenum, GLenum, const void *);
+extern void (APIENTRY *__rglgen_glCopyBufferSubData)(GLenum, GLenum, GLintptr, GLintptr, GLsizeiptr);
+}
+#define glClearBufferSubData __rglgen_glClearBufferSubData
+#define glCopyBufferSubData __rglgen_glCopyBufferSubData
+
+/* The fragments a frame asks for, counted by the shaders (the counter goes
+ * up for a fragment that finds no room too), read back without waiting:
+ * after each band the counter is copied, on the GPU, into this frame's
+ * slot of a small buffer, and a fence is put after the frame; a frame
+ * whose fence has passed, polled before a frame is drawn, has its counts
+ * read. Three frames back is the earliest a count is seen. The band
+ * being drawn is gl4band (gl4.h). */
+gl4Band gl4band;
+enum { OIT_COUNT_SLOTS = 4, OIT_MAX_BANDS = 64 };
+static GLuint count_buffer;
+static void *count_fence[OIT_COUNT_SLOTS];	// GLsync; null when the slot is free
+static u32 count_bands[OIT_COUNT_SLOTS];
+static bool count_rtt[OIT_COUNT_SLOTS];	// the slot's frame was a render to a texture
+static u32 count_head;		// the slot the frame being drawn uses
+// how many bands frames are drawn in: the screen's [0], renders to a texture [1]
+static u32 oit_bands[2] = { 1, 1 };
+static u32 oit_roomy_frames[2];
 
 #define MAX_PIXELS_PER_FRAGMENT "32"
 
@@ -86,7 +139,7 @@ vec4 resolveAlphaBlend(ivec2 coords) {
 			srcColor = secondaryBuffer;
 		else
 		{
-			srcColor = pixel.color;
+			srcColor = unpackUnorm4x8(pixel.color);
 			if (shadowed)
 				srcColor.rgb *= shade_scale_factor;
 		}
@@ -298,6 +351,14 @@ void initABuffer()
 		glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(GLint), &zero);
 		glCheck();
 	}
+	if (count_buffer == 0)
+	{
+		glGenBuffers(1, &count_buffer);
+		glBindBuffer(GL_COPY_WRITE_BUFFER, count_buffer);
+		glBufferData(GL_COPY_WRITE_BUFFER, OIT_COUNT_SLOTS * OIT_MAX_BANDS * sizeof(GLuint), NULL, GL_DYNAMIC_READ);
+		glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+		glCheck();
+	}
 
 	if (g_abuffer_final_shader.program == 0)
 		gl4CompilePipelineShader(&g_abuffer_final_shader, final_shader_source, VertexShaderSource);
@@ -356,6 +417,21 @@ void termABuffer()
 	  glDeleteBuffers(1, &atomic_buffer);
 	  atomic_buffer = 0;
    }
+   if (count_buffer != 0)
+   {
+	  glDeleteBuffers(1, &count_buffer);
+	  count_buffer = 0;
+   }
+   for (u32 i = 0; i < OIT_COUNT_SLOTS; i++)
+	  if (count_fence[i] != nullptr)
+	  {
+		 glDeleteSync((GLsync)count_fence[i]);
+		 count_fence[i] = nullptr;
+	  }
+   count_head = 0;
+   oit_bands[0] = oit_bands[1] = 1;
+   oit_roomy_frames[0] = oit_roomy_frames[1] = 0;
+   gl4band.height = 0;
    if (g_quadVertexArray != 0)
    {
 	  glDeleteVertexArrays(1, &g_quadVertexArray);
@@ -479,33 +555,98 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 	glBindVertexArray(gl4.vbo.main_vao);
 }
 
-void checkOverflowAndReset()
+/* The bands this frame is drawn in, from the counts of the oldest frame
+ * whose fence has passed: never this frame's, which nothing waits for.
+ * More at once when that one had fragments that found no room; fewer when
+ * a second of frames in a row would have fitted in fewer. Each band is
+ * taken to need what the fullest one did, with a quarter more room. The
+ * screen's frames and renders to a texture are counted apart. */
+u32 gl4OitChooseBands(bool rtt)
 {
-	// Using atomic counter
-	GLuint max_pixel_index = 0;
-//	glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(GLuint), &max_pixel_index);
-////	printf("ABUFFER %d pixels used\n", max_pixel_index);
-//	if ((max_pixel_index + 1) * 32 - 1 >= pixel_buffer_size)
-//	{
-//		GLint64 size;
-//		glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &size);
-//		if (pixel_buffer_size == size)
-//			printf("A-buffer overflow: %d pixels. Buffer size already maxed out\n", max_pixel_index);
-//		else
-//		{
-//			pixel_buffer_size = (GLuint)min(2 * (GLint64)pixel_buffer_size, size);
-//
-//			printf("A-buffer overflow: %d pixels. Resizing buffer to %d MB\n", max_pixel_index, pixel_buffer_size / 1024 / 1024);
-//
-//			glBindBuffer(GL_SHADER_STORAGE_BUFFER, pixels_buffer);
-//			glBufferData(GL_SHADER_STORAGE_BUFFER, pixel_buffer_size, NULL, GL_DYNAMIC_COPY);
-//			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, pixels_buffer);
-//			glCheck();
-//		}
-//	}
-	// Reset counter
-	max_pixel_index = 0;
- 	glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0 , sizeof(GLuint), &max_pixel_index);
+	const u32 slot = (count_head + 1) % OIT_COUNT_SLOTS;	// the oldest in flight, when all are
+	for (u32 k = 0; k < OIT_COUNT_SLOTS; k++)
+	{
+		const u32 i = (slot + k) % OIT_COUNT_SLOTS;
+		if (count_fence[i] == nullptr)
+			continue;
+		const GLenum r = glClientWaitSync((GLsync)count_fence[i], 0, 0);
+		if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED)
+			break;
+		glDeleteSync((GLsync)count_fence[i]);
+		count_fence[i] = nullptr;
+
+		GLuint counts[OIT_MAX_BANDS];
+		const u32 drawnIn = std::max<u32>(std::min<u32>(count_bands[i], OIT_MAX_BANDS), 1);
+		glBindBuffer(GL_COPY_READ_BUFFER, count_buffer);
+		glGetBufferSubData(GL_COPY_READ_BUFFER, (GLintptr)(i * OIT_MAX_BANDS * sizeof(GLuint)), drawnIn * sizeof(GLuint), counts);
+		glBindBuffer(GL_COPY_READ_BUFFER, 0);
+		u32 fragments = 0;
+		for (u32 b = 0; b < drawnIn; b++)
+			fragments = std::max<u32>(fragments, counts[b]);
+
+		const u64 room = std::max<u64>((u64)pixels_buffer_size / OIT_FRAGMENT_BYTES, 1);
+		const u64 frame = (u64)fragments * drawnIn;
+		const u32 wanted = (u32)std::max<u64>(std::min<u64>((frame + frame / 4 + room - 1) / room, OIT_MAX_BANDS), 1);
+		u32& bands = oit_bands[count_rtt[i] ? 1 : 0];
+		u32& roomy = oit_roomy_frames[count_rtt[i] ? 1 : 0];
+		const u32 was = bands;
+		if (fragments > room)
+		{
+			bands = std::min<u32>(std::max({ bands, wanted, drawnIn + 1 }), OIT_MAX_BANDS);
+			roomy = 0;
+		}
+		else if (wanted < bands)
+		{
+			if (++roomy >= 60)
+			{
+				bands = wanted;
+				roomy = 0;
+			}
+		}
+		else
+			roomy = 0;
+		if (bands != was)
+			NOTICE_LOG(RENDERER, "OpenGL per-pixel renderer: %u translucent fragments in a band of %u%s, room for %u: %u band%s",
+					fragments, drawnIn, count_rtt[i] ? " (a render to a texture)" : "", (u32)room, bands, bands > 1 ? "s" : "");
+		break;
+	}
+	return oit_bands[rtt ? 1 : 0];
+}
+
+void gl4OitBandBegin()
+{
+	/* The band before (or the frame before) may still be being put on the
+	 * picture: its lists read from the first entries, which this band's
+	 * polygons write again, and its pointers set back to nothing, which
+	 * this band's polygons link from. Nothing of this band's starts before
+	 * that is done. */
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_ATOMIC_COUNTER_BARRIER_BIT);
+	// the counter back at nothing, on the GPU, after what the band before drew
+	const GLuint zero = 0;
+	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, atomic_buffer);
+	glClearBufferSubData(GL_ATOMIC_COUNTER_BUFFER, GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER, GL_UNSIGNED_INT, &zero);
+}
+
+void gl4OitBandEnd(u32 band)
+{
+	if (band >= OIT_MAX_BANDS)
+		return;
+	glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+	glBindBuffer(GL_COPY_WRITE_BUFFER, count_buffer);
+	glCopyBufferSubData(GL_ATOMIC_COUNTER_BUFFER, GL_COPY_WRITE_BUFFER, 0,
+			(GLintptr)((count_head * OIT_MAX_BANDS + band) * sizeof(GLuint)), sizeof(GLuint));
+	glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+}
+
+void gl4OitFrameEnd(u32 bands, bool rtt)
+{
+	if (count_fence[count_head] != nullptr)
+		// (a slot still in flight is used again: its count is lost, not waited for)
+		glDeleteSync((GLsync)count_fence[count_head]);
+	count_fence[count_head] = (void *)glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	count_bands[count_head] = bands;
+	count_rtt[count_head] = rtt;
+	count_head = (count_head + 1) % OIT_COUNT_SLOTS;
 }
 
 void renderABuffer()
@@ -516,7 +657,8 @@ void renderABuffer()
 
 	glcache.Disable(GL_DEPTH_TEST);
 	glcache.Disable(GL_CULL_FACE);
-	glcache.Disable(GL_SCISSOR_TEST);
+	// (the band's pixels alone: the others' lists are empty, and their picture is done)
+	gl4ScissorOff();
 	// what the last polygon blended with is no business of the lists being put on the picture
 	glcache.Disable(GL_BLEND);
 	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);

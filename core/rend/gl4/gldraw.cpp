@@ -237,12 +237,9 @@ static void SetTextureRepeatMode(int index, GLuint dir, u32 clamp, u32 mirror)
 static void SetBaseClipping()
 {
 	if (gl4ShaderUniforms.base_clipping.enabled)
-	{
-		glcache.Enable(GL_SCISSOR_TEST);
-		glcache.Scissor(gl4ShaderUniforms.base_clipping.x, gl4ShaderUniforms.base_clipping.y, gl4ShaderUniforms.base_clipping.width, gl4ShaderUniforms.base_clipping.height);
-	}
+		gl4Scissor(gl4ShaderUniforms.base_clipping.x, gl4ShaderUniforms.base_clipping.y, gl4ShaderUniforms.base_clipping.width, gl4ShaderUniforms.base_clipping.height);
 	else
-		glcache.Disable(GL_SCISSOR_TEST);
+		gl4ScissorOff();
 }
 
 template <u32 Type, bool SortingEnabled, Pass pass>
@@ -349,8 +346,7 @@ static void SetGPState(const PolyParam* gp)
 		if (gl4ShaderUniforms.base_clipping.enabled)
 			IntersectClipRect(clip_rect, gl4ShaderUniforms.base_clipping.x, gl4ShaderUniforms.base_clipping.y,
 					gl4ShaderUniforms.base_clipping.width, gl4ShaderUniforms.base_clipping.height);
-		glcache.Enable(GL_SCISSOR_TEST);
-		glcache.Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
+		gl4Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
 	}
 	else
 		SetBaseClipping();
@@ -625,10 +621,7 @@ static void DrawModVols(int first, int count)
 			int clip_rect[4];
 			clip = param.tileclip;
 			if (GetTileClip(clip, ViewportMatrix, clip_rect) == TileClipping::Outside)
-			{
-				glcache.Enable(GL_SCISSOR_TEST);
-				glcache.Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
-			}
+				gl4Scissor(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
 			else
 				SetBaseClipping();
 		}
@@ -660,7 +653,6 @@ static void DrawModVols(int first, int count)
 
 void renderABuffer();
 void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom);
-void checkOverflowAndReset();
 
 static GLuint CreateColorFBOTexture(int width, int height)
 {
@@ -714,7 +706,6 @@ void gl4CreateTextures(int width, int height)
 
 void gl4DrawStrips(GLuint output_fbo, int width, int height)
 {
-	checkOverflowAndReset();
 	glBindFramebuffer(GL_FRAMEBUFFER, geom_fbo);
 	if (texSamplers[0] == 0)
 		glGenSamplers(2, texSamplers);
@@ -748,7 +739,7 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 	working_holds_screen = !pvrrc.isRTT;
 	glcache.DepthMask(GL_TRUE);
 	glClearDepth(0.0);
-	glStencilMask(0xFF);
+	glcache.StencilMask(0xFF);
 	glClear(GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); glCheck();
 
 	//Draw the strips !
@@ -757,8 +748,26 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 	glActiveTexture(GL_TEXTURE0);
 	glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
 
-	RenderPass previous_pass = {};
+	/* In bands, when the frames before had more translucent fragments than
+	 * the lists have room for (abuffer.cpp): all of the frame's render
+	 * passes once a band, every draw and clear cut to the band by the
+	 * scissor, each band's lists starting empty and put on the picture
+	 * before the next band's. Nothing is dropped and nothing is allocated;
+	 * the opaque polygons are drawn once a band. */
+	const u32 bands = std::max<u32>(std::min<u32>(gl4OitChooseBands(pvrrc.isRTT), (u32)std::max(height, 1)), 1);
+	const int bandHeight = (height + (int)bands - 1) / (int)bands;
+	const u32 bandCount = (u32)((height + bandHeight - 1) / bandHeight);
 	int render_pass_count = pvrrc.render_passes.used();
+
+	for (u32 band = 0; band < bandCount; band++)
+	{
+	gl4band.y = (int)band * bandHeight;
+	gl4band.height = bandCount > 1 ? std::min(bandHeight, height - gl4band.y) : 0;
+	gl4OitBandBegin();
+	glBindFramebuffer(GL_FRAMEBUFFER, geom_fbo);
+	// (the modifier volumes of the band before left the stencil mask at their bits)
+	glcache.StencilMask(0xFF);
+	RenderPass previous_pass = {};
 
 	for (int render_pass = 0; render_pass < render_pass_count; render_pass++)
 	{
@@ -954,7 +963,7 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 		if (!skip_op_pt && render_pass < render_pass_count - 1)
 		{
 			// Clear the stencil from this pass
-			glStencilMask(0xFF);
+			glcache.StencilMask(0xFF);
 			glClear(GL_STENCIL_BUFFER_BIT);
 		}
 
@@ -971,6 +980,10 @@ void gl4DrawStrips(GLuint output_fbo, int width, int height)
 	glBindSampler(0, 0);
 	glBindTexture(GL_TEXTURE_2D, opaqueTexId);
 	renderABuffer();
+	gl4OitBandEnd(band);
+	}
+	gl4band.height = 0;
+	gl4OitFrameEnd(bandCount, pvrrc.isRTT);
 }
 
 static void gl4_draw_quad_texture(GLuint texture, float w, float h)
