@@ -905,6 +905,15 @@ uint it_base = 0u;	/* where the batch being walked is in s_prim */
 uint it_hiz;
 float it_zlo, it_zhi;	/* the depth the primitive it_next() gave has over the tile */
 bool it_skip, it_started;
+/* A range whose run was read in one batch is walked again from that
+ * batch, while it is still there: the walk over the same list by
+ * another test (the colour subpass after the depth subpass's, the next
+ * round of translucent fragments, the translucent depth) reads the run
+ * once more otherwise. What the last fill was: its range, its filter,
+ * where its batch is, how many it kept, and which fill it was. */
+uint it_fills;	/* fills this walk made */
+uint rp_lo = PVRC_NONE, rp_hi = 0u, rp_hiz, rp_base, rp_n, rp_batch;
+bool it_replay;
 float g_zmin, g_zmax;	/* the tile's depths after the depth subpass (the lanes in the picture) */
 float g_zbound;	/* a depth no lane in the picture has less than, now */
 uint g_hiz_skipped;
@@ -1005,15 +1014,45 @@ bool hiz_keep(uint mode, float zl, float zh)
    return zh >= g_zmin;
 }
 
-void it_begin(uint lo, uint hi)
+/* The walk over the primitives @lo to @hi (not in it) begins, their
+ * batches filtered by @hiz. A batch kept from the last fill serves again
+ * when it holds the whole range, its half of s_prim has not been written
+ * since (at most one fill has come after it, which went to the other
+ * half), and its filter let through everything this walk's does: the
+ * walk's own, or the running bound's (none), or - with @tr_depth, the
+ * translucent depth after the sorted translucent of the same pass, both
+ * testing for at or in front of the depths - the sorted translucent's. */
+void it_begin(uint lo, uint hi, uint hiz, bool tr_depth)
 {
-   it_hiz = HIZ_NONE;
+   it_hiz = hiz;
    it_lo = lo;
    it_hi = hi;
    it_c = lo >> PVR_CHUNK_LOG2;
    it_clast = hi > lo ? (hi - 1u) >> PVR_CHUNK_LOG2 : 0u;
    it_j = it_end = it_k = it_n = 0u;
    it_started = false;
+   it_fills = 0u;
+   it_replay = lo == rp_lo && hi == rp_hi && it_batch - rp_batch <= 2u
+         && (rp_hiz == hiz || rp_hiz == HIZ_RUN || (tr_depth && rp_hiz == HIZ_TR && hiz == HIZ_RUN));
+   if (it_replay)
+   {
+      it_base = rp_base;
+      it_n = rp_n;
+      it_started = true;
+      it_c = it_clast + 1u;	/* (nothing more to read) */
+      if (hiz == HIZ_RUN)
+      {
+         /* the bound, as a fill would have it */
+         barrier();
+         if (g_tid == 0u)
+            s_zr[0] = 0xffffffffu;
+         barrier();
+         if (g_in)
+            atomicMin(s_zr[0], pvrc_zkey(g_depth));
+         barrier();
+         g_zbound = pvrc_zfrom(s_zr[0]);
+      }
+   }
 }
 
 /* The next primitive (PVRC_NONE: there are no more): in uniform control
@@ -1028,6 +1067,18 @@ uint it_next()
          it_zlo = uintBitsToFloat(s_zlo[it_base + it_k]);
          it_zhi = uintBitsToFloat(s_zhi[it_base + it_k]);
          it_k++;
+         if (it_replay && it_hiz != HIZ_NONE && it_hiz != HIZ_RUN && rp_hiz != it_hiz)
+         {
+            /* (the batch was kept by a looser filter: this walk's now) */
+            uint mode = 6u;
+            if (it_hiz != HIZ_TR)
+            {
+               const uint isp = frm.w[rec_poly(p * PVRC_REC_WORDS) + PVRC_Q_ISP];
+               mode = (isp & (1u << 26)) == 0u ? 2u : it_hiz == HIZ_PT ? 6u : isp >> 29;
+            }
+            if (!hiz_keep(mode, it_zlo, it_zhi))
+               continue;
+         }
          return p;
       }
       if (it_j >= it_end)
@@ -1036,7 +1087,20 @@ uint it_next()
             it_c++;
          it_started = true;
          if (it_hi <= it_lo || it_c > it_clast)
+         {
+            if (it_fills == 1u && !it_replay)
+            {
+               rp_lo = it_lo;
+               rp_hi = it_hi;
+               rp_hiz = it_hiz;
+               rp_base = it_base;
+               rp_n = it_n;
+               rp_batch = it_batch - 1u;
+            }
+            else if (!it_replay)
+               rp_lo = PVRC_NONE;
             return PVRC_NONE;
+         }
          it_cbase = it_c << PVR_CHUNK_LOG2;
          const uint lo16 = max(it_lo, it_cbase) - it_cbase;
          const uint hi16 = min(it_hi - it_cbase, 65536u);
@@ -1115,6 +1179,7 @@ uint it_next()
       if (it_hiz == HIZ_RUN && g_in)
          atomicMin(s_zr[2u + side], pvrc_zkey(g_depth));
       it_batch++;
+      it_fills++;
       it_base = side * 256u;
       it_n = total;
       it_k = 0u;
@@ -1666,8 +1731,7 @@ void main()
        * the lane had, one that passed but was discarded, or any after a
        * lesser depth was written over a greater - for the colour subpass
        * to look at that one alone when none could. */
-      it_begin(opLo, mvoLo);
-      it_hiz = HIZ_RUN;
+      it_begin(opLo, mvoLo, HIZ_RUN, false);
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
@@ -1712,8 +1776,7 @@ void main()
          if (writes && (mode & 1u) != 0u)
             g_zbound = min(g_zbound, it_zlo);
       }
-      it_begin(ptLo, trLo);
-      it_hiz = HIZ_RUN;
+      it_begin(ptLo, trLo, HIZ_RUN, false);
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
@@ -1768,7 +1831,7 @@ void main()
          uint cov = 0u;	/* what the volume being sent covers, front and back */
          uint pending = PVRC_NONE;	/* the last triangle of the parameter that ends it */
          uint closer = 0u;	/* ...the triangle that tells which one */
-         it_begin(mvoLo, ptLo);
+         it_begin(mvoLo, ptLo, HIZ_NONE, false);
          for (;;)
          {
             prim = it_next();
@@ -1811,8 +1874,7 @@ void main()
        * depth is drawn where its depth is the lane's: the one that wrote
        * it, when no other can have it there (its depth needs no
        * computing then: it is the lane's) */
-      it_begin(opLo, mvoLo);
-      it_hiz = HIZ_OP;
+      it_begin(opLo, mvoLo, HIZ_OP, false);
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
@@ -1836,8 +1898,7 @@ void main()
          if (!killed)
             g_col = blend8(frm.w[pp + PVRC_Q_TSP], c, g_col);
       }
-      it_begin(ptLo, trLo);
-      it_hiz = HIZ_PT;
+      it_begin(ptLo, trLo, HIZ_PT, false);
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
@@ -1865,8 +1926,7 @@ void main()
       if (!autosort)
       {
          /* Translucent, in the order sent, blended as they come */
-         it_begin(trLo, trHi);
-         it_hiz = HIZ_RUN;
+         it_begin(trLo, trHi, HIZ_RUN, false);
          while ((prim = it_next()) != PVRC_NONE)
          {
             const uint r = prim * PVRC_REC_WORDS;
@@ -1938,8 +1998,7 @@ void main()
                s_xs[g_tid * 5u + 2u] = bl;
                barrier();
             }
-            it_begin(trLo, trHi);
-            it_hiz = HIZ_TR;
+            it_begin(trLo, trHi, HIZ_TR, false);
             for (;;)
             {
                /* the step's primitives: the lane of sample j takes the j-th */
@@ -2097,7 +2156,7 @@ void main()
                uint cov = 0u;
                uint pending = PVRC_NONE;
                uint closer = 0u;
-               it_begin(mvtLo, mvtHi);
+               it_begin(mvtLo, mvtHi, HIZ_NONE, false);
                for (;;)
                {
                   prim = it_next();
@@ -2202,8 +2261,7 @@ void main()
       if (!lastPass)
       {
          /* the translucent polygons' depth, for the render passes after */
-         it_begin(trLo, trHi);
-         it_hiz = HIZ_RUN;
+         it_begin(trLo, trHi, HIZ_RUN, autosort);
          while ((prim = it_next()) != PVRC_NONE)
          {
             const uint r = prim * PVRC_REC_WORDS;
