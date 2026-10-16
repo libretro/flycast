@@ -24,9 +24,8 @@
 #define OIT_LAYERS 2u
 #define OIT_MIN_BYTES (32ull << 20)
 
-static inline u64 oit_buffer_bytes(u32 width, u32 height, u32 available_kib, u64 most)
+static inline u64 oit_buffer_bytes_of(u64 bytes, u32 available_kib, u64 most)
 {
-	u64 bytes = (u64)width * height * OIT_LAYERS * OIT_FRAGMENT_BYTES;
 	const u64 share = (u64)available_kib * 1024u / 2u;
 	if (bytes > share)
 		bytes = share;
@@ -35,6 +34,22 @@ static inline u64 oit_buffer_bytes(u32 width, u32 height, u32 available_kib, u64
 	if (bytes > most)
 		bytes = most;
 	return bytes & ~(u64)(OIT_FRAGMENT_BYTES - 1u);
+}
+
+static inline u64 oit_buffer_bytes(u32 width, u32 height, u32 available_kib, u64 most)
+{
+	return oit_buffer_bytes_of((u64)width * height * OIT_LAYERS * OIT_FRAGMENT_BYTES, available_kib, most);
+}
+
+/* The buffer when the compute renderer draws the screen's frames (Rendering
+ * Method: Compute) and the per-pixel renderer only those it cannot: a
+ * quarter of a layer - what these frames need beyond it is drawn in bands,
+ * so nothing is dropped - in place of OIT_LAYERS, which at a high internal
+ * resolution is most of the video memory the renderer takes */
+#define OIT_FALLBACK_LAYER_SHIFT 2u
+static inline u64 oit_fallback_buffer_bytes(u32 width, u32 height, u32 available_kib, u64 most)
+{
+	return oit_buffer_bytes_of(((u64)width * height * OIT_FRAGMENT_BYTES) >> OIT_FALLBACK_LAYER_SHIFT, available_kib, most);
 }
 
 #endif

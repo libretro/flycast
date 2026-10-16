@@ -484,6 +484,24 @@ struct ComputeDrawer::Resources
 ComputeDrawer::ComputeDrawer() {}
 ComputeDrawer::~ComputeDrawer() {}
 
+const char *ComputeDrawer::DeviceLacks()
+{
+	VulkanContext *context = VulkanContext::Instance();
+	const vk::PhysicalDeviceLimits limits = context->GetPhysicalDevice().getProperties().limits;
+	if (!context->SupportsShaderInt64())
+		return "no 64-bit integers in shaders";
+	if (!context->SupportsSampledImageArrayIndexing())
+		return "no indexing of an array of textures";
+	if (limits.maxComputeWorkGroupInvocations < PVRC_WG || limits.maxComputeWorkGroupSize[0] < PVRC_WG)
+		return "workgroups too small";
+	if (limits.maxPerStageDescriptorSamplers < PVRC_TEX_SLOTS + 2 || limits.maxPerStageDescriptorSampledImages < PVRC_TEX_SLOTS + 2
+			|| limits.maxDescriptorSetSamplers < PVRC_TEX_SLOTS + 2 || limits.maxDescriptorSetSampledImages < PVRC_TEX_SLOTS + 2)
+		return "too few texture bindings";
+	if (limits.maxComputeSharedMemorySize < PVRC_SORT_MAX * 4)
+		return "too little shared memory";
+	return nullptr;
+}
+
 bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, SamplerManager *samplerManager)
 {
 	Term();
@@ -503,17 +521,9 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 		res.reset();
 		return false;
 	};
-	if (!context->SupportsShaderInt64())
-		return fail("no 64-bit integers in shaders");
-	if (!context->SupportsSampledImageArrayIndexing())
-		return fail("no indexing of an array of textures");
-	if (limits.maxComputeWorkGroupInvocations < PVRC_WG || limits.maxComputeWorkGroupSize[0] < PVRC_WG)
-		return fail("workgroups too small");
-	if (limits.maxPerStageDescriptorSamplers < PVRC_TEX_SLOTS + 2 || limits.maxPerStageDescriptorSampledImages < PVRC_TEX_SLOTS + 2
-			|| limits.maxDescriptorSetSamplers < PVRC_TEX_SLOTS + 2 || limits.maxDescriptorSetSampledImages < PVRC_TEX_SLOTS + 2)
-		return fail("too few texture bindings");
-	if (limits.maxComputeSharedMemorySize < PVRC_SORT_MAX * 4)
-		return fail("too little shared memory");
+	const char *lacks = DeviceLacks();
+	if (lacks != nullptr)
+		return fail(lacks);
 	std::unique_ptr<Resources> r(new Resources());
 	r->keep = pvrc_fragments_kept(limits.maxComputeSharedMemorySize);
 	r->tileLog2 = extent.width > 1280 ? 6 : 5;

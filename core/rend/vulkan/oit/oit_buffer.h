@@ -42,10 +42,22 @@ public:
 	 * than the device can allocate in one piece, nor than a shader can be
 	 * given as one (Mesa's software Vulkan stops at 128 MB, and a buffer
 	 * bound past the limit drew nothing at all). */
-	static vk::DeviceSize PlannedSize(int width, int height)
+	vk::DeviceSize PlannedSize(int width, int height) const
 	{
-		return oit_buffer_bytes((u32)std::max(width, 0), (u32)std::max(height, 0),
-				VulkanContext::Instance()->GetVramBudget().available_kib(), (u64)BindingLimit() * Bindings);
+		const u32 kib = VulkanContext::Instance()->GetVramBudget().available_kib();
+		if (compact)
+			return oit_fallback_buffer_bytes((u32)std::max(width, 0), (u32)std::max(height, 0), kib, (u64)BindingLimit() * Bindings);
+		return oit_buffer_bytes((u32)std::max(width, 0), (u32)std::max(height, 0), kib, (u64)BindingLimit() * Bindings);
+	}
+
+	/* The compute renderer draws the screen's frames: the buffer is for
+	 * the frames it leaves to the per-pixel renderer alone
+	 * (oit_fallback_buffer_bytes()). Before the renderer is set up, or
+	 * made again for a size: never while a game runs. */
+	void SetCompact(bool on)
+	{
+		compact = on;
+		plannedSize = 0;
 	}
 
 	/* The screen's size: the fragment buffer is made for it, at the next
@@ -301,6 +313,7 @@ private:
 	vk::UniqueDescriptorSetLayout descSetLayout;
 
 	std::unique_ptr<BufferData> pixelBuffers[Bindings];
+	bool compact = false;
 	vk::DeviceSize plannedSize = 0;
 	vk::DeviceSize bufferSize = 0;
 	vk::DeviceSize bindingSize = 0;

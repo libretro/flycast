@@ -77,6 +77,11 @@ public:
 	 * slots; false when the device cannot have it (logged) */
 	bool Init(vk::Extent2D extent, u32 samples, CommandPool *pool, SamplerManager *samplerManager);
 	void Term();
+	/* Whether the device has what the kernels need (the reason it has not,
+	 * or NULL): what Init() checks before it looks at the frame size and
+	 * the video memory, for what is set up for the compute renderer before
+	 * Init() can be called */
+	static const char *DeviceLacks();
 	bool Ready() const { return ready; }
 	u32 GetSamples() const { return samples; }
 

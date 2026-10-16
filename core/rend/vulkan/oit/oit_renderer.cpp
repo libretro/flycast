@@ -35,6 +35,7 @@ public:
 	{
 		DEBUG_LOG(RENDERER, "OITVulkanRenderer::Init");
 
+		oitBuffers.SetCompact(rend_compute_wanted && ComputeDrawer::DeviceLacks() == nullptr);
 		oitBuffers.Init(0, 0, &texCommandPool);
 		samples = SsaaSamples();
 		oitShaderManager.SetSamples(samples);
@@ -60,6 +61,7 @@ public:
 		NOTICE_LOG(RENDERER, "OIT Resize %d x %d", w, h);
 		// what is replaced below may be in use by frames still on the GPU
 		texCommandPool.WaitAll();
+		oitBuffers.SetCompact(rend_compute_wanted && ComputeDrawer::DeviceLacks() == nullptr);
 		const u32 was = samples;
 		samples = SsaaSamples();
 		if (samples != was)
@@ -169,7 +171,7 @@ private:
 	{
 		const vk::Extent2D size = GetContext()->GetViewPort();
 		return GetContext()->SsaaSamples(settings.rend.Ssaa, ssaa_per_sample_kib(size.width, size.height, 4 + GetContext()->GetDepthBytes()),
-				(u32)(OITBuffers::PlannedSize(size.width, size.height) >> 10), false, "Vulkan per-pixel renderer");
+				(u32)(oitBuffers.PlannedSize(size.width, size.height) >> 10), false, "Vulkan per-pixel renderer");
 	}
 
 	OITBuffers oitBuffers;
