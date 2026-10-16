@@ -477,7 +477,7 @@ struct ComputeDrawer::Resources
 	vk::UniqueSampler nearest;
 	// this frame's, between Prepare and Record
 	u32 words = 0, prims = 0;
-	u64 skipped = 0, dropped = 0;
+	u64 skipped = 0, dropped = 0, hiz = 0;
 	u32 peels = 0;
 };
 
@@ -614,9 +614,9 @@ void ComputeDrawer::Term()
 	if (res)
 	{
 		if (statFrames + statFallback != 0)
-			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn, %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles behind the eye left out, at most %u rounds of translucent fragments",
+			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn, %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles behind the eye left out, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
 					(unsigned long long)statFrames, (unsigned long long)statFallback, (unsigned long long)res->skipped,
-					(unsigned long long)res->dropped, res->peels);
+					(unsigned long long)res->dropped, res->peels, (unsigned long long)res->hiz);
 	}
 	timer.Term();
 	res.reset();
@@ -641,6 +641,7 @@ bool ComputeDrawer::Prepare(bool last, const Texture *paletteTexture)
 		const u32 *st = r.statsMap + slot * PVRC_STATS;
 		r.skipped += st[PVRC_ST_SKIPPED];
 		r.dropped += st[PVRC_ST_DROPPED];
+		r.hiz += st[PVRC_ST_HIZ];
 		r.peels = std::max(r.peels, st[PVRC_ST_PEELS]);
 	}
 

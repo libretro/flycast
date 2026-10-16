@@ -29,8 +29,9 @@
  *             fixed point, turned so that its edges are positive inside,
  *             its 1/w, and the pixels around it, cut to its clip; culled
  *             and empty ones get no pixels. The primitive is counted in
- *             every coarse tile (2^log2 pixels square) those pixels touch,
- *             for its chunk (65536 primitives, pvr_tile.h).
+ *             every coarse tile (2^log2 pixels square) those pixels touch
+ *             and its edges do not all leave out, for its chunk (65536
+ *             primitives, pvr_tile.h).
  *  2 scan     one workgroup: where each tile's run of each chunk starts in
  *             the bin pool, a fixed array of 16-bit entries (two a word),
  *             each run at an even entry. A run that does not fit, or is
@@ -52,6 +53,20 @@
  *             those, and so on until none are left - none is ever
  *             dropped, whatever their number. Then the samples of each
  *             pixel are resolved (pvr_resolve.h) and the pixel written.
+ *             A list's run is read 256 entries at a time, an entry a lane,
+ *             and only the primitives that can cover a sample of the fine
+ *             tile are kept, in their order (a bit a lane in shared
+ *             memory, counted): the lanes walk those alone. The walks
+ *             that test against the depth the depth subpass leaves (the
+ *             colour subpass's, the sorted translucent's) keep only the
+ *             primitives that can pass that test somewhere in the tile, by
+ *             its least and most depth; the walks that write depth pass
+ *             over the primitives whose depth is below the least any lane
+ *             of the tile has as they come. In the colour subpass a lane
+ *             shades the primitive that wrote its depth and looks at no
+ *             other (unless another could have the same depth there).
+ *             A fine tile of a coarse tile with nothing binned to it is
+ *             written straight away.
  *  6 clear    the bin pool's words the frame used set back to 0 for the
  *             next one (the scatter ORs its entries in).
  * Nothing is read back: the counts are the GPU's, and the clear's size an
@@ -247,6 +262,7 @@
 #define PVRC_ST_SKIPPED   4u   /* runs walked over their whole chunk */
 #define PVRC_ST_DROPPED   5u   /* triangles with a vertex behind the eye, left out */
 #define PVRC_ST_PEELS     6u   /* the most rounds of translucent fragments a tile took */
+#define PVRC_ST_HIZ       7u   /* primitives the walks passed over by the tiles' depths */
 #define PVRC_STATS        8u
 
 /* The textures a frame can have, slots of the kernels' array */
@@ -478,6 +494,36 @@ PVR_FN pvr_u32 pvrc_bin_words(pvr_u32 runs, pvr_u32 pool)
 uint pvrc_runs() { return frm.w[PVRC_F_RUNS]; }
 uint pvrc_tiles() { return frm.w[PVRC_F_TILES_X] * frm.w[PVRC_F_TILES_Y]; }
 
+#if PVRC_KERNEL == PVRC_K_SETUP || PVRC_KERNEL == PVRC_K_SCATTER || PVRC_KERNEL == PVRC_K_WALK
+/* The shift a primitive's x and y are kept at (pvrc_xy_shift()) */
+uint rec_shift(uint r)
+{
+   return (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_SHIFT_AT) & 7u;
+}
+
+/* The most the edge from (@ax, @ay) to (@bx, @by) has over the pixels
+ * @x0 to @x1, @y0 to @y1 (all in them), at shift @sh: at one of their
+ * corners, for it is linear (a sample's place, shifted, is inside them) */
+int64_t pvrc_edge_max(int ax, int ay, int bx, int by, int x0, int y0, int x1, int y1, uint sh)
+{
+   const int64_t dx = int64_t(bx - ax), dy = int64_t(by - ay);
+   const int64_t px0 = int64_t((x0 * 256 >> sh) - ax), px1 = int64_t(((x1 + 1) * 256 >> sh) - ax);
+   const int64_t py0 = int64_t((y0 * 256 >> sh) - ay), py1 = int64_t(((y1 + 1) * 256 >> sh) - ay);
+   return max(dx * py0, dx * py1) - min(dy * px0, dy * px1);
+}
+
+/* Whether no edge of primitive @r has all those pixels' samples outside it */
+bool pvrc_rec_hits(uint r, int x0, int y0, int x1, int y1)
+{
+   const int ax = int(rec.w[r]), ay = int(rec.w[r + 1u]);
+   const int bx = int(rec.w[r + 2u]), by = int(rec.w[r + 3u]);
+   const int cx = int(rec.w[r + 4u]), cy = int(rec.w[r + 5u]);
+   const uint sh = rec_shift(r);
+   return pvrc_edge_max(bx, by, cx, cy, x0, y0, x1, y1, sh) >= 0 && pvrc_edge_max(cx, cy, ax, ay, x0, y0, x1, y1, sh) >= 0
+         && pvrc_edge_max(ax, ay, bx, by, x0, y0, x1, y1, sh) >= 0;
+}
+#endif
+
 #if PVRC_KERNEL == PVRC_K_SETUP || PVRC_KERNEL == PVRC_K_SCATTER
 /* The coarse tiles a primitive's pixels touch, first x | y << 16 and last */
 uvec2 pvrc_tile_range(uint r)
@@ -486,6 +532,16 @@ uvec2 pvrc_tile_range(uint r)
    uint l2 = frm.w[PVRC_F_TILE_LOG2];
    return uvec2(((b0 & 0xffffu) >> l2) | (((b0 >> 16) >> l2) << 16),
          ((b1 & 0xffffu) >> l2) | (((b1 >> 16) >> l2) << 16));
+}
+
+/* Whether a primitive is binned to a coarse tile of its range: one its
+ * edges do not all leave out (the setup counts, the scatter places, by
+ * the same test) */
+bool pvrc_tile_hit(uint r, uint tx, uint ty)
+{
+   const uint l2 = frm.w[PVRC_F_TILE_LOG2];
+   const int x0 = int(tx << l2), y0 = int(ty << l2);
+   return pvrc_rec_hits(r, x0, y0, x0 + int(1u << l2) - 1, y0 + int(1u << l2) - 1);
 }
 #endif
 
@@ -651,7 +707,8 @@ void main()
    const uint base = (prim >> PVR_CHUNK_LOG2) * pvrc_tiles();
    for (uint ty = tr.x >> 16; ty <= (tr.y >> 16); ty++)
       for (uint tx = tr.x & 0xffffu; tx <= (tr.y & 0xffffu); tx++)
-         atomicAdd(bin.w[PVRC_B_COUNT(pvrc_runs()) + base + ty * tilesX + tx], 1u);
+         if (pvrc_tile_hit(r, tx, ty))
+            atomicAdd(bin.w[PVRC_B_COUNT(pvrc_runs()) + base + ty * tilesX + tx], 1u);
 }
 #endif
 
@@ -726,6 +783,8 @@ void main()
    for (uint ty = tr.x >> 16; ty <= (tr.y >> 16); ty++)
       for (uint tx = tr.x & 0xffffu; tx <= (tr.y & 0xffffu); tx++)
       {
+         if (!pvrc_tile_hit(r, tx, ty))
+            continue;
          const uint e = base + ty * tilesX + tx;
          const uint start = bin.w[PVRC_B_START(runs) + e];
          if ((start & PVRC_RUN_SKIP) != 0u)
@@ -801,11 +860,14 @@ layout(set = 0, binding = 4) uniform sampler2D lastPicture;
 layout(set = 0, binding = 5) uniform sampler2D palette;
 layout(set = 0, binding = 6) uniform sampler2D textures[PVRC_TEX_SLOTS];
 
-shared uint s_prim[256];
+shared uint s_prim[512];	/* the primitives of a batch kept, in order (two batches' in turn, the walk of one going on as the next is read) */
+shared uint s_zlo[512], s_zhi[512];	/* the depth each has over the tile, least and most (float bits) */
 shared uint s_kh[PVRC_KEEP * 256u];
 shared uint s_kl[PVRC_KEEP * 256u];
 shared uint s_kc[PVRC_KEEP * 256u];	/* (each fragment's colour, as the lists keep it) */
 shared uint s_flag;
+shared uint s_mask[16];	/* the entries of a batch kept, a bit each (two batches' words, in turn) */
+shared uint s_zr[4];	/* the lanes' least and most depth, as pvrc_zkey() has them (and two batches' least, in turn) */
 
 uint g_tid;
 uint g_ct;	/* the coarse tile */
@@ -815,11 +877,35 @@ int g_sx, g_sy;	/* ...its sample, in 24.8 */
 int g_cx, g_cy;	/* ...the pixel's centre */
 int g_s0x, g_s0y;	/* ...its first sample */
 bool g_in;	/* inside the picture */
+uint g_col;	/* the colour attachment's, 8 bits a channel */
+float g_depth;
+uint g_stencil;	/* the shadow bit of what is there, 0x80, and the volume bits */
+uint g_win;	/* the primitive that wrote the lane's depth in this render pass (PVRC_NONE: none) */
+bool g_multi;	/* ...or another could have the same depth there: the colour subpass has to look at them all */
+bool g_seen;	/* a polygon covered the lane in this render pass's depth subpass */
 
 /* ---- The primitives of a range of numbers in the tile, in order ---- */
 
+/* The depth test a walk's primitives are passed over by, from the tile's
+ * depths: those that test against what the depth subpass left and write
+ * none (the colour subpass's, the sorted translucent's), by its least and
+ * most; those that write (the depth subpass's, the translucent depth's,
+ * the presorted translucent's), by a depth no lane's is below as they go */
+#define HIZ_NONE 0u
+#define HIZ_RUN  1u	/* the running bound */
+#define HIZ_OP   2u	/* the colour subpass's opaque: equal, or its own test without a depth write */
+#define HIZ_PT   3u	/* ...its punch-through: equal, or greater or equal */
+#define HIZ_TR   4u	/* sorted translucent: in front of it, or at it */
+
 uint it_lo, it_hi, it_c, it_clast, it_j, it_end, it_k, it_n, it_cbase, it_run;
+uint it_batch = 0u;
+uint it_base = 0u;	/* where the batch being walked is in s_prim */
+uint it_hiz;
+float it_zlo, it_zhi;	/* the depth the primitive it_next() gave has over the tile */
 bool it_skip, it_started;
+float g_zmin, g_zmax;	/* the tile's depths after the depth subpass (the lanes in the picture) */
+float g_zbound;	/* a depth no lane in the picture has less than, now */
+uint g_hiz_skipped;
 
 uint pvrc_pool_entry(uint at)
 {
@@ -841,8 +927,85 @@ uint pvrc_lower_bound(uint start, uint count, uint v)
    return lo;
 }
 
+/* A depth as a word whose order is the depth's (for the shared atomics) */
+uint pvrc_zkey(float z)
+{
+   const uint b = floatBitsToUint(z);
+   return (b & 0x80000000u) != 0u ? ~b : b | 0x80000000u;
+}
+
+float pvrc_zfrom(uint k)
+{
+   return uintBitsToFloat((k & 0x80000000u) != 0u ? k & 0x7fffffffu : ~k);
+}
+
+/* Whether a primitive can cover a sample of the fine tile: its pixels
+ * meet the tile's, and no edge has the whole tile outside it. Asked of
+ * each entry of a run once, by one lane, when it_next() takes the run's
+ * entries in, so that the walk's every lane looks only at the primitives
+ * that pass */
+bool rec_in_tile(uint r)
+{
+   const uint b0 = rec.w[r + PVRC_R_BBOX0], b1 = rec.w[r + PVRC_R_BBOX1];
+   if (!((b0 & 0xffffu) <= g_fine.z && (b1 & 0xffffu) >= g_fine.x
+         && (b0 >> 16) <= g_fine.w && (b1 >> 16) >= g_fine.y))
+      return false;
+   return pvrc_rec_hits(r, int(g_fine.x), int(g_fine.y), int(g_fine.z), int(g_fine.w));
+}
+
+i64vec3 rec_edges(uint r, int px, int py);
+float pvrc_depth(float w);
+uint rec_poly(uint r);
+
+/* The depths a polygon's triangle @r can have at the places the lanes of
+ * the fine tile take it (their samples, or the pixels' centres): its 1/w
+ * is an affine function of the place, so it is between those at the
+ * corners of the pixels of the tile it can cover, taken with room for
+ * every rounding of the lanes' own 1/w and depth (pvrc_depth() keeps the
+ * order of 1/w) */
+vec2 rec_zrange(uint r)
+{
+   const uint b0 = rec.w[r + PVRC_R_BBOX0], b1 = rec.w[r + PVRC_R_BBOX1];
+   const int x0 = int(max(b0 & 0xffffu, g_fine.x)) * 256, y0 = int(max(b0 >> 16, g_fine.y)) * 256;
+   const int x1 = int(min(b1 & 0xffffu, g_fine.z) + 1u) * 256, y1 = int(min(b1 >> 16, g_fine.w) + 1u) * 256;
+   const vec3 q = vec3(uintBitsToFloat(rec.w[r + PVRC_R_Q]), uintBitsToFloat(rec.w[r + PVRC_R_Q + 1u]), uintBitsToFloat(rec.w[r + PVRC_R_Q + 2u]));
+   float lo = 3.4e38, hi = -3.4e38;
+   vec3 most = vec3(0.0);
+   float area = 0.0;
+   for (uint c = 0u; c < 4u; c++)
+   {
+      const i64vec3 e = rec_edges(r, (c & 1u) != 0u ? x1 : x0, (c & 2u) != 0u ? y1 : y0);
+      const vec3 ef = vec3(float(e.x), float(e.y), float(e.z));
+      area = float(e.x + e.y + e.z);
+      most = max(most, abs(ef));
+      const float w = dot(ef, q);
+      lo = min(lo, w);
+      hi = max(hi, w);
+   }
+   const float room = 1e-5 * dot(most, abs(q));
+   const float zlo = pvrc_depth((lo - room) / area), zhi = pvrc_depth((hi + room) / area);
+   return vec2(zlo - 1e-6 * abs(zlo), zhi + 1e-6 * abs(zhi));
+}
+
+/* Whether a polygon's triangle whose depths over the tile are @zl to
+ * @zh can pass the test @mode (ISP DepthMode) against the tile's depths
+ * after the depth subpass, at some lane */
+bool hiz_keep(uint mode, float zl, float zh)
+{
+   if (mode == 5u || mode == 7u)
+      return true;
+   if (mode == 0u)
+      return false;
+   if (mode == 1u || mode == 3u)
+      return zl <= g_zmax;
+   if (mode == 2u)
+      return zh >= g_zmin && zl <= g_zmax;
+   return zh >= g_zmin;
+}
+
 void it_begin(uint lo, uint hi)
 {
+   it_hiz = HIZ_NONE;
    it_lo = lo;
    it_hi = hi;
    it_c = lo >> PVR_CHUNK_LOG2;
@@ -859,7 +1022,9 @@ uint it_next()
    {
       if (it_k < it_n)
       {
-         uint p = s_prim[it_k];
+         uint p = s_prim[it_base + it_k];
+         it_zlo = uintBitsToFloat(s_zlo[it_base + it_k]);
+         it_zhi = uintBitsToFloat(s_zhi[it_base + it_k]);
          it_k++;
          return p;
       }
@@ -894,52 +1059,70 @@ uint it_next()
          }
          continue;
       }
-      barrier();
+      /* 256 entries of the run at a time, a lane each: those whose
+       * primitive can cover a sample of the fine tile, and can pass the
+       * walk's depth test somewhere in it, kept in order. Two barriers: a
+       * batch goes to the half of s_prim the batch before did not, and
+       * its mask words were cleared in that batch after every lane had
+       * counted that one's, so no lane still walking the batch before
+       * reads what this one writes. */
       const uint at = it_j + g_tid;
       uint v = PVRC_NONE;
       if (at < it_end)
          v = it_skip ? it_cbase + at : it_cbase | pvrc_pool_entry(it_run + at);
-      s_prim[g_tid] = v;
-      it_n = min(256u, it_end - it_j);
-      it_k = 0u;
-      it_j += it_n;
+      bool keep = v != PVRC_NONE && rec_in_tile(v * PVRC_REC_WORDS);
+      vec2 zr = vec2(0.0);
+      if (keep && it_hiz != HIZ_NONE)
+      {
+         zr = rec_zrange(v * PVRC_REC_WORDS);
+         if (it_hiz != HIZ_RUN)
+         {
+            uint mode = 6u;
+            if (it_hiz != HIZ_TR)
+            {
+               const uint isp = frm.w[rec_poly(v * PVRC_REC_WORDS) + PVRC_Q_ISP];
+               mode = (isp & (1u << 26)) == 0u ? 2u : it_hiz == HIZ_PT ? 6u : isp >> 29;
+            }
+            keep = hiz_keep(mode, zr.x, zr.y);
+         }
+      }
+      const uint side = it_batch & 1u;
+      const uint mb = side * 8u, word = g_tid >> 5, bit = 1u << (g_tid & 31u);
+      if (g_tid < 8u)
+         s_mask[(mb ^ 8u) + g_tid] = 0u;	/* (the next batch's, which no lane reads now) */
+      if (g_tid == 0u)
+         s_zr[2u + side] = 0xffffffffu;
+      if (keep)
+         atomicOr(s_mask[mb + word], bit);
+      it_j += min(256u, it_end - it_j);
       barrier();
+      uint before = 0u, total = 0u;
+      for (uint q = 0u; q < 8u; q++)
+      {
+         const uint c = uint(bitCount(s_mask[mb + q]));
+         before += q < word ? c : 0u;
+         total += c;
+      }
+      if (keep)
+      {
+         const uint slot = side * 256u + before + uint(bitCount(s_mask[mb + word] & (bit - 1u)));
+         s_prim[slot] = v;
+         s_zlo[slot] = floatBitsToUint(zr.x);
+         s_zhi[slot] = floatBitsToUint(zr.y);
+      }
+      if (it_hiz == HIZ_RUN && g_in)
+         atomicMin(s_zr[2u + side], pvrc_zkey(g_depth));
+      it_batch++;
+      it_base = side * 256u;
+      it_n = total;
+      it_k = 0u;
+      barrier();
+      if (it_hiz == HIZ_RUN)
+         g_zbound = pvrc_zfrom(s_zr[2u + side]);
    }
 }
 
 /* ---- A primitive at a lane ---- */
-
-/* The shift a primitive's x and y are kept at (pvrc_xy_shift()) */
-uint rec_shift(uint r)
-{
-   return (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_SHIFT_AT) & 7u;
-}
-
-/* The most an edge from (@ax, @ay) to (@bx, @by) has over the fine tile:
- * at one of its corners, for it is linear (at shift @sh) */
-int64_t edge_max(int ax, int ay, int bx, int by, uint sh)
-{
-   const int64_t dx = int64_t(bx - ax), dy = int64_t(by - ay);
-   const int64_t x0 = int64_t((int(g_fine.x) * 256 >> sh) - ax), x1 = int64_t((int(g_fine.z + 1u) * 256 >> sh) - ax);
-   const int64_t y0 = int64_t((int(g_fine.y) * 256 >> sh) - ay), y1 = int64_t((int(g_fine.w + 1u) * 256 >> sh) - ay);
-   return max(dx * y0, dx * y1) - min(dy * x0, dy * x1);
-}
-
-/* Whether a primitive can cover a sample of the fine tile: its pixels
- * meet the tile's, and no edge has the whole tile outside it (the same
- * for every lane, so the walk passes over it as one) */
-bool rec_in_tile(uint r)
-{
-   const uint b0 = rec.w[r + PVRC_R_BBOX0], b1 = rec.w[r + PVRC_R_BBOX1];
-   if (!((b0 & 0xffffu) <= g_fine.z && (b1 & 0xffffu) >= g_fine.x
-         && (b0 >> 16) <= g_fine.w && (b1 >> 16) >= g_fine.y))
-      return false;
-   const int x0 = int(rec.w[r]), y0 = int(rec.w[r + 1u]);
-   const int x1 = int(rec.w[r + 2u]), y1 = int(rec.w[r + 3u]);
-   const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
-   const uint sh = rec_shift(r);
-   return edge_max(x1, y1, x2, y2, sh) >= 0 && edge_max(x2, y2, x0, y0, sh) >= 0 && edge_max(x0, y0, x1, y1, sh) >= 0;
-}
 
 bool in_rect(uint r0, uint r1)
 {
@@ -1410,10 +1593,6 @@ bool vol_close_counts(uint cov, uint cull)
    return cov != 0u;
 }
 
-uint g_col;	/* the colour attachment's, 8 bits a channel */
-float g_depth;
-uint g_stencil;	/* the shadow bit of what is there, 0x80, and the volume bits */
-
 void main()
 {
    g_tid = gl_LocalInvocationIndex;
@@ -1437,9 +1616,17 @@ void main()
    else
       g_col = frm.w[PVRC_F_CLEAR];
    g_depth = 0.0;
+   g_hiz_skipped = 0u;
    uint peels = 0u;
+   if (g_tid < 16u)
+      s_mask[g_tid] = 0u;	/* (the first batch's barrier is before any lane reads it) */
 
-   const uint passes = frm.w[PVRC_F_PASSES];
+   /* A coarse tile nothing is binned to: its fine tiles are the picture
+    * as it starts */
+   uint binned = 0u;
+   for (uint c = 0u; c < frm.w[PVRC_F_CHUNKS]; c++)
+      binned += bin.w[PVRC_B_COUNT(pvrc_runs()) + c * pvrc_tiles() + g_ct];
+   const uint passes = binned == 0u ? 0u : frm.w[PVRC_F_PASSES];
    for (uint pass = 0u; pass < passes; pass++)
    {
       const uint pw = PVRC_F_PASS + pass * PVRC_PASS_WORDS;
@@ -1450,55 +1637,115 @@ void main()
       const bool lastPass = pass + 1u == passes;
       uint prim;
       g_stencil = 0u;
+      g_win = PVRC_NONE;
+      g_multi = false;
+      g_seen = false;
 
-      /* The depth subpass: opaque, then punch-through */
+      /* The depth subpass: opaque, then punch-through. The walk passes
+       * over a primitive whose depth is below every lane's where it
+       * tests for more (or equal); a primitive that can write a lesser
+       * depth than the lanes have lowers the bound they are known to
+       * keep. A lane notes which primitive wrote its depth, and whether
+       * another could have the same depth there - one tested at the depth
+       * the lane had, one that passed but was discarded, or any after a
+       * lesser depth was written over a greater - for the colour subpass
+       * to look at that one alone when none could. */
       it_begin(opLo, mvoLo);
+      it_hiz = HIZ_RUN;
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
-         if (!rec_in_tile(r))
-            continue;
          const uint pp = rec_poly(r);
+         const uint isp = frm.w[pp + PVRC_Q_ISP];
+         const uint mode = isp >> 29;
+         const bool writes = (isp & (1u << 26)) == 0u;
+         if (mode == 0u || ((mode & 1u) == 0u && it_zhi < g_zbound))
+         {
+            g_hiz_skipped++;
+            continue;
+         }
          i64vec3 e;
          ivec2 pos;
-         if (!lane_cover(r, pp, false, e, pos))
-            continue;
-         const uint isp = frm.w[pp + PVRC_Q_ISP];
-         const float z = pvrc_depth(rec_bary(r, e).w);
-         if (pvrc_depth_pass(isp >> 29, z, g_depth) == 0u)
-            continue;
-         if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
+         if (lane_cover(r, pp, false, e, pos))
          {
-            bool killed;
-            shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_DEPTH, false, killed);
-            if (killed)
-               continue;
+            const float z = pvrc_depth(rec_bary(r, e).w);
+            const bool seen = g_seen;
+            g_seen = true;
+            if (z == g_depth)
+               g_multi = true;
+            if (pvrc_depth_pass(mode, z, g_depth) != 0u)
+            {
+               bool killed = false;
+               if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
+                  shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_DEPTH, false, killed);
+               if (killed)
+                  g_multi = true;
+               else
+               {
+                  if (writes)
+                  {
+                     if ((mode & 1u) != 0u && seen)
+                        g_multi = true;
+                     g_depth = z;
+                     g_win = prim;
+                  }
+                  g_stencil = (g_stencil & 0x7fu) | ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) != 0u ? 0x80u : 0u);
+               }
+            }
          }
-         if ((isp & (1u << 26)) == 0u)
-            g_depth = z;
-         g_stencil = (g_stencil & 0x7fu) | ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) != 0u ? 0x80u : 0u);
+         if (writes && (mode & 1u) != 0u)
+            g_zbound = min(g_zbound, it_zlo);
       }
       it_begin(ptLo, trLo);
+      it_hiz = HIZ_RUN;
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
-         if (!rec_in_tile(r))
+         if (it_zhi < g_zbound)
+         {
+            g_hiz_skipped++;
             continue;
+         }
          const uint pp = rec_poly(r);
          i64vec3 e;
          ivec2 pos;
          if (!lane_cover(r, pp, false, e, pos))
             continue;
          const float z = pvrc_depth(rec_bary(r, e).w);
+         g_seen = true;
+         if (z == g_depth)
+            g_multi = true;
          if (pvrc_depth_pass(6u, z, g_depth) == 0u)
             continue;
          bool killed;
          shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_DEPTH, false, killed);
          if (killed)
+         {
+            g_multi = true;
             continue;
+         }
          g_depth = z;	/* (punch-through always writes it) */
+         g_win = prim;
          g_stencil = (g_stencil & 0x7fu) | ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) != 0u ? 0x80u : 0u);
       }
+
+      /* The tile's depths now, for the walks that test against them */
+      barrier();
+      if (g_tid == 0u)
+      {
+         s_zr[0] = 0xffffffffu;
+         s_zr[1] = 0u;
+      }
+      barrier();
+      if (g_in)
+      {
+         atomicMin(s_zr[0], pvrc_zkey(g_depth));
+         atomicMax(s_zr[1], pvrc_zkey(g_depth));
+      }
+      barrier();
+      g_zmin = pvrc_zfrom(s_zr[0]);
+      g_zmax = pvrc_zfrom(s_zr[1]);
+      barrier();
 
       /* The opaque modifier volumes: the volume bits of each sample */
       {
@@ -1529,7 +1776,7 @@ void main()
                pending = end;
                closer = r;
             }
-            if (!rec_in_tile(r) || !g_in)
+            if (!g_in)
                continue;
             if (!rec_covers(r, g_sx, g_sy))
                continue;
@@ -1544,42 +1791,55 @@ void main()
       /* (the stencil is 0x81 where a polygon that takes shadows is in one) */
       const bool shadowed = g_stencil == 0x81u;
 
-      /* The colour subpass: opaque, punch-through */
+      /* The colour subpass: opaque, punch-through. A polygon that writes
+       * depth is drawn where its depth is the lane's: the one that wrote
+       * it, when no other can have it there (its depth needs no
+       * computing then: it is the lane's) */
       it_begin(opLo, mvoLo);
+      it_hiz = HIZ_OP;
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
-         if (!rec_in_tile(r))
-            continue;
          const uint pp = rec_poly(r);
+         const uint isp = frm.w[pp + PVRC_Q_ISP];
+         const bool known = (isp & (1u << 26)) == 0u && !g_multi;
+         if (known && prim != g_win)
+            continue;
          i64vec3 e;
          ivec2 pos;
          if (!lane_cover(r, pp, false, e, pos))
             continue;
-         const uint isp = frm.w[pp + PVRC_Q_ISP];
-         const float z = pvrc_depth(rec_bary(r, e).w);
-         if (pvrc_depth_pass((isp & (1u << 26)) == 0u ? 2u : isp >> 29, z, g_depth) == 0u)
-            continue;
+         if (!known)
+         {
+            const float z = pvrc_depth(rec_bary(r, e).w);
+            if (pvrc_depth_pass((isp & (1u << 26)) == 0u ? 2u : isp >> 29, z, g_depth) == 0u)
+               continue;
+         }
          bool killed;
          const vec4 c = shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_COLOR, shadowed, killed);
          if (!killed)
             g_col = blend8(frm.w[pp + PVRC_Q_TSP], c, g_col);
       }
       it_begin(ptLo, trLo);
+      it_hiz = HIZ_PT;
       while ((prim = it_next()) != PVRC_NONE)
       {
          const uint r = prim * PVRC_REC_WORDS;
-         if (!rec_in_tile(r))
-            continue;
          const uint pp = rec_poly(r);
+         const uint isp = frm.w[pp + PVRC_Q_ISP];
+         const bool known = (isp & (1u << 26)) == 0u && !g_multi;
+         if (known && prim != g_win)
+            continue;
          i64vec3 e;
          ivec2 pos;
          if (!lane_cover(r, pp, false, e, pos))
             continue;
-         const uint isp = frm.w[pp + PVRC_Q_ISP];
-         const float z = pvrc_depth(rec_bary(r, e).w);
-         if (pvrc_depth_pass((isp & (1u << 26)) == 0u ? 2u : 6u, z, g_depth) == 0u)
-            continue;
+         if (!known)
+         {
+            const float z = pvrc_depth(rec_bary(r, e).w);
+            if (pvrc_depth_pass((isp & (1u << 26)) == 0u ? 2u : 6u, z, g_depth) == 0u)
+               continue;
+         }
          bool killed;
          const vec4 c = shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_COLOR, shadowed, killed);
          if (!killed)
@@ -1590,27 +1850,38 @@ void main()
       {
          /* Translucent, in the order sent, blended as they come */
          it_begin(trLo, trHi);
+         it_hiz = HIZ_RUN;
          while ((prim = it_next()) != PVRC_NONE)
          {
             const uint r = prim * PVRC_REC_WORDS;
-            if (!rec_in_tile(r))
-               continue;
             const uint pp = rec_poly(r);
+            const uint isp = frm.w[pp + PVRC_Q_ISP];
+            const uint mode = isp >> 29;
+            const bool writes = (isp & (1u << 26)) == 0u;
+            if (mode == 0u || ((mode & 1u) == 0u && it_zhi < g_zbound))
+            {
+               g_hiz_skipped++;
+               continue;
+            }
             i64vec3 e;
             ivec2 pos;
-            if (!lane_cover(r, pp, false, e, pos))
-               continue;
-            const uint isp = frm.w[pp + PVRC_Q_ISP];
-            const float z = pvrc_depth(rec_bary(r, e).w);
-            if (pvrc_depth_pass(isp >> 29, z, g_depth) == 0u)
-               continue;
-            bool killed;
-            const vec4 c = shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_COLOR, shadowed, killed);
-            if (killed)
-               continue;
-            if ((isp & (1u << 26)) == 0u)
-               g_depth = z;
-            g_col = blend8(frm.w[pp + PVRC_Q_TSP], c, g_col);
+            if (lane_cover(r, pp, false, e, pos))
+            {
+               const float z = pvrc_depth(rec_bary(r, e).w);
+               if (pvrc_depth_pass(mode, z, g_depth) != 0u)
+               {
+                  bool killed;
+                  const vec4 c = shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_COLOR, shadowed, killed);
+                  if (!killed)
+                  {
+                     if (writes)
+                        g_depth = z;
+                     g_col = blend8(frm.w[pp + PVRC_Q_TSP], c, g_col);
+                  }
+               }
+            }
+            if (writes && (mode & 1u) != 0u)
+               g_zbound = min(g_zbound, it_zlo);
          }
       }
       else if (trHi > trLo)
@@ -1627,11 +1898,10 @@ void main()
             uint n = 0u;
             bool more = false;
             it_begin(trLo, trHi);
+            it_hiz = HIZ_TR;
             while ((prim = it_next()) != PVRC_NONE)
             {
                const uint r = prim * PVRC_REC_WORDS;
-               if (!rec_in_tile(r))
-                  continue;
                const uint pp = rec_poly(r);
                if (!in_rect(frm.w[pp + PVRC_Q_RECT], frm.w[pp + PVRC_Q_RECT + 1u]))
                   continue;
@@ -1714,7 +1984,7 @@ void main()
                      pending = end;
                      closer = r;
                   }
-                  if (!rec_in_tile(r) || !g_in || n == 0u)
+                  if (!g_in || n == 0u)
                      continue;
                   if (!rec_covers(r, g_s0x, g_s0y))
                      continue;
@@ -1792,29 +2062,35 @@ void main()
       {
          /* the translucent polygons' depth, for the render passes after */
          it_begin(trLo, trHi);
+         it_hiz = HIZ_RUN;
          while ((prim = it_next()) != PVRC_NONE)
          {
             const uint r = prim * PVRC_REC_WORDS;
-            if (!rec_in_tile(r))
-               continue;
             const uint pp = rec_poly(r);
+            const uint isp = frm.w[pp + PVRC_Q_ISP];
+            const uint mode = autosort ? 6u : isp >> 29;
+            const bool writes = (isp & (1u << 26)) == 0u;
+            if (mode == 0u || ((mode & 1u) == 0u && it_zhi < g_zbound))
+            {
+               g_hiz_skipped++;
+               continue;
+            }
             i64vec3 e;
             ivec2 pos;
-            if (!lane_cover(r, pp, false, e, pos))
-               continue;
-            const uint isp = frm.w[pp + PVRC_Q_ISP];
-            const float z = pvrc_depth(rec_bary(r, e).w);
-            if (pvrc_depth_pass(autosort ? 6u : isp >> 29, z, g_depth) == 0u)
-               continue;
-            if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
+            if (lane_cover(r, pp, false, e, pos))
             {
-               bool killed;
-               shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_DEPTH, false, killed);
-               if (killed)
-                  continue;
+               const float z = pvrc_depth(rec_bary(r, e).w);
+               if (pvrc_depth_pass(mode, z, g_depth) != 0u)
+               {
+                  bool killed = false;
+                  if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
+                     shade(pp, lane_frag(r, pp, e, pos), PVRC_SHADE_DEPTH, false, killed);
+                  if (!killed && writes)
+                     g_depth = z;
+               }
             }
-            if ((isp & (1u << 26)) == 0u)
-               g_depth = z;
+            if (writes && (mode & 1u) != 0u)
+               g_zbound = min(g_zbound, it_zlo);
          }
       }
    }
@@ -1827,6 +2103,8 @@ void main()
       imageStore(outImage, ivec2(g_px, g_py), (vec4(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u), float(c >> 24)) + 0.25) / 255.0);
    if (g_tid == 0u && peels > 1u)
       atomicMax(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_PEELS], peels);
+   if (g_tid == 0u && g_hiz_skipped != 0u)
+      atomicAdd(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_HIZ], g_hiz_skipped);
 }
 #endif
 
