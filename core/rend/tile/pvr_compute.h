@@ -283,7 +283,7 @@
  * the device gives a workgroup: three words each (the key's two and the
  * colour), 256 lanes, and room for the rest of what the walk keeps there */
 #define PVRC_K_MAX 8u
-#define PVRC_WALK_SHARED_FIXED 2048u
+#define PVRC_WALK_SHARED_FIXED 16896u
 #define PVRC_FRAGMENT_BYTES 12u
 #if !defined(PVRC_SHADER_GLSL)
 PVR_FN pvr_u32 pvrc_fragments_kept(pvr_u32 shared_bytes)
@@ -868,6 +868,8 @@ shared uint s_kc[PVRC_KEEP * 256u];	/* (each fragment's colour, as the lists kee
 shared uint s_flag;
 shared uint s_mask[16];	/* the entries of a batch kept, a bit each (two batches' words, in turn) */
 shared uint s_zr[4];	/* the lanes' least and most depth, as pvrc_zkey() has them (and two batches' least, in turn) */
+shared uint s_x[4u * 256u];	/* a word or a translucent fragment (key, colour, samples) from each lane, for the lanes of its pixel */
+shared uint s_xs[5u * 256u];	/* each lane's translucent list as it stands: fragments and whether a round is begun, the boundary, the nearest kept */
 
 uint g_tid;
 uint g_ct;	/* the coarse tile */
@@ -1547,11 +1549,20 @@ ivec2 rate_pos(uint r)
    return all || first == PVRC_SAMPLES ? ivec2(g_cx, g_cy) : at;
 }
 
+/* The same, from the samples of the pixel the triangle covers, a bit
+ * each (what rate_pos() finds out) */
+ivec2 rate_pos_cov(uint cov)
+{
+   if (PVRC_SAMPLES == 1u || cov == 0u || cov == (1u << PVRC_SAMPLES) - 1u)
+      return ivec2(g_cx, g_cy);
+   const uint first = uint(findLSB(cov));
+   return ivec2(g_px * 256 + int(SSAA_SAMPLE_X16(PVRC_SAMPLES, first)) * 16, g_py * 256 + int(SSAA_SAMPLE_Y16(PVRC_SAMPLES, first)) * 16);
+}
+
 /* ...its inputs there, with gl_FragCoord (its 1/w for the depth and the
  * fog) and its textures' derivatives at the centre, whose edges are @ec */
-Frag rate_frag(uint r, uint pp, i64vec3 ec)
+Frag rate_frag_at(uint r, uint pp, i64vec3 ec, ivec2 at)
 {
-   const ivec2 at = rate_pos(r);
    if (at.x == g_cx && at.y == g_cy)
       return rec_frag(r, pp, ec, g_cx, g_cy);
    Frag f = rec_frag(r, pp, rec_edges(r, at.x, at.y), at.x, at.y);
@@ -1561,6 +1572,11 @@ Frag rate_frag(uint r, uint pp, i64vec3 ec)
     * per-pixel renderer's once-a-pixel polygons are under SSAA) */
    frag_grads(r, frm.w[pp + PVRC_Q_FLAGS], ec, f);
    return f;
+}
+
+Frag rate_frag(uint r, uint pp, i64vec3 ec)
+{
+   return rate_frag_at(r, pp, ec, rate_pos(r));
 }
 
 /* The fragment lane_cover() found: at the sample, or once a pixel */
@@ -1888,66 +1904,191 @@ void main()
       {
          /* Translucent, sorted: K fragments at a time, the farthest
           * first, blended in floats onto the colour as the last subpass
-          * does; then the next K beyond the last one, until there are none */
+          * does; then the next K beyond the last one, until there are none.
+          * A fragment is shaded once a pixel, at its centre, whichever of
+          * the pixel's samples it covers: so the N lanes of a pixel take N
+          * primitives at a time, a lane shading one, and hand what they
+          * made to the lanes of the samples it covers through shared
+          * memory, each of which keeps its own K. (At one sample a pixel,
+          * the lane is the pixel's and hands nothing over.) */
          vec4 fc = col_unpack(g_col);
          vec4 sec = vec4(0.0);
          uint bh = 0u, bl = 0u;
          bool started = false;
+         const uint pbase = g_tid & ~(PVRC_SAMPLES - 1u);	/* the pixel's first lane */
+         float pz[8];	/* the depths of the pixel's samples */
+         pz[0] = g_depth;
+         if (PVRC_SAMPLES > 1u)
+         {
+            s_x[g_tid] = floatBitsToUint(g_depth);
+            barrier();
+            for (uint j = 0u; j < PVRC_SAMPLES; j++)
+               pz[j] = uintBitsToFloat(s_x[pbase + j]);
+            barrier();
+         }
          for (;;)
          {
             uint n = 0u;
             bool more = false;
+            if (PVRC_SAMPLES > 1u)
+            {
+               /* the list as the round starts, for the lanes that shade */
+               s_xs[g_tid * 5u] = started ? 256u : 0u;
+               s_xs[g_tid * 5u + 1u] = bh;
+               s_xs[g_tid * 5u + 2u] = bl;
+               barrier();
+            }
             it_begin(trLo, trHi);
             it_hiz = HIZ_TR;
-            while ((prim = it_next()) != PVRC_NONE)
+            for (;;)
             {
-               const uint r = prim * PVRC_REC_WORDS;
-               const uint pp = rec_poly(r);
-               if (!in_rect(frm.w[pp + PVRC_Q_RECT], frm.w[pp + PVRC_Q_RECT + 1u]))
-                  continue;
-               if (!rec_covers(r, g_sx, g_sy))
-                  continue;
-               const float w = vol_w(r);
-               const float z = pvrc_depth(w);
-               if (!(z >= g_depth))
-                  continue;
-               if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
+               /* the step's primitives: the lane of sample j takes the j-th */
+               uint mine = PVRC_NONE;
+               bool any = false;
+               for (uint j = 0u; j < PVRC_SAMPLES; j++)
                {
-                  const uint c0 = frm.w[pp + PVRC_Q_CLIP], c1 = frm.w[pp + PVRC_Q_CLIP + 1u];
-                  const float x = float(g_px) + 0.5, y = float(g_py) + 0.5;
-                  if (x >= float(c0 & 0xffffu) && x <= float(c1 & 0xffffu) && y >= float(c0 >> 16) && y <= float(c1 >> 16))
+                  const uint p = any || j == 0u ? it_next() : PVRC_NONE;
+                  if (p != PVRC_NONE)
+                     any = true;
+                  else if (j == 0u)
+                     break;
+                  if (j == smp)
+                     mine = p;
+               }
+               if (!any)
+                  break;
+               /* this lane's fragment: for which samples it is a
+                * candidate (covered, in front of the depth, inside its
+                * clips, beyond the boundary of what the round before took),
+                * and which of those can keep it as their list stands */
+               uint xh = 0u, xl = 0u, xc = 0u, cand = 0u, kept = 0u;
+               if (mine != PVRC_NONE)
+               {
+                  const uint r = mine * PVRC_REC_WORDS;
+                  const uint pp = rec_poly(r);
+                  if (in_rect(frm.w[pp + PVRC_Q_RECT], frm.w[pp + PVRC_Q_RECT + 1u]))
+                  {
+                     uint cov = 0u;
+                     for (uint j = 0u; j < PVRC_SAMPLES; j++)
+                     {
+                        const int sx = g_px * 256 + int(SSAA_SAMPLE_X16(PVRC_SAMPLES, j)) * 16;
+                        const int sy = g_py * 256 + int(SSAA_SAMPLE_Y16(PVRC_SAMPLES, j)) * 16;
+                        if (rec_covers(r, sx, sy))
+                           cov |= 1u << j;
+                     }
+                     if (cov != 0u)
+                     {
+                        const i64vec3 ec = rec_edges(r, g_cx, g_cy);
+                        const float z = pvrc_depth(rec_bary(r, ec).w);
+                        for (uint j = 0u; j < PVRC_SAMPLES; j++)
+                           if ((cov & (1u << j)) != 0u && z >= pz[j])
+                              cand |= 1u << j;
+                        if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
+                        {
+                           const uint c0 = frm.w[pp + PVRC_Q_CLIP], c1 = frm.w[pp + PVRC_Q_CLIP + 1u];
+                           const float x = float(g_px) + 0.5, y = float(g_py) + 0.5;
+                           if (x >= float(c0 & 0xffffu) && x <= float(c1 & 0xffffu) && y >= float(c0 >> 16) && y <= float(c1 >> 16))
+                              cand = 0u;
+                        }
+                        if (cand != 0u)
+                        {
+                           xh = pvr_key_hi(z, 0u);
+                           xl = mine << 2;
+                           for (uint j = 0u; j < PVRC_SAMPLES; j++)
+                           {
+                              if ((cand & (1u << j)) == 0u)
+                                 continue;
+                              uint st = started ? 256u : 0u, sbh = bh, sbl = bl, skh = 0u, skl = 0u;
+                              if (PVRC_SAMPLES > 1u)
+                              {
+                                 const uint xs = (pbase + j) * 5u;
+                                 st = s_xs[xs];
+                                 sbh = s_xs[xs + 1u];
+                                 sbl = s_xs[xs + 2u];
+                                 skh = s_xs[xs + 3u];
+                                 skl = s_xs[xs + 4u];
+                              }
+                              else
+                              {
+                                 st |= n;
+                                 if (n == PVRC_KEEP)
+                                 {
+                                    skh = s_kh[(PVRC_KEEP - 1u) * 256u + g_tid];
+                                    skl = s_kl[(PVRC_KEEP - 1u) * 256u + g_tid] & ~3u;
+                                 }
+                              }
+                              if ((st & 256u) != 0u && pvr_key_before(sbh, sbl, xh, xl) == 0u)
+                                 cand &= ~(1u << j);	/* (taken already) */
+                              else if ((st & 255u) < PVRC_KEEP || pvr_key_before(xh, xl, skh, skl) != 0u)
+                                 kept |= 1u << j;
+                           }
+                        }
+                        if (kept != 0u)
+                        {
+                           /* shaded now, as the per-pixel renderer shades a
+                            * fragment it puts in its lists */
+                           bool killed;
+                           xc = col_pack(clamp(shade(pp, rate_frag_at(r, pp, ec, rate_pos_cov(cov)), PVRC_SHADE_OIT, false, killed), 0.0, 1.0));
+                        }
+                     }
+                  }
+               }
+               /* the step's fragments to the lanes of their samples */
+               uint got = PVRC_SAMPLES == 1u ? 1u : PVRC_SAMPLES;
+               if (PVRC_SAMPLES > 1u)
+               {
+                  s_x[g_tid * 4u] = xh;
+                  s_x[g_tid * 4u + 1u] = xl;
+                  s_x[g_tid * 4u + 2u] = xc;
+                  s_x[g_tid * 4u + 3u] = cand | (kept << 8);
+                  barrier();
+               }
+               for (uint j = 0u; j < got; j++)
+               {
+                  uint kh = xh, kl = xl, kc = xc, m = cand | (kept << 8);
+                  if (PVRC_SAMPLES > 1u)
+                  {
+                     const uint x = (pbase + j) * 4u;
+                     kh = s_x[x];
+                     kl = s_x[x + 1u];
+                     kc = s_x[x + 2u];
+                     m = s_x[x + 3u];
+                  }
+                  if ((m & (1u << smp)) == 0u)
                      continue;
+                  uint at;
+                  if (n < PVRC_KEEP)
+                     at = n++;
+                  else
+                  {
+                     more = true;
+                     const uint li = (PVRC_KEEP - 1u) * 256u + g_tid;
+                     if ((m & (256u << smp)) == 0u || pvr_key_before(kh, kl, s_kh[li], s_kl[li] & ~3u) == 0u)
+                        continue;
+                     at = PVRC_KEEP - 1u;
+                  }
+                  while (at > 0u && pvr_key_before(kh, kl, s_kh[(at - 1u) * 256u + g_tid], s_kl[(at - 1u) * 256u + g_tid] & ~3u) != 0u)
+                  {
+                     s_kh[at * 256u + g_tid] = s_kh[(at - 1u) * 256u + g_tid];
+                     s_kl[at * 256u + g_tid] = s_kl[(at - 1u) * 256u + g_tid];
+                     s_kc[at * 256u + g_tid] = s_kc[(at - 1u) * 256u + g_tid];
+                     at--;
+                  }
+                  s_kh[at * 256u + g_tid] = kh;
+                  s_kl[at * 256u + g_tid] = kl;
+                  s_kc[at * 256u + g_tid] = kc;
                }
-               const uint kh = pvr_key_hi(z, 0u);
-               const uint kl = prim << 2;
-               if (started && pvr_key_before(bh, bl, kh, kl) == 0u)
-                  continue;	/* (taken already) */
-               uint at;
-               if (n < PVRC_KEEP)
-                  at = n++;
-               else
+               if (PVRC_SAMPLES > 1u)
                {
-                  more = true;
-                  const uint li = (PVRC_KEEP - 1u) * 256u + g_tid;
-                  if (pvr_key_before(kh, kl, s_kh[li], s_kl[li] & ~3u) == 0u)
-                     continue;
-                  at = PVRC_KEEP - 1u;
+                  /* the list as it stands now, for the next step's shading */
+                  s_xs[g_tid * 5u] = (started ? 256u : 0u) | n;
+                  if (n == PVRC_KEEP)
+                  {
+                     s_xs[g_tid * 5u + 3u] = s_kh[(PVRC_KEEP - 1u) * 256u + g_tid];
+                     s_xs[g_tid * 5u + 4u] = s_kl[(PVRC_KEEP - 1u) * 256u + g_tid] & ~3u;
+                  }
+                  barrier();
                }
-               /* shaded now, as the per-pixel renderer shades a fragment
-                * it puts in its lists: every lane here has the same
-                * primitive, so the texture it reads is one for all */
-               bool killed;
-               const uint kc = col_pack(clamp(shade(pp, rate_frag(r, pp, rec_edges(r, g_cx, g_cy)), PVRC_SHADE_OIT, false, killed), 0.0, 1.0));
-               while (at > 0u && pvr_key_before(kh, kl, s_kh[(at - 1u) * 256u + g_tid], s_kl[(at - 1u) * 256u + g_tid] & ~3u) != 0u)
-               {
-                  s_kh[at * 256u + g_tid] = s_kh[(at - 1u) * 256u + g_tid];
-                  s_kl[at * 256u + g_tid] = s_kl[(at - 1u) * 256u + g_tid];
-                  s_kc[at * 256u + g_tid] = s_kc[(at - 1u) * 256u + g_tid];
-                  at--;
-               }
-               s_kh[at * 256u + g_tid] = kh;
-               s_kl[at * 256u + g_tid] = kl;
-               s_kc[at * 256u + g_tid] = kc;
             }
 
             /* The translucent modifier volumes, on the fragments kept: at
