@@ -557,6 +557,7 @@ void DX11Renderer::SetupFrame()
 	VertexConstants vtx = {
 		{ normal.sx, -normal.sy, normal.sz, 0.f },
 		{ normal.tx, -normal.ty, normal.tz, 0.f },
+		{ pvr_depth_scale(pvrrc.fZ_max), 1.f / normal.sz, 0.f, 0.f },
 	};
 	SetConstants(vtxConstants.get(), vtx, vtxUploaded, vtxUploadedValid);
 	FragmentConstants frag;

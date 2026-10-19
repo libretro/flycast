@@ -31,6 +31,8 @@ cbuffer VertexConstants : register(b0)
 	// the guest's coordinates to clip space.
 	float4 normalScale;
 	float4 normalOffset;
+	// 1/fZ_max, and the inverse of what the matrix scales z by (rend/depth_scale.h)
+	float4 depthScale;
 };
 
 // A vertex's z is the guest's 1/w. It is made the clip space w's inverse,
@@ -45,12 +47,19 @@ cbuffer VertexConstants : register(b0)
 // hidden behind the background.
 // The clip space w is handed down instead, with the perspective, which
 // clipping keeps right; one over it at a pixel is that 1/w.
+// The depth is the position's (rend/depth_scale.h): z goes out as S, so
+// that the depth the rasterizer interpolates is S*z, the guest's 1/w up to
+// 1 at fZ_max, linear across the screen as the chip has it; no pixel
+// shader writes a depth. This one function places the vertices of every
+// shader, and the position is precise, so a pass that tests EQUAL against
+// another pass's depth is exact.
 float4 transformVertex(float3 pos, out float clipW)
 {
-	float4 vpos = float4(pos * normalScale.xyz + normalOffset.xyz, 1.0);
+	precise float4 vpos = float4(pos * normalScale.xyz + normalOffset.xyz, 1.0);
 	vpos.w = 1.0 / vpos.z;
-	vpos.z = vpos.w;
 	vpos.xy *= vpos.w;
+	// (a z beyond fZ_max is at depth 1, not clipped)
+	vpos.z = min(depthScale.x * depthScale.y, vpos.w);
 	clipW = vpos.w;
 	return vpos;
 }
@@ -73,7 +82,7 @@ struct VertexIn
 
 struct VertexOut
 {
-	float4 pos : SV_POSITION;
+	precise float4 pos : SV_POSITION;
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
@@ -94,7 +103,7 @@ VertexOut main(in VertexIn vin)
 const char * const DX11ModVolVertexShader = R"(
 struct VertexOut
 {
-	float4 pos : SV_POSITION;
+	precise float4 pos : SV_POSITION;
 	float clipW : TEXCOORD1;
 };
 
@@ -140,12 +149,6 @@ float fog_mode2(float w)
 	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
 }
 
-// The depth written: the same function of 1/w as the other renderers write
-float fragDepth(float w)
-{
-	w *= 100000.0;
-	return log2(1.0 + max(w, -0.999999)) / 34.0;
-}
 )";
 
 static const char PixelShaderHeader[] = R"(
@@ -212,10 +215,10 @@ struct Pixel
 	float clipW : TEXCOORD1;
 };
 
+// (the depth is the position's, which the depth test took: no SV_Depth)
 struct PSO
 {
 	float4 col : SV_Target;
-	float depth : SV_Depth;
 };
 
 PSO main(in Pixel inpix)
@@ -315,7 +318,6 @@ PSO main(in Pixel inpix)
 		discard;
 
 	PSO pso;
-	pso.depth = fragDepth(w);
 	pso.col = color;
 	return pso;
 }
@@ -328,20 +330,11 @@ struct Pixel
 	float clipW : TEXCOORD1;
 };
 
-struct PSO
-{
-	float4 col : SV_Target;
-	float depth : SV_Depth;
-};
-
 // The colour is only ever written by the pass that darkens what is left
-// in the volumes: by what the shadows take away
-PSO main(in Pixel inpix)
+// in the volumes: by what the shadows take away (the depth is the position's)
+float4 main(in Pixel inpix) : SV_Target
 {
-	PSO pso;
-	pso.depth = fragDepth(1.0 / inpix.clipW);
-	pso.col = float4(0.0, 0.0, 0.0, 1.0 - shade_scale_factor);
-	return pso;
+	return float4(0.0, 0.0, 0.0, 1.0 - shade_scale_factor);
 }
 )";
 

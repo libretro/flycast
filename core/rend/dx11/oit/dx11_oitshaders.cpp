@@ -49,7 +49,7 @@ struct VertexIn
 
 struct VertexOut
 {
-	float4 pos : SV_POSITION;
+	precise float4 pos : SV_POSITION;
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
@@ -276,22 +276,21 @@ struct VertexOut
 	nointerpolation uint polyNumber : POLYNUMBER;
 };
 
+// (the depth is the position's, which the depth test took: no SV_Depth)
 struct PSO
 {
 	float4 col : SV_Target;
-	float depth : SV_Depth;
 };
 
 PSO main(in VertexOut inpix)
 {
 	const float w = 1.0 / inpix.clipW;
 	PSO pso;
-	pso.depth = fragDepth(w);
 
 	#if PASS == PASS_OIT
 		// Manual depth testing
 		float frontDepth = DepthTex[uint2(inpix.pos.xy)];
-		if (pso.depth < frontDepth)
+		if (inpix.pos.z < frontDepth)
 			discard;
 	#endif
 
@@ -495,7 +494,7 @@ PSO main(in VertexOut inpix)
 
 		Pixel pixel;
 		pixel.color = packColors(clamp(color, 0.0, 1.0));
-		pixel.depth = pso.depth;
+		pixel.depth = inpix.pos.z;
 		pixel.seq_num = inpix.polyNumber;
 		uint next;
 		InterlockedExchange(abufferPointers[coords], idx, next);
@@ -516,9 +515,9 @@ struct ModVolPixel
 	float clipW : TEXCOORD1;
 };
 
-float main(in ModVolPixel inpix) : SV_Depth
+// (the depth is the position's; nothing is shaded)
+void main(in ModVolPixel inpix)
 {
-	return fragDepth(1.0 / inpix.clipW);
 }
 )";
 
@@ -689,7 +688,7 @@ struct ModVolPixel
 void main(in ModVolPixel inpix)
 {
 #if MV_MODE == MV_XOR || MV_MODE == MV_OR
-	float depth = fragDepth(1.0 / inpix.clipW);
+	const float depth = inpix.pos.z;	// the position's, which the depth test took
 #endif
 	uint2 coords = uint2(inpix.pos.xy);
 

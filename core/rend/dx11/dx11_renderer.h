@@ -29,6 +29,7 @@
 #include "rend/tileclip.h"
 #include "rend/transform_matrix.h"
 #include "rend/shadows.h"
+#include "rend/depth_scale.h"
 #include "dx11context_lr.h"
 #include "dx11_overlay.h"
 #include "dx11_texdecoder.h"
@@ -59,6 +60,7 @@ protected:
 	{
 		float scale[4];
 		float offset[4];
+		float depthScale[4];	// 1/fZ_max, 1 / the scale's z (rend/depth_scale.h)
 	};
 	struct FragmentConstants
 	{
