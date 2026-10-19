@@ -68,7 +68,7 @@ public:
 protected:
 	struct VertexConstants
 	{
-		float scale[4];
+		float scale[4];		// x, y, z, and the depth's scale (shaders/dx12_raster.hlsl)
 		float offset[4];
 	};
 	struct FragmentConstants

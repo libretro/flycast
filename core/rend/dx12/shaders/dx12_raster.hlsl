@@ -50,7 +50,8 @@ cbuffer PolyConstants : register(b1)
 cbuffer VertexConstants : register(b0)
 {
 	// The normal matrix, which is never more than a scale and then a move:
-	// the guest's coordinates to clip space.
+	// the guest's coordinates to clip space. normalScale.w is the depth's
+	// scale: one over the frame's largest 1/w (fZ_max).
 	float4 normalScale;
 	float4 normalOffset;
 };
@@ -66,16 +67,21 @@ cbuffer FragmentConstants : register(b2)
 	float shade_scale_factor;
 };
 
-// See DX11VertexTransform: a vertex's z is the guest's 1/w; the clip
-// space w is handed down, with the perspective, and one over it at a
-// pixel is that 1/w.
-float4 transformVertex(float3 pos, out float clipW)
+// A vertex's z is the guest's 1/w, which is what the PowerVR compares
+// depths by: the clip space position is (x * w, y * w, S, w), so that the
+// depth the rasterizer makes of it, z / w, is S / w = S * (1/w) - the
+// guest's own depth, scaled by S = 1 / fZ_max into (0, 1], the largest
+// nearest: a reversed depth, in a float buffer, tested by the PowerVR's
+// modes as they are (mode 6, greater or equal, is GREATER_EQUAL), and no
+// depth is written by the pixel shaders. The same function, precise, for
+// every pass, so that a pass that tests EQUAL against another's depth
+// finds it. One over the clip space w at a pixel (SV_Position.w) is the
+// guest's 1/w there, for the fog.
+precise float4 transformVertex(float3 pos)
 {
-	float4 vpos = float4(pos * normalScale.xyz + normalOffset.xyz, 1.0);
-	vpos.w = 1.0 / vpos.z;
-	vpos.z = vpos.w;
-	vpos.xy *= vpos.w;
-	clipW = vpos.w;
+	precise float3 p = pos * normalScale.xyz + normalOffset.xyz;
+	precise float w = 1.0 / p.z;
+	precise float4 vpos = float4(p.x * w, p.y * w, normalScale.w, w);
 	return vpos;
 }
 
@@ -98,13 +104,6 @@ float fog_mode2(float w)
 	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
 }
 
-// The depth written: the same function of 1/w as the other renderers write
-float fragDepth(float w)
-{
-	w *= 100000.0;
-	return log2(1.0 + max(w, -0.999999)) / 34.0;
-}
-
 #ifdef DX12_POLY_VS
 struct VertexIn
 {
@@ -116,17 +115,16 @@ struct VertexIn
 
 struct VertexOut
 {
-	float4 pos : SV_POSITION;
+	precise float4 pos : SV_POSITION;
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
-	float clipW : TEXCOORD1;
 };
 
 VertexOut main(in VertexIn vin)
 {
 	VertexOut vo;
-	vo.pos = transformVertex(vin.pos, vo.clipW);
+	vo.pos = transformVertex(vin.pos);
 	vo.col = vin.col;
 	vo.spec = vin.spec;
 	vo.uv = vin.uv;
@@ -141,18 +139,12 @@ struct Pixel
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
 	float2 uv : TEXCOORD0;
-	float clipW : TEXCOORD1;
 };
 
-struct PSO
+float4 main(in Pixel inpix) : SV_Target
 {
-	float4 col : SV_Target;
-	float depth : SV_Depth;
-};
-
-PSO main(in Pixel inpix)
-{
-	const float w = 1.0 / inpix.clipW;
+	// (the guest's 1/w at this pixel)
+	const float w = inpix.pos.w;
 	const uint shadInstr = (polyFlags >> DX12_PF_SHAD_INSTR_SHIFT) & 3;
 	const uint fogCtrl = (polyFlags >> DX12_PF_FOG_SHIFT) & 3;
 	const bool bumpmap = (polyFlags & DX12_PF_BUMPMAP) != 0;
@@ -248,57 +240,28 @@ PSO main(in Pixel inpix)
 	// pixels that hide what is behind them. (0 for the colours.)
 	if (color.a < prepassAlpha)
 		discard;
-
-	PSO pso;
-	pso.depth = fragDepth(w);
-	pso.col = color;
-	return pso;
+	return color;
 }
 #endif
 
 #ifdef DX12_MODVOL_VS
-struct VertexOut
+// (a position alone: the volumes' triangles, and the polygons' vertices
+// read for their position only - the depth of sorted polygons)
+precise float4 main(in float3 pos : POSITION) : SV_POSITION
 {
-	float4 pos : SV_POSITION;
-	float clipW : TEXCOORD1;
-};
-
-VertexOut main(in float3 pos : POSITION)
-{
-	VertexOut vo;
 	// (behind the eye, or as good as at an infinite distance: nowhere)
 	if (pos.z < 0.0 || pos.z > 3.4e37)
-	{
-		vo.pos = float4(0.0, 0.0, 1.0, 1.0 / pos.z);
-		vo.clipW = vo.pos.w;
-		return vo;
-	}
-	vo.pos = transformVertex(pos, vo.clipW);
-	return vo;
+		return float4(0.0, 0.0, 1.0, 1.0 / pos.z);
+	return transformVertex(pos);
 }
 #endif
 
 #ifdef DX12_MODVOL_PS
-struct Pixel
-{
-	float4 pos : SV_POSITION;
-	float clipW : TEXCOORD1;
-};
-
-struct PSO
-{
-	float4 col : SV_Target;
-	float depth : SV_Depth;
-};
-
 // The colour is only ever written by the pass that darkens what is left
 // in the volumes: by what the shadows take away
-PSO main(in Pixel inpix)
+float4 main(in float4 pos : SV_POSITION) : SV_Target
 {
-	PSO pso;
-	pso.depth = fragDepth(1.0 / inpix.clipW);
-	pso.col = float4(0.0, 0.0, 0.0, 1.0 - shade_scale_factor);
-	return pso;
+	return float4(0.0, 0.0, 0.0, 1.0 - shade_scale_factor);
 }
 #endif
 

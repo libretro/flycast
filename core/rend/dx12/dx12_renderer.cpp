@@ -462,7 +462,8 @@ bool DX12Renderer::UploadGeometry()
 	 * they are. */
 	const xform& normal = matrices.GetNormalMatrix();
 	const VertexConstants vtx = {
-		{ normal.sx, -normal.sy, normal.sz, 0.f },
+		// (and the depth's scale: one over the frame's largest 1/w)
+		{ normal.sx, -normal.sy, normal.sz, 1.f / pvrrc.fZ_max },
 		{ normal.tx, -normal.ty, normal.tz, 0.f },
 	};
 	FragmentConstants frag;
