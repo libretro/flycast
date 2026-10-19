@@ -359,6 +359,66 @@ void DX12Pipelines::MakeAtStart()
 			k.cull = cull;
 			Add(k.Pack());
 		}
+	/* The polygons' pipelines games mostly draw with (DX12Renderer::DrawPoly()):
+	 * opaque ones with every depth mode, punch-through and translucent ones
+	 * with the blends games use, the sorted translucent ones, and the
+	 * shadow passes. A game's others are made as it first draws with them,
+	 * and are in the key log for its next run. */
+	static const u8 blends[][2] = { { 4, 5 }, { 1, 1 }, { 1, 0 }, { 4, 1 }, { 0, 1 }, { 1, 5 } };
+	for (u32 g = 0; g < 2; g++)
+		for (u32 cull = 0; cull < 3; cull++)
+		{
+			k = DX12PsoKey{};
+			k.kind = DX12_PSO_POLY;
+			k.gouraud = g != 0;
+			k.cull = cull;
+			k.depthBound = true;
+			k.depthTest = true;
+			k.writeColor = true;
+			// opaque: no blend, the shadow stencil
+			k.stencil = DX12Stencil::Shadow;
+			for (u32 func = 1; func < 8; func++)
+				for (u32 w = 0; w < 2; w++)
+				{
+					k.depthFunc = func;
+					k.depthWrite = w != 0;
+					Add(k.Pack());
+				}
+			// punch-through: blended, depth written, greater or equal
+			k.blend = true;
+			k.depthFunc = 6;
+			k.depthWrite = true;
+			for (const u8 *b : blends)
+			{
+				k.src = b[0];
+				k.dst = b[1];
+				Add(k.Pack());
+			}
+			// translucent, sorted: no depth write; and unsorted with the depth modes seen most
+			k.stencil = DX12Stencil::None;
+			for (const u8 *b : blends)
+			{
+				k.src = b[0];
+				k.dst = b[1];
+				k.depthFunc = 6;
+				k.depthWrite = false;
+				Add(k.Pack());
+				k.depthFunc = 7;
+				Add(k.Pack());
+				k.depthWrite = true;
+				Add(k.Pack());
+				k.depthFunc = 6;
+				Add(k.Pack());
+			}
+			// the shadow passes: where the polygon is (equal), nothing written but the colour
+			k.blend = false;
+			k.depthWrite = false;
+			k.depthFunc = 2;
+			k.stencil = DX12Stencil::ShadowLaterWins;
+			Add(k.Pack());
+			k.stencil = DX12Stencil::ShadowEarlierWins;
+			Add(k.Pack());
+		}
 	// the quads
 	k = DX12PsoKey{};
 	k.kind = DX12_PSO_QUAD;
