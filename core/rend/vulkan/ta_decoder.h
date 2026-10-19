@@ -48,6 +48,9 @@ struct TaGpuDraw
 {
 	vk::Buffer vertices, indices, modtrig, commands, trDraws, trParams;
 	vk::DeviceSize trParamsSize = 0;
+	/* the frame's words (TAG_O_*): 1/fZ_max at TAG_O_ZSCALE, which the
+	 * drawers copy into their vertex uniforms (rend/depth_scale.h) */
+	vk::Buffer frame;
 	PFN_vkCmdDrawIndexedIndirectCountKHR drawCount = nullptr;
 	/* The second commands of the opaque and punch-through draw groups for
 	 * shadows (TA_GPU_SHADOWS, TAG_K_SHADOW): a group's at this many bytes

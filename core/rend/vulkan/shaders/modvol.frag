@@ -7,9 +7,8 @@ layout (push_constant) uniform pushBlock
 	float sp_ShaderColor;
 } pushConstants;
 
+// (the depth is the position's: position.glsl; the colour is the final pass's tint)
 void main()
 {
-	float w = gl_FragCoord.w * 100000.0;
-	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 	FragColor = vec4(0.0, 0.0, 0.0, pushConstants.sp_ShaderColor);
 }

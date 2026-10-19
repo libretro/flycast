@@ -1,5 +1,7 @@
 // The per-triangle renderer's depth prepass of a sorted translucent list
-// (rend/sorter.h; shaders.cpp). Made with pp_Texture, pp_Gouraud and
+// (rend/sorter.h; shaders.cpp): the polygon's alpha as the colour pass
+// has it, and nothing drawn where it is below the least that hides (the
+// depth is the position's: position.glsl). Made with pp_Texture, pp_Gouraud and
 // pp_SampleRate defined, after pso_key.h: tools/rend/kernels_spv.sh.
 
 layout (constant_id = PSO_SC_SSAA_SAMPLES) const int SSAA_SAMPLES = 1;
@@ -149,7 +151,4 @@ void main()
 
 	if ((f & PREPASS_ALWAYS) == 0u && color.a < PREPASS_ALPHA_MIN_GLSL)
 		discard;
-
-	float w = gl_FragCoord.w * 100000.0;
-	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 }

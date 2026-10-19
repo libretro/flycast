@@ -34,6 +34,8 @@
 #include "rend/shadows.h"
 #include "ssaa.h"
 #include "gpu_timer.h"
+#include "rend/depth_scale.h"
+#include "rend/ta_gpu.h"
 
 class BaseDrawer
 {
@@ -158,12 +160,43 @@ protected:
 			cmdBuffer.drawIndexedIndirect(gpuDraw->trDraws, (vk::DeviceSize)(first + 1) * stride, count, stride);
 	}
 
+	/* The vertex shaders' uniforms (shaders/position.glsl) for the render
+	 * being recorded, in the buffer of swap chain image @image: the matrix
+	 * and 1/fZ_max from the host; for a frame decoded on the GPU, 1/fZ_max
+	 * is the decode's word, copied over the host's before the render pass
+	 * (so this is called before the render pass begins). The buffers are
+	 * made the first time an image's is needed. */
+	template<typename T>
+	vk::Buffer WriteVertexUniforms(const vk::CommandBuffer& cmdBuffer, int image)
+	{
+		while ((int)vertexUniformBuffers.size() <= image)
+			vertexUniformBuffers.push_back(std::unique_ptr<BufferData>(new BufferData(sizeof(T),
+					vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eTransferDst)));
+		T uniforms;
+		xform_to_mat4(&matrices.GetNormalMatrix(), uniforms.normal_matrix);
+		uniforms.depth_scale = pvr_depth_scale(pvrrc.fZ_max);
+		uniforms.depth_mul = 1.f / matrices.GetNormalMatrix().sz;
+		uniforms.pad[0] = uniforms.pad[1] = 0.f;
+		BufferData& buffer = *vertexUniformBuffers[image];
+		buffer.upload(sizeof(uniforms), &uniforms);
+		if (pvrrc.gpu && gpuDraw != nullptr && gpuDraw->frame)
+		{
+			cmdBuffer.copyBuffer(gpuDraw->frame, *buffer.buffer,
+					vk::BufferCopy(TAG_O_ZSCALE * 4, offsetof(T, depth_scale), 4));
+			const vk::MemoryBarrier copied(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eUniformRead);
+			cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eVertexShader, {}, copied, nullptr, nullptr);
+		}
+		return *buffer.buffer;
+	}
+
 	vk::Rect2D baseScissor;
 	vk::Rect2D currentScissor;
 	TransformMatrix<false> matrices;
 	CommandPool *commandPool = nullptr;
 	const TaGpuDraw *gpuDraw = nullptr;
 	GpuDraws gpuDraws = GpuDraws::Groups;
+	std::vector<std::unique_ptr<BufferData>> vertexUniformBuffers;
+	vk::Buffer vertexUniformBuffer;	// this render's
 };
 
 class Drawer : public BaseDrawer
@@ -237,13 +270,12 @@ private:
    void DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass,
 			int render_pass);
-	void UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const FragmentShaderUniforms& fragmentUniforms);
+	void UploadMainBuffer(const FragmentShaderUniforms& fragmentUniforms);
 
 	int imageIndex = 0;
 	struct {
 		vk::DeviceSize indexOffset = 0;
 		vk::DeviceSize modVolOffset = 0;
-		vk::DeviceSize vertexUniformOffset = 0;
 		vk::DeviceSize fragmentUniformOffset = 0;
 	} offsets;
 	std::vector<DescriptorSets> descriptorSets;

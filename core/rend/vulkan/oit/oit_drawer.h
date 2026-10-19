@@ -84,6 +84,7 @@ protected:
 		tempFramebuffers[1].reset();
 		depthAttachment.reset();
 		mainBuffers.clear();
+		vertexUniformBuffers.clear();
 		descriptorSets.clear();
 	}
 
@@ -152,13 +153,12 @@ private:
 			const List<PolyParam>& polys, u32 first, u32 last);
 	template<bool Translucent>
 	void DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int first, int count, const ModifierVolumeParam *modVolParams);
-	void UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& vertexUniforms,
+	void UploadMainBuffer(
 			const OITDescriptorSets::FragmentShaderUniforms& fragmentUniforms);
 
 	struct {
 		vk::DeviceSize indexOffset = 0;
 		vk::DeviceSize modVolOffset = 0;
-		vk::DeviceSize vertexUniformOffset = 0;
 		vk::DeviceSize fragmentUniformOffset = 0;
 		vk::DeviceSize polyParamsOffset = 0;
 		vk::DeviceSize polyParamsSize = 0;

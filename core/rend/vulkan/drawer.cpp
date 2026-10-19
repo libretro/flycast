@@ -429,7 +429,7 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 	cmdBuffer.drawIndexed(4, 1, 0, 0, 0);
 }
 
-void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const FragmentShaderUniforms& fragmentUniforms)
+void Drawer::UploadMainBuffer(const FragmentShaderUniforms& fragmentUniforms)
 {
 	// TODO Put this logic in an allocator
 	std::vector<const void *> chunks;
@@ -468,17 +468,10 @@ void Drawer::UploadMainBuffer(const VertexShaderUniforms& vertexUniforms, const 
 			chunkSizes.push_back(idx.size() * sizeof(u32));
 		}
 	}
-	// Uniform buffers
+	// Fragment uniform buffer (the vertex one is its own: WriteVertexUniforms())
 	u32 indexSize = indexBytes + sortedIndexCount * sizeof(u32);
 	padding = align(offsets.indexOffset + indexSize, std::max(4, (int)GetContext()->GetUniformBufferAlignment()));
-	offsets.vertexUniformOffset = offsets.indexOffset + indexSize + padding;
-	chunks.push_back(nullptr);
-	chunkSizes.push_back(padding);
-
-	chunks.push_back(&vertexUniforms);
-	chunkSizes.push_back(sizeof(vertexUniforms));
-	padding = align(offsets.vertexUniformOffset + sizeof(VertexShaderUniforms), std::max(4, (int)GetContext()->GetUniformBufferAlignment()));
-	offsets.fragmentUniformOffset = offsets.vertexUniformOffset + sizeof(VertexShaderUniforms) + padding;
+	offsets.fragmentUniformOffset = offsets.indexOffset + indexSize + padding;
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
@@ -505,15 +498,11 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 	}
 	currentScissor = vk::Rect2D();
 
+	/* (which works the matrices out for this render, and writes the vertex
+	 * uniforms from them: taken before it, they were the last render's - of
+	 * two renders to textures of different sizes in one frame, each was
+	 * drawn with the other's, at the wrong scale) */
 	vk::CommandBuffer cmdBuffer = BeginRenderPass();
-
-	/* After BeginRenderPass(), which works the matrices out for this
-	 * render. Taken before it, they were the last render's: the same from
-	 * one frame to the next for the screen, so it did not show - but of two
-	 * renders to textures of different sizes in one frame, each was drawn
-	 * with the other's, at the wrong scale. */
-	VertexShaderUniforms vtxUniforms;
-	xform_to_mat4(&matrices.GetNormalMatrix(), vtxUniforms.normal_matrix);
 
 	FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<FragmentShaderUniforms>();
 	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
@@ -523,10 +512,10 @@ bool Drawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		SetProvokingVertices();
 
 	// Upload vertex and index buffers
-	UploadMainBuffer(vtxUniforms, fragUniforms);
+	UploadMainBuffer(fragUniforms);
 
 	// Update per-frame descriptor set and bind it
-	GetCurrentDescSet().UpdateUniforms(GetMainBuffer(0)->buffer.get(), offsets.vertexUniformOffset, offsets.fragmentUniformOffset,
+	GetCurrentDescSet().UpdateUniforms(vertexUniformBuffer, GetMainBuffer(0)->buffer.get(), offsets.fragmentUniformOffset,
 			fogTexture->GetImageView(), paletteTexture->GetImageView());
 	GetCurrentDescSet().BindPerFrameDescriptorSets(cmdBuffer);
 	// Reset per-poly descriptor set pool
@@ -678,6 +667,7 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	NewImage();
 	vk::CommandBuffer commandBuffer = commandPool->Allocate();
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	vertexUniformBuffer = WriteVertexUniforms<VertexShaderUniforms>(commandBuffer, GetCurrentImage());
 
 	if (samples > 1)
 	{
@@ -778,7 +768,7 @@ vk::CommandBuffer TextureDrawer::BeginRenderPass()
 	commandBuffer.beginRenderPass(vk::RenderPassBeginInfo(rttPipelineManager->GetRenderPass(),	*framebuffers[GetCurrentImage()],
 			vk::Rect2D( { 0, 0 }, { width, height }), samples > 1 ? 3 : 2, samples > 1 ? ssaa_clear_colors : clear_colors),
 			vk::SubpassContents::eInline);
-	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, (float)upscaledWidth, (float)upscaledHeight, 1.0f, 0.0f));
+	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, (float)upscaledWidth, (float)upscaledHeight, 0.0f, 1.0f));
 	{
 		// only the pixel clip is written
 		const u32 scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
@@ -968,6 +958,8 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	NewImage();
 	vk::CommandBuffer commandBuffer = commandPool->Allocate();
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	matrices.CalcMatrices(&pvrrc);
+	vertexUniformBuffer = WriteVertexUniforms<VertexShaderUniforms>(commandBuffer, GetCurrentImage());
 
 	/* A framebuffer the game has not drawn to lately starts as the border
 	 * colour, which is what the OpenGL renderers clear it to; any other
@@ -982,9 +974,7 @@ vk::CommandBuffer ScreenDrawer::BeginRenderPass()
 	commandBuffer.beginRenderPass(vk::RenderPassBeginInfo(*renderPass, *framebuffers[GetCurrentImage()],
 			vk::Rect2D( { 0, 0 }, viewport), samples > 1 ? 3 : 2, samples > 1 ? ssaa_clear_colors : clear_colors),
 			vk::SubpassContents::eInline);
-	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, viewport.width, viewport.height, 1.0f, 0.0f));
-
-	matrices.CalcMatrices(&pvrrc);
+	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, viewport.width, viewport.height, 0.0f, 1.0f));
 
 	SetBaseScissor();
 	/* A render that covers only part of the screen leaves the rest of the

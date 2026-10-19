@@ -201,10 +201,8 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 	BindVertices(cmdBuffer, buffer);
 }
 
-void OITDrawer::UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& vertexUniforms,
-		const OITDescriptorSets::FragmentShaderUniforms& fragmentUniforms)
+void OITDrawer::UploadMainBuffer(const OITDescriptorSets::FragmentShaderUniforms& fragmentUniforms)
 {
-	using VertexShaderUniforms = OITDescriptorSets::VertexShaderUniforms;
 	using FragmentShaderUniforms = OITDescriptorSets::FragmentShaderUniforms;
 
 	// TODO Put this logic in an allocator
@@ -237,17 +235,10 @@ void OITDrawer::UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& 
 	chunks.push_back(pvrrc.idx.head());
 	chunkSizes.push_back(indexBytes);
 
-	// Uniform buffers
+	// Fragment uniform buffer (the vertex one is its own: WriteVertexUniforms())
 	u32 indexSize = indexBytes;
 	padding = align(offsets.indexOffset + indexSize, std::max(4, (int)GetContext()->GetUniformBufferAlignment()));
-	offsets.vertexUniformOffset = offsets.indexOffset + indexSize + padding;
-	chunks.push_back(nullptr);
-	chunkSizes.push_back(padding);
-
-	chunks.push_back(&vertexUniforms);
-	chunkSizes.push_back(sizeof(vertexUniforms));
-	padding = align(offsets.vertexUniformOffset + sizeof(VertexShaderUniforms), std::max(4, (int)GetContext()->GetUniformBufferAlignment()));
-	offsets.fragmentUniformOffset = offsets.vertexUniformOffset + sizeof(VertexShaderUniforms) + padding;
+	offsets.fragmentUniformOffset = offsets.indexOffset + indexSize + padding;
 	chunks.push_back(nullptr);
 	chunkSizes.push_back(padding);
 
@@ -293,9 +284,6 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		setImageLayout(cmdBuffer, depthAttachment->GetImage(), GetContext()->GetDepthFormat(), 1, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal);
 	}
 
-	OITDescriptorSets::VertexShaderUniforms vtxUniforms;
-	xform_to_mat4(&matrices.GetNormalMatrix(), vtxUniforms.normal_matrix);
-
 	OITDescriptorSets::FragmentShaderUniforms fragUniforms = MakeFragmentUniforms<OITDescriptorSets::FragmentShaderUniforms>();
 	fragUniforms.shade_scale_factor = FPU_SHAD_SCALE.scale_factor / 256.f;
 
@@ -308,7 +296,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 		SetProvokingVertices();
 
 	// Upload vertex and index buffers
-	UploadMainBuffer(vtxUniforms, fragUniforms);
+	UploadMainBuffer(fragUniforms);
 
 	quadBuffer->Update();
 
@@ -329,7 +317,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 
 	// Update per-frame descriptor set and bind it
 	const vk::Buffer mainBuffer = GetMainBuffer(0)->buffer.get();
-	GetCurrentDescSet().UpdateUniforms(mainBuffer, offsets.vertexUniformOffset, offsets.fragmentUniformOffset,
+	GetCurrentDescSet().UpdateUniforms(vertexUniformBuffer, mainBuffer, offsets.fragmentUniformOffset,
 			fogTexture->GetImageView(), offsets.polyParamsOffset,
 			offsets.polyParamsSize, depthAttachment->GetStencilView(),
 			depthAttachment->GetImageView(), paletteTexture->GetImageView(),
@@ -513,7 +501,7 @@ bool OITDrawer::Draw(const Texture *fogTexture, const Texture *paletteTexture)
 			quadBuffer->Bind(cmdBuffer);
 			if (finalPass)
 			{
-				cmdBuffer.setViewport(0, vk::Viewport(0.f, 0.f, (float)viewport.extent.width, (float)viewport.extent.height, 1.f, 0.f));
+				cmdBuffer.setViewport(0, vk::Viewport(0.f, 0.f, (float)viewport.extent.width, (float)viewport.extent.height, 0.f, 1.f));
 				cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelineManager->GetFinalPipeline());
 				quadBuffer->Draw(cmdBuffer);
 			}
@@ -771,6 +759,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 
 	vk::CommandBuffer commandBuffer = commandPool->Allocate();
 	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	vertexUniformBuffer = WriteVertexUniforms<OITDescriptorSets::VertexShaderUniforms>(commandBuffer, GetCurrentImage());
 
 	MakeBuffers(widthPow2, heightPow2);
 
@@ -848,7 +837,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	framebuffers[GetCurrentImage()] = device.createFramebufferUnique(vk::FramebufferCreateInfo(vk::FramebufferCreateFlags(),
 			rttPipelineManager->GetRenderPass(true, true), ARRAY_SIZE(imageViews), imageViews, widthPow2, heightPow2, 1));
 
-	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, (float)upscaledWidth, (float)upscaledHeight, 1.0f, 0.0f));
+	commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, (float)upscaledWidth, (float)upscaledHeight, 0.0f, 1.0f));
 	{
 		// only the pixel clip is written
 		const u32 scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
@@ -887,11 +876,12 @@ vk::CommandBuffer OITScreenDrawer::NewFrame()
 	timer.Begin(commandBuffer, commandPool->GetIndex());
 
 	matrices.CalcMatrices(&pvrrc);
+	vertexUniformBuffer = WriteVertexUniforms<OITDescriptorSets::VertexShaderUniforms>(commandBuffer, GetCurrentImage());
 
 	SetBaseScissor();
 
 	commandBuffer.setScissor(0, baseScissor);
-	commandBuffer.setViewport(0, vk::Viewport(viewport.offset.x, viewport.offset.y, viewport.extent.width, viewport.extent.height, 1.0f, 0.0f));
+	commandBuffer.setViewport(0, vk::Viewport(viewport.offset.x, viewport.offset.y, viewport.extent.width, viewport.extent.height, 0.0f, 1.0f));
 	currentCommandBuffer = commandBuffer;
 
 	return commandBuffer;

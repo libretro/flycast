@@ -124,10 +124,15 @@ struct PrepassShaderParams
 	int samples;
 };
 
-// std140 alignment required
+/* std140 alignment required; shaders/position.glsl, and rend/depth_scale.h
+ * for depth_scale: 1/fZ_max, which for a frame decoded on the GPU is the
+ * decode's own word, copied over this one before the render pass */
 struct VertexShaderUniforms
 {
 	float normal_matrix[16];
+	float depth_scale;
+	float depth_mul;	// 1 / what the matrix scales z by
+	float pad[2];
 };
 
 // std140 alignment required

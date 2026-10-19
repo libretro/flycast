@@ -1,9 +1,5 @@
-// Modifier volumes, of both renderers (shaders.cpp, oit_shaders.cpp)
-
-layout (std140, set = 0, binding = 0) uniform VertexShaderUniforms
-{
-	mat4 normal_matrix;
-} uniformBuffer;
+// Modifier volumes, of both renderers (shaders.cpp, oit_shaders.cpp), after
+// position.glsl
 
 layout (location = 0) in vec4         in_pos;
 
@@ -16,9 +12,5 @@ void main()
 		return;
 	}
 
-	vpos = uniformBuffer.normal_matrix * vpos;
-	vpos.w = 1.0 / vpos.z;
-	vpos.z = vpos.w;
-	vpos.xy *= vpos.w; 
-	gl_Position = vpos;
+	gl_Position = pvr_position(vpos);
 }

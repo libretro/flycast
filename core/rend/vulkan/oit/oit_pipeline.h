@@ -33,10 +33,13 @@
 class OITDescriptorSets
 {
 public:
-	// std140 alignment required
+	// std140 alignment required (the per-triangle renderer's: shaders.h)
 	struct VertexShaderUniforms
 	{
 		float normal_matrix[16];
+		float depth_scale;
+		float depth_mul;
+		float pad[2];
 	};
 
 	// std140 alignment required
@@ -84,7 +87,8 @@ public:
 		this->colorInputLayout = colorInputLayout;
 	}
 	// FIXME way too many params
-	void UpdateUniforms(vk::Buffer buffer, u32 vertexUniformOffset, u32 fragmentUniformOffset, vk::ImageView fogImageView,
+	// (the vertex uniforms are a buffer of their own: BaseDrawer::WriteVertexUniforms())
+	void UpdateUniforms(vk::Buffer vertexUniformBuffer, vk::Buffer buffer, u32 fragmentUniformOffset, vk::ImageView fogImageView,
 			u32 polyParamsOffset, u32 polyParamsSize, vk::ImageView stencilImageView, vk::ImageView depthImageView,
 			vk::ImageView paletteImageView, vk::ImageLayout depthInputLayout,
 			vk::Buffer gpuPolyParams = vk::Buffer(), vk::DeviceSize gpuPolyParamsSize = 0)
@@ -95,7 +99,7 @@ public:
 					vk::DescriptorSetAllocateInfo(GetContext()->GetDescriptorPool(), 1, &perFrameLayout)).front());
 		}
 		std::vector<vk::DescriptorBufferInfo> bufferInfos;
-		bufferInfos.push_back(vk::DescriptorBufferInfo(buffer, vertexUniformOffset, sizeof(VertexShaderUniforms)));
+		bufferInfos.push_back(vk::DescriptorBufferInfo(vertexUniformBuffer, 0, sizeof(VertexShaderUniforms)));
 		bufferInfos.push_back(vk::DescriptorBufferInfo(buffer, fragmentUniformOffset, sizeof(FragmentShaderUniforms)));
 
 		std::vector<vk::WriteDescriptorSet> writeDescriptorSets;

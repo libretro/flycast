@@ -16,6 +16,7 @@
 #include "hw/pvr/ta.h"
 #include "hw/pvr/Renderer_if.h"
 #include "rend/ta_gpu.h"
+#include "rend/depth_scale.h"
 #include "rend/sorter.h"
 #include "rend/shadows.h"
 #include "ta_gpu_test.h"
@@ -274,6 +275,16 @@ static const char *compare(TA_context *ctx, const TaGpuFrame &gf, const tgt_out 
 		if (z != o.frm[TAG_O_ZMAX])
 		{
 			snprintf(why, room, "fZ_max: %08x, %08x", z, o.frm[TAG_O_ZMAX]);
+			return why;
+		}
+		/* its reciprocal, which the vertex shaders take from the frame
+		 * (within two units in the last place: a device need not divide
+		 * exactly) */
+		const float s = pvr_depth_scale(rc.fZ_max);
+		memcpy(&z, &s, 4);
+		if (z > o.frm[TAG_O_ZSCALE] + 2 || z + 2 < o.frm[TAG_O_ZSCALE])
+		{
+			snprintf(why, room, "1/fZ_max: %08x, %08x", z, o.frm[TAG_O_ZSCALE]);
 			return why;
 		}
 	}

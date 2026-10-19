@@ -570,6 +570,12 @@ int tgt_model(const void *ta, const unsigned *table, unsigned trd, struct tgt_ou
       if (u.zcount && u.v.w[TAG_V_Z] > m_frm[TAG_O_ZMAX])
          m_frm[TAG_O_ZMAX] = u.v.w[TAG_V_Z];
    }
+   {
+      float z, s;
+      memcpy(&z, &m_frm[TAG_O_ZMAX], 4);
+      s = 1.0f / z;
+      memcpy(&m_frm[TAG_O_ZSCALE], &s, 4);
+   }
    for (t = 0; t < nmod; t++)
       for (i = 0; i < 9; i++)
          m_mod[t * 9 + i] = tag_modtrig_word(t, i);

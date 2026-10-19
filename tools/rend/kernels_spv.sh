@@ -34,7 +34,10 @@
 # a shader declares (interpolation, the sample rate, the per-pixel
 # renderer's pass, SSAA). Everything else a polygon needs is in the bits of
 # a specialization constant (vulkan/pso_key.h), so the same words serve all
-# of them and no module is made for a combination of them.
+# of them and no module is made for a combination of them. Every vertex
+# module starts with vulkan/shaders/position.glsl, which places the vertex
+# (rend/depth_scale.h): the same text, so the position is invariant between
+# the passes that test EQUAL against each other's depth.
 #
 # Each kernel is the header with the lines the renderer used to put in front
 # of it, compiled with glslangValidator -V -g0 --target-env vulkan1.0 (what
@@ -268,11 +271,11 @@ make_compute() {
 # The raster modules, one a line: the name, the stage, the #defines
 # (NAME=VALUE, comma separated, - for none) and what the text is made of
 raster_list() {
-   for g in 0 1; do echo "TRI_VERT_G$g vert pp_Gouraud=$g tri.vert"; done
+   for g in 0 1; do echo "TRI_VERT_G$g vert pp_Gouraud=$g position.glsl tri.vert"; done
    for g in 0 1; do for r in 0 1 2; do
       echo "TRI_FRAG_G${g}_R$r frag pp_Gouraud=$g,pp_SampleRate=$r key tri.frag"
    done; done
-   echo "MODVOL_VERT vert - modvol.vert"
+   echo "MODVOL_VERT vert - position.glsl modvol.vert"
    echo "MODVOL_FRAG frag - modvol.frag"
    echo "QUAD_VERT vert - quad.vert"
    echo "QUAD_FRAG frag - quad.frag"
@@ -281,7 +284,7 @@ raster_list() {
    for t in 0 1; do for g in 0 1; do for r in 0 1 2; do
       echo "PREPASS_FRAG_T${t}_G${g}_R$r frag pp_Texture=$t,pp_Gouraud=$g,pp_SampleRate=$r key prepass.frag"
    done; done; done
-   for g in 0 1; do echo "OIT_VERT_G$g vert pp_Gouraud=$g oit.vert"; done
+   for g in 0 1; do echo "OIT_VERT_G$g vert pp_Gouraud=$g position.glsl oit.vert"; done
    for g in 0 1; do for p in 0 1 2; do for r in 0 1 2; do
       [ $p = 2 ] && [ $r = 1 ] && continue
       ss=; [ $r != 0 ] && ss=,SSAA=1

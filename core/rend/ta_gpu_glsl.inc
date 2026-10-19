@@ -2,7 +2,7 @@
  * compile the kernels from where OpenGL takes no SPIR-V (the lines that
  * go in front: gles/ta_decoder_gl.cpp). Made by tools/rend/kernels_spv.sh
  * update from it. Not to be edited.
- * header 07bbaf0ba34436d29727ba708282c1bd875a0775
+ * header 03d018fd034b46ad6e65a4310aead477cc727f0c
  */
 static const char * const ta_gpu_glsl[] = {
 "/* The tile accelerator's vertices and indices made on the GPU (GPU-side\n",
@@ -342,7 +342,8 @@ static const char * const ta_gpu_glsl[] = {
 "#define TAG_O_ARGS1   10   /* ...a workgroup a strip */\n",
 "#define TAG_O_PASS    16   /* each render pass's polygon parameters, as the lists have them at its end: 3 words */\n",
 "#define TAG_O_SEG     48   /* each segment: TAG_OS_* */\n",
-"#define TAG_O_WORDS   176\n",
+"#define TAG_O_ZSCALE  176  /* 1/fZ_max, for the vertex shaders (rend/depth_scale.h) */\n",
+"#define TAG_O_WORDS   177\n",
 "#define TAG_OS_SFIRST 0    /* its first strip */\n",
 "#define TAG_OS_STRIPS 1\n",
 "#define TAG_OS_LBASE  2    /* its first strip's place in its list */\n",
@@ -1600,6 +1601,9 @@ static const char * const ta_gpu_glsl[] = {
 "      frm.w[TAG_O_ARGS1] = ns;\n",
 "      frm.w[TAG_O_ARGS1 + 1u] = 1u;\n",
 "      frm.w[TAG_O_ARGS1 + 2u] = 1u;\n",
+"      /* (every vertex's z has been in: TAG_K_UNPACK is done. fZ_max is\n",
+"       * between 1 and 2^20, as tag_zcounts() keeps it) */\n",
+"      frm.w[TAG_O_ZSCALE] = floatBitsToUint(1.0 / uintBitsToFloat(frm.w[TAG_O_ZMAX]));\n",
 "   }\n",
 "}\n",
 "#endif\n",

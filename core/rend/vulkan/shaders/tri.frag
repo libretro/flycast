@@ -242,8 +242,5 @@ void main()
 		color.a = 1.0;
 	}
 
-	float w = gl_FragCoord.w * 100000.0;
-	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
-
 	gl_FragColor = color;
 }

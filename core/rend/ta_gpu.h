@@ -335,7 +335,8 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_O_ARGS1   10   /* ...a workgroup a strip */
 #define TAG_O_PASS    16   /* each render pass's polygon parameters, as the lists have them at its end: 3 words */
 #define TAG_O_SEG     48   /* each segment: TAG_OS_* */
-#define TAG_O_WORDS   176
+#define TAG_O_ZSCALE  176  /* 1/fZ_max, for the vertex shaders (rend/depth_scale.h) */
+#define TAG_O_WORDS   177
 #define TAG_OS_SFIRST 0    /* its first strip */
 #define TAG_OS_STRIPS 1
 #define TAG_OS_LBASE  2    /* its first strip's place in its list */
@@ -1593,6 +1594,9 @@ void main()
       frm.w[TAG_O_ARGS1] = ns;
       frm.w[TAG_O_ARGS1 + 1u] = 1u;
       frm.w[TAG_O_ARGS1 + 2u] = 1u;
+      /* (every vertex's z has been in: TAG_K_UNPACK is done. fZ_max is
+       * between 1 and 2^20, as tag_zcounts() keeps it) */
+      frm.w[TAG_O_ZSCALE] = floatBitsToUint(1.0 / uintBitsToFloat(frm.w[TAG_O_ZMAX]));
    }
 }
 #endif

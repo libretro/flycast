@@ -199,22 +199,20 @@ void main()
 		}
 	}
 #endif
-	setFragDepth();
-
 	#if PASS == PASS_OIT && defined(SSAA)
 		/* Manual depth testing, at each sample the fragment covers (with its
 		 * depth at the pixel's centre: it is shaded once a pixel), which
 		 * leaves the samples it is seen at */
 		uint coverage = 0u;
 		for (int s = 0; s < SSAA_SAMPLES; s++)
-			if ((gl_SampleMaskIn[0] & (1 << s)) != 0 && gl_FragDepth >= subpassLoad(DepthTex, s).r)
+			if ((gl_SampleMaskIn[0] & (1 << s)) != 0 && FRAG_DEPTH >= subpassLoad(DepthTex, s).r)
 				coverage |= 1u << s;
 		if (coverage == 0u)
 			discard;
 	#elif PASS == PASS_OIT
 		// Manual depth testing
 		highp float frontDepth = subpassLoad(DepthTex).r;
-		if (gl_FragDepth < frontDepth)
+		if (FRAG_DEPTH < frontDepth)
 			discard;
 	#endif
 
@@ -404,7 +402,7 @@ void main()
 
 		Pixel pixel;
 		pixel.color = packColors(clamp(color, vec4(0.0), vec4(1.0)));
-		pixel.depth = gl_FragDepth;
+		pixel.depth = FRAG_DEPTH;
 		pixel.seq_num = uint(pushConstants.pp_Number) + vtx_pp;
 		#ifdef SSAA
 			pixel.seq_num |= coverage << COVERAGE_SHIFT;

@@ -131,8 +131,10 @@ bool TaDecoder::Init(CommandPool& pool)
 		// (and a second command for each, for shadows: TAG_T_SHD_CMD)
 		r->buffers[B_CMD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.headers * 2 * TAG_C_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer, local));
+		// (read by a copy too: the drawers take 1/fZ_max from it, TaGpuDraw::frame)
 		r->buffers[B_FRM] = std::unique_ptr<BufferData>(new BufferData(TAG_O_WORDS * 4,
-				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
+				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst
+				| vk::BufferUsageFlagBits::eTransferSrc, local));
 		r->buffers[B_TRD] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)trdSlots * TAG_C_WORDS * 4,
 				storage | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst, local));
 		r->buffers[B_TRP] = std::unique_ptr<BufferData>(new BufferData((vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4, storage, local));
@@ -249,6 +251,7 @@ bool TaDecoder::Init(CommandPool& pool)
 	draw.commands = *r->buffers[B_CMD]->buffer;
 	draw.trDraws = *r->buffers[B_TRD]->buffer;
 	draw.trParams = *r->buffers[B_TRP]->buffer;
+	draw.frame = *r->buffers[B_FRM]->buffer;
 	draw.trParamsSize = (vk::DeviceSize)sz.list[2] * TAG_P_WORDS * 4;
 	draw.shadowCommands = (vk::DeviceSize)sz.headers * TAG_C_WORDS * 4;
 	draw.sorted = r->sorted ? *r->sorted->buffer : vk::Buffer();
@@ -425,11 +428,13 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	 * from the next stage on, or its own kernels) is done before they are
 	 * written again */
 	const vk::MemoryBarrier before(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
-			| vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eIndexRead | vk::AccessFlagBits::eIndirectCommandRead,
+			| vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eIndexRead | vk::AccessFlagBits::eIndirectCommandRead
+			| vk::AccessFlagBits::eTransferRead,
 			vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
-	// (the per-pixel renderer reads the translucent polygon parameters in its fragment shaders)
+	// (the per-pixel renderer reads the translucent polygon parameters in its fragment shaders; the drawers copy from the frame's words)
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexInput
-			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader,
+			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader
+			| vk::PipelineStageFlagBits::eTransfer,
 			vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader, {}, before, nullptr, nullptr);
 	const vk::Buffer frm = *r.buffers[B_FRM]->buffer;
 	/* Two fills that do not overlap: two transfer writes to the same word
@@ -492,13 +497,13 @@ void TaDecoder::Record(TA_context *ctx, CommandPool& pool)
 	if (flags & TA_GPU_PROVOKE)
 		indirect(TAG_K_PROVOKE, TAG_O_ARGS1);
 
-	// for whatever draws from them
+	// for whatever draws from them (and the drawers' copy of 1/fZ_max out of the frame's words)
 	const vk::MemoryBarrier after(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eVertexAttributeRead
 			| vk::AccessFlagBits::eIndexRead | vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead
-			| vk::AccessFlagBits::eUniformRead);
+			| vk::AccessFlagBits::eUniformRead | vk::AccessFlagBits::eTransferRead);
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eVertexInput
 			| vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader
-			| vk::PipelineStageFlagBits::eComputeShader,
+			| vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
 			{}, after, nullptr, nullptr);
 	if (r.queries)
 	{
