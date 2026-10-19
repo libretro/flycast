@@ -84,6 +84,7 @@ enum
 	DX9VC_NormalScale = 0,
 	DX9VC_NormalOffset = 1,
 	DX9VC_HalfPixel = 2,		// half a pixel of the viewport, in clip space
+	DX9VC_DepthScale = 3,		// 1/fZ_max, 1 / the normal matrix's z scale (rend/depth_scale.h)
 	// pixel shaders: the frame's, c0 to c4, and the polygon's, c5 and c6
 	DX9PC_ColorClampMin = 0,
 	DX9PC_ColorClampMax = 1,

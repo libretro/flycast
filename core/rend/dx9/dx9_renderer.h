@@ -28,6 +28,7 @@
 #include "rend/tileclip.h"
 #include "rend/transform_matrix.h"
 #include "rend/shadows.h"
+#include "rend/depth_scale.h"
 #include "dx9context_lr.h"
 #include "dx9_texture.h"
 #include "dx9_texdecoder.h"

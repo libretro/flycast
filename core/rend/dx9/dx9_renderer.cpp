@@ -503,6 +503,8 @@ void DX9Renderer::SetupFrame()
 		{ normal.tx, -normal.ty, normal.tz, 0.f },
 	};
 	device->SetVertexShaderConstantF(DX9VC_NormalScale, &vtx[0][0], 2);
+	const float depthScale[4] = { pvr_depth_scale(pvrrc.fZ_max), 1.f / normal.sz, 0.f, 0.f };
+	device->SetVertexShaderConstantF(DX9VC_DepthScale, depthScale, 1);
 
 	float frag[5][4] = {};
 	// the clamping limits

@@ -26,8 +26,11 @@
  *   interpolation brings to the inverse of the straight line's value.
  * - A pixel's centre is where its coordinates are whole numbers, and not
  *   half a pixel further on: the vertices are moved back by half a pixel.
- * - No depth clipping can be turned off: the clip space's z is 0, inside
- *   the clip volume, and the depth is the pixel shader's own anyway.
+ * - The depth is the position's, as in the other renderers
+ *   (rend/depth_scale.h): the vertex goes out at z = S, a depth of S*z,
+ *   the guest's 1/w up to 1 at fZ_max; no pixel shader writes a depth, and
+ *   one function places the vertices of every shader. (Shader model 3 has
+ *   no precise: the same text in every shader is what there is.)
  * - Vertex colours are read as D3DCOLOR, blue in the first byte: the
  *   vertices have red there, and the vertex shader puts it back.
  * - Flat shading is the device's (D3DRS_SHADEMODE), as is culling. */
@@ -39,18 +42,22 @@ static const char VertexTransform[] = R"(
 float4 normalScale : register(c0);
 float4 normalOffset : register(c1);
 float4 halfPixel : register(c2);
+// 1/fZ_max, and the inverse of what the matrix scales z by (rend/depth_scale.h)
+float4 depthScale : register(c3);
 
 // A vertex's z is the guest's 1/w. It is made the clip space w's inverse,
 // and x and y are multiplied by w, so that the division by it leaves them
 // where they are and everything in between is interpolated with the
-// perspective.
+// perspective. The clip space z is S, so that the depth is S*z: the
+// guest's 1/w, linear across the screen, as the chip has it.
 float4 transformVertex(float3 pos, out float invW)
 {
 	float4 vpos = float4(pos * normalScale.xyz + normalOffset.xyz, 1.0);
 	vpos.w = 1.0 / vpos.z;
 	invW = vpos.w;
 	vpos.xy = (vpos.xy + halfPixel.xy) * vpos.w;
-	vpos.z = 0.0;
+	// (a z beyond fZ_max is at depth 1, not clipped)
+	vpos.z = min(depthScale.x * depthScale.y, vpos.w);
 	return vpos;
 }
 )";
@@ -163,17 +170,10 @@ float fog_mode2(float w)
 	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
 }
 
-// The depth written: the same function of 1/w as the other renderers write
-float fragDepth(float w)
-{
-	w *= 100000.0;
-	return log2(1.0 + max(w, -0.999999)) / 34.0;
-}
-
+// (the depth is the position's, which the depth test took: none written here)
 struct PSO
 {
 	float4 col : COLOR0;
-	float depth : DEPTH;
 };
 )";
 
@@ -344,7 +344,6 @@ PSO main(in Pixel inpix)
 		discard;
 
 	PSO pso;
-	pso.depth = fragDepth(w);
 	pso.col = color;
 	return pso;
 }
@@ -356,7 +355,6 @@ static const char ModVolPixelShaderSource[] = R"(
 PSO main(in float invW : TEXCOORD1)
 {
 	PSO pso;
-	pso.depth = fragDepth(1.0 / invW);
 	pso.col = float4(0.0, 0.0, 0.0, 1.0 - frameParams.z);
 	return pso;
 }
