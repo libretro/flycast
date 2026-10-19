@@ -149,7 +149,11 @@ public:
 
 	/* A transition, if the image is not in that state already */
 	void Transition(DX12Image& image, D3D12_RESOURCE_STATES state);
-	void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES& current, D3D12_RESOURCE_STATES state);
+	void Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES& current, D3D12_RESOURCE_STATES state,
+			UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+	/* What a shader wrote through unordered access views is done before
+	 * what comes next reads or writes them */
+	void UavBarrier(ID3D12Resource *resource);
 
 	/* ---- Descriptors ---- */
 	DX12DescriptorHeap& Srv() { return srvHeap; }			// shader visible: textures (the bindless table), the kernels' UAVs
@@ -166,9 +170,12 @@ public:
 	 * is recorded and not after: the next of a ring of them */
 	u32 TransientRtv() { return transientRtv = (transientRtv + 1) % TRANSIENT_RTVS; }
 	static const u32 TRANSIENT_RTVS = 64;
-	/* The bindless table starts here; the UAVs after it */
+	/* The bindless table starts here; the UAVs after it; then the per-pixel renderer's table */
 	static const u32 UavFirst = DX12_SRV_TABLE_SIZE;
 	static const u32 UavCount = 4096;
+	static const u32 OitFirst = UavFirst + UavCount;
+	/* How many root constants a polygon has (shaders/dx12_raster.hlsl, PolyConstants) */
+	static const u32 PolyConstantCount = 14;
 
 	/* ---- Root signatures, pipelines ---- */
 	ID3D12RootSignature *RasterRootSignature() const { return rasterRoot; }
@@ -357,7 +364,7 @@ private:
 		bool viewportSet;
 		UINT stencilRef;
 		bool stencilRefSet;
-		u32 rootConstants[16];
+		u32 rootConstants[PolyConstantCount];
 		bool rootConstantsSet;
 		u32 rtv, dsv;
 		D3D12_VERTEX_BUFFER_VIEW vertexBuffer;

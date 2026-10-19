@@ -86,8 +86,10 @@ enum class DX12Stencil
 /* What the special blends are: the key's own factors; by the source's
  * alpha (the crosshairs); by the blend factor's (the VMUs' screens) */
 enum { DX12_BLEND_KEY = 0, DX12_BLEND_ALPHA = 1, DX12_BLEND_FACTOR = 2 };
-/* Which shaders */
-enum { DX12_PSO_POLY = 0, DX12_PSO_MODVOL = 1, DX12_PSO_QUAD = 2 };
+/* Which shaders: the per-triangle renderer's polygons, the modifier
+ * volumes, the quads; the per-pixel renderer's polygons (in a pass, DX12_PASS_),
+ * its lists put together, its translucent modifier volumes */
+enum { DX12_PSO_POLY = 0, DX12_PSO_MODVOL = 1, DX12_PSO_QUAD = 2, DX12_PSO_OIT = 3, DX12_PSO_OIT_FINAL = 4, DX12_PSO_OIT_MODVOL = 5 };
 
 struct DX12PsoKey
 {
@@ -103,15 +105,16 @@ struct DX12PsoKey
 	u32 cull;			// 0 none, 1 front faces, 2 back faces
 	u32 special;		// DX12_BLEND_
 	bool depthBound;	// a depth and stencil is bound (its format is in the pipeline)
+	u32 pass;			// DX12_PASS_, of a DX12_PSO_OIT pipeline
 
 	u64 Pack() const
 	{
 		return (u64)(kind & 7) | ((u64)gouraud << 3) | ((u64)blend << 4) | ((u64)(src & 7) << 5) | ((u64)(dst & 7) << 8)
 				| ((u64)writeColor << 11) | ((u64)depthTest << 12) | ((u64)depthWrite << 13) | ((u64)(depthFunc & 7) << 14)
 				| ((u64)((u32)stencil & 15) << 17) | ((u64)(cull & 3) << 21) | ((u64)(special & 3) << 23)
-				| ((u64)depthBound << 25)
+				| ((u64)depthBound << 25) | ((u64)(pass & 3) << 26)
 				// (never 0: an empty slot's)
-				| (1ull << 26);
+				| (1ull << 28);
 	}
 	static DX12PsoKey Unpack(u64 v)
 	{
@@ -129,14 +132,15 @@ struct DX12PsoKey
 		k.cull = (v >> 21) & 3;
 		k.special = (v >> 23) & 3;
 		k.depthBound = (v >> 25) & 1;
+		k.pass = (v >> 26) & 3;
 		return k;
 	}
 	/* Whether a key read from a file is one this core makes */
 	static bool Valid(u64 v)
 	{
 		const DX12PsoKey k = Unpack(v);
-		return (v >> 27) == 0 && (v >> 26) == 1 && k.kind <= DX12_PSO_QUAD && (u32)k.stencil < (u32)DX12Stencil::Count
-				&& k.cull <= 2 && k.special <= DX12_BLEND_FACTOR;
+		return (v >> 29) == 0 && (v >> 28) == 1 && k.kind <= DX12_PSO_OIT_MODVOL && (u32)k.stencil < (u32)DX12Stencil::Count
+				&& k.cull <= 2 && k.special <= DX12_BLEND_FACTOR && k.pass <= DX12_PASS_OIT;
 	}
 };
 
@@ -149,6 +153,8 @@ public:
 	void Term();
 	/* Everything a frame can need, and the keys kept from earlier runs */
 	void MakeAtStart();
+	/* One more a renderer wants made before a game draws */
+	void Prepare(const DX12PsoKey& key) { Add(key.Pack()); }
 
 	/* The pipeline of @key: the table's, or made now (and counted) */
 	ID3D12PipelineState *Get(const DX12PsoKey& key)

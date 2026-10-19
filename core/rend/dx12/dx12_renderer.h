@@ -80,7 +80,7 @@ protected:
 		float alphaTestValue;
 		float fogDensity;
 		float shadeScale;
-		float padding;
+		u32 pixelBufferCount;	// the per-pixel renderer's: how many pixels its lists have room for
 	};
 	/* The polygon's root constants, as shaders/dx12_raster.hlsl reads them */
 	struct PolyConstants
@@ -92,6 +92,11 @@ protected:
 		u32 flags;			// DX12_PF_
 		u32 texture;		// in the bindless table
 		u32 sampler;		// in the sampler table
+		// the per-pixel renderer's
+		u32 texture1;		// the second volume's
+		u32 sampler1;
+		u32 polyNumber;		// the translucent polygon's, in its list
+		u32 oitFlags;		// DX12_OF_
 	};
 	/* One picture of the screen's */
 	struct ScreenTarget
@@ -123,10 +128,18 @@ protected:
 	DX12Image paletteTexture;	// 1024 by 1, at DX12_SRV_PALETTE
 
 	/* The depth and stencil, for the screen and renders to textures: as
-	 * large as the largest of them so far, with its view at 0 of the
-	 * depth heap */
+	 * large as the largest of them so far. Its views in the depth heap: to
+	 * draw with (depth.rtv), and for the per-pixel renderer, which reads
+	 * the stencil or both from the shaders, ones that leave the stencil or
+	 * both as they are. Its two planes are transitioned apart there:
+	 * depth.state is the depth's, stencilState the stencil's. */
 	DX12Image depth;
+	D3D12_RESOURCE_STATES stencilState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	u32 dsvReadStencil = ~0u;
+	u32 dsvReadOnly = ~0u;
 	bool EnsureDepth(u32 width, u32 height);
+	/* The depth's planes into these states */
+	void DepthStates(D3D12_RESOURCE_STATES depthPlane, D3D12_RESOURCE_STATES stencilPlane);
 
 	/* The screen: a picture for each of the frontend's sync indexes (one
 	 * with version 1), the size rendered at */
@@ -174,14 +187,27 @@ protected:
 	void SetBaseScissor();
 	void SetProvokingVertices();
 	void MakeFragmentConstants(FragmentConstants& constants);
+	u32 pixelBufferRoom = 0;	// the per-pixel renderer's: how many pixels its lists have room for
 	/* The polygons, the volumes and the indexes, and the sorted triangles'
 	 * indexes after those (sortedIndexes), and the constants, in the ring */
 	bool UploadGeometry();
 	/* What every polygon of the frame is drawn with */
 	void SetupFrame();
 
-	/* The context taken by Process() and kept for the Render() after it */
+	/* The frontend was waited for in Process(), for the Render() after it */
 	bool heldFromProcess = false;
+
+	/* The frame's polygons: into what Begin...() bound */
+	virtual void DrawFrame();
+	/* What is bound by the time DrawFrame() is called: the per-pixel
+	 * renderer puts the frame together in pictures of its own, and binds
+	 * the screen's only at the end */
+	virtual bool BindsScreen() const { return true; }
+	/* A modifier volume's pipeline */
+	ID3D12PipelineState *ModVolPipeline(bool depthTest, bool depthWrite, u32 depthFunc, DX12Stencil stencil, u32 cull, bool writeColor, u32 special);
+	void ClearTarget(const DX12Image& image, const float color[4]);
+	/* The frame's scissors, cut to the band being drawn by the per-pixel renderer */
+	virtual D3D12_RECT CutScissor(const D3D12_RECT& rect) const { return rect; }
 
 	// Per-triangle sort results
 	std::vector<std::vector<SortTrigDrawParam>> sortedPolys;
@@ -208,14 +234,14 @@ protected:
 	};
 	struct DrawArgs
 	{
-		u32 constants[10];
+		u32 constants[DX12Context::PolyConstantCount];
 		D3D12_DRAW_INDEXED_ARGUMENTS draw;
 	};
 	enum { BATCH_MAX = 4096 };
 	DrawState batchState{};
 	DrawArgs *batch = nullptr;
 	u32 batchCount = 0;
-	void Draw(const DrawState& state, const u32 constants[10], u32 indexCount, u32 firstIndex);
+	void Draw(const DrawState& state, const u32 *constants, u32 indexCount, u32 firstIndex);
 	void FlushBatch();
 	u32 statBatches = 0, statBatched = 0;
 
@@ -232,7 +258,6 @@ private:
 	void CheckPaletteTexture();
 	bool UploadFramebuffer();
 	void DrawFramebuffer();
-	void ClearTarget(const DX12Image& image, const float color[4]);
 
 	enum class ShadowPass { None, LaterWins, EarlierWins };
 	void DrawPoly(u32 listType, bool sortTriangles, const PolyParam& poly, u32 first, u32 count,
@@ -244,9 +269,6 @@ private:
 	bool prepassDraw = false;	// DrawPoly() draws for the depth prepass
 	void DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass);
-	void DrawFrame();
-	/* A modifier volume's pipeline */
-	ID3D12PipelineState *ModVolPipeline(bool depthTest, bool depthWrite, u32 depthFunc, DX12Stencil stencil, u32 cull, bool writeColor, u32 special);
 
 	/* The framebuffer the game wrote itself, for a frame that is that */
 	DX12Image fbTexture;

@@ -146,6 +146,11 @@ void rend_create_renderer()
 		NOTICE_LOG(PVR, "Creating Direct3D 12 per-triangle/strip renderer");
 		renderer = rend_D3D12();
 		break;
+	case 10:
+		NOTICE_LOG(PVR, "Creating Direct3D 12 per-pixel renderer");
+		renderer = rend_OITD3D12();
+		fallback_renderer = rend_D3D12();
+		break;
 #endif
 	}
 }

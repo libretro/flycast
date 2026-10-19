@@ -25,6 +25,31 @@
 /* The quad's: its picture sampled with the linear sampler, not the point one */
 #define DX12_QF_LINEAR           0x0001u
 
+/* The per-pixel renderer's second word of bits (oit/dx12_oitrenderer.cpp):
+ * the polygon's blend (8 when the pass that puts the lists together is
+ * to decide), and its second volume's bits, where the first volume's are
+ * the DX12_PF_ ones above */
+#define DX12_OF_SRC_SHIFT        0			/* four bits: the first volume's source blend, 8 for any */
+#define DX12_OF_DST_SHIFT        4			/* four bits: its destination blend */
+#define DX12_OF_SRC1_SHIFT       8			/* four bits: the second volume's */
+#define DX12_OF_DST1_SHIFT       12
+#define DX12_OF_SHAD_INSTR1_SHIFT 16		/* two bits */
+#define DX12_OF_FOG1_SHIFT       18			/* two bits */
+#define DX12_OF_USE_ALPHA1       0x00100000u
+#define DX12_OF_IGNORE_TEX_A1    0x00200000u
+#define DX12_OF_TWO_VOLUMES      0x00400000u
+/* The translucent modifier volumes' passes (the same word): rend/shadows.h's modes */
+#define DX12_OF_MV_XOR           0
+#define DX12_OF_MV_OR            1
+#define DX12_OF_MV_INCLUSION     2
+#define DX12_OF_MV_EXCLUSION     3
+/* The per-pixel passes, a pixel shader each (DX12_OIT_PASS when compiled) */
+#define DX12_PASS_DEPTH          0
+#define DX12_PASS_COLOR          1
+#define DX12_PASS_OIT            2
+/* How many of a pixel's translucent pixels are sorted at most */
+#define DX12_OIT_MAX_PIXELS      32
+
 /* The bindless table (t0 to DX12_SRV_TABLE_SIZE - 1, space 1): the fog
  * table, the palette and a view of nothing (sampled as zero) at these
  * places, everything else after them */
@@ -33,6 +58,9 @@
 #define DX12_SRV_NONE            2
 #define DX12_SRV_FIRST_FREE      3
 #define DX12_SRV_TABLE_SIZE      16384
+/* The per-pixel renderer's table (DX12Context::OitFirst): the lists (u1), their
+ * heads (u2), the counter (u3), the stencil (t4) and the depth (t6) */
+#define DX12_OIT_TABLE_SIZE      5
 /* The polygons' samplers (s0 to DX12_SAMPLER_TABLE_SIZE - 1, space 1), by
  * the TSP's MipMapD, filtering, clamp and flip bits, ten of them
  * (dx12_sampler_index() in dx12_texture.h) */

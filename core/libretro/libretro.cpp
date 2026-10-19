@@ -902,6 +902,8 @@ static void update_variables(bool first_startup)
       		settings.pvr.rend = 0;
       	else if (settings.pvr.rend == 7)
       		settings.pvr.rend = 6;
+      	else if (settings.pvr.rend == 10)
+      		settings.pvr.rend = 9;
          settings.pvr.Emulation.AlphaSortMode = 1;
       }
       else if (!strcmp(var.value, "per-triangle (normal)"))
@@ -912,6 +914,8 @@ static void update_variables(bool first_startup)
       		settings.pvr.rend = 0;
       	else if (settings.pvr.rend == 7)
       		settings.pvr.rend = 6;
+      	else if (settings.pvr.rend == 10)
+      		settings.pvr.rend = 9;
          settings.pvr.Emulation.AlphaSortMode = 0;
       }
       else if (!strcmp(var.value, "per-pixel (accurate)"))
@@ -922,6 +926,8 @@ static void update_variables(bool first_startup)
       		settings.pvr.rend = 3;
       	else if (settings.pvr.rend == 6)
       		settings.pvr.rend = 7;
+      	else if (settings.pvr.rend == 9)
+      		settings.pvr.rend = 10;
          settings.pvr.Emulation.AlphaSortMode = 0;	// Not used
       }
    }
@@ -933,6 +939,8 @@ static void update_variables(bool first_startup)
    		settings.pvr.rend = 0;
    	else if (settings.pvr.rend == 7)
    		settings.pvr.rend = 6;
+   	else if (settings.pvr.rend == 10)
+   		settings.pvr.rend = 9;
       settings.pvr.Emulation.AlphaSortMode = 0;
    }
    if (rend_compute_wanted && settings.pvr.rend == 4)
@@ -1547,7 +1555,8 @@ void retro_run (void)
        * is in the frontend's buffer, which stays.) So are the Direct3D
        * renderers'. */
       if (renderer_changed && !was_changed && (settings.pvr.rend == 4 || settings.pvr.rend == 5
-            || settings.pvr.rend == 6 || settings.pvr.rend == 7 || settings.pvr.rend == 8 || settings.pvr.rend == 9))
+            || settings.pvr.rend == 6 || settings.pvr.rend == 7 || settings.pvr.rend == 8 || settings.pvr.rend == 9
+            || settings.pvr.rend == 10))
          rend_keep_picture();
 #endif
 #ifdef HAVE_VULKAN
@@ -1681,7 +1690,7 @@ void retro_run (void)
 #endif
 #ifdef HAVE_D3D12
    /* the frame is handed to the frontend as the Direct3D 12 interface has it */
-   if (!is_dupe && settings.pvr.rend == 9)
+   if (!is_dupe && (settings.pvr.rend == 9 || settings.pvr.rend == 10))
       DX12Context::Instance()->Present();
 #endif
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9) || defined(HAVE_D3D12)
@@ -2504,9 +2513,10 @@ static bool set_dx12_hw_render(void)
 			&& probe.interface_version >= 1)
 		environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void *)&negotiation_interface);
 
-	/* (per triangle, or per strip: the per-pixel renderer is yet to come) */
-	if (settings.pvr.rend == 0 || settings.pvr.rend == 3)
+	if (settings.pvr.rend == 0)
 		settings.pvr.rend = 9;
+	else if (settings.pvr.rend == 3)
+		settings.pvr.rend = 10;
 	renderer_changed = true;
 	return true;
 }

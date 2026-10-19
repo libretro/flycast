@@ -183,8 +183,11 @@ void DX12Renderer::Term()
 		depth.resource->AddRef();
 		context->Release(depth.resource.get());
 		context->Dsv().Free(depth.rtv);
+		context->Dsv().Free(dsvReadStencil);
+		context->Dsv().Free(dsvReadOnly);
 	}
 	depth = DX12Image();
+	dsvReadStencil = dsvReadOnly = ~0u;
 	DropImage(paletteTexture);
 	DropImage(fogTexture);
 	delete [] batch;
@@ -512,6 +515,7 @@ void DX12Renderer::MakeFragmentConstants(FragmentConstants& constants)
 	// half a step under the reference: see the same in gles/gles.cpp
 	constants.alphaTestValue = ((PT_ALPHA_REF & 0xFF) - 0.5f) / 255.0f;
 	constants.shadeScale = FPU_SHAD_SCALE.scale_factor / 256.f;
+	constants.pixelBufferCount = pixelBufferRoom;
 }
 
 void DX12Renderer::SetupFrame()
@@ -530,7 +534,7 @@ bool DX12Renderer::EnsureDepth(u32 width, u32 height)
 		return true;
 	width = std::max(width, depth.width);
 	height = std::max(height, depth.height);
-	// (the one there was goes once the GPU is done with it; its view's place is used again)
+	// (the one there was goes once the GPU is done with it; its views' places are used again)
 	u32 dsv = depth.rtv;
 	if (depth.resource)
 	{
@@ -542,18 +546,20 @@ bool DX12Renderer::EnsureDepth(u32 width, u32 height)
 	clear.Format = DX12DepthFormat;
 	clear.DepthStencil.Depth = 0.f;
 	clear.DepthStencil.Stencil = 0;
-	depth.state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	depth.state = stencilState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	if (!dx12_make_texture(device, width, height, 1, DX12DepthResourceFormat, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, depth.state,
 			depth.resource, &clear))
 	{
 		WARN_LOG(RENDERER, "DX12: depth buffer creation failed (%d x %d)", width, height);
-		if (dsv != ~0u)
-			context->Dsv().Free(dsv);
 		return false;
 	}
 	if (dsv == ~0u)
+	{
 		dsv = context->Dsv().Alloc();
-	if (dsv == ~0u)
+		dsvReadStencil = context->Dsv().Alloc();
+		dsvReadOnly = context->Dsv().Alloc();
+	}
+	if (dsv == ~0u || dsvReadStencil == ~0u || dsvReadOnly == ~0u)
 	{
 		depth = DX12Image();
 		return false;
@@ -562,12 +568,23 @@ bool DX12Renderer::EnsureDepth(u32 width, u32 height)
 	view.Format = DX12DepthFormat;
 	view.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
 	device->CreateDepthStencilView(depth.resource, &view, context->Dsv().Cpu(dsv));
+	view.Flags = D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+	device->CreateDepthStencilView(depth.resource, &view, context->Dsv().Cpu(dsvReadStencil));
+	view.Flags = D3D12_DSV_FLAG_READ_ONLY_STENCIL | D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+	device->CreateDepthStencilView(depth.resource, &view, context->Dsv().Cpu(dsvReadOnly));
 	depth.rtv = dsv;
 	depth.width = width;
 	depth.height = height;
 	// (the view is read when a command is recorded: what is bound is bound to the old one)
 	context->ForgetTargets();
 	return true;
+}
+
+void DX12Renderer::DepthStates(D3D12_RESOURCE_STATES depthPlane, D3D12_RESOURCE_STATES stencilPlane)
+{
+	// (the planes are the subresources: the depth 0, the stencil 1)
+	context->Transition(depth.resource, depth.state, depthPlane, 0);
+	context->Transition(depth.resource, stencilState, stencilPlane, 1);
 }
 
 /* ---- The screen ---- */
@@ -686,6 +703,13 @@ bool DX12Renderer::BeginScreen()
 	targetHeight = screenHeight;
 
 	matrices.CalcMatrices(&pvrrc);
+	if (!BindsScreen())
+	{
+		// (the per-pixel renderer clears and binds its own pictures, and this one at the end)
+		context->Transition(target.image, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		SetBaseScissor();
+		return true;
+	}
 
 	/* A framebuffer the game has not drawn to lately starts as the border
 	 * colour; any other starts black - unless the render covers only part
@@ -855,10 +879,13 @@ bool DX12Renderer::BeginRTT()
 	targetHeight = upscaledHeight;
 
 	context->Transition(spare->resource, spare->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-	context->SetTargets(spare->rtv, depth.rtv);
-	const float black[4] = { 0.f, 0.f, 0.f, 1.f };
-	context->Cmd()->ClearRenderTargetView(context->Rtv().Cpu(spare->rtv), black, 0, nullptr);
-	context->Cmd()->ClearDepthStencilView(context->Dsv().Cpu(depth.rtv), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.f, 0, 0, nullptr);
+	if (BindsScreen())
+	{
+		context->SetTargets(spare->rtv, depth.rtv);
+		const float black[4] = { 0.f, 0.f, 0.f, 1.f };
+		context->Cmd()->ClearRenderTargetView(context->Rtv().Cpu(spare->rtv), black, 0, nullptr);
+		context->Cmd()->ClearDepthStencilView(context->Dsv().Cpu(depth.rtv), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.f, 0, 0, nullptr);
+	}
 	context->SetViewport((float)upscaledWidth, (float)upscaledHeight);
 	// only the pixel clip is written
 	baseScissor = D3D12_RECT{ (LONG)(clipX * scale), (LONG)(clipY * scale),
@@ -987,7 +1014,7 @@ bool DX12Renderer::Render()
 
 /* ---- The draws, batched ---- */
 
-void DX12Renderer::Draw(const DrawState& state, const u32 constants[10], u32 indexCount, u32 firstIndex)
+void DX12Renderer::Draw(const DrawState& state, const u32 *constants, u32 indexCount, u32 firstIndex)
 {
 	if (batchCount != 0 && (batchCount == BATCH_MAX || state.pso != batchState.pso || state.stencilRef != batchState.stencilRef
 			|| state.topology != batchState.topology || memcmp(&state.scissor, &batchState.scissor, sizeof(state.scissor))))
@@ -1030,7 +1057,7 @@ void DX12Renderer::FlushBatch()
 	for (u32 i = 0; i < count; i++)
 	{
 		const DrawArgs& args = batch[i];
-		context->SetRootConstants(args.constants, 10);
+		context->SetRootConstants(args.constants, DX12Context::PolyConstantCount);
 		cmd->DrawIndexedInstanced(args.draw.IndexCountPerInstance, 1, args.draw.StartIndexLocation, 0, 0);
 	}
 }
@@ -1059,6 +1086,7 @@ void DX12Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& p
 		state.scissor = scissorRect;
 	else
 		state.scissor = baseScissor;
+	state.scissor = CutScissor(state.scissor);
 
 	float trilinearAlpha = 1.f;
 	const bool trilinear = poly.pcw.Texture && poly.tsp.FilterMode > 1 && listType != ListType_Punch_Through && poly.tcw.MipMapped == 1;
@@ -1081,7 +1109,7 @@ void DX12Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& p
 
 	/* The polygon's root constants: its bits, what the Direct3D 11
 	 * renderer made a shader for */
-	PolyConstants constants;
+	PolyConstants constants = {};
 	constants.clipTest[0] = (float)scissorRect.left;
 	constants.clipTest[1] = (float)scissorRect.top;
 	constants.clipTest[2] = (float)scissorRect.right;
@@ -1193,7 +1221,8 @@ void DX12Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& p
 	state.topology = prepassDraw || (sortTriangles && !settings.pvr.Emulation.AlphaSortMode)
 			? D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 
-	u32 words[10];
+	static_assert(sizeof(PolyConstants) == DX12Context::PolyConstantCount * 4, "the polygon's root constants");
+	u32 words[DX12Context::PolyConstantCount];
 	memcpy(words, &constants, sizeof(words));
 	Draw(state, words, count, first);
 }

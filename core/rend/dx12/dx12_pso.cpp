@@ -36,7 +36,7 @@ struct DX12PsoFileHeader
 	u64 libraryBytes;
 };
 static const char PsoFileMagic[8] = { 'F', 'C', 'D', '1', '2', 'P', 'S', 'O' };
-static const u32 PsoFileVersion = 1;
+static const u32 PsoFileVersion = 2;
 static const u32 MaxKeys = 8192;
 
 static const D3D12_COMPARISON_FUNC depthFuncs[] =
@@ -83,6 +83,17 @@ static const D3D12_INPUT_ELEMENT_DESC MainLayout[] =
 };
 /* (a position alone: the modifier volumes' triangles, and the polygons'
  * vertices read for their position only - the stride is the view's) */
+/* (the per-pixel renderer's: with the second volume's colours and coordinates) */
+static const D3D12_INPUT_ELEMENT_DESC OITLayout[] =
+{
+	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(Vertex, x), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, col), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "COLOR",    1, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, vtx_spc), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, (UINT)offsetof(Vertex, u), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "COLOR",    2, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, col1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "COLOR",    3, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, spc1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT,    0, (UINT)offsetof(Vertex, u1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+};
 static const D3D12_INPUT_ELEMENT_DESC PositionLayout[] =
 {
 	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -170,6 +181,20 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 	case DX12_PSO_MODVOL:
 		vs = DX12Shader::ModVolVS;
 		ps = DX12Shader::ModVolPS;
+		desc.InputLayout = { PositionLayout, (UINT)ARRAY_SIZE(PositionLayout) };
+		break;
+	case DX12_PSO_OIT:
+		vs = key.gouraud ? DX12Shader::OITVS : DX12Shader::OITFlatVS;
+		ps = (DX12Shader)((int)(key.gouraud ? DX12Shader::OITDepthPS : DX12Shader::OITDepthFlatPS) + 2 * (int)std::min<u32>(key.pass, DX12_PASS_OIT));
+		desc.InputLayout = { OITLayout, (UINT)ARRAY_SIZE(OITLayout) };
+		break;
+	case DX12_PSO_OIT_FINAL:
+		vs = DX12Shader::OITFinalVS;
+		ps = DX12Shader::OITFinalPS;
+		break;
+	case DX12_PSO_OIT_MODVOL:
+		vs = DX12Shader::ModVolVS;
+		ps = DX12Shader::OITModVolPS;
 		desc.InputLayout = { PositionLayout, (UINT)ARRAY_SIZE(PositionLayout) };
 		break;
 	default:

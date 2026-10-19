@@ -34,6 +34,18 @@ enum class DX12Shader
 	ModVolPS = 6,
 	QuadVS = 7,
 	QuadPS = 8,
+	// the per-pixel renderer's
+	OITVS = 9,
+	OITFlatVS = 10,
+	OITDepthPS = 11,		// DX12_PASS_DEPTH; smooth, then flat; then the colour pass's, then the lists'
+	OITDepthFlatPS = 12,
+	OITColorPS = 13,
+	OITColorFlatPS = 14,
+	OITListPS = 15,
+	OITListFlatPS = 16,
+	OITFinalVS = 17,
+	OITFinalPS = 18,
+	OITModVolPS = 19,
 };
 
 D3D12_SHADER_BYTECODE dx12_shader(DX12Shader shader);

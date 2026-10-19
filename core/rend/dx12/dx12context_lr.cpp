@@ -250,7 +250,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 	releasedFirst = releasedCount = 0;
 
 	// the heaps
-	ok = ok && srvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, UavFirst + UavCount, true, DX12_SRV_FIRST_FREE);
+	ok = ok && srvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, OitFirst + DX12_OIT_TABLE_SIZE, true, DX12_SRV_FIRST_FREE);
 	if (ok)
 		// (the table's own; the UAVs' are handed out by DX12TexDecoder from UavFirst on)
 		srvHeap.Range(DX12_SRV_FIRST_FREE, UavFirst);
@@ -266,7 +266,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 		uav.Format = DXGI_FORMAT_R8G8B8A8_UINT;
 		uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-		for (u32 i = UavFirst; i < UavFirst + UavCount; i++)
+		for (u32 i = UavFirst; i < OitFirst + DX12_OIT_TABLE_SIZE; i++)
 			device->CreateUnorderedAccessView(nullptr, nullptr, &uav, srvHeap.Cpu(i));
 	}
 	ok = ok && MakeRootSignatures();
@@ -305,12 +305,21 @@ bool DX12Context::MakeRootSignatures()
 		return true;
 	};
 
-	// the polygons', the modifier volumes', the quads' (see shaders/dx12_raster.hlsl)
+	/* the polygons', the modifier volumes', the quads', and the per-pixel
+	 * renderer's (see shaders/dx12_raster.hlsl): its lists, heads and
+	 * counter (u1 to u3), the stencil (t4) and the depth (t6) are one table
+	 * at OitFirst of the heap, its translucent polygons' parameters (t5) a
+	 * root descriptor */
 	D3D12_DESCRIPTOR_RANGE srvRange = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, DX12_SRV_TABLE_SIZE, 0, 1, 0 };
 	D3D12_DESCRIPTOR_RANGE samplerRange = { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, DX12_SAMPLER_TABLE_SIZE, 0, 1, 0 };
-	D3D12_ROOT_PARAMETER params[5]{};
+	D3D12_DESCRIPTOR_RANGE oitRanges[3] = {
+		{ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 1, 0, 0 },
+		{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, 3 },
+		{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, 4 },
+	};
+	D3D12_ROOT_PARAMETER params[7]{};
 	params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-	params[0].Constants = { 1, 0, 10 };
+	params[0].Constants = { 1, 0, PolyConstantCount };
 	params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[1].Descriptor = { 0, 0 };
@@ -324,6 +333,12 @@ bool DX12Context::MakeRootSignatures()
 	params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[4].DescriptorTable = { 1, &samplerRange };
 	params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[5].DescriptorTable = { 3, oitRanges };
+	params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+	params[6].Descriptor = { 5, 0 };
+	params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	D3D12_STATIC_SAMPLER_DESC statics[2]{};
 	for (int i = 0; i < 2; i++)
 	{
@@ -339,7 +354,7 @@ bool DX12Context::MakeRootSignatures()
 		s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	}
 	D3D12_ROOT_SIGNATURE_DESC desc{};
-	desc.NumParameters = 5;
+	desc.NumParameters = 7;
 	desc.pParameters = params;
 	desc.NumStaticSamplers = 2;
 	desc.pStaticSamplers = statics;
@@ -365,17 +380,17 @@ bool DX12Context::MakeRootSignatures()
 	if (!make(kdesc, decodeRoot))
 		return false;
 
-	/* Draws that set the polygon's ten root constants each, recorded as
-	 * one ExecuteIndirect (DX12Renderer's batches). A device that cannot
-	 * has its draws recorded one by one. */
+	/* Draws that set the polygon's root constants each, recorded as one
+	 * ExecuteIndirect (DX12Renderer's batches). A device that cannot has
+	 * its draws recorded one by one. */
 	D3D12_INDIRECT_ARGUMENT_DESC args[2]{};
 	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
 	args[0].Constant.RootParameterIndex = 0;
 	args[0].Constant.DestOffsetIn32BitValues = 0;
-	args[0].Constant.Num32BitValuesToSet = 10;
+	args[0].Constant.Num32BitValuesToSet = PolyConstantCount;
 	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 	D3D12_COMMAND_SIGNATURE_DESC sig{};
-	sig.ByteStride = 10 * 4 + sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+	sig.ByteStride = PolyConstantCount * 4 + sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
 	sig.NumArgumentDescs = 2;
 	sig.pArgumentDescs = args;
 	if (FAILED(device->CreateCommandSignature(&sig, rasterRoot, __uuidof(ID3D12CommandSignature), (void **)drawSignature.put())))
@@ -490,6 +505,7 @@ void DX12Context::BindRaster()
 	cmd->SetGraphicsRootSignature(rasterRoot);
 	cmd->SetGraphicsRootDescriptorTable(3, srvHeap.Gpu(0));
 	cmd->SetGraphicsRootDescriptorTable(4, samplerHeap.Gpu(0));
+	cmd->SetGraphicsRootDescriptorTable(5, srvHeap.Gpu(OitFirst));
 	bound.rootConstantsSet = false;
 	bound.pso = nullptr;
 }
@@ -680,14 +696,22 @@ ID3D12Resource *DX12Context::ReadbackBuffer(u64 bytes)
 	return readback;
 }
 
-void DX12Context::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES& current, D3D12_RESOURCE_STATES state)
+void DX12Context::UavBarrier(ID3D12Resource *resource)
+{
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+	barrier.UAV.pResource = resource;
+	Cmd()->ResourceBarrier(1, &barrier);
+}
+
+void DX12Context::Transition(ID3D12Resource *resource, D3D12_RESOURCE_STATES& current, D3D12_RESOURCE_STATES state, UINT subresource)
 {
 	if (current == state || resource == nullptr)
 		return;
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	barrier.Transition.pResource = resource;
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.Subresource = subresource;
 	barrier.Transition.StateBefore = current;
 	barrier.Transition.StateAfter = state;
 	Cmd()->ResourceBarrier(1, &barrier);
