@@ -18,10 +18,11 @@
 /* The Direct3D 12 renderer's pipeline state objects.
  *
  * One pixel shader draws every polygon (dx12_shaders.h: the polygon's bits
- * are root constants), so a pipeline is the fixed-function state a polygon
- * is drawn with and nothing more: its key (DX12PsoKey) is the blend, depth,
- * stencil and cull state, the interpolation, and which shaders. Every
- * pipeline is made from its key alone.
+ * are root constants; the per-pixel renderer's has one a pass), so a
+ * pipeline is the fixed-function state a polygon is drawn with and nothing
+ * more: its key (DX12PsoKey) is the blend, depth, stencil and cull state,
+ * the interpolation, and which shaders. Every pipeline is made from its
+ * key alone.
  *
  * When. At the start (DX12Context::Init()), every pipeline a frame can
  * need whatever it draws - the modifier volumes' in every mode and cull
