@@ -257,7 +257,7 @@ void PostProcessor::Init()
 
 	glGenRenderbuffers(1, &depthBuffer);
 	glBindRenderbuffer(RARCH_GL_RENDERBUFFER, depthBuffer);
-	glRenderbufferStorage(RARCH_GL_RENDERBUFFER, RARCH_GL_DEPTH24_STENCIL8, width, height);
+	glRenderbufferStorage(RARCH_GL_RENDERBUFFER, gl.depth_format, width, height);
 
 #if defined(HAVE_OPENGLES2) || defined(HAVE_OPENGLES1) || defined(OSX_PPC)
 	glFramebufferRenderbuffer(RARCH_GL_FRAMEBUFFER, RARCH_GL_DEPTH_ATTACHMENT,
@@ -327,7 +327,7 @@ void PostProcessor::Resize()
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
 	glBindRenderbuffer(RARCH_GL_RENDERBUFFER, depthBuffer);
-	glRenderbufferStorage(RARCH_GL_RENDERBUFFER, RARCH_GL_DEPTH24_STENCIL8, width, height);
+	glRenderbufferStorage(RARCH_GL_RENDERBUFFER, gl.depth_format, width, height);
 #if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
 	if (gl.gl_major >= 3)
 	{

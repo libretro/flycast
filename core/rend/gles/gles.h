@@ -11,6 +11,37 @@
 #include "rend/tex_pool.h"
 #include "postprocess.h"
 #include "glcache.h"
+#include "rend/depth_scale.h"
+#include "rend/ta_gpu.h"
+
+#ifndef GL_DEPTH32F_STENCIL8
+#define GL_DEPTH32F_STENCIL8 0x8CAD
+#endif
+#ifndef GL_LOWER_LEFT
+#define GL_LOWER_LEFT 0x8CA1
+#endif
+#ifndef GL_ZERO_TO_ONE
+#define GL_ZERO_TO_ONE 0x935F
+#endif
+#ifndef GL_NEGATIVE_ONE_TO_ONE
+#define GL_NEGATIVE_ONE_TO_ONE 0x935E
+#endif
+#ifndef GL_UNIFORM_BUFFER
+#define GL_UNIFORM_BUFFER 0x8A11
+#endif
+#ifndef GL_COPY_READ_BUFFER
+#define GL_COPY_READ_BUFFER 0x8F36
+#endif
+// the uniform buffer binding of the depth scale (DepthScaleBlock in the vertex shaders)
+#define DEPTH_UBO_BINDING 0
+// (the OpenGL ES headers spell the calling convention this way)
+#ifndef APIENTRYP
+#ifdef GL_APIENTRYP
+#define APIENTRYP GL_APIENTRYP
+#else
+#define APIENTRYP *
+#endif
+#endif
 
 #ifndef TEXTURE_MAX_ANISOTROPY_EXT
 #define TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
@@ -140,6 +171,14 @@ struct gl_ctx
 	int gl_major;
 	int gl_minor;
 	bool is_gles;
+	/* The depth (rend/depth_scale.h; findGLVersion()): the format of the
+	 * depth buffers this renderer makes, the uniform buffer the depth scale
+	 * is in (0: a plain uniform), and glClipControl where the context has
+	 * it (null where not) */
+	GLenum depth_format;
+	GLuint depth_ubo;
+	void (APIENTRYP clipControl)(GLenum origin, GLenum depth);
+	void (APIENTRYP copyBufferSubData)(GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size);
 	GLuint single_channel_format;
 	GLenum index_type;
 	bool stencil_present;
@@ -194,6 +233,7 @@ void vertex_buffer_unmap(void);
 void findGLVersion();
 GLuint gl_CompileShader(const char* shader, GLuint type);
 GLuint gl_CompileAndLink(const char* VertexShader, const char* FragmentShader);
+void gl_bind_depth_ubo(GLuint program);
 bool CompilePipelineShader(PipelineShader* s);
 void vertex_buffer_unmap();
 

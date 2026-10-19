@@ -16,7 +16,7 @@ gl4ShaderUniforms_t gl4ShaderUniforms;
 
 //Fragment and vertex shaders code
 
-static const char* VertexShaderSource = R"(#version 130
+static const char* VertexShaderSource = R"(#version 430
 #define pp_Gouraud %d
 
 #if pp_Gouraud == 0
@@ -25,8 +25,15 @@ static const char* VertexShaderSource = R"(#version 130
 #define INTERPOLATION smooth
 #endif
 
+/* The depth is the position's (rend/depth_scale.h; gles/gles.cpp has the
+   same): a vertex goes out at (x*w, y*w, a*S + b*w, w) with w = 1/z, a
+   depth of a*S*z + b, 1/w as the chip has it. depth_scale is (a, b, -, S),
+   S = 1/fZ_max, in the uniform buffer a frame decoded on the GPU writes.
+   The same text places the vertices of every program, and the position is
+   invariant: a pass that tests EQUAL against another's depth is exact. */
+invariant gl_Position;
+layout(std140, binding = 0) uniform DepthScaleBlock { highp vec4 depth_scale; };
 /* Vertex constants*/ 
-uniform vec4      scale;
 uniform highp mat4 normal_matrix;
 /* Vertex input */
 in vec4 in_pos;
@@ -57,8 +64,9 @@ void main()
 	vtx_uv1 = in_uv1;
 	vec4 vpos = normal_matrix * in_pos;
 	vpos.w = 1.0 / vpos.z;
-	vpos.z = vpos.w;
 	vpos.xy *= vpos.w;
+	// (a z beyond fZ_max is at the nearest depth, not clipped)
+	vpos.z = min(depth_scale.x * depth_scale.w + depth_scale.y * vpos.w, vpos.w);
 	gl_Position = vpos;
 }
 )";
@@ -208,12 +216,10 @@ vec4 palettePixel(sampler2D tex, vec2 coords)
 
 void main()
 {
-   setFragDepth();
-  
    #if PASS == PASS_OIT
       // Manual depth testing
       float frontDepth = texture(DepthTex, gl_FragCoord.xy / textureSize(DepthTex, 0)).r;
-      if (gl_FragDepth < frontDepth)
+      if (FRAG_DEPTH < frontDepth)
          discard;
    #endif
   
@@ -421,7 +427,7 @@ void main()
       
       Pixel pixel;
       pixel.color = packUnorm4x8(color);
-      pixel.depth = gl_FragDepth;
+      pixel.depth = FRAG_DEPTH;
       pixel.seq_num = uint(pp_Number) + vtx_pp;
       pixel.next = imageAtomicExchange(abufferPointerImg, coords, idx);
       pixels[idx] = pixel;
@@ -432,11 +438,11 @@ void main()
 }
 )";
 
+// (the depth is the position's; nothing is shaded)
 static const char* ModifierVolumeShader = SHADER_HEADER
 R"(
 void main()
 {
-   setFragDepth();
 }
 )";
 
@@ -566,6 +572,9 @@ static void gl_term(void)
 	glDeleteBuffers(1, &gl4.vbo.idxs);
 	glDeleteBuffers(1, &gl4.vbo.idxs2);
 	glDeleteBuffers(1, &gl4.vbo.tr_poly_params);
+	if (gl.depth_ubo != 0)
+		glDeleteBuffers(1, &gl.depth_ubo);
+	gl.depth_ubo = 0;
 	for (auto it = gl4.shaders.begin(); it != gl4.shaders.end(); it++)
 	{
 		// (one drawn with a general program has none of its own, but may have one coming)
@@ -696,6 +705,30 @@ static bool RenderFrame()
 	xform_to_mat4(&matrices.GetNormalMatrix(), gl4ShaderUniforms.normal_mat);
 	const xform& scissor_mat = matrices.GetScissorMatrix();
 	ViewportMatrix = matrices.GetViewportMatrix();
+
+	/* The depth is the position's (rend/depth_scale.h, and the vertex
+	 * shader): a*S*z + b, with S = 1/fZ_max; a and b take the depth to the
+	 * device's clip space - [0,1] with clip control, else [-1,1] - and undo
+	 * what the matrix scales z by. For a frame decoded on the GPU, S is the
+	 * decode's word, copied over the host's (the copy is ordered after the
+	 * decode's kernels: GlTaDecoder). */
+	{
+		const float mul = 1.f / matrices.GetNormalMatrix().sz;
+		const float coefs[4] = { gl.clipControl != nullptr ? mul : 2.f * mul, gl.clipControl != nullptr ? 0.f : -1.f,
+				0.f, pvr_depth_scale(pvrrc.fZ_max) };
+		glBindBuffer(GL_UNIFORM_BUFFER, gl.depth_ubo);
+		glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(coefs), coefs);
+		if (pvrrc.gpu)
+		{
+			glBindBuffer(GL_COPY_READ_BUFFER, glTaDecoder.Draw().frame);
+			gl.copyBufferSubData(GL_COPY_READ_BUFFER, GL_UNIFORM_BUFFER, TAG_O_ZSCALE * 4, 12, 4);
+			glBindBuffer(GL_COPY_READ_BUFFER, 0);
+		}
+		glBindBuffer(GL_UNIFORM_BUFFER, 0);
+		glBindBufferBase(GL_UNIFORM_BUFFER, DEPTH_UBO_BINDING, gl.depth_ubo);
+		if (gl.clipControl != nullptr)
+			gl.clipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+	}
 
 	if (!is_rtt)
 		gcflip=0;
@@ -971,6 +1004,9 @@ static bool RenderFrame()
 		ReadRTTBuffer();
 
 	glBindVertexArray(0);
+	// (the frontend's own drawing has the context as it was)
+	if (gl.clipControl != nullptr)
+		gl.clipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
 
 	return !is_rtt;
 }
@@ -987,6 +1023,12 @@ struct gl4rend : Renderer
 		if (gl.gl_major < 4 || (gl.gl_major == 4 && gl.gl_minor < 3))
 		{
 			WARN_LOG(RENDERER, "Warning: OpenGL %d.%d doesn't support per-pixel sorting. 4.3 required", gl.gl_major, gl.gl_minor);
+			return false;
+		}
+		// (the vertex shaders take the depth scale from a uniform buffer: findGLVersion())
+		if (gl.depth_ubo == 0)
+		{
+			WARN_LOG(RENDERER, "OpenGL: no uniform buffer for the depth scale");
 			return false;
 		}
 		glprog_open();

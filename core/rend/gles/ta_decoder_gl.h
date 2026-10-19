@@ -47,6 +47,9 @@
 struct GlTaDraw
 {
 	GLuint vertices = 0, indices = 0, modtrig = 0, trParams = 0;
+	/* the frame's words (TAG_O_*): 1/fZ_max at TAG_O_ZSCALE, which the
+	 * renderers copy into their depth scale uniform buffer (rend/depth_scale.h) */
+	GLuint frame = 0;
 	/* (the per-pixel renderer) a word for each translucent strip, its
 	 * number: an attribute of one a draw, which a draw record's baseInstance
 	 * picks (TA_GPU_INSTANCE) */
@@ -172,6 +175,9 @@ public:
 	void BindModVols() {}
 	void WriteSorted() {}
 	intptr_t BindSorted() { return 0; }
+	// (the frame's words of a decode that never is: no buffer)
+	struct { unsigned frame = 0; } drawNone;
+	const decltype(drawNone)& Draw() const { return drawNone; }
 };
 
 #endif

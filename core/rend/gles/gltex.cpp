@@ -215,7 +215,7 @@ void gl_tex_init(bool depth)
 		const u32 side = std::min<u32>(1024 * scale, (u32)std::max(most, 1024));
 		glGenRenderbuffers(1, &gl.rtt.depthb);
 		glBindRenderbuffer(RARCH_GL_RENDERBUFFER, gl.rtt.depthb);
-		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, RARCH_GL_DEPTH24_STENCIL8, side, side);
+		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, gl.depth_format, side, side);
 		gl.rtt.depthWidth = gl.rtt.depthHeight = side;
 	}
 	gl.rtt.kept = true;
@@ -823,7 +823,7 @@ void BindRTT(u32 addy, u32 fbw, u32 fbh, u32 channels, u32 fmt)
 			m_i32TexSize by m_i32TexSize.
 		*/
 
-		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, RARCH_GL_DEPTH24_STENCIL8, fbw2, fbh2);
+		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, gl.depth_format, fbw2, fbh2);
 		gl.rtt.depthWidth = fbw2;
 		gl.rtt.depthHeight = fbh2;
 	}

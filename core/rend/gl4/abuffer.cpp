@@ -252,9 +252,6 @@ R"(
 
 void main(void)
 {
-#if MV_MODE == MV_XOR || MV_MODE == MV_OR
-	setFragDepth();
-#endif
 	ivec2 coords = ivec2(gl_FragCoord.xy);
 	
 	uint idx = imageLoad(abufferPointerImg, coords).x;
@@ -266,10 +263,10 @@ void main(void)
 		if (getShadowEnable(pp))
 		{
 #if MV_MODE == MV_XOR
-			if (gl_FragDepth >= pixel.depth)
+			if (FRAG_DEPTH >= pixel.depth)
 				atomicXor(pixels[idx].seq_num, SHADOW_STENCIL);
 #elif MV_MODE == MV_OR
-			if (gl_FragDepth >= pixel.depth)
+			if (FRAG_DEPTH >= pixel.depth)
 				atomicOr(pixels[idx].seq_num, SHADOW_STENCIL);
 #elif MV_MODE == MV_INCLUSION
 			uint prev_val = atomicAnd(pixels[idx].seq_num, ~(SHADOW_STENCIL));

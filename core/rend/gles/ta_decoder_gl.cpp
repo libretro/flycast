@@ -486,6 +486,7 @@ bool GlTaDecoder::Init()
 	draw.indices = r->buffers[B_IDX];
 	draw.modtrig = r->buffers[B_MOD];
 	draw.trParams = r->buffers[B_TRP];
+	draw.frame = r->buffers[B_FRM];
 	draw.instances = r->instances;
 	draw.sorted = r->sortSlot != 0 ? r->sorted : 0;
 	draw.sortedOffset = 0;
@@ -727,9 +728,9 @@ void GlTaDecoder::Record(TA_context *ctx)
 	if (flags & TA_GPU_PROVOKE)
 		indirect(TAG_K_PROVOKE, TAG_O_ARGS1);
 	glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
-	// for whatever draws from them
+	// for whatever draws from them (and the renderers' copy of 1/fZ_max out of the frame's words)
 	glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT | GL_COMMAND_BARRIER_BIT
-			| GL_SHADER_STORAGE_BARRIER_BIT);
+			| GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 	if (r.queries[0] != 0)
 	{
 		gx.queryCounter(r.queries[2 * index + 1], GL_TIMESTAMP);

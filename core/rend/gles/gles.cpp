@@ -34,12 +34,17 @@ float fb_scale_x, fb_scale_y;
 static const char* VertexShaderSource = R"(%s
 #define TARGET_GL %s
 #define pp_Gouraud %d
+#define DEPTH_UBO %d
 
 #define GLES2 0
 #define GLES3 1
 #define GL2 2
 #define GL3 3
 
+// (uniform buffers: OpenGL 3.1's, an extension to GLSL 1.30; see depth_scale below)
+#if DEPTH_UBO == 1 && TARGET_GL == GL3
+#extension GL_ARB_uniform_buffer_object : enable
+#endif
 #if TARGET_GL == GL2
 #define highp
 #define lowp
@@ -61,8 +66,21 @@ static const char* VertexShaderSource = R"(%s
 #define INTERPOLATION
 #endif
 
-/* Vertex constants*/ 
+/* The depth is the position's (rend/depth_scale.h): the vertex goes out at
+   (x*w, y*w, a*S + b*w, w) with w = 1/z, a depth of a*S*z + b, 1/w as the
+   chip has it, linear in screen space. depth_scale is (a, b, -, S): S is
+   1/fZ_max, which a frame decoded on the GPU has only on the GPU, so where
+   the context has uniform buffers it is one the renderer copies into
+   (DEPTH_UBO; gl_ctx::depth_ubo). The same text places the vertices of
+   every program, and the position is invariant: a pass that tests EQUAL
+   against another's depth is exact. */
+invariant gl_Position;
+#if DEPTH_UBO == 1
+layout(std140) uniform DepthScaleBlock { highp vec4 depth_scale; };
+#else
 uniform highp vec4      depth_scale;
+#endif
+/* Vertex constants*/ 
 uniform highp mat4 normal_matrix;
 uniform highp float sp_FOG_DENSITY;
 
@@ -86,16 +104,15 @@ void main()
 	vtx_uv = in_uv;
 	highp vec4 vpos = normal_matrix * in_pos;
 	vpos.w = 1.0 / vpos.z;
-#if TARGET_GL != GLES2
-   vpos.z = vpos.w;
-#else
+#if TARGET_GL == GLES2
    // Interpolated with perspective correction, 1/depth comes out as one over
    // the depth at the pixel, which is what fog goes by. depth itself does not:
    // it came out too large inside any triangle that spans a range of depths.
    fog_depth = vpos.w;
-   vpos.z=depth_scale.x+depth_scale.y*vpos.w; 
 #endif
 	vpos.xy *= vpos.w;
+	// (a z beyond fZ_max is at the nearest depth, not clipped)
+	vpos.z = min(depth_scale.x * depth_scale.w + depth_scale.y * vpos.w, vpos.w);
 	gl_Position = vpos;
 }
 )";
@@ -380,11 +397,9 @@ void main()
 	}
 	//color.rgb=vec3(gl_FragCoord.w * sp_FOG_DENSITY / 128.0);
 #if TARGET_GL != GLES2
-	// (only where the shader writes the depth anyway: a discard there costs nothing more)
+	// (the sorted translucent depth prepass: rend/sorter.h; the depth itself is the position's)
 	if (color.a < prepass_alpha)
 		discard;
-	highp float w = gl_FragCoord.w * 100000.0;
-	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
 #endif
 	gl_FragColor =color;
 }
@@ -410,13 +425,9 @@ out highp vec4 FragColor;
 #endif
 
 uniform lowp float sp_ShaderColor;
-/* Vertex input*/
+// (the depth is the position's; the colour is the final pass's tint)
 void main()
 {
-#if TARGET_GL != GLES2
-   highp float w = gl_FragCoord.w * 100000.0;
-   gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0;
-#endif
    gl_FragColor=vec4(0.0, 0.0, 0.0, sp_ShaderColor);
 }
 )";
@@ -482,12 +493,24 @@ static void pipeline_from_key(PipelineShader *s, u32 key)
 	s->shadowed = key & 1;
 }
 
+// A program's depth scale block (DEPTH_UBO in the vertex shader) given the renderer's uniform buffer
+void gl_bind_depth_ubo(GLuint program)
+{
+#ifndef HAVE_OPENGLES2
+	if (gl.depth_ubo == 0)
+		return;
+	const GLuint block = glGetUniformBlockIndex(program, "DepthScaleBlock");
+	if (block != GL_INVALID_INDEX)
+		glUniformBlockBinding(program, block, DEPTH_UBO_BINDING);
+#endif
+}
+
 /* A polygon's program asked of the driver (glprogram_cache.h): its own, or
  * (@general) the general one of its pp_Gouraud */
 static GLuint make_pipeline_program(const PipelineShader *s, bool general, bool background)
 {
 	char vshader[8192];
-	int rc = snprintf(vshader, sizeof(vshader), VertexShaderSource, gl.glsl_version_header, gl.gl_version, s->pp_Gouraud);
+	int rc = snprintf(vshader, sizeof(vshader), VertexShaderSource, gl.glsl_version_header, gl.gl_version, s->pp_Gouraud, gl.depth_ubo != 0);
 	verify(rc + 1 <= (int)sizeof(vshader));
 
 	char header[128];
@@ -515,6 +538,7 @@ static void pipeline_locations(PipelineShader *s, bool general)
 
 	//get the uniform locations
 	s->depth_scale      = glGetUniformLocation(s->program, "depth_scale");
+	gl_bind_depth_ubo(s->program);
 
 	s->pp_ClipTest      = glGetUniformLocation(s->program, "pp_ClipTest");
 
@@ -878,7 +902,19 @@ void findGLVersion()
 	}
 	gl.max_anisotropy = 1.f;
 	bool nvx_meminfo = false, ati_meminfo = false;
+	/* The depth (rend/depth_scale.h): a 32-bit float depth buffer where
+	 * this renderer makes its own (OpenGL 3.0, OpenGL ES 3.0; the frame
+	 * buffer the frontend gives has what it gives), the depth scale in a
+	 * uniform buffer where there are any (OpenGL 3.1 or its extension,
+	 * OpenGL ES 3.0: so that a frame decoded on the GPU can write it), and
+	 * clip space z in [0,1] where the context has ARB_clip_control
+	 * (OpenGL 4.5's), which keeps a float depth buffer's precision */
+	bool ubo = false, clip_control = false;
+	gl.depth_format = gl.gl_major >= 3 ? GL_DEPTH32F_STENCIL8 : RARCH_GL_DEPTH24_STENCIL8;
 #ifndef HAVE_OPENGLES2
+	// (a build with the OpenGL ES 2 headers has no uniform buffer functions: the uniform, on any context)
+	ubo = gl.is_gles ? gl.gl_major >= 3 : gl.gl_major * 10 + gl.gl_minor >= 31;
+	// (by the extension, which every driver with it lists, 4.5's or not: the other path can then be tried by turning the extension off)
 	if (gl.gl_major >= 3)
 	{
 		for (u32 i = 0; ; i++)
@@ -892,6 +928,10 @@ void findGLVersion()
 				nvx_meminfo = true;
 			else if (!strcmp(extension, "GL_ATI_meminfo"))
 				ati_meminfo = true;
+			else if (!strcmp(extension, "GL_ARB_uniform_buffer_object"))
+				ubo = true;
+			else if (!strcmp(extension, "GL_ARB_clip_control") && !gl.is_gles)
+				clip_control = true;
 		}
 	}
 	else
@@ -904,6 +944,33 @@ void findGLVersion()
 			ati_meminfo = strstr(extensions, "GL_ATI_meminfo") != nullptr;
 		}
 	}
+	gl.clipControl = nullptr;
+	gl.copyBufferSubData = nullptr;
+	{
+		glsm_ctx_proc_address_t proc = { nullptr };
+		if (glsm_ctl(GLSM_CTL_PROC_ADDRESS_GET, &proc) && proc.addr != nullptr)
+		{
+			if (clip_control)
+				gl.clipControl = (void (APIENTRYP)(GLenum, GLenum))proc.addr("glClipControl");
+			if (ubo)
+				gl.copyBufferSubData = (void (APIENTRYP)(GLenum, GLenum, GLintptr, GLintptr, GLsizeiptr))proc.addr("glCopyBufferSubData");
+		}
+	}
+	if (gl.depth_ubo != 0)
+		glDeleteBuffers(1, &gl.depth_ubo);
+	gl.depth_ubo = 0;
+	// (the copy is OpenGL 3.1's too; without it the uniform, and no frame decoded on the GPU: GlTaDecoder needs 4.3)
+	if (ubo && gl.copyBufferSubData != nullptr)
+	{
+		glGenBuffers(1, &gl.depth_ubo);
+		glBindBuffer(GL_UNIFORM_BUFFER, gl.depth_ubo);
+		glBufferData(GL_UNIFORM_BUFFER, 16, nullptr, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_UNIFORM_BUFFER, 0);
+	}
+	(void)clip_control;
+	NOTICE_LOG(RENDERER, "OpenGL depth: %s depth buffers, the scale in a %s, clip space z in %s",
+			gl.depth_format == GL_DEPTH32F_STENCIL8 ? "32-bit float" : "24-bit",
+			gl.depth_ubo != 0 ? "uniform buffer" : "uniform", gl.clipControl != nullptr ? "[0,1]" : "[-1,1]");
 	while (glGetError() != GL_NO_ERROR)
 		;
 	gl_query_vram_budget(nvx_meminfo, ati_meminfo);
@@ -1015,6 +1082,9 @@ static void gl_term(void)
 	glDeleteBuffers(1, &gl.vbo.modvols);
 	glDeleteBuffers(1, &gl.vbo.idxs);
 	glDeleteBuffers(1, &gl.vbo.idxs2);
+	if (gl.depth_ubo != 0)
+		glDeleteBuffers(1, &gl.depth_ubo);
+	gl.depth_ubo = 0;
 	glDeleteTextures(1, &fbTextureId);
 	fbTextureId = 0;
 	glDeleteTextures(1, &fogTextureId);
@@ -1037,11 +1107,12 @@ static bool gl_create_resources(void)
    glprog_open();
 
    char vshader[8192];
-   sprintf(vshader, VertexShaderSource, gl.glsl_version_header, gl.gl_version, 1);
+   sprintf(vshader, VertexShaderSource, gl.glsl_version_header, gl.gl_version, 1, gl.depth_ubo != 0);
    char fshader[8192];
 	sprintf(fshader, ModifierVolumeShader, gl.glsl_version_header, gl.gl_version);
 
 	gl.modvol_shader.program = gl_CompileAndLink(vshader, fshader);
+	gl_bind_depth_ubo(gl.modvol_shader.program);
 	gl.modvol_shader.normal_matrix  = glGetUniformLocation(gl.modvol_shader.program, "normal_matrix");
 	gl.modvol_shader.depth_scale = glGetUniformLocation(gl.modvol_shader.program, "depth_scale");
 	gl.modvol_shader.sp_ShaderColor = glGetUniformLocation(gl.modvol_shader.program, "sp_ShaderColor");
@@ -1154,18 +1225,6 @@ static bool RenderFrame(void)
 
 	bool is_rtt = pvrrc.isRTT;
 
-	float vtx_min_fZ = 0.f;	//pvrrc.fZ_min;
-	float vtx_max_fZ = pvrrc.fZ_max;
-
-	//sanitise the values, now with NaN detection (for omap)
-	//0x49800000 is 1024*1024. Using integer math to avoid issues w/ infs and nans
-	if ((s32&)vtx_max_fZ < 0 || (u32&)vtx_max_fZ > 0x49800000)
-		vtx_max_fZ = 10 * 1024;
-
-	//add some extra range to avoid clipping border cases
-	vtx_min_fZ *= 0.98f;
-	vtx_max_fZ *= 1.001f;
-
 	TransformMatrix<true> matrices(pvrrc);
 	xform_to_mat4(&matrices.GetNormalMatrix(), ShaderUniforms.normal_mat);
 	const xform& scissor_mat = matrices.GetScissorMatrix();
@@ -1176,10 +1235,37 @@ static bool RenderFrame(void)
 	else
 		gcflip = 1;
 
-	ShaderUniforms.depth_coefs[0] = 2 / (vtx_max_fZ - vtx_min_fZ);
-	ShaderUniforms.depth_coefs[1] = -vtx_min_fZ - 1;
-	ShaderUniforms.depth_coefs[2] = 0;
-	ShaderUniforms.depth_coefs[3] = 0;
+	/* The depth is the position's (rend/depth_scale.h, and the vertex
+	 * shader): a*S*z + b, with S = 1/fZ_max; a and b take the depth to the
+	 * device's clip space - [0,1] with clip control, else [-1,1] - and undo
+	 * what the matrix scales z by */
+	{
+		const float mul = 1.f / matrices.GetNormalMatrix().sz;
+		ShaderUniforms.depth_coefs[0] = gl.clipControl != nullptr ? mul : 2.f * mul;
+		ShaderUniforms.depth_coefs[1] = gl.clipControl != nullptr ? 0.f : -1.f;
+		ShaderUniforms.depth_coefs[2] = 0;
+		ShaderUniforms.depth_coefs[3] = pvr_depth_scale(pvrrc.fZ_max);
+#ifndef HAVE_OPENGLES2
+		if (gl.depth_ubo != 0)
+		{
+			/* ...in the uniform buffer, and for a frame decoded on the GPU,
+			 * S from the decode's word of it, copied over the host's (the
+			 * copy is ordered after the decode's kernels: GlTaDecoder) */
+			glBindBuffer(GL_UNIFORM_BUFFER, gl.depth_ubo);
+			glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(ShaderUniforms.depth_coefs), ShaderUniforms.depth_coefs);
+			if (pvrrc.gpu)
+			{
+				glBindBuffer(GL_COPY_READ_BUFFER, glTaDecoder.Draw().frame);
+				gl.copyBufferSubData(GL_COPY_READ_BUFFER, GL_UNIFORM_BUFFER, TAG_O_ZSCALE * 4, 12, 4);
+				glBindBuffer(GL_COPY_READ_BUFFER, 0);
+			}
+			glBindBuffer(GL_UNIFORM_BUFFER, 0);
+			glBindBufferBase(GL_UNIFORM_BUFFER, DEPTH_UBO_BINDING, gl.depth_ubo);
+		}
+#endif
+	}
+	if (gl.clipControl != nullptr)
+		gl.clipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
 	//VERT and RAM fog color constants
 	u8* fog_colvert_bgra = (u8*)&FOG_COL_VERT;
@@ -1438,6 +1524,9 @@ static bool RenderFrame(void)
 
 	if (is_rtt)
 		ReadRTTBuffer();
+	// (the frontend's own drawing has the context as it was)
+	if (gl.clipControl != nullptr)
+		gl.clipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
 
 	return !is_rtt;
 }

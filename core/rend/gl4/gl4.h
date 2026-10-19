@@ -195,11 +195,8 @@ uint getNextPixelIndex() \n\
 	return index; \n\
 } \n\
 \n\
-void setFragDepth(void) \n\
-{ \n\
-	float w = 100000.0 * gl_FragCoord.w; \n\
-	gl_FragDepth = log2(1.0 + max(w, -0.999999)) / 34.0; \n\
-} \n\
+/* A fragment's depth: the position's, which the depth test took (rend/depth_scale.h) */ \n\
+#define FRAG_DEPTH gl_FragCoord.z \n\
 /* A translucent polygon's words, as the Vulkan per-pixel renderer and \n\
  * GPU-side TA processing have them (rend/ta_gpu.h, TAG_P_WORDS): its TSP \n\
  * word with the ISP word's depth function and depth write bits in 13-15 \n\
