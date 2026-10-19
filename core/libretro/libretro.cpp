@@ -2248,16 +2248,32 @@ static bool set_vulkan_hw_render()
 	if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render))
 		return false;
 
-	static const struct retro_hw_render_context_negotiation_interface_vulkan negotiation_interface = {
+	/* Version 2 where the frontend has it: the device is then made through
+	 * the frontend, which can add what it needs (e.g. for its low-latency
+	 * modes). A frontend that predates v2 rejects any version but 1. */
+	static const struct retro_hw_render_context_negotiation_interface_vulkan negotiation_interface_v1 = {
 			RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN,
-         /* Version 1: get_application_info and create_device are all
-          * this core provides. libretro_vulkan.h describes version 2. */
-         1,
+			1,
 			VkGetApplicationInfo,
-         VkCreateDevice,
-         nullptr,
+			VkCreateDevice,
+			nullptr,
 	};
-	environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void *)&negotiation_interface);
+	static const struct retro_hw_render_context_negotiation_interface_vulkan negotiation_interface_v2 = {
+			RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN,
+			2,
+			VkGetApplicationInfo,
+			VkCreateDevice,
+			nullptr,
+			nullptr,
+			VkCreateDevice2,
+	};
+	struct retro_hw_render_context_negotiation_interface negotiation_support;
+	negotiation_support.interface_type = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN;
+	negotiation_support.interface_version = 0;
+	if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT, &negotiation_support))
+		negotiation_support.interface_version = 0;
+	environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE,
+			(void *)(negotiation_support.interface_version >= 2 ? &negotiation_interface_v2 : &negotiation_interface_v1));
 
 	if (settings.pvr.rend == 0)
 		settings.pvr.rend = rend_compute_wanted ? 5 : 4;	// (Compute is drawn by the per-pixel renderer)

@@ -35,12 +35,13 @@ const VkApplicationInfo* VkGetApplicationInfo()
 	return &(VkApplicationInfo&)applicationInfo;
 }
 
-bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysicalDevice gpu,
+static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkPhysicalDevice gpu,
                          VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr,
                          const char** required_device_extensions,
                          unsigned num_required_device_extensions,
                          const char** required_device_layers, unsigned num_required_device_layers,
-                         const VkPhysicalDeviceFeatures* required_features)
+                         const VkPhysicalDeviceFeatures* required_features,
+                         retro_vulkan_create_device_wrapper_t create_device_wrapper, void *opaque)
 {
 	vulkan_symbol_wrapper_init(get_instance_proc_addr);
 	vulkan_symbol_wrapper_load_global_symbols();
@@ -246,7 +247,9 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 			vk::DeviceQueueCreateInfo(vk::DeviceQueueCreateFlags(), context->queue_family_index, 1, &queuePriority),
 			vk::DeviceQueueCreateInfo(vk::DeviceQueueCreateFlags(), context->presentation_queue_family_index, 1, &queuePriority),
 	};
-	vk::PhysicalDeviceFeatures features(*required_features);
+	vk::PhysicalDeviceFeatures features;
+	if (required_features != nullptr)
+		features = *required_features;
 	if (fragmentStoresAndAtomics)
 		features.fragmentStoresAndAtomics = true;
 	if (VulkanContext::Instance()->samplerAnisotropy)
@@ -267,7 +270,20 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 			context->queue_family_index == context->presentation_queue_family_index ? 1 : 2, deviceQueueCreateInfos,
 			num_required_device_layers, required_device_layers, deviceExtensions.size(), &deviceExtensions[0], &features);
 	deviceCreateInfo.pNext = featuresChain;
-	vk::Device device = physicalDevice.createDevice(deviceCreateInfo);
+	vk::Device device;
+	if (create_device_wrapper != nullptr)
+	{
+		// the frontend's vkCreateDevice, which adds what it needs
+		device = vk::Device(create_device_wrapper((VkPhysicalDevice)physicalDevice, opaque,
+				&static_cast<const VkDeviceCreateInfo&>(deviceCreateInfo)));
+		if (!device)
+		{
+			ERROR_LOG(RENDERER, "The frontend could not create the Vulkan device");
+			return false;
+		}
+	}
+	else
+		device = physicalDevice.createDevice(deviceCreateInfo);
 	context->device = (VkDevice)device;
 	vulkan_symbol_wrapper_load_core_device_symbols(context->device);
 
@@ -276,6 +292,28 @@ bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysic
 	context->presentation_queue = (VkQueue)device.getQueue(context->presentation_queue_family_index, 0);
 
 	return true;
+}
+
+bool VkCreateDevice(retro_vulkan_context* context, VkInstance instance, VkPhysicalDevice gpu,
+                         VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr,
+                         const char** required_device_extensions,
+                         unsigned num_required_device_extensions,
+                         const char** required_device_layers, unsigned num_required_device_layers,
+                         const VkPhysicalDeviceFeatures* required_features)
+{
+	return createDevice(context, instance, gpu, surface, get_instance_proc_addr,
+			required_device_extensions, num_required_device_extensions,
+			required_device_layers, num_required_device_layers, required_features, nullptr, nullptr);
+}
+
+// The same device, made through the frontend's wrapper (negotiation v2),
+// which brings its own extensions and features.
+bool VkCreateDevice2(retro_vulkan_context* context, VkInstance instance, VkPhysicalDevice gpu,
+                         VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr,
+                         retro_vulkan_create_device_wrapper_t create_device_wrapper, void *opaque)
+{
+	return createDevice(context, instance, gpu, surface, get_instance_proc_addr,
+			nullptr, 0, nullptr, 0, nullptr, create_device_wrapper, opaque);
 }
 
 bool VulkanContext::Init(retro_hw_render_interface_vulkan *retro_render_if)

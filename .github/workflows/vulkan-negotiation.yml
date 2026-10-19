@@ -1,0 +1,41 @@
+name: Vulkan negotiation
+
+# The core's Vulkan device, negotiated as RetroArch does (v2, made through
+# the frontend's vkCreateDevice wrapper) and as a frontend without v2 does
+# (v1), on lavapipe under the validation layer: tools/vulkan/vk_negotiate.sh.
+
+on:
+  push:
+    paths:
+      - 'core/rend/vulkan/**'
+      - 'core/libretro/**'
+      - 'tools/vulkan/**'
+      - 'Makefile*'
+      - '.github/workflows/vulkan-negotiation.yml'
+  pull_request:
+    paths:
+      - 'core/rend/vulkan/**'
+      - 'core/libretro/**'
+      - 'tools/vulkan/**'
+      - 'Makefile*'
+      - '.github/workflows/vulkan-negotiation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vulkan-negotiation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vulkan (lavapipe, validation layer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libgl1-mesa-dev mesa-vulkan-drivers vulkan-validationlayers libvulkan1
+      - name: Build the core
+        run: make -j"$(nproc)"
+      - name: Negotiation v2 and v1
+        run: VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json sh tools/vulkan/vk_negotiate.sh
