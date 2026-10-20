@@ -54,6 +54,12 @@ static unsigned nrecs;
 static unsigned ref_dropped;
 static unsigned ref_clipped;
 
+/* (the kernel's clamp of a pixel far out to what an int has) */
+static int ref_int(ref_s64 v)
+{
+   return v < -0x7fffffffL ? -0x7fffffff : v > 0x7fffffffL ? 0x7fffffff : (int)v;
+}
+
 static void setup(unsigned prim, Rec *r)
 {
    unsigned osrc = F[PVRC_F_O_SRC], lo = 0, hi = F[PVRC_F_SOURCES], i, src, index, k, isp, rect0, rect1, cull;
@@ -170,10 +176,10 @@ static void setup(unsigned prim, Rec *r)
       {
          const ref_s64 m = (ref_s64)1 << shift;
          const ref_s64 ax0 = (ref_s64)mnx * m - 255, ay0 = (ref_s64)mny * m - 255, ax1 = (ref_s64)mxx * m, ay1 = (ref_s64)mxy * m;
-         bx0 = (int)(ax0 >= 0 ? ax0 / 256 : -((-ax0 + 255) / 256));
-         by0 = (int)(ay0 >= 0 ? ay0 / 256 : -((-ay0 + 255) / 256));
-         bx1 = (int)(ax1 >= 0 ? ax1 / 256 : -((-ax1 + 255) / 256));
-         by1 = (int)(ay1 >= 0 ? ay1 / 256 : -((-ay1 + 255) / 256));
+         bx0 = ref_int(ax0 >= 0 ? ax0 / 256 : -((-ax0 + 255) / 256));
+         by0 = ref_int(ay0 >= 0 ? ay0 / 256 : -((-ay0 + 255) / 256));
+         bx1 = ref_int(ax1 >= 0 ? ax1 / 256 : -((-ax1 + 255) / 256));
+         by1 = ref_int(ay1 >= 0 ? ay1 / 256 : -((-ay1 + 255) / 256));
       }
       if (r->neg != 0)
       {
@@ -214,9 +220,11 @@ static int edge_in(ref_s64 e, int dx, int dy)
 
 static void rec_edges(const Rec *r, int px, int py, ref_s64 *e)
 {
-   /* (at its shift; a sample's place is not negative and divides exactly) */
-   px >>= r->shift;
-   py >>= r->shift;
+   /* (at its shift, the place divided to the nearest as the kernels' is: a
+    * place is not negative) */
+   const int half = (1 << r->shift) >> 1;
+   px = (px + half) >> r->shift;
+   py = (py + half) >> r->shift;
    e[0] = (ref_s64)(r->x[2] - r->x[1]) * (ref_s64)(py - r->y[1]) - (ref_s64)(r->y[2] - r->y[1]) * (ref_s64)(px - r->x[1]);
    e[1] = (ref_s64)(r->x[0] - r->x[2]) * (ref_s64)(py - r->y[2]) - (ref_s64)(r->y[0] - r->y[2]) * (ref_s64)(px - r->x[2]);
    e[2] = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(py - r->y[0]) - (ref_s64)(r->y[1] - r->y[0]) * (ref_s64)(px - r->x[0]);
