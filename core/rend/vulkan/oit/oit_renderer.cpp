@@ -128,12 +128,20 @@ public:
 		/* Rendering Method: Compute draws the screen's frames it can
 		 * (vulkan/compute_drawer.h) into the same pictures; the others are
 		 * drawn below */
-		if (!pvrrc.isRTT && computeDrawer.Ready() && computeDrawer.CanDraw() && !vmus->Drawing())
+		if (computeDrawer.Ready())
 		{
-			bool last;
-			if (screenDrawer.ComputeCanStart(&last) && computeDrawer.Prepare(last, paletteTexture.get()))
+			bool last, scaled;
+			if (pvrrc.isRTT)
+				computeDrawer.Fallback(ComputeFrame::Why_Rtt);
+			else if (!computeDrawer.CanDraw())
+				computeDrawer.Fallback(ComputeFrame::Why_Decode);
+			else if (vmus->Drawing())
+				computeDrawer.Fallback(ComputeFrame::Why_Osd);
+			else if (!screenDrawer.ComputeCanStart(&last, &scaled))
+				computeDrawer.Fallback(ComputeFrame::Why_Picture);
+			else if (computeDrawer.Prepare(last, scaled, paletteTexture.get()))
 			{
-				const OITScreenDrawer::ComputeTarget target = screenDrawer.ComputeBegin(last);
+				const OITScreenDrawer::ComputeTarget target = screenDrawer.ComputeBegin(last, scaled);
 				computeDrawer.Record(target.image, target.view, target.last);
 				screenDrawer.ComputeEnd();
 				return true;

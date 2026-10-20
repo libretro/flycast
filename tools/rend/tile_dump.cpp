@@ -157,6 +157,7 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 	layout.runs = layout.chunks * ((layout.width + (1u << layout.tileLog2) - 1) >> layout.tileLog2)
 			* ((layout.height + (1u << layout.tileLog2) - 1) >> layout.tileLog2);
 	layout.lastPicture = false;
+	layout.lastScaled = false;
 	DumpSlots slots;
 	u32 prims;
 	/* (the parse's vertices are changed for flat shading, as the raster

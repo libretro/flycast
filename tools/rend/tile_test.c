@@ -693,9 +693,9 @@ int main(int argc, char **argv)
                printf("tile_test: %s at %u sample%s, K %u%s: %s", argv[a], n, n > 1 ? "s" : "", keep, as_gpu ? ", as the decode's" : "", bad ? "DIFFERENT" : "the same");
                if (bad)
                   printf(" (%u pixels; the first at %u,%u: %08x, the reference %08x)", bad, first % w, first / w, got[first], ref[first]);
-               printf("; %u primitives, %u passes, %u layers at most, %u rounds, %u runs walked whole, %u left out, %u clipped at the eye, %u passed over by the tiles' depths; device %.1f ms, reference %.1f ms\n",
+               printf("; %u primitives, %u passes, %u layers at most, %u rounds, %u runs walked whole, %u left out, %u clipped at the eye (the device %u), %u passed over by the tiles' depths; device %.1f ms, reference %.1f ms\n",
                      frame[PVRC_F_PRIMS], frame[PVRC_F_PASSES], rst.layers_most, stats[PVRC_ST_PEELS] ? stats[PVRC_ST_PEELS] : 1,
-                     stats[PVRC_ST_SKIPPED], stats[PVRC_ST_DROPPED], rst.clipped, stats[PVRC_ST_HIZ], ms, ref_ms);
+                     stats[PVRC_ST_SKIPPED], stats[PVRC_ST_DROPPED], rst.clipped, stats[PVRC_ST_CLIPPED], stats[PVRC_ST_HIZ], ms, ref_ms);
                if (bad && ppm)
                {
                   char name[256];

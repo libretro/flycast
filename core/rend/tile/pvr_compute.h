@@ -150,6 +150,7 @@
 #define PVRC_F_WORDS      192u
 
 #define PVRC_FF_LAST_PICTURE 1u   /* start from the last picture, not the clear colour */
+#define PVRC_FF_LAST_SCALED  2u   /* ...which is of another size (kept from another context): filtered over the picture, as the raster renderer's quad does */
 
 /* A render pass: where its lists start in the numbering (opaque, opaque
  * modifier volumes, punch-through, translucent, the translucent's end),
@@ -294,9 +295,10 @@
 #define PVRC_ST_DROPPED   5u   /* triangles with a vertex at no depth (or not a number), left out */
 #define PVRC_ST_PEELS     6u   /* the most rounds of translucent fragments a tile took */
 #define PVRC_ST_HIZ       7u   /* primitives the walks passed over by the tiles' depths */
-#define PVRC_STATS        8u
-#define PVRC_ST_SETUP_X   8u   /* (a frame of the decode's) the setup's and the scatter's dispatch: x, y, z */
-#define PVRC_ST_SORT_X    11u  /* ...the sort's */
+#define PVRC_ST_CLIPPED   8u   /* triangles with a vertex behind the eye, clipped */
+#define PVRC_STATS        9u
+#define PVRC_ST_SETUP_X   9u   /* (a frame of the decode's) the setup's and the scatter's dispatch: x, y, z */
+#define PVRC_ST_SORT_X    12u  /* ...the sort's */
 
 /* The textures a frame can have, slots of the kernels' array */
 #define PVRC_TEX_SLOTS 1024
@@ -829,6 +831,8 @@ void main()
       empty = true;
    if (bad)
       atomicAdd(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_DROPPED], 1u);
+   else if (behind != 0u && !empty)
+      atomicAdd(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_CLIPPED], 1u);
    if (cross < 0)
    {
       int t = x[1]; x[1] = x[2]; x[2] = t;
@@ -1857,7 +1861,10 @@ void main()
    g_s0x = g_px * 256 + int(SSAA_SAMPLE_X16(PVRC_SAMPLES, 0u)) * 16;
    g_s0y = g_py * 256 + int(SSAA_SAMPLE_Y16(PVRC_SAMPLES, 0u)) * 16;
 
-   if ((frm.w[PVRC_F_FLAGS] & PVRC_FF_LAST_PICTURE) != 0u && g_in)
+   if ((frm.w[PVRC_F_FLAGS] & PVRC_FF_LAST_SCALED) != 0u && g_in)
+      g_col = col_pack(textureLod(lastPicture, (vec2(float(g_px), float(g_py)) + 0.5)
+            / vec2(float(frm.w[PVRC_F_WIDTH]), float(frm.w[PVRC_F_HEIGHT])), 0.0));
+   else if ((frm.w[PVRC_F_FLAGS] & PVRC_FF_LAST_PICTURE) != 0u && g_in)
       g_col = col_pack(texelFetch(lastPicture, ivec2(g_px, g_py), 0));
    else
       g_col = frm.w[PVRC_F_CLEAR];

@@ -60,6 +60,7 @@ public:
 		u32 runs;		// runs the bin buffer has room for
 		u32 chunks;		// ...for this many chunks
 		bool lastPicture;	// start from the picture before
+		bool lastScaled;	// ...one of another size
 	};
 	/* The words, in @out (room for @room); their count, or 0 when the frame
 	 * does not fit there, has more primitives or textures than there is
@@ -67,6 +68,10 @@ public:
 	 * number of primitives. Flat polygons have their first vertex's colours
 	 * made those of their last, as the raster renderers have them. */
 	u32 Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u32 *prims);
+	/* Why a frame is left to the raster renderer: Pack()'s reasons (after
+	 * it returned 0), and the drawer's */
+	enum { Why_None, Why_Passes, Why_Room, Why_Textures, Why_Rtt, Why_Osd, Why_Picture, Why_Decode, Why_Count };
+	u32 why = Why_None;
 
 	// the most words a frame of this machine takes, and the most primitives
 	static u32 MaxWords();
@@ -95,18 +100,22 @@ public:
 	// whether the frame in pvrrc is one this draws (before anything is recorded)
 	bool CanDraw() const;
 	/* The frame's words and textures, @last: started from the picture
-	 * before. False: it does not fit, and the raster renderer draws it;
+	 * before (@scaled: one of another size, kept from another context). False: it does not fit, and the raster renderer draws it;
 	 * nothing is recorded either way. */
-	bool Prepare(bool last, const Texture *paletteTexture);
+	bool Prepare(bool last, bool scaled, const Texture *paletteTexture);
 	/* ...then drawn into @image (its view @view), left in the layout the
 	 * raster renderer leaves its picture in; @last, the picture before (or
 	 * null). Its own command buffer of the pool's, submitted with the
 	 * frame's others. */
 	void Record(vk::Image image, vk::ImageView view, vk::ImageView last);
 
+	// a frame left to the raster renderer, and why (ComputeFrame::Why_*)
+	void Fallback(u32 why) { statFallback++; statWhy[why < ComputeFrame::Why_Count ? why : 0]++; }
 	// what is logged at Term()
 	u64 statFrames = 0;
+	u64 statGpuFrames = 0;
 	u64 statFallback = 0;
+	u64 statWhy[ComputeFrame::Why_Count] = {};
 
 private:
 	struct Resources;

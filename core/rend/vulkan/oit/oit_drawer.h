@@ -260,19 +260,20 @@ public:
 	/* The compute renderer draws frames into this drawer's pictures
 	 * (vulkan/compute_drawer.h), which are then made for it to write too */
 	void SetStoragePicture(bool on) { storagePicture = on; }
-	/* Whether the frame in pvrrc can be drawn by it here: not when it would
-	 * start from the picture kept from another context or size, which this
-	 * drawer scales; @last, whether it starts from the picture before, as
-	 * DrawLastPicture() says */
-	bool ComputeCanStart(bool *last)
+	/* Whether the frame in pvrrc can be drawn by it here; @last, whether it
+	 * starts from the picture before, as DrawLastPicture() says, and
+	 * @scaled, whether that is the picture kept from another context, which
+	 * can be of another size and is filtered over the screen as this
+	 * drawer's quad does */
+	bool ComputeCanStart(bool *last, bool *scaled)
 	{
 		matrices.CalcMatrices(&pvrrc);
 		*last = false;
+		*scaled = false;
 		if ((!havePicture && !restoredPicture) || lastPicturePipeline == nullptr || pvrrc.clearFramebuffer || !matrices.IsClipped())
 			return true;
-		if (!havePicture)
-			return false;
 		*last = true;
+		*scaled = !havePicture;
 		return true;
 	}
 	struct ComputeTarget
@@ -282,7 +283,7 @@ public:
 		vk::ImageView last;	// the picture before, with @last
 	};
 	// the picture it draws the frame in
-	ComputeTarget ComputeBegin(bool last)
+	ComputeTarget ComputeBegin(bool last, bool scaled)
 	{
 		NewImage();
 		const int count = (int)finalColorAttachments.size();
@@ -290,7 +291,7 @@ public:
 		t.image = finalColorAttachments[GetCurrentImage()]->GetImage();
 		t.view = finalColorAttachments[GetCurrentImage()]->GetImageView();
 		if (last)
-			t.last = finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView();
+			t.last = scaled ? restoredPicture : finalColorAttachments[(GetCurrentImage() + count - 1) % count]->GetImageView();
 		return t;
 	}
 	// ...and once it is recorded, as EndFrame() ends one of this drawer's

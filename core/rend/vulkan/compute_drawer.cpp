@@ -77,6 +77,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	 * PVRC_SRC_WORDS), and none of those buffers is copied */
 	const bool gpu = rc.gpu;
 	const u32 passCount = (u32)rc.render_passes.used();
+	why = Why_Passes;
 	if (passCount == 0 || passCount > PVRC_PASS_MAX)
 		return 0;
 	const u32 nop = rc.global_param_op.used(), npt = rc.global_param_pt.used(), ntr = rc.global_param_tr.used();
@@ -89,6 +90,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	const u32 oIdx = gpu ? oVtx : oVtx + rc.verts.used() * PVRC_VTX_WORDS;
 	const u32 oMod = gpu ? oVtx : oIdx + rc.idx.used();
 	const u32 total = gpu ? oVtx : oMod + rc.modtrig.used() * 9;
+	why = Why_Room;
 	if (total > room)
 		return 0;
 
@@ -291,6 +293,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 		q[PVRC_Q_LIST] = listType;
 		return true;
 	};
+	why = Why_Textures;
 	for (u32 i = 0; i < nop; i++)
 		if (!poly(rc.global_param_op.head()[i], ListType_Opaque, out + oPoly + i * PVRC_POLY_WORDS))
 			return 0;
@@ -330,7 +333,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	out[PVRC_F_TILE_LOG2] = layout.tileLog2;
 	out[PVRC_F_PRIMS] = gpu ? 0 : prim;
 	out[PVRC_F_PASSES] = passCount;
-	out[PVRC_F_FLAGS] = layout.lastPicture ? PVRC_FF_LAST_PICTURE : 0;
+	out[PVRC_F_FLAGS] = layout.lastPicture ? (layout.lastScaled ? PVRC_FF_LAST_PICTURE | PVRC_FF_LAST_SCALED : PVRC_FF_LAST_PICTURE) : 0;
 	/* A framebuffer the game has not drawn to lately starts as the border
 	 * colour; any other black (OITDrawer::Draw()) */
 	out[PVRC_F_CLEAR] = rc.clearFramebuffer
@@ -398,6 +401,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	}
 
 	*primsOut = gpu ? 0 : prim;
+	why = Why_None;
 	return total;
 }
 
@@ -488,10 +492,12 @@ struct ComputeDrawer::Resources
 	std::vector<vk::WriteDescriptorSet> writes;
 	std::vector<vk::DescriptorBufferInfo> bufferInfos;
 	vk::UniqueSampler nearest;
+	vk::UniqueSampler linear;	// (a picture of another size to start from)
+	bool lastScaled = false;
 	bool gpu = false;	// this frame's is the decode's
 	// this frame's, between Prepare and Record
 	u32 words = 0, prims = 0;
-	u64 skipped = 0, dropped = 0, hiz = 0;
+	u64 skipped = 0, dropped = 0, hiz = 0, clipped = 0;
 	u32 peels = 0;
 };
 
@@ -619,6 +625,9 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 	r->nearest = device.createSamplerUnique(vk::SamplerCreateInfo(vk::SamplerCreateFlags(), vk::Filter::eNearest, vk::Filter::eNearest,
 			vk::SamplerMipmapMode::eNearest, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
 			vk::SamplerAddressMode::eClampToEdge));
+	r->linear = device.createSamplerUnique(vk::SamplerCreateInfo(vk::SamplerCreateFlags(), vk::Filter::eLinear, vk::Filter::eLinear,
+			vk::SamplerMipmapMode::eNearest, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
+			vk::SamplerAddressMode::eClampToEdge));
 	std::vector<vk::DescriptorBufferInfo> buffers;
 	buffers.reserve((3 + GpuBindings) * slots);
 	std::vector<vk::WriteDescriptorSet> writes;
@@ -658,14 +667,22 @@ void ComputeDrawer::Term()
 	if (res)
 	{
 		if (statFrames + statFallback != 0)
-			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn, %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles at no depth left out, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
-					(unsigned long long)statFrames, (unsigned long long)statFallback, (unsigned long long)res->skipped,
-					(unsigned long long)res->dropped, res->peels, (unsigned long long)res->hiz);
+		{
+			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn (%llu of them the GPU's TA decode's), %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles at no depth left out, %llu with a vertex behind the eye clipped, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
+					(unsigned long long)statFrames, (unsigned long long)statGpuFrames, (unsigned long long)statFallback, (unsigned long long)res->skipped,
+					(unsigned long long)res->dropped, (unsigned long long)res->clipped, res->peels, (unsigned long long)res->hiz);
+			NOTICE_LOG(RENDERER, "Vulkan compute renderer: fallbacks: %llu renders to a texture, %llu with the VMUs or crosshairs drawn over, %llu starting from a picture it cannot take, %llu with more render passes than it takes, %llu with more textures than its slots, %llu too large, %llu the decode's without its buffers",
+					(unsigned long long)statWhy[ComputeFrame::Why_Rtt], (unsigned long long)statWhy[ComputeFrame::Why_Osd],
+					(unsigned long long)statWhy[ComputeFrame::Why_Picture], (unsigned long long)statWhy[ComputeFrame::Why_Passes],
+					(unsigned long long)statWhy[ComputeFrame::Why_Textures], (unsigned long long)statWhy[ComputeFrame::Why_Room],
+					(unsigned long long)statWhy[ComputeFrame::Why_Decode]);
+		}
 	}
 	timer.Term();
 	res.reset();
 	ready = false;
-	statFrames = statFallback = 0;
+	statFrames = statFallback = statGpuFrames = 0;
+	memset(statWhy, 0, sizeof(statWhy));
 }
 
 bool ComputeDrawer::CanDraw() const
@@ -675,7 +692,7 @@ bool ComputeDrawer::CanDraw() const
 	return true;
 }
 
-bool ComputeDrawer::Prepare(bool last, const Texture *paletteTexture)
+bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTexture)
 {
 	Resources& r = *res;
 	const int slot = commandPool->GetIndex();
@@ -685,6 +702,7 @@ bool ComputeDrawer::Prepare(bool last, const Texture *paletteTexture)
 		const u32 *st = r.statsMap + slot * PVRC_STATS;
 		r.skipped += st[PVRC_ST_SKIPPED];
 		r.dropped += st[PVRC_ST_DROPPED];
+		r.clipped += st[PVRC_ST_CLIPPED];
 		r.hiz += st[PVRC_ST_HIZ];
 		r.peels = std::max(r.peels, st[PVRC_ST_PEELS]);
 	}
@@ -697,12 +715,14 @@ bool ComputeDrawer::Prepare(bool last, const Texture *paletteTexture)
 	layout.runs = r.runs;
 	layout.chunks = r.chunks;
 	layout.lastPicture = last;
+	layout.lastScaled = last && scaled;
+	r.lastScaled = layout.lastScaled;
 	r.slots.Reset();
 	u32 *words = r.ringMap + (size_t)slot * r.ringWords;
 	r.words = frame.Pack(layout, r.slots, words, r.ringWords, &r.prims);
 	if (r.words == 0)
 	{
-		statFallback++;
+		Fallback(frame.why);
 		return false;
 	}
 	r.gpu = pvrrc.gpu;
@@ -787,7 +807,8 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 	};
 	// (the pictures and the palette every frame: three words)
 	write(B_OUT, 0, vk::DescriptorType::eStorageImage, VK_NULL_HANDLE, (VkImageView)view, vk::ImageLayout::eGeneral);
-	write(B_LAST, 0, vk::DescriptorType::eCombinedImageSampler, dummySampler, last ? (VkImageView)last : dummyView, vk::ImageLayout::eShaderReadOnlyOptimal);
+	write(B_LAST, 0, vk::DescriptorType::eCombinedImageSampler, last && r.lastScaled ? (VkSampler)*r.linear : dummySampler,
+			last ? (VkImageView)last : dummyView, vk::ImageLayout::eShaderReadOnlyOptimal);
 	if (!r.writes.empty())
 		context->GetDevice().updateDescriptorSets(r.writes, nullptr);
 
@@ -865,4 +886,6 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 	timer.End(cmd, slot);
 	cmd.end();
 	statFrames++;
+	if (r.gpu)
+		statGpuFrames++;
 }
