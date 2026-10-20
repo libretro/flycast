@@ -121,6 +121,13 @@ public:
 	PooledImage *Take(vk::Format format, u32 width, u32 height, bool mips);
 	/* An image to render to, @width by @height, with @usage */
 	PooledImage *TakeTarget(u32 width, u32 height, const vk::ImageUsageFlags& usage);
+	/* Before Init(): the images rendered to are also to be written by
+	 * compute shaders (the compute renderer's renders to a texture) */
+	void SetTargetStorage(bool on) { if (!ready) targetStorage = on; }
+	/* ...and, after it, whether they are: the device can have it (an
+	 * image made outside the pool for a render is made with the usage the
+	 * drawer asks for, which then has it too) */
+	bool TargetsStorable() const { return ready && targetStorage; }
 	/* Free again now; or when the frames that may still use it are done */
 	void Give(PooledImage *image) { book.Give(image); }
 	void Retire(PooledImage *image) { book.Retire(image); }
@@ -139,6 +146,8 @@ private:
 	vk::Format formats[FORMATS];
 	bool storable[FORMATS] = {};
 	bool usable[FORMATS] = {};
+	bool targetStorage = false;
+	vk::ImageUsageFlags targetUsage;	// of the images rendered to
 	PooledImage *all = nullptr;
 };
 

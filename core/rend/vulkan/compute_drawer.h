@@ -24,10 +24,18 @@
  *   keeps (runs walked the slow way, triangles left out) are copied to
  *   host memory and read when the frame's slot comes round, after the wait
  *   for its fence the command pool does anyway.
+ * - A render to a texture is drawn the same way, at one sample a pixel
+ *   as the per-pixel renderer draws it, into the very texture that
+ *   renderer would have drawn it in (OITTextureDrawer::ComputeBegin()):
+ *   the size of the frame from its first pixel to the pixel clip's last,
+ *   in powers of two, times Render To Texture Upscaling, cleared outside
+ *   the clip. The texture cache, the lock on its video memory and the
+ *   copy to video memory when the game touches it (rtt_read.h) are that
+ *   renderer's, unchanged. Its bins are made for the largest such texture.
  * - A frame it cannot draw is left to the raster renderer (CanDraw()):
- *   renders to a texture, more textures than it has slots for, a picture
- *   from another context to start from, the VMUs or crosshairs drawn over
- *   the picture, more render passes than the kernels take. */
+ *   more textures than it has slots for, a texture rendered to that the
+ *   device cannot write from a compute shader, the VMUs or crosshairs
+ *   drawn over the picture, more render passes than the kernels take. */
 #pragma once
 #include "vulkan.h"
 #include "buffer.h"
@@ -61,6 +69,7 @@ public:
 		u32 chunks;		// ...for this many chunks
 		bool lastPicture;	// start from the picture before
 		bool lastScaled;	// ...one of another size
+		u32 rttScale;		// a render to a texture: Render To Texture Upscaling's (else 0)
 	};
 	/* The words, in @out (room for @room); their count, or 0 when the frame
 	 * does not fit there, has more primitives or textures than there is
@@ -76,6 +85,12 @@ public:
 	// the most words a frame of this machine takes, and the most primitives
 	static u32 MaxWords();
 	static u32 MaxPrims();
+	// the coarse tiles' size for a picture this wide (log2)
+	static u32 TileLog2(u32 width) { return width > 1280 ? 6 : 5; }
+	// the most coarse tiles a texture rendered to has (at the most upscaling there is)
+	static u32 MaxRttTiles();
+	// Render To Texture Upscaling, as the renders to a texture have it
+	static u32 RttScale();
 };
 
 class ComputeDrawer
@@ -100,9 +115,11 @@ public:
 	// whether the frame in pvrrc is one this draws (before anything is recorded)
 	bool CanDraw() const;
 	/* The frame's words and textures, @last: started from the picture
-	 * before (@scaled: one of another size, kept from another context). False: it does not fit, and the raster renderer draws it;
-	 * nothing is recorded either way. */
-	bool Prepare(bool last, bool scaled, const Texture *paletteTexture);
+	 * before (@scaled: one of another size, kept from another context);
+	 * a render to a texture, into one of @rtt's size. False: it does not
+	 * fit, and the raster renderer draws it; nothing is recorded either
+	 * way, and nothing of the textures is looked at. */
+	bool Prepare(bool last, bool scaled, const Texture *paletteTexture, vk::Extent2D rtt = vk::Extent2D());
 	/* ...then drawn into @image (its view @view), left in the layout the
 	 * raster renderer leaves its picture in; @last, the picture before (or
 	 * null). Its own command buffer of the pool's, submitted with the
@@ -114,6 +131,7 @@ public:
 	// what is logged at Term()
 	u64 statFrames = 0;
 	u64 statGpuFrames = 0;
+	u64 statRttFrames = 0;
 	u64 statFallback = 0;
 	u64 statWhy[ComputeFrame::Why_Count] = {};
 

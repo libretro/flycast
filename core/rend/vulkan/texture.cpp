@@ -176,7 +176,7 @@ static const vk::Format poolFormats[] = {
 };
 static const char * const poolFormatNames[] = { "5551", "565", "4444", "8888", "8-bit", "1555", "4444 (planar)", "8888 rendered to" };
 // what the pictures rendered to are used for (the drawers' renderTargetUsage, and to be written as a texture after)
-static const vk::ImageUsageFlags targetUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
+static const vk::ImageUsageFlags baseTargetUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
 		| vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 
 int TexturePool::FormatIndex(vk::Format format)
@@ -209,7 +209,13 @@ void TexturePool::Init(const TexDecoder *decoder)
 				| vk::FormatFeatureFlagBits::eTransferSrc;
 		usable[f] = (props.optimalTilingFeatures & needed) == needed;
 		if (f == TARGET)
+		{
 			usable[f] = usable[f] && (props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eColorAttachment);
+			// (the compute renderer writes them as storage images: SetTargetStorage())
+			if (!(props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eStorageImage))
+				targetStorage = false;
+			targetUsage = baseTargetUsage | (targetStorage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlags());
+		}
 		// the 16-bit ones the device cannot sample are converted to 32 bits (Force32BitTexture())
 		if (f < 3 && !context->IsFormatSupported((TextureType)(f == 0 ? TextureType::_5551 : f == 1 ? TextureType::_565 : TextureType::_4444)))
 			usable[f] = false;

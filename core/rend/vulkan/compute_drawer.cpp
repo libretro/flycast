@@ -56,6 +56,20 @@ u32 ComputeFrame::MaxWords()
 			+ verts * PVRC_VTX_WORDS + 120 * 1024 * s + 16384 * s * 9;
 }
 
+u32 ComputeFrame::RttScale()
+{
+	return settings.rend.RenderToTextureUpscale > 1 ? (u32)settings.rend.RenderToTextureUpscale : 1;
+}
+
+/* (a texture rendered to is at most 1024 x 1024, times Render To Texture
+ * Upscaling's 8 at the most: OITTextureDrawer::GetSize()) */
+u32 ComputeFrame::MaxRttTiles()
+{
+	const u32 side = 1024 * 8;
+	const u32 tiles = (side + (1u << TileLog2(side)) - 1) >> TileLog2(side);
+	return tiles * tiles;
+}
+
 static inline u32 rectWord(int x, int y)
 {
 	return (u32)std::max(x, 0) | ((u32)std::max(y, 0) << 16);
@@ -95,7 +109,14 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 		return 0;
 
 	matrices.CalcMatrices(&pvrrc);
-	SetBaseScissor();
+	const u32 rttScale = rc.isRTT ? std::max(layout.rttScale, 1u) : 1;
+	if (rc.isRTT)
+		/* only the pixel clip is written, as OITTextureDrawer::NewFrame()
+		 * has it; the texture is cleared around it */
+		baseScissor = vk::Rect2D(vk::Offset2D(rc.fb_X_CLIP.min * rttScale, rc.fb_Y_CLIP.min * rttScale),
+				vk::Extent2D((rc.fb_X_CLIP.max + 1 - rc.fb_X_CLIP.min) * rttScale, (rc.fb_Y_CLIP.max + 1 - rc.fb_Y_CLIP.min) * rttScale));
+	else
+		SetBaseScissor();
 
 	memset(out, 0, PVRC_F_WORDS * 4);
 	const int bx0 = std::min((int)baseScissor.offset.x, (int)layout.width);
@@ -335,7 +356,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	out[PVRC_F_PASSES] = passCount;
 	out[PVRC_F_FLAGS] = layout.lastPicture ? (layout.lastScaled ? PVRC_FF_LAST_PICTURE | PVRC_FF_LAST_SCALED : PVRC_FF_LAST_PICTURE) : 0;
 	/* A framebuffer the game has not drawn to lately starts as the border
-	 * colour; any other black (OITDrawer::Draw()) */
+	 * colour; any other black (OITDrawer::Draw()), a texture rendered to too */
 	out[PVRC_F_CLEAR] = rc.clearFramebuffer
 			? (VO_BORDER_COL.Red | (VO_BORDER_COL.Green << 8) | (VO_BORDER_COL.Blue << 16) | 0xff000000u)
 			: 0xff000000u;
@@ -343,11 +364,14 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	out[PVRC_F_SCISSOR + 1] = (u32)by0;
 	out[PVRC_F_SCISSOR + 2] = (u32)bx1;
 	out[PVRC_F_SCISSOR + 3] = (u32)by1;
+	/* (a render to a texture: the matrix is to the frame's own pixels, and
+	 * the raster renderer's viewport is that many times larger) */
 	const xform& vp = matrices.GetViewportMatrix();
-	out[PVRC_F_XFORM] = fbits(vp.sx);
-	out[PVRC_F_XFORM + 1] = fbits(vp.sy);
-	out[PVRC_F_XFORM + 2] = fbits(vp.tx);
-	out[PVRC_F_XFORM + 3] = fbits(vp.ty);
+	const float vs = (float)rttScale;
+	out[PVRC_F_XFORM] = fbits(vp.sx * vs);
+	out[PVRC_F_XFORM + 1] = fbits(vp.sy * vs);
+	out[PVRC_F_XFORM + 2] = fbits(vp.tx * vs);
+	out[PVRC_F_XFORM + 3] = fbits(vp.ty * vs);
 	out[PVRC_F_XFORM + 4] = fbits(vp.sz);
 	/* Where the raster renderers clip a triangle with a vertex behind the
 	 * eye, which the kernels clip there too (pvr_compute.h,
@@ -478,6 +502,8 @@ struct ComputeDrawer::Resources
 	vk::UniqueDescriptorSetLayout setLayout;
 	vk::UniquePipelineLayout pipelineLayout;
 	vk::UniquePipeline pipelines[PVRC_KERNELS + 1];
+	// with SSAA, the kernels for renders to a texture, at one sample a pixel
+	vk::UniquePipeline rttPipelines[PVRC_KERNELS + 1];
 	vk::UniqueDescriptorPool descriptorPool;
 	std::vector<vk::DescriptorSet> sets;
 	// what each set's texture slots, picture and last picture have
@@ -495,6 +521,7 @@ struct ComputeDrawer::Resources
 	vk::UniqueSampler linear;	// (a picture of another size to start from)
 	bool lastScaled = false;
 	bool gpu = false;	// this frame's is the decode's
+	bool rtt = false;	// ...a render to a texture
 	// this frame's, between Prepare and Record
 	u32 words = 0, prims = 0;
 	u64 skipped = 0, dropped = 0, hiz = 0, clipped = 0;
@@ -548,10 +575,11 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 		return fail(lacks);
 	std::unique_ptr<Resources> r(new Resources());
 	r->keep = pvrc_fragments_kept(limits.maxComputeSharedMemorySize);
-	r->tileLog2 = extent.width > 1280 ? 6 : 5;
+	r->tileLog2 = ComputeFrame::TileLog2(extent.width);
 	const u32 tiles = ((extent.width + (1u << r->tileLog2) - 1) >> r->tileLog2) * ((extent.height + (1u << r->tileLog2) - 1) >> r->tileLog2);
 	r->chunks = (ComputeFrame::MaxPrims() + PVR_CHUNK_PRIMS - 1) >> PVR_CHUNK_LOG2;
-	r->runs = r->chunks * tiles;
+	// (room for the screen's tiles, and a texture rendered to's: a few words each)
+	r->runs = r->chunks * std::max(tiles, ComputeFrame::MaxRttTiles());
 	r->binWords = pvrc_bin_words(r->runs, PoolEntries);
 	r->ringWords = (ComputeFrame::MaxWords() + 63) & ~63u;
 	const int slots = pool->GetSize();
@@ -595,17 +623,22 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 	r->setLayout = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), B_COUNT, bindings));
 	r->pipelineLayout = device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), 1, &r->setLayout.get()));
 
-	// every kernel, now, for this many samples: none is made while a game runs
-	const u32 spec[4] = { this->samples, SSAA_LOG2(this->samples), r->keep, 0 };
-	const vk::SpecializationMapEntry entries[4] = { { 0, 0, 4 }, { 1, 4, 4 }, { 2, 8, 4 }, { 3, 12, 4 } };
-	const vk::SpecializationInfo specInfo(4, entries, sizeof(spec), spec);
-	for (int k = 1; k <= PVRC_KERNELS; k++)
+	/* every kernel, now, for this many samples, and for one when that is
+	 * not one (renders to a texture): none is made while a game runs */
+	for (int set = 0; set < (this->samples > 1 ? 2 : 1); set++)
 	{
-		vk::UniqueShaderModule module = device.createShaderModuleUnique(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(),
-				compute_spv_size[k], compute_spv[k]));
-		const vk::PipelineShaderStageCreateInfo stage(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute, *module, "main", &specInfo);
-		r->pipelines[k] = device.createComputePipelineUnique(context->GetPipelineCache(),
-				vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *r->pipelineLayout));
+		const u32 n = set == 0 ? this->samples : 1;
+		const u32 spec[4] = { n, SSAA_LOG2(n), r->keep, 0 };
+		const vk::SpecializationMapEntry entries[4] = { { 0, 0, 4 }, { 1, 4, 4 }, { 2, 8, 4 }, { 3, 12, 4 } };
+		const vk::SpecializationInfo specInfo(4, entries, sizeof(spec), spec);
+		for (int k = 1; k <= PVRC_KERNELS; k++)
+		{
+			vk::UniqueShaderModule module = device.createShaderModuleUnique(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(),
+					compute_spv_size[k], compute_spv[k]));
+			const vk::PipelineShaderStageCreateInfo stage(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute, *module, "main", &specInfo);
+			(set == 0 ? r->pipelines : r->rttPipelines)[k] = device.createComputePipelineUnique(context->GetPipelineCache(),
+					vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *r->pipelineLayout));
+		}
 	}
 
 	const vk::DescriptorPoolSize sizes[] = {
@@ -668,10 +701,10 @@ void ComputeDrawer::Term()
 	{
 		if (statFrames + statFallback != 0)
 		{
-			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn (%llu of them the GPU's TA decode's), %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles at no depth left out, %llu with a vertex behind the eye clipped, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
-					(unsigned long long)statFrames, (unsigned long long)statGpuFrames, (unsigned long long)statFallback, (unsigned long long)res->skipped,
+			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn (%llu of them the GPU's TA decode's, %llu renders to a texture), %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles at no depth left out, %llu with a vertex behind the eye clipped, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
+					(unsigned long long)statFrames, (unsigned long long)statGpuFrames, (unsigned long long)statRttFrames, (unsigned long long)statFallback, (unsigned long long)res->skipped,
 					(unsigned long long)res->dropped, (unsigned long long)res->clipped, res->peels, (unsigned long long)res->hiz);
-			NOTICE_LOG(RENDERER, "Vulkan compute renderer: fallbacks: %llu renders to a texture, %llu with the VMUs or crosshairs drawn over, %llu starting from a picture it cannot take, %llu with more render passes than it takes, %llu with more textures than its slots, %llu too large, %llu the decode's without its buffers",
+			NOTICE_LOG(RENDERER, "Vulkan compute renderer: fallbacks: %llu renders to a texture it cannot write, %llu with the VMUs or crosshairs drawn over, %llu starting from a picture it cannot take, %llu with more render passes than it takes, %llu with more textures than its slots, %llu too large, %llu the decode's without its buffers",
 					(unsigned long long)statWhy[ComputeFrame::Why_Rtt], (unsigned long long)statWhy[ComputeFrame::Why_Osd],
 					(unsigned long long)statWhy[ComputeFrame::Why_Picture], (unsigned long long)statWhy[ComputeFrame::Why_Passes],
 					(unsigned long long)statWhy[ComputeFrame::Why_Textures], (unsigned long long)statWhy[ComputeFrame::Why_Room],
@@ -681,18 +714,18 @@ void ComputeDrawer::Term()
 	timer.Term();
 	res.reset();
 	ready = false;
-	statFrames = statFallback = statGpuFrames = 0;
+	statFrames = statFallback = statGpuFrames = statRttFrames = 0;
 	memset(statWhy, 0, sizeof(statWhy));
 }
 
 bool ComputeDrawer::CanDraw() const
 {
-	if (!ready || pvrrc.isRTT || pvrrc.isRenderFramebuffer || (pvrrc.gpu && gpuDraw == nullptr))
+	if (!ready || pvrrc.isRenderFramebuffer || (pvrrc.gpu && gpuDraw == nullptr))
 		return false;
 	return true;
 }
 
-bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTexture)
+bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTexture, vk::Extent2D rtt)
 {
 	Resources& r = *res;
 	const int slot = commandPool->GetIndex();
@@ -708,15 +741,24 @@ bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTextur
 	}
 
 	ComputeFrame::Layout layout;
-	layout.width = extent.width;
-	layout.height = extent.height;
-	layout.tileLog2 = r.tileLog2;
+	r.rtt = pvrrc.isRTT;
+	layout.width = r.rtt ? rtt.width : extent.width;
+	layout.height = r.rtt ? rtt.height : extent.height;
+	layout.tileLog2 = r.rtt ? ComputeFrame::TileLog2(layout.width) : r.tileLog2;
 	layout.pool = PoolEntries;
 	layout.runs = r.runs;
 	layout.chunks = r.chunks;
-	layout.lastPicture = last;
-	layout.lastScaled = last && scaled;
+	layout.lastPicture = last && !r.rtt;
+	layout.lastScaled = layout.lastPicture && scaled;
+	layout.rttScale = r.rtt ? ComputeFrame::RttScale() : 0;
 	r.lastScaled = layout.lastScaled;
+	// (a texture rendered to larger than the bins are made for: none the PowerVR's registers ask for)
+	const u32 tiles = ((layout.width + (1u << layout.tileLog2) - 1) >> layout.tileLog2) * ((layout.height + (1u << layout.tileLog2) - 1) >> layout.tileLog2);
+	if (layout.width == 0 || layout.height == 0 || (u64)tiles * r.chunks > r.runs)
+	{
+		Fallback(ComputeFrame::Why_Room);
+		return false;
+	}
 	r.slots.Reset();
 	u32 *words = r.ringMap + (size_t)slot * r.ringWords;
 	r.words = frame.Pack(layout, r.slots, words, r.ringWords, &r.prims);
@@ -726,7 +768,19 @@ bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTextur
 		return false;
 	}
 	r.gpu = pvrrc.gpu;
+	r.dummyView = (VkImageView)paletteTexture->GetImageView();
 
+	/* (the buffers and textures the set has are written by Record(),
+	 * after the texture a render to a texture goes to is taken, which the
+	 * frame's textures can be: as the raster renderer has them) */
+	return true;
+}
+
+void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView last)
+{
+	Resources& r = *res;
+	const int slot = commandPool->GetIndex();
+	const u32 *words = r.ringMap + (size_t)slot * r.ringWords;
 	/* The set's textures, picture and palette, where they changed */
 	VulkanContext *context = VulkanContext::Instance();
 	const vk::DescriptorSet set = r.sets[slot];
@@ -757,7 +811,7 @@ bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTextur
 			have[b] = want[b];
 		}
 	}
-	const VkImageView dummyView = (VkImageView)paletteTexture->GetImageView();
+	const VkImageView dummyView = r.dummyView;
 	const VkSampler dummySampler = (VkSampler)*r.nearest;
 	auto write = [&](u32 binding, u32 element, vk::DescriptorType type, VkSampler sampler, VkImageView v, vk::ImageLayout l) {
 		r.imageInfos.push_back(vk::DescriptorImageInfo(vk::Sampler(sampler), vk::ImageView(v), l));
@@ -788,23 +842,6 @@ bool ComputeDrawer::Prepare(bool last, bool scaled, const Texture *paletteTextur
 		}
 	}
 	r.setUsed[slot] = r.slots.used;
-	r.dummyView = dummyView;
-	return true;
-}
-
-void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView last)
-{
-	Resources& r = *res;
-	const int slot = commandPool->GetIndex();
-	const u32 *words = r.ringMap + (size_t)slot * r.ringWords;
-	VulkanContext *context = VulkanContext::Instance();
-	const vk::DescriptorSet set = r.sets[slot];
-	const VkImageView dummyView = r.dummyView;
-	const VkSampler dummySampler = (VkSampler)*r.nearest;
-	auto write = [&](u32 binding, u32 element, vk::DescriptorType type, VkSampler sampler, VkImageView v, vk::ImageLayout l) {
-		r.imageInfos.push_back(vk::DescriptorImageInfo(vk::Sampler(sampler), vk::ImageView(v), l));
-		r.writes.push_back(vk::WriteDescriptorSet(set, binding, element, 1, type, &r.imageInfos.back()));
-	};
 	// (the pictures and the palette every frame: three words)
 	write(B_OUT, 0, vk::DescriptorType::eStorageImage, VK_NULL_HANDLE, (VkImageView)view, vk::ImageLayout::eGeneral);
 	write(B_LAST, 0, vk::DescriptorType::eCombinedImageSampler, last && r.lastScaled ? (VkSampler)*r.linear : dummySampler,
@@ -822,8 +859,26 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
 			vk::DependencyFlags(), vk::MemoryBarrier(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferRead,
 					vk::AccessFlagBits::eTransferWrite), nullptr, nullptr);
-	cmd.fillBuffer(bins, 0, r.binsZero ? (vk::DeviceSize)PVRC_B_POOL(r.runs) * 4 : VK_WHOLE_SIZE, 0);
-	r.binsZero = true;
+	{
+		/* (only this frame's runs: the bins have room for the largest
+		 * texture rendered to's, and the kernels read no others) */
+		const u32 used = (r.gpu ? r.chunks : words[PVRC_F_CHUNKS]) * words[PVRC_F_TILES_X] * words[PVRC_F_TILES_Y];
+		if (!r.binsZero)
+			cmd.fillBuffer(bins, 0, VK_WHOLE_SIZE, 0);
+		else if (used >= r.runs)
+			cmd.fillBuffer(bins, 0, (vk::DeviceSize)PVRC_B_POOL(r.runs) * 4, 0);
+		else
+		{
+			if (used != 0)
+			{
+				cmd.fillBuffer(bins, (vk::DeviceSize)PVRC_B_COUNT(r.runs) * 4, (vk::DeviceSize)used * 4, 0);
+				cmd.fillBuffer(bins, (vk::DeviceSize)PVRC_B_START(r.runs) * 4, (vk::DeviceSize)used * 4, 0);
+				cmd.fillBuffer(bins, (vk::DeviceSize)PVRC_B_CURSOR(r.runs) * 4, (vk::DeviceSize)used * 4, 0);
+			}
+			cmd.fillBuffer(bins, (vk::DeviceSize)PVRC_B_STATS(r.runs) * 4, (vk::DeviceSize)(PVRC_B_POOL(r.runs) - PVRC_B_STATS(r.runs)) * 4, 0);
+		}
+		r.binsZero = true;
+	}
 	/* (and what the frame's textures were made with before: the texture
 	 * decoder's and the uploads' barriers, and a render to texture's
 	 * render pass, make them ready for fragment shaders, not these) */
@@ -834,8 +889,11 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 			vk::PipelineStageFlagBits::eComputeShader, vk::DependencyFlags(), toCompute, nullptr, toGeneral);
 	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *r.pipelineLayout, 0, 1, &set, 0, nullptr);
+	// (a render to a texture is drawn at one sample a pixel)
+	const vk::UniquePipeline *pipelines = r.rtt && samples > 1 ? r.rttPipelines : r.pipelines;
+	const u32 n = r.rtt ? 1 : samples;
 	auto step = [&](int kernel, u32 x, u32 y) {
-		cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.pipelines[kernel]);
+		cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[kernel]);
 		if (x != 0 && y != 0)
 			cmd.dispatch(x, y, 1);
 		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
@@ -849,7 +907,7 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 		/* A frame of the decode's: its numbering, and the dispatches of
 		 * the kernels whose sizes are the GPU's, from it */
 		auto indirect = [&](int kernel, u32 at) {
-			cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.pipelines[kernel]);
+			cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[kernel]);
 			cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + at) * 4);
 			cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
 					vk::DependencyFlags(), vk::MemoryBarrier(vk::AccessFlagBits::eShaderWrite,
@@ -868,24 +926,30 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 		step(PVRC_K_SCATTER, groups, 1);
 		step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
 	}
-	const u32 fw = PVRC_FINE_W(samples), fh = PVRC_FINE_H(samples);
-	step(PVRC_K_WALK, (extent.width + fw - 1) / fw, (extent.height + fh - 1) / fh);
-	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.pipelines[PVRC_K_CLEAR]);
+	const u32 fw = PVRC_FINE_W(n), fh = PVRC_FINE_H(n);
+	step(PVRC_K_WALK, (words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh);
+	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[PVRC_K_CLEAR]);
 	cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_CLEAR_X) * 4);
 	// the counts, for when this slot comes round
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(),
 			vk::MemoryBarrier(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead), nullptr, nullptr);
 	cmd.copyBuffer(bins, *r.stats->buffer, vk::BufferCopy((vk::DeviceSize)PVRC_B_STATS(r.runs) * 4, (vk::DeviceSize)slot * PVRC_STATS * 4, PVRC_STATS * 4));
 	r.statsWritten[slot] = true;
-	// the picture, for the frontend, as the raster renderer leaves it
-	const vk::ImageMemoryBarrier toRead(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eGeneral,
+	/* the picture, for the frontend, as the raster renderer leaves it; a
+	 * texture, for the frames that draw with it (either renderer) and the
+	 * copy to video memory when the game touches it */
+	const vk::ImageMemoryBarrier toRead(vk::AccessFlagBits::eShaderWrite,
+			r.rtt ? vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead : vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eGeneral,
 			vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
 			vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, vk::DependencyFlags(),
-			nullptr, nullptr, toRead);
+	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+			r.rtt ? vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer
+					: vk::PipelineStageFlagBits::eFragmentShader, vk::DependencyFlags(), nullptr, nullptr, toRead);
 	timer.End(cmd, slot);
 	cmd.end();
 	statFrames++;
 	if (r.gpu)
 		statGpuFrames++;
+	if (r.rtt)
+		statRttFrames++;
 }

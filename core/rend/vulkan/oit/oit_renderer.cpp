@@ -41,6 +41,9 @@ public:
 		oitShaderManager.SetSamples(samples);
 		textureDrawer.SetCommandPool(&texCommandPool);
 		textureDrawer.Init(&samplerManager, &rttShaderManager, &textureCache, &oitBuffers);
+		/* (renders to a texture drawn by the compute renderer go to the
+		 * pool's images, which it then writes as storage images) */
+		texPool.SetTargetStorage(rend_compute_wanted && ComputeDrawer::DeviceLacks() == nullptr);
 		textureDrawer.SetGpuDraw(taDecoder.Draw());
 
 		screenDrawer.SetStoragePicture(rend_compute_wanted);
@@ -49,6 +52,7 @@ public:
 		screenDrawer.SetGpuDraw(taDecoder.Draw());
 		computeDrawer.SetGpuDraw(taDecoder.Draw());
 		BaseInit(screenDrawer.GetRenderPass(), screenDrawer.GetOsdSubpass());
+		textureDrawer.SetStorageTarget(texPool.TargetsStorable());
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
 		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1, samples);
 		screenDrawer.SetLastPicturePipeline(&lastPicturePipeline);
@@ -125,15 +129,27 @@ public:
 			return false;
 		}
 
-		/* Rendering Method: Compute draws the screen's frames it can
-		 * (vulkan/compute_drawer.h) into the same pictures; the others are
-		 * drawn below */
-		if (computeDrawer.Ready())
+		/* Rendering Method: Compute draws the frames it can
+		 * (vulkan/compute_drawer.h) into the same pictures, and the renders
+		 * to a texture into the same textures; the others are drawn below */
+		if (computeDrawer.Ready() && pvrrc.isRTT)
 		{
-			bool last, scaled;
-			if (pvrrc.isRTT)
+			if (!texPool.TargetsStorable())
 				computeDrawer.Fallback(ComputeFrame::Why_Rtt);
 			else if (!computeDrawer.CanDraw())
+				computeDrawer.Fallback(ComputeFrame::Why_Decode);
+			else if (computeDrawer.Prepare(false, false, paletteTexture.get(), OITTextureDrawer::ComputeSize()))
+			{
+				const OITTextureDrawer::ComputeTarget target = textureDrawer.ComputeBegin();
+				computeDrawer.Record(target.image, target.view, vk::ImageView());
+				textureDrawer.ComputeEnd();
+				return false;
+			}
+		}
+		else if (computeDrawer.Ready())
+		{
+			bool last, scaled;
+			if (!computeDrawer.CanDraw())
 				computeDrawer.Fallback(ComputeFrame::Why_Decode);
 			else if (vmus->Drawing())
 				computeDrawer.Fallback(ComputeFrame::Why_Osd);

@@ -6,8 +6,10 @@
 #        CONTENT run for FRAMES frames with the core options given; some of
 #        the frames it draws to the screen written as the compute
 #        renderer's words (tile_dump.cpp: TILE_DUMP_EVERY, TILE_DUMP_MAX,
-#        TILE_DUMP_FROM), then each drawn by the kernels on the device and
-#        by the reference (TILE_SAMPLES, TILE_KEEP), and compared
+#        TILE_DUMP_FROM), and some of its renders to a texture
+#        (TILE_DUMP_RTT, TILE_DUMP_RTT_EVERY), then each drawn by the kernels
+#        on the device and by the reference (TILE_SAMPLES, TILE_KEEP), and
+#        compared
 #   sh tools/rend/tile_test.sh -f FRAME...
 #        frames written before, drawn and compared
 #
@@ -87,6 +89,7 @@ mkdir -p "$WORK/frames"
 TILE_DUMP_DIR="$WORK/frames" LD_PRELOAD="$WORK/libGLESv2.so.2" "$WORK/tile_dump" self "$CONTENT" "$FRAMES" \
    reicast_threaded_rendering=disabled "$@" > "$WORK/dump.out" 2> "$WORK/dump.err" || true
 grep '^tile_dump' "$WORK/dump.out" || true
-ls "$WORK/frames"/frame_*.bin > /dev/null 2>&1 || { echo "tile_test: no frames written" >&2; exit 1; }
-"$WORK/tile_test" "$WORK" "$WORK/frames"/frame_*.bin | tee "$WORK/out"
+DUMPED=$(ls "$WORK/frames"/frame_*.bin "$WORK/frames"/rtt_*.bin 2>/dev/null || true)
+[ -n "$DUMPED" ] || { echo "tile_test: no frames written" >&2; exit 1; }
+"$WORK/tile_test" "$WORK" $DUMPED | tee "$WORK/out"
 [ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ]

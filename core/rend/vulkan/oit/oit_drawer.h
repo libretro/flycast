@@ -346,13 +346,51 @@ public:
 
 	virtual void EndFrame() override;
 
+	/* The compute renderer draws renders to a texture into the texture this
+	 * drawer would (vulkan/compute_drawer.h): its images are then made for
+	 * it to write too */
+	void SetStorageTarget(bool on) { storageUsage = on ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlags(); }
+	// the size of the texture the render in pvrrc goes to
+	static vk::Extent2D ComputeSize()
+	{
+		const Size s = GetSize();
+		return vk::Extent2D(s.widthPow2, s.heightPow2);
+	}
+	struct ComputeTarget
+	{
+		vk::Image image;
+		vk::ImageView view;
+	};
+	// the texture it draws the render in, as NewFrame() takes it...
+	ComputeTarget ComputeBegin();
+	// ...and once it is recorded, as EndFrame() ends one of this drawer's
+	void ComputeEnd();
+
 protected:
 	virtual vk::CommandBuffer NewFrame() override;
 	virtual vk::Framebuffer GetFinalFramebuffer() const override { return *framebuffers[GetCurrentImage()]; }
 	virtual vk::Format GetColorFormat() const override { return vk::Format::eR8G8B8A8Unorm; }
 
 private:
+	/* The render's sizes: the frame from its first pixel to the pixel
+	 * clip's last, the clip, and the texture, a power of two, all times
+	 * Render To Texture Upscaling */
+	struct Size
+	{
+		u32 origWidth, origHeight;
+		u32 clipX, clipY, clipWidth, clipHeight;
+		u32 upscaledWidth, upscaledHeight;
+		u32 widthPow2, heightPow2;
+	};
+	static Size GetSize();
+	/* The texture the render goes to, taken from the cache and given an
+	 * image to render to, with @usage too; the layout it is in */
+	vk::ImageLayout TakeTexture(const Size& size, const vk::ImageUsageFlags& usage);
+	// the render is submitted: video memory gets it when something first touches it there
+	void Watch();
+
 	u32 textureAddr = 0;
+	vk::ImageUsageFlags storageUsage;
 
 	Texture *texture = nullptr;
 	vk::Image colorImage;

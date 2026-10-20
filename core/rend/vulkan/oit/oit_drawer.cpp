@@ -723,51 +723,43 @@ void OITScreenDrawer::MakeFramebuffers()
 	}
 }
 
-vk::CommandBuffer OITTextureDrawer::NewFrame()
+OITTextureDrawer::Size OITTextureDrawer::GetSize()
 {
-	DEBUG_LOG(RENDERER, "RenderToTexture packmode=%d stride=%d - %d,%d -> %d,%d", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
-			FB_X_CLIP.min, FB_Y_CLIP.min, FB_X_CLIP.max, FB_Y_CLIP.max);
-	NewImage();
-
-	matrices.CalcMatrices(&pvrrc);
-
-	textureAddr = FB_W_SOF1 & VRAM_MASK;
+	Size s;
 	// the frame from its first pixel, as far as the pixel clip goes (see TransformMatrix)
-	u32 origWidth = pvrrc.fb_X_CLIP.max + 1;
-	u32 origHeight = pvrrc.fb_Y_CLIP.max + 1;
-	const u32 clipX = pvrrc.fb_X_CLIP.min, clipY = pvrrc.fb_Y_CLIP.min;
-	const u32 clipWidth = origWidth - clipX, clipHeight = origHeight - clipY;
-	u32 upscaledWidth = origWidth;
-	u32 upscaledHeight = origHeight;
-	u32 heightPow2 = 8;
-	while (heightPow2 < upscaledHeight)
-		heightPow2 *= 2;
-	u32 widthPow2 = 8;
-	while (widthPow2 < upscaledWidth)
-		widthPow2 *= 2;
+	s.origWidth = pvrrc.fb_X_CLIP.max + 1;
+	s.origHeight = pvrrc.fb_Y_CLIP.max + 1;
+	s.clipX = pvrrc.fb_X_CLIP.min;
+	s.clipY = pvrrc.fb_Y_CLIP.min;
+	s.clipWidth = s.origWidth - s.clipX;
+	s.clipHeight = s.origHeight - s.clipY;
+	s.upscaledWidth = s.origWidth;
+	s.upscaledHeight = s.origHeight;
+	s.heightPow2 = 8;
+	while (s.heightPow2 < s.upscaledHeight)
+		s.heightPow2 *= 2;
+	s.widthPow2 = 8;
+	while (s.widthPow2 < s.upscaledWidth)
+		s.widthPow2 *= 2;
 
 	if (settings.rend.RenderToTextureUpscale > 1)
 	{
-		upscaledWidth *= settings.rend.RenderToTextureUpscale;
-		upscaledHeight *= settings.rend.RenderToTextureUpscale;
-		widthPow2 *= settings.rend.RenderToTextureUpscale;
-		heightPow2 *= settings.rend.RenderToTextureUpscale;
+		s.upscaledWidth *= settings.rend.RenderToTextureUpscale;
+		s.upscaledHeight *= settings.rend.RenderToTextureUpscale;
+		s.widthPow2 *= settings.rend.RenderToTextureUpscale;
+		s.heightPow2 *= settings.rend.RenderToTextureUpscale;
 	}
+	return s;
+}
 
-	VulkanContext *context = GetContext();
-	vk::Device device = context->GetDevice();
-
-	vk::CommandBuffer commandBuffer = commandPool->Allocate();
-	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-	vertexUniformBuffer = WriteVertexUniforms<OITDescriptorSets::VertexShaderUniforms>(commandBuffer, GetCurrentImage());
-
-	MakeBuffers(widthPow2, heightPow2);
-
-	vk::ImageView colorImageView;
+vk::ImageLayout OITTextureDrawer::TakeTexture(const Size& size, const vk::ImageUsageFlags& usage)
+{
+	const u32 origWidth = size.origWidth, origHeight = size.origHeight;
+	const u32 widthPow2 = size.widthPow2, heightPow2 = size.heightPow2;
 	vk::ImageLayout colorImageCurrentLayout;
 
 	/* what an earlier render left waiting in this memory, while its picture is still what it was: see rtt_read.h */
-	vk_rtt_supersede(textureAddr, clipX, clipY, clipWidth, clipHeight);
+	vk_rtt_supersede(textureAddr, size.clipX, size.clipY, size.clipWidth, size.clipHeight);
 	// TexAddr : fb_rtt.TexAddr, Reserved : 0, StrideSel : 0, ScanOrder : 1
 	TCW tcw = { { textureAddr >> 3, 0, 0, 1 } };
 	switch (FB_W_CTRL.fb_packmode) {
@@ -792,7 +784,7 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	{
 		texture->Create();
 		texture->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
-		texture->SetDevice(device);
+		texture->SetDevice(GetContext()->GetDevice());
 	}
 	else if (textureCache->IsInFlight(texture))
 	{
@@ -805,7 +797,8 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 	 * same address, the same size and in this format: its image was not
 	 * made to be rendered to, nor to be copied from, and is made again. */
 	const vk::ImageUsageFlags renderTargetUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled
-			| vk::ImageUsageFlagBits::eTransferSrc;	// read back when the game touches it in video memory
+			| vk::ImageUsageFlagBits::eTransferSrc	// read back when the game touches it in video memory
+			| storageUsage | usage;
 	if (texture->format != vk::Format::eR8G8B8A8Unorm || texture->extent.width != widthPow2 || texture->extent.height != heightPow2
 			|| (texture->imageUsage & renderTargetUsage) != renderTargetUsage)
 	{
@@ -820,11 +813,39 @@ vk::CommandBuffer OITTextureDrawer::NewFrame()
 		colorImageCurrentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 	}
 	colorImage = texture->GetImage();
-	colorImageView = texture->GetImageView();
 	viewport.offset.x = 0;
 	viewport.offset.y = 0;
 	viewport.extent.width = widthPow2;
 	viewport.extent.height = heightPow2;
+	return colorImageCurrentLayout;
+}
+
+vk::CommandBuffer OITTextureDrawer::NewFrame()
+{
+	DEBUG_LOG(RENDERER, "RenderToTexture packmode=%d stride=%d - %d,%d -> %d,%d", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
+			FB_X_CLIP.min, FB_Y_CLIP.min, FB_X_CLIP.max, FB_Y_CLIP.max);
+	NewImage();
+
+	matrices.CalcMatrices(&pvrrc);
+
+	textureAddr = FB_W_SOF1 & VRAM_MASK;
+	const Size size = GetSize();
+	const u32 clipX = size.clipX, clipY = size.clipY;
+	const u32 clipWidth = size.clipWidth, clipHeight = size.clipHeight;
+	const u32 upscaledWidth = size.upscaledWidth, upscaledHeight = size.upscaledHeight;
+	const u32 widthPow2 = size.widthPow2, heightPow2 = size.heightPow2;
+
+	VulkanContext *context = GetContext();
+	vk::Device device = context->GetDevice();
+
+	vk::CommandBuffer commandBuffer = commandPool->Allocate();
+	commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	vertexUniformBuffer = WriteVertexUniforms<OITDescriptorSets::VertexShaderUniforms>(commandBuffer, GetCurrentImage());
+
+	MakeBuffers(widthPow2, heightPow2);
+
+	const vk::ImageLayout colorImageCurrentLayout = TakeTexture(size, vk::ImageUsageFlags());
+	const vk::ImageView colorImageView = texture->GetImageView();
 
 	setImageLayout(commandBuffer, colorImage, vk::Format::eR8G8B8A8Unorm, 1, colorImageCurrentLayout, vk::ImageLayout::eColorAttachmentOptimal);
 
@@ -860,12 +881,39 @@ void OITTextureDrawer::EndFrame()
 	currentCommandBuffer = nullptr;
 	commandPool->EndFrame();
 
+	Watch();
+}
+
+void OITTextureDrawer::Watch()
+{
 	texture->dirty = 0;
 	texture->stride_read = 0;	// (rendered, not read)
    libCore_vramlock_Lock(texture->sa_tex, texture->sa + texture->size - 1, texture);
 	/* video memory gets it when something first touches it there */
 	vk_rtt_watch(texture, textureAddr, pvrrc.fb_X_CLIP.min, pvrrc.fb_Y_CLIP.min,
 			pvrrc.fb_X_CLIP.max - pvrrc.fb_X_CLIP.min + 1, pvrrc.fb_Y_CLIP.max - pvrrc.fb_Y_CLIP.min + 1);
+}
+
+/* The compute renderer's render to a texture goes to the texture a render
+ * of this drawer's would, which is left as one of its is: in the cache,
+ * locked in video memory and watched */
+OITTextureDrawer::ComputeTarget OITTextureDrawer::ComputeBegin()
+{
+	NewImage();
+	textureAddr = FB_W_SOF1 & VRAM_MASK;
+	// (the compute renderer's own barrier makes it ready to be written, from whatever it held)
+	TakeTexture(GetSize(), vk::ImageUsageFlagBits::eStorage);
+	ComputeTarget t;
+	t.image = colorImage;
+	t.view = texture->GetImageView();
+	return t;
+}
+
+void OITTextureDrawer::ComputeEnd()
+{
+	colorImage = nullptr;
+	commandPool->EndFrame();
+	Watch();
 }
 
 vk::CommandBuffer OITScreenDrawer::NewFrame()

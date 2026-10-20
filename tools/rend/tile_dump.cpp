@@ -12,6 +12,12 @@
  *   TILE_DUMP_FROM  the first frame that may be (default 0)
  *   TILE_W, TILE_H  the picture's size (default the core's screen)
  *
+ * And renders to a texture, as the compute renderer draws them, at the
+ * size of the texture they go to (OITTextureDrawer::ComputeSize(), with
+ * Render To Texture Upscaling), from TILE_DUMP_FROM too (rtt_NNNNN.bin):
+ *   TILE_DUMP_RTT       at most this many (default 4; 0 none)
+ *   TILE_DUMP_RTT_EVERY one render to a texture in this many (default 10)
+ *
  * And, for the reference software renderer (tools/rend/refsw), the same
  * frames as the parse left them, with the registers and video memory
  * (refsw/refsw_dump.h: refsw_NNNNN.bin), chosen by the same variables:
@@ -23,8 +29,10 @@
 #include "hw/pvr/pvr_regs.h"
 #include "hw/pvr/Renderer_if.h"
 #include "rend/vulkan/compute_drawer.h"
+#include "rend/vulkan/oit/oit_drawer.h"
 #include "refsw/refsw_dump.h"
 
+#include <algorithm>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,7 +69,7 @@ struct DumpSlots : public ComputeFrame::Slots
 
 static ComputeFrame packer;
 static std::vector<u32> words;
-static u32 frames, written;
+static u32 frames, written, rttFrames, rttWritten;
 
 template<class T>
 static bool put(FILE *f, const List<T>& list)
@@ -125,6 +133,49 @@ static void refsw_dump(TA_context *ctx, const char *dir, u32 n, u32 width, u32 h
 	fflush(stdout);
 }
 
+/* A render to a texture, as the compute renderer packs it */
+static void rtt_dump(TA_context *ctx, const char *dir, u32 n)
+{
+	if (ctx->rend.fb_X_CLIP.max < ctx->rend.fb_X_CLIP.min || ctx->rend.fb_Y_CLIP.max < ctx->rend.fb_Y_CLIP.min)
+		return;	// (no pixel: the renderers draw nothing)
+	if (words.empty())
+		words.resize(ComputeFrame::MaxWords());
+	const vk::Extent2D size = OITTextureDrawer::ComputeSize();
+	ComputeFrame::Layout layout;
+	layout.width = size.width;
+	layout.height = size.height;
+	layout.tileLog2 = ComputeFrame::TileLog2(layout.width);
+	layout.pool = 2u << 20;
+	layout.chunks = (ComputeFrame::MaxPrims() + PVR_CHUNK_PRIMS - 1) >> PVR_CHUNK_LOG2;
+	layout.runs = layout.chunks * ((layout.width + (1u << layout.tileLog2) - 1) >> layout.tileLog2)
+			* ((layout.height + (1u << layout.tileLog2) - 1) >> layout.tileLog2);
+	layout.lastPicture = false;
+	layout.lastScaled = false;
+	layout.rttScale = ComputeFrame::RttScale();
+	DumpSlots slots;
+	u32 prims;
+	std::vector<Vertex> keep(ctx->rend.verts.head(), ctx->rend.verts.head() + ctx->rend.verts.used());
+	const u32 count = packer.Pack(layout, slots, words.data(), (u32)words.size(), &prims);
+	memcpy(ctx->rend.verts.head(), keep.data(), keep.size() * sizeof(Vertex));
+	if (count == 0)
+	{
+		printf("tile_dump: render to a texture %u not packed\n", n);
+		return;
+	}
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/rtt_%05u.bin", dir, n);
+	FILE *f = fopen(path, "wb");
+	if (f == NULL || fwrite(words.data(), 4, count, f) != count)
+		printf("tile_dump: %s not written\n", path);
+	if (f != NULL)
+		fclose(f);
+	printf("tile_dump: render to a texture %u: %u x %u (upscaled %u times), clip %u-%u x %u-%u, %u primitives, %u render passes, %u words\n",
+			n, layout.width, layout.height, layout.rttScale, ctx->rend.fb_X_CLIP.min, ctx->rend.fb_X_CLIP.max,
+			ctx->rend.fb_Y_CLIP.min, ctx->rend.fb_Y_CLIP.max, prims, words[PVRC_F_PASSES], count);
+	fflush(stdout);
+	rttWritten++;
+}
+
 extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 {
 	const bool rv = __real__Z13ta_parse_vdrcP10TA_context(ctx);
@@ -137,6 +188,15 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 	if (rv && refsw_dir != NULL)
 		printf("tile_dump: render %u: %s%u/%u/%u polygons, %u vertices\n", n, ctx->rend.isRTT ? "to a texture, " : "",
 				ctx->rend.global_param_op.used(), ctx->rend.global_param_pt.used(), ctx->rend.global_param_tr.used(), ctx->rend.verts.used());
+	const u32 rttMost = getenv("TILE_DUMP_RTT") ? atoi(getenv("TILE_DUMP_RTT")) : 4;
+	const u32 rttEvery = getenv("TILE_DUMP_RTT_EVERY") ? std::max(atoi(getenv("TILE_DUMP_RTT_EVERY")), 1) : 10;
+	if (rv && dir != NULL && ctx->rend.isRTT && n >= from)
+	{
+		const u32 k = rttFrames++;
+		if (rttWritten < rttMost && k % rttEvery == 0)
+			rtt_dump(ctx, dir, n);
+		return rv;
+	}
 	if (!rv || (dir == NULL && refsw_dir == NULL) || ctx->rend.isRTT || ctx->rend.isRenderFramebuffer || written >= most || n < from || (n - from) % every != 0)
 		return rv;
 	if (refsw_dir != NULL)
@@ -158,6 +218,7 @@ extern "C" bool __wrap__Z13ta_parse_vdrcP10TA_context(TA_context *ctx)
 			* ((layout.height + (1u << layout.tileLog2) - 1) >> layout.tileLog2);
 	layout.lastPicture = false;
 	layout.lastScaled = false;
+	layout.rttScale = 0;
 	DumpSlots slots;
 	u32 prims;
 	/* (the parse's vertices are changed for flat shading, as the raster
