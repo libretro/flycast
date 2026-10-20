@@ -219,7 +219,7 @@ void TexturePool::Init(const TexDecoder *decoder)
 		// the 16-bit ones the device cannot sample are converted to 32 bits (Force32BitTexture())
 		if (f < 3 && !context->IsFormatSupported((TextureType)(f == 0 ? TextureType::_5551 : f == 1 ? TextureType::_565 : TextureType::_4444)))
 			usable[f] = false;
-		if (f >= 5)
+		if (f >= 5 && f != TARGET)
 			usable[f] = usable[f] && decoder != nullptr && decoder->NativeFormat(f == 5 ? TextureType::_5551 : TextureType::_4444) == formats[f];
 		storable[f] = f < 5 && f != TARGET && decoder != nullptr && decoder->Ready() && decoder->Takes(formats[f]);
 		have[f] = usable[f] ? texel[f] : 0;
