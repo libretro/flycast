@@ -47,6 +47,7 @@ public:
 		screenDrawer.Init(&samplerManager, &oitShaderManager, &oitBuffers, samples);
 		screenDrawer.SetCommandPool(&texCommandPool);
 		screenDrawer.SetGpuDraw(taDecoder.Draw());
+		computeDrawer.SetGpuDraw(taDecoder.Draw());
 		BaseInit(screenDrawer.GetRenderPass(), screenDrawer.GetOsdSubpass());
 		// (a quad pipeline is for one subpass: the one above is the last subpass's, this the colour one's)
 		lastPicturePipeline.Init(&shaderManager, screenDrawer.GetRenderPass(), 1, samples);

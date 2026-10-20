@@ -6,9 +6,14 @@
  * - Its input is the CPU's parse of the frame (ta_parse_vdrc()): the
  *   vertices, indices and modifier volume triangles go up once, with the
  *   polygon parameters and the render passes, into this frame's piece of
- *   a ring of host-visible memory the kernels read in place. (A frame the
- *   GPU decoded, TA processing: GPU, is drawn by the raster renderer: the
- *   kernels do not read the decode's draw groups yet.)
+ *   a ring of host-visible memory the kernels read in place. Or, for a
+ *   frame the GPU decoded (TA processing: GPU, vulkan/ta_decoder.h), the
+ *   decode's own buffers, read in place on the device: only the polygon
+ *   parameters of its draw groups and the render passes go up, and a first
+ *   kernel numbers the triangles from the decode's commands and translucent
+ *   draw records (PVRC_K_GPUSRC). Nothing of the frame is parsed or copied
+ *   on the CPU; the decode's last barrier is for compute shaders' reads
+ *   too, and the next decode's first one waits for them.
  * - Everything is made in Init(), when the renderer starts or changes
  *   size: the kernels' pipelines (from SPIR-V made with the source,
  *   vulkan/compute_spv.inc), the ring, the primitives' setup and the bin
@@ -20,9 +25,9 @@
  *   host memory and read when the frame's slot comes round, after the wait
  *   for its fence the command pool does anyway.
  * - A frame it cannot draw is left to the raster renderer (CanDraw()):
- *   renders to a texture, a frame decoded on the GPU, more textures than
- *   it has slots for, a picture from another context to start from, the
- *   VMUs or crosshairs drawn over the picture, a frame larger than the ring. */
+ *   renders to a texture, more textures than it has slots for, a picture
+ *   from another context to start from, the VMUs or crosshairs drawn over
+ *   the picture, more render passes than the kernels take. */
 #pragma once
 #include "vulkan.h"
 #include "buffer.h"
@@ -83,6 +88,8 @@ public:
 	 * Init() can be called */
 	static const char *DeviceLacks();
 	bool Ready() const { return ready; }
+	// what a frame decoded on the GPU is read from (pvrrc.gpu)
+	void SetGpuDraw(const TaGpuDraw *gpuDraw) { this->gpuDraw = gpuDraw; }
 	u32 GetSamples() const { return samples; }
 
 	// whether the frame in pvrrc is one this draws (before anything is recorded)
@@ -110,6 +117,7 @@ private:
 	vk::Extent2D extent;
 	CommandPool *commandPool = nullptr;
 	SamplerManager *samplerManager = nullptr;
+	const TaGpuDraw *gpuDraw = nullptr;
 	ComputeFrame frame;
 	GpuFrameTimer timer;
 };

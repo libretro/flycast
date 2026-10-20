@@ -52,6 +52,7 @@ typedef struct
 static Rec *recs;
 static unsigned nrecs;
 static unsigned ref_dropped;
+static unsigned ref_clipped;
 
 static void setup(unsigned prim, Rec *r)
 {
@@ -91,7 +92,7 @@ static void setup(unsigned prim, Rec *r)
    else
    {
       unsigned pp = F[PVRC_F_O_POLY] + index * PVRC_POLY_WORDS;
-      unsigned at = F[PVRC_F_O_IDX] + F[pp + PVRC_Q_FIRST] + i;
+      unsigned at = F[PVRC_F_O_IDX] + F[osrc + lo * PVRC_SRC_WORDS + 2] + i;
       unsigned odd = i & 1, ov = F[PVRC_F_O_VTX];
       r->vi[0] = F[at];
       r->vi[1] = F[at + 1 + odd];
@@ -154,6 +155,8 @@ static void setup(unsigned prim, Rec *r)
       u = r->vi[1]; r->vi[1] = r->vi[2]; r->vi[2] = u;
    }
    r->neg = (r->q[0] < 0.0f ? 1u : 0u) | (r->q[1] < 0.0f ? 2u : 0u) | (r->q[2] < 0.0f ? 4u : 0u);
+   if (r->neg != 0 && !empty)
+      ref_clipped++;
    r->src = src;
    {
       int mnx = r->x[0] < r->x[1] ? r->x[0] : r->x[1], mny = r->y[0] < r->y[1] ? r->y[0] : r->y[1];
@@ -948,6 +951,7 @@ int tile_ref(const unsigned *frame, unsigned samples, const unsigned *last, unsi
       nrecs = prims;
    }
    ref_dropped = 0;
+   ref_clipped = 0;
    ref_layers_most = 0;
    for (i = 0; i < prims; i++)
       setup(i, &recs[i]);
@@ -973,6 +977,7 @@ int tile_ref(const unsigned *frame, unsigned samples, const unsigned *last, unsi
    if (st)
    {
       st->dropped = ref_dropped;
+      st->clipped = ref_clipped;
       st->layers_most = ref_layers_most;
    }
    (void)fu;

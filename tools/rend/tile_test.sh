@@ -36,7 +36,7 @@ ${CXX:-c++} -x c++ -std=c++11 -Wall -Wextra -Werror -Wno-unused-function -Icore/
 # the kernels, as kernels_spv.sh makes them, with nothing fused (PVRC_EXACT)
 K_WALK=$(awk '$1 == "#define" && $2 == "PVRC_K_WALK" { print $3 }' core/rend/tile/pvr_compute.h)
 k=1
-while [ $k -le 6 ]; do
+while [ $k -le "$(awk '$1 == "#define" && $2 == "PVRC_KERNELS" { print $3 }' core/rend/tile/pvr_compute.h)" ]; do
    { echo "#version 450"; echo "#define PVR_SHADER_GLSL"; echo "#define PVRC_SHADER_GLSL"; echo "#define PVRC_KERNEL $k"; echo "#define PVRC_EXACT"
      if [ $k = "$K_WALK" ]; then echo "#define PVR_LANE_COUNT 8"; echo "#define PVR_LANE_GROUP_SIZE 256"; else echo "#define PVR_LANE_NONE"; fi
      for h in core/rend/tile/pvr_lane.h core/rend/tile/pvr_tile.h core/rend/tile/pvr_modvol.h core/rend/tile/pvr_resolve.h core/rend/ssaa_pattern.h core/rend/tile/pvr_compute.h; do

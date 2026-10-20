@@ -104,7 +104,8 @@
 #define PVRC_K_SORT    4
 #define PVRC_K_WALK    5
 #define PVRC_K_CLEAR   6
-#define PVRC_KERNELS   6
+#define PVRC_K_GPUSRC  7   /* (a frame of the decode's, first) */
+#define PVRC_KERNELS   7
 
 #define PVRC_NONE 0xffffffffu
 
@@ -140,6 +141,8 @@
 #define PVRC_F_O_MOD      43u
 #define PVRC_F_RUNS       44u  /* runs the bin buffer has room for (chunks x tiles) */
 #define PVRC_F_ZCLIP      45u  /* (float) the raster renderers' depth scale (1/fZ_max, rend/depth_scale.h) over the 1/w scale (XFORM's fifth): where they clip */
+#define PVRC_F_GPU        46u  /* a frame of the GPU's TA decode (PVRC_K_GPUSRC): the indices the decode has room for; 0 for a frame of the CPU's parse */
+#define PVRC_F_PRIM_ROOM  47u  /* (a frame of the decode's) the primitives the setup has room for */
 #define PVRC_F_FOG        48u  /* the fog table, 256 bytes as MakeFogTexture() lays them out */
 #define PVRC_F_PASS       112u /* the render passes, PVRC_PASS_WORDS each */
 #define PVRC_PASS_WORDS   8u
@@ -215,9 +218,34 @@
 #define PVRC_M_CLOSE_BY  5u
 
 /* The table of starts: a word for the first number of each parameter's
- * triangles, then its kind and index, in number order */
-#define PVRC_SRC_WORDS 2u
+ * triangles, then its kind and index, then (a polygon's) its first index,
+ * in number order.
+ *
+ * A frame of the GPU's TA decode (PVRC_F_GPU) has its polygons' index
+ * ranges only on the GPU, so the CPU writes the table without the starts
+ * and PVRC_K_GPUSRC fills them in. The CPU's third word is then a
+ * volume's number of triangles, or a polygon's draw group: the slot of its
+ * indirect command (TAG_H_SLOT), or with PVRC_SRC_TRD its place in the
+ * translucent draw records (TAG_H_TRB: a count of strips, then a record
+ * for each, whose indices follow one another); and a render pass's words
+ * (PVRC_P_*, but the flags) and a volume's PVRC_M_CLOSE_END are entries of
+ * the table, which it makes the numbers of their first (last) triangles.
+ * A command's third word becomes its first index; a translucent group is
+ * one parameter, whose triangles are those of its index range from its
+ * first strip's first index to its last's last, and the ones that reach
+ * past the end of their strip draw nothing (the setup looks its strip up). */
+#define PVRC_SRC_WORDS 3u
 #define PVRC_SRC_MODVOL 0x80000000u
+#define PVRC_SRC_TRD    0x40000000u
+#define PVRC_SRC_INDEX  0x3fffffffu
+
+/* What PVRC_K_GPUSRC reads of the decode's buffers (rend/ta_gpu.h: TAG_C_*,
+ * TAG_O_*; vulkan/compute_drawer.cpp checks that they are the same) */
+#define PVRC_TAG_C_WORDS   5u
+#define PVRC_TAG_C_COUNT   0u
+#define PVRC_TAG_C_FIRST   2u
+#define PVRC_TAG_O_OVERRUN 3u
+#define PVRC_TAG_O_ZSCALE  176u
 
 /* A vertex: the parse's Vertex, word for word */
 #define PVRC_VTX_WORDS 11u
@@ -267,6 +295,8 @@
 #define PVRC_ST_PEELS     6u   /* the most rounds of translucent fragments a tile took */
 #define PVRC_ST_HIZ       7u   /* primitives the walks passed over by the tiles' depths */
 #define PVRC_STATS        8u
+#define PVRC_ST_SETUP_X   8u   /* (a frame of the decode's) the setup's and the scatter's dispatch: x, y, z */
+#define PVRC_ST_SORT_X    11u  /* ...the sort's */
 
 /* The textures a frame can have, slots of the kernels' array */
 #define PVRC_TEX_SLOTS 1024
@@ -306,9 +336,23 @@ layout(constant_id = 1) const uint PVRC_LOG2N = 0u;
 layout(constant_id = 2) const uint PVRC_KEEP = 4u;
 layout(constant_id = 3) const uint PVRC_TEST = 0u;
 
+#if PVRC_KERNEL == PVRC_K_GPUSRC
+layout(std430, set = 0, binding = 0) coherent buffer Frame { uint w[]; } frm;
+#else
 layout(std430, set = 0, binding = 0) readonly buffer Frame { uint w[]; } frm;
+#endif
 layout(std430, set = 0, binding = 1) buffer Records { uint w[]; } rec;
 layout(std430, set = 0, binding = 2) buffer Bins { uint w[]; } bin;
+/* The vertices, indices and volume triangles (a frame of the parse's:
+ * the frame's own words, at PVRC_F_O_VTX and the others; of the decode's,
+ * its buffers, from 0); the decode's commands, translucent draw records
+ * and frame words (PVRC_K_GPUSRC, and the setup's translucent strips) */
+layout(std430, set = 0, binding = 7) readonly buffer Vertices { uint w[]; } vtx;
+layout(std430, set = 0, binding = 8) readonly buffer Indices { uint w[]; } idx;
+layout(std430, set = 0, binding = 9) readonly buffer VolumeTriangles { uint w[]; } mvt;
+layout(std430, set = 0, binding = 10) readonly buffer Commands { uint w[]; } dcmd;
+layout(std430, set = 0, binding = 11) readonly buffer TrDraws { uint w[]; } dtrd;
+layout(std430, set = 0, binding = 12) readonly buffer DecodeFrame { uint w[]; } dfrm;
 
 #define FRMF(i) uintBitsToFloat(frm.w[i])
 #endif
@@ -649,9 +693,44 @@ void main()
          hi = mid;
    }
    const uint i = prim - frm.w[osrc + lo * PVRC_SRC_WORDS];
-   const uint src = frm.w[osrc + lo * PVRC_SRC_WORDS + 1u];
-   const bool modvol = (src & PVRC_SRC_MODVOL) != 0u;
-   const uint index = src & ~PVRC_SRC_MODVOL;
+   const uint kind = frm.w[osrc + lo * PVRC_SRC_WORDS + 1u];
+   const uint third = frm.w[osrc + lo * PVRC_SRC_WORDS + 2u];
+   const bool modvol = (kind & PVRC_SRC_MODVOL) != 0u;
+   const uint index = kind & PVRC_SRC_INDEX;
+   const uint src = kind & ~PVRC_SRC_TRD;
+   /* a triangle of a translucent group that reaches past the end of its
+    * strip draws nothing: its indices are not read; the others are their
+    * strip's, whose first is even (a strip's triangles turn by their
+    * place in it) */
+   bool between = false;
+   uint first = third, parity = 0u;
+   if ((kind & PVRC_SRC_TRD) != 0u)
+   {
+      const uint n = dtrd.w[third * PVRC_TAG_C_WORDS];
+      first = dtrd.w[(third + 1u) * PVRC_TAG_C_WORDS + PVRC_TAG_C_FIRST];
+      const uint at = first + i;
+      uint slo = 0u, shi = n;
+      while (shi - slo > 1u)
+      {
+         const uint mid = (slo + shi) >> 1;
+         if (dtrd.w[(third + 1u + mid) * PVRC_TAG_C_WORDS + PVRC_TAG_C_FIRST] <= at)
+            slo = mid;
+         else
+            shi = mid;
+      }
+      const uint sr = (third + 1u + slo) * PVRC_TAG_C_WORDS;
+      between = !(at + 2u < dtrd.w[sr + PVRC_TAG_C_FIRST] + dtrd.w[sr + PVRC_TAG_C_COUNT]);
+      parity = (dtrd.w[sr + PVRC_TAG_C_FIRST] - first) & 1u;
+   }
+   if (between)
+   {
+      const uint r = prim * PVRC_REC_WORDS;
+      rec.w[r + PVRC_R_SRC] = src;
+      rec.w[r + PVRC_R_EXTRA] = 0u;
+      rec.w[r + PVRC_R_BBOX0] = 0xffffffffu;
+      rec.w[r + PVRC_R_BBOX1] = 0u;
+      return;
+   }
 
    float vx[3], vy[3], vz[3];
    uint vi[3];
@@ -663,9 +742,9 @@ void main()
       const uint t = frm.w[PVRC_F_O_MOD] + (frm.w[mp + PVRC_M_FIRST] + i) * 9u;
       for (uint k = 0u; k < 3u; k++)
       {
-         vx[k] = uintBitsToFloat(frm.w[t + k * 3u]);
-         vy[k] = uintBitsToFloat(frm.w[t + k * 3u + 1u]);
-         vz[k] = uintBitsToFloat(frm.w[t + k * 3u + 2u]);
+         vx[k] = uintBitsToFloat(mvt.w[t + k * 3u]);
+         vy[k] = uintBitsToFloat(mvt.w[t + k * 3u + 1u]);
+         vz[k] = uintBitsToFloat(mvt.w[t + k * 3u + 2u]);
          vi[k] = 0u;
       }
       isp = frm.w[mp + PVRC_M_ISP];
@@ -677,20 +756,20 @@ void main()
    else
    {
       const uint pp = frm.w[PVRC_F_O_POLY] + index * PVRC_POLY_WORDS;
-      const uint at = frm.w[PVRC_F_O_IDX] + frm.w[pp + PVRC_Q_FIRST] + i;
+      const uint at = frm.w[PVRC_F_O_IDX] + first + i;
       /* a strip's triangle i, the device's way: i, i + 1, i + 2, and for
        * an odd one i, i + 2, i + 1; its first vertex is the provoking one */
-      const uint odd = i & 1u;
-      vi[0] = frm.w[at];
-      vi[1] = frm.w[at + 1u + odd];
-      vi[2] = frm.w[at + 2u - odd];
+      const uint odd = (i ^ parity) & 1u;
+      vi[0] = idx.w[at];
+      vi[1] = idx.w[at + 1u + odd];
+      vi[2] = idx.w[at + 2u - odd];
       provoking = vi[0];
       const uint ov = frm.w[PVRC_F_O_VTX];
       for (uint k = 0u; k < 3u; k++)
       {
-         vx[k] = uintBitsToFloat(frm.w[ov + vi[k] * PVRC_VTX_WORDS]);
-         vy[k] = uintBitsToFloat(frm.w[ov + vi[k] * PVRC_VTX_WORDS + 1u]);
-         vz[k] = uintBitsToFloat(frm.w[ov + vi[k] * PVRC_VTX_WORDS + 2u]);
+         vx[k] = uintBitsToFloat(vtx.w[ov + vi[k] * PVRC_VTX_WORDS]);
+         vy[k] = uintBitsToFloat(vtx.w[ov + vi[k] * PVRC_VTX_WORDS + 1u]);
+         vz[k] = uintBitsToFloat(vtx.w[ov + vi[k] * PVRC_VTX_WORDS + 2u]);
       }
       isp = frm.w[pp + PVRC_Q_ISP];
       rect0 = frm.w[pp + PVRC_Q_RECT];
@@ -1357,7 +1436,7 @@ float bary_mix(Bary b, float a0, float a1, float a2)
 
 uint vtxw(uint v, uint k)
 {
-   return frm.w[frm.w[PVRC_F_O_VTX] + v * PVRC_VTX_WORDS + k];
+   return vtx.w[frm.w[PVRC_F_O_VTX] + v * PVRC_VTX_WORDS + k];
 }
 
 vec4 vtx_color(uint v, uint k)
@@ -2390,6 +2469,113 @@ void main()
       atomicMax(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_PEELS], peels);
    if (g_tid == 0u && g_hiz_skipped != 0u)
       atomicAdd(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_HIZ], g_hiz_skipped);
+}
+#endif
+
+#if PVRC_KERNEL == PVRC_K_GPUSRC
+/* A frame of the GPU's TA decode, before the setup (PVRC_SRC_WORDS): one
+ * workgroup. Each entry's number of triangles - a volume's from the CPU, a
+ * polygon draw group's from its indices, kept inside the room the decode
+ * has (none if it ran out) - and their prefix sum, the table's starts;
+ * then the render passes' and the volumes' entries made numbers of
+ * triangles, the frame's count of them and of chunks, the clip's depth
+ * scale (the decode's 1/fZ_max) and the dispatches of the setup, the
+ * scatter and the sort. */
+layout(local_size_x = 256) in;
+shared uint s_sum[256];
+
+void main()
+{
+   const uint tid = gl_LocalInvocationIndex;
+   const uint n = frm.w[PVRC_F_SOURCES], osrc = frm.w[PVRC_F_O_SRC];
+   const uint room = frm.w[PVRC_F_GPU];
+   const bool overrun = dfrm.w[PVRC_TAG_O_OVERRUN] != 0u;
+   uint base = 0u;
+   for (uint b = 0u; b < n; b += 256u)
+   {
+      const uint s = b + tid;
+      uint count = 0u;
+      if (s < n)
+      {
+         const uint e = osrc + s * PVRC_SRC_WORDS;
+         const uint kind = frm.w[e + 1u], third = frm.w[e + 2u];
+         uint f = 0u, c = 0u;
+         if ((kind & PVRC_SRC_MODVOL) != 0u)
+            count = third;
+         else
+         {
+            if ((kind & PVRC_SRC_TRD) != 0u)
+            {
+               const uint strips = dtrd.w[third * PVRC_TAG_C_WORDS];
+               if (strips != 0u)
+               {
+                  const uint last = (third + strips) * PVRC_TAG_C_WORDS;
+                  f = dtrd.w[(third + 1u) * PVRC_TAG_C_WORDS + PVRC_TAG_C_FIRST];
+                  const uint end = dtrd.w[last + PVRC_TAG_C_FIRST] + dtrd.w[last + PVRC_TAG_C_COUNT];
+                  c = end > f ? end - f : 0u;
+               }
+            }
+            else
+            {
+               f = dcmd.w[third * PVRC_TAG_C_WORDS + PVRC_TAG_C_FIRST];
+               c = dcmd.w[third * PVRC_TAG_C_WORDS + PVRC_TAG_C_COUNT];
+               frm.w[e + 2u] = f;
+            }
+            c = f >= room ? 0u : min(c, room - f);
+            count = c > 2u ? c - 2u : 0u;
+         }
+         if (overrun)
+            count = 0u;
+      }
+      s_sum[tid] = count;
+      barrier();
+      for (uint d = 1u; d < 256u; d <<= 1)
+      {
+         uint v = tid >= d ? s_sum[tid - d] : 0u;
+         barrier();
+         s_sum[tid] += v;
+         barrier();
+      }
+      if (s < n)
+         frm.w[osrc + s * PVRC_SRC_WORDS] = base + s_sum[tid] - count;
+      base += s_sum[255];
+      barrier();
+   }
+   const uint prims = min(base, frm.w[PVRC_F_PRIM_ROOM]);
+   memoryBarrierBuffer();
+   barrier();
+   /* (an entry's start, or the end for the one past the last) */
+   const uint passes = frm.w[PVRC_F_PASSES];
+   for (uint k = tid; k < passes * PVRC_PASS_WORDS; k += 256u)
+   {
+      if ((k % PVRC_PASS_WORDS) == PVRC_P_FLAGS)
+         continue;
+      const uint s = frm.w[PVRC_F_PASS + k];
+      frm.w[PVRC_F_PASS + k] = min(s < n ? frm.w[osrc + s * PVRC_SRC_WORDS] : base, prims);
+   }
+   const uint omvp = frm.w[PVRC_F_O_MVP];
+   const uint mvps = (osrc - omvp) / PVRC_MVP_WORDS;
+   for (uint m = tid; m < mvps; m += 256u)
+   {
+      const uint s = frm.w[omvp + m * PVRC_MVP_WORDS + PVRC_M_CLOSE_END];
+      if (s < n)
+         frm.w[omvp + m * PVRC_MVP_WORDS + PVRC_M_CLOSE_END] = frm.w[osrc + s * PVRC_SRC_WORDS] + frm.w[osrc + s * PVRC_SRC_WORDS + 2u] - 1u;
+   }
+   if (tid == 0u)
+   {
+      const uint chunks = (prims + PVR_CHUNK_PRIMS - 1u) >> PVR_CHUNK_LOG2;
+      frm.w[PVRC_F_PRIMS] = prims;
+      frm.w[PVRC_F_CHUNKS] = chunks;
+      PVRC_INVARIANT float zs = uintBitsToFloat(dfrm.w[PVRC_TAG_O_ZSCALE]) * FRMF(PVRC_F_ZCLIP);
+      frm.w[PVRC_F_ZCLIP] = floatBitsToUint(zs);
+      const uint st = PVRC_B_STATS(pvrc_runs());
+      bin.w[st + PVRC_ST_SETUP_X] = (prims + PVRC_WG_SETUP - 1u) / PVRC_WG_SETUP;
+      bin.w[st + PVRC_ST_SETUP_X + 1u] = 1u;
+      bin.w[st + PVRC_ST_SETUP_X + 2u] = 1u;
+      bin.w[st + PVRC_ST_SORT_X] = pvrc_tiles();
+      bin.w[st + PVRC_ST_SORT_X + 1u] = chunks;
+      bin.w[st + PVRC_ST_SORT_X + 2u] = 1u;
+   }
 }
 #endif
 

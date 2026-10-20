@@ -11,7 +11,17 @@
  * fused operations: tile_test.sh). The environment: TILE_SAMPLES (default
  * "1 2 4 8"), TILE_KEEP (default "0 1": 0 is the device's own K),
  * TILE_VALIDATE=1 the validation layer, any error it reports a failure;
- * TILE_PPM a directory to write the pictures that differ to. */
+ * TILE_PPM a directory to write the pictures that differ to.
+ *
+ * Each frame is also drawn the way a frame of the GPU's TA decode is
+ * (TILE_GPU=0 not): its table of starts made what the CPU writes for one
+ * (PVRC_SRC_WORDS) - the polygons' index ranges as indirect commands, the
+ * translucent strips that follow one another with the same parameters as
+ * one draw group of translucent draw records, the render passes' and the
+ * volumes' numbers as entries of the table - and numbered on the device by
+ * PVRC_K_GPUSRC, the setup, scatter and sort dispatched from its counts:
+ * the picture has to be the reference's still, and the count of triangles
+ * what the groups give. */
 #define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,10 +210,10 @@ static void init(const char *dir, int validate)
    VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
    VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
    VkPhysicalDeviceProperties props;
-   VkDescriptorSetLayoutBinding b[7];
+   VkDescriptorSetLayoutBinding b[13];
    VkDescriptorSetLayoutCreateInfo lci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
    VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-   VkDescriptorPoolSize sizes[3] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
+   VkDescriptorPoolSize sizes[3] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
          { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PVRC_TEX_SLOTS + 2 } };
    VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
    VkDescriptorSetAllocateInfo dai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -256,15 +266,15 @@ static void init(const char *dir, int validate)
    CHECK(vkCreateFence(device, &fci, NULL, &fence));
 
    memset(b, 0, sizeof(b));
-   for (k = 0; k < 7; k++)
+   for (k = 0; k < 13; k++)
    {
       b[k].binding = k;
       b[k].descriptorCount = 1;
       b[k].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-      b[k].descriptorType = k < 3 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : k == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      b[k].descriptorType = k < 3 || k >= 7 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : k == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
    }
    b[6].descriptorCount = PVRC_TEX_SLOTS;
-   lci.bindingCount = 7;
+   lci.bindingCount = 13;
    lci.pBindings = b;
    CHECK(vkCreateDescriptorSetLayout(device, &lci, NULL, &set_layout));
    pli.setLayoutCount = 1;
@@ -325,13 +335,120 @@ static VkPipeline make_pipeline(unsigned k, unsigned samples, unsigned keep)
    return pipeline;
 }
 
-/* The frame drawn by the kernels at @samples, keeping @keep: into @out;
- * the stats words into @stats */
-static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, unsigned keep, unsigned *out, unsigned *stats)
+/* A frame of the parse's as a frame of the decode's would be (see the top):
+ * the words into @g (as many as the frame's), the decode's commands,
+ * translucent draw records and frame words into @cmd, @trd and @dfrm
+ * (room for as many as the frame has entries, words of the frame and
+ * PVRC_TAG_O_ZSCALE + 1); the number of triangles it comes to */
+static unsigned gpu_frame(const unsigned *frame, unsigned words, unsigned *g, unsigned *cmd, unsigned *trd, unsigned *dfrm)
 {
-   const unsigned w = frame[PVRC_F_WIDTH], h = frame[PVRC_F_HEIGHT], runs = frame[PVRC_F_RUNS], prims = frame[PVRC_F_PRIMS];
-   const unsigned tiles = frame[PVRC_F_TILES_X] * frame[PVRC_F_TILES_Y];
-   const unsigned binWords = pvrc_bin_words(runs, frame[PVRC_F_POOL]);
+   const unsigned n = frame[PVRC_F_SOURCES], osrc = frame[PVRC_F_O_SRC], total = frame[PVRC_F_PRIMS];
+   const unsigned passes = frame[PVRC_F_PASSES], omvp = frame[PVRC_F_O_MVP], opoly = frame[PVRC_F_O_POLY];
+   unsigned *map = (unsigned *)malloc((n + 1) * sizeof(unsigned));
+   unsigned s, k, m = 0, ncmd = 0, ntrd = 0, prims = 0, group = PVRC_NONE, prev_end = 0, prev_poly = 0;
+   memcpy(g, frame, (size_t)words * 4);
+   memset(dfrm, 0, (PVRC_TAG_O_ZSCALE + 1) * 4);
+   dfrm[PVRC_TAG_O_ZSCALE] = 0x3f800000u;	/* (1: the frame's PVRC_F_ZCLIP stays as it is) */
+   for (s = 0; s < n; s++)
+   {
+      const unsigned *e = frame + osrc + s * PVRC_SRC_WORDS;
+      const unsigned start = e[0], end = s + 1 < n ? e[PVRC_SRC_WORDS] : total, cnt = end - start;
+      unsigned *o = g + osrc + m * PVRC_SRC_WORDS;
+      int boundary = 0;
+      for (k = 0; k < passes * PVRC_PASS_WORDS; k++)
+         if (k % PVRC_PASS_WORDS != PVRC_P_FLAGS && frame[PVRC_F_PASS + k] == start)
+            boundary = 1;
+      if (e[1] & PVRC_SRC_MODVOL)
+      {
+         o[0] = 0; o[1] = e[1]; o[2] = cnt;
+         group = PVRC_NONE;
+         prims += cnt;
+         map[s] = m++;
+         continue;
+      }
+      {
+         const unsigned poly = opoly + (e[1] & PVRC_SRC_INDEX) * PVRC_POLY_WORDS;
+         if (frame[poly + PVRC_Q_LIST] != 2)
+         {
+            unsigned *c = cmd + ncmd * PVRC_TAG_C_WORDS;
+            c[PVRC_TAG_C_COUNT] = cnt + 2; c[1] = 1; c[PVRC_TAG_C_FIRST] = e[2]; c[3] = 0; c[4] = 0;
+            o[0] = 0; o[1] = e[1]; o[2] = ncmd++;
+            group = PVRC_NONE;
+            prims += cnt;
+            map[s] = m++;
+            continue;
+         }
+         /* a translucent strip: in the group before if it follows on from
+          * its last strip with the same parameters */
+         if (group != PVRC_NONE && !boundary && prev_end == e[2]
+               && memcmp(frame + prev_poly, frame + poly, PVRC_Q_FIRST * 4) == 0
+               && frame[prev_poly + PVRC_Q_LIST] == frame[poly + PVRC_Q_LIST])
+         {
+            trd[group * PVRC_TAG_C_WORDS]++;
+            prims += cnt + 2;	/* (the two that reach from the strip before into it draw nothing) */
+            map[s] = m - 1;
+         }
+         else
+         {
+            group = ntrd++;
+            trd[group * PVRC_TAG_C_WORDS] = 1;
+            o[0] = 0; o[1] = e[1] | PVRC_SRC_TRD; o[2] = group;
+            prims += cnt;
+            map[s] = m++;
+         }
+         {
+            unsigned *c = trd + ntrd * PVRC_TAG_C_WORDS;
+            c[PVRC_TAG_C_COUNT] = cnt + 2; c[1] = 1; c[PVRC_TAG_C_FIRST] = e[2]; c[3] = 0; c[4] = 0;
+            ntrd++;
+         }
+         prev_end = e[2] + cnt + 2;
+         prev_poly = poly;
+      }
+   }
+   map[n] = m;
+   /* the passes' and the volumes' numbers as entries */
+   for (k = 0; k < passes * PVRC_PASS_WORDS; k++)
+   {
+      const unsigned v = frame[PVRC_F_PASS + k];
+      if (k % PVRC_PASS_WORDS == PVRC_P_FLAGS)
+         continue;
+      for (s = 0; s < n && frame[osrc + s * PVRC_SRC_WORDS] != v; s++)
+         ;
+      g[PVRC_F_PASS + k] = map[s];
+   }
+   for (k = 0; omvp + k * PVRC_MVP_WORDS < osrc; k++)
+   {
+      const unsigned v = frame[omvp + k * PVRC_MVP_WORDS + PVRC_M_CLOSE_END];
+      if (v == PVRC_NONE)
+         continue;
+      for (s = 0; s + 1 < n && frame[osrc + (s + 1) * PVRC_SRC_WORDS] <= v; s++)
+         ;
+      g[omvp + k * PVRC_MVP_WORDS + PVRC_M_CLOSE_END] = map[s];
+   }
+   g[PVRC_F_SOURCES] = m;
+   g[PVRC_F_PRIMS] = 0;
+   g[PVRC_F_CHUNKS] = 0;
+   g[PVRC_F_GPU] = 0x7fffffffu;
+   g[PVRC_F_PRIM_ROOM] = prims;
+   free(map);
+   return prims;
+}
+
+/* The frame drawn by the kernels at @samples, keeping @keep: into @out;
+ * the stats words into @stats. With @gpu, as a frame of the decode's
+ * (gpu_frame()); 0 if it did not come to the triangles it should. */
+static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples, unsigned keep, unsigned *out, unsigned *stats, int gpu)
+{
+   const unsigned w = frame0[PVRC_F_WIDTH], h = frame0[PVRC_F_HEIGHT], runs = frame0[PVRC_F_RUNS];
+   const unsigned tiles = frame0[PVRC_F_TILES_X] * frame0[PVRC_F_TILES_Y];
+   const unsigned binWords = pvrc_bin_words(runs, frame0[PVRC_F_POOL]);
+   const unsigned nsrc = frame0[PVRC_F_SOURCES] + 1;
+   struct buffer cb = make_buffer((VkDeviceSize)nsrc * PVRC_TAG_C_WORDS * 4, 0);
+   struct buffer tb = make_buffer((VkDeviceSize)nsrc * 2 * PVRC_TAG_C_WORDS * 4, 0);
+   struct buffer db = make_buffer((PVRC_TAG_O_ZSCALE + 1) * 4, 0);
+   unsigned *gf = gpu ? (unsigned *)malloc((size_t)words * 4) : NULL;
+   const unsigned prims = gpu ? gpu_frame(frame0, words, gf, (unsigned *)cb.mapped, (unsigned *)tb.mapped, (unsigned *)db.mapped) : frame0[PVRC_F_PRIMS];
+   const unsigned *frame = gpu ? gf : frame0;
    struct buffer fb = make_buffer((VkDeviceSize)words * 4, 0);
    struct buffer rb = make_buffer((VkDeviceSize)(prims ? prims : 1) * PVRC_REC_WORDS * 4, 0);
    struct buffer bb = make_buffer((VkDeviceSize)binWords * 4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
@@ -339,9 +456,9 @@ static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, 
    struct image outImage = make_image(w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
    struct image dummy = make_image(1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
    VkPipeline pipelines[PVRC_KERNELS + 1];
-   VkDescriptorBufferInfo bi[3];
+   VkDescriptorBufferInfo bi[9];
    VkDescriptorImageInfo ii[3 + PVRC_TEX_SLOTS];
-   VkWriteDescriptorSet wr[7];
+   VkWriteDescriptorSet wr[13];
    VkCommandBufferBeginInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
    VkBufferImageCopy copy;
    VkClearColorValue zero;
@@ -357,14 +474,21 @@ static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, 
    bi[0].buffer = fb.buffer; bi[0].offset = 0; bi[0].range = VK_WHOLE_SIZE;
    bi[1].buffer = rb.buffer; bi[1].offset = 0; bi[1].range = VK_WHOLE_SIZE;
    bi[2].buffer = bb.buffer; bi[2].offset = 0; bi[2].range = VK_WHOLE_SIZE;
-   for (k = 0; k < 3; k++)
+   /* (the vertices, indices and volume triangles are the frame's own words, either way) */
+   for (k = 3; k < 6; k++)
+      bi[k] = bi[0];
+   bi[6].buffer = cb.buffer; bi[6].offset = 0; bi[6].range = VK_WHOLE_SIZE;
+   bi[7].buffer = tb.buffer; bi[7].offset = 0; bi[7].range = VK_WHOLE_SIZE;
+   bi[8].buffer = db.buffer; bi[8].offset = 0; bi[8].range = VK_WHOLE_SIZE;
+   for (k = 0; k < 9; k++)
    {
-      wr[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      wr[k].dstSet = set;
-      wr[k].dstBinding = k;
-      wr[k].descriptorCount = 1;
-      wr[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      wr[k].pBufferInfo = &bi[k];
+      VkWriteDescriptorSet *x = &wr[k < 3 ? k : k + 4];
+      x->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      x->dstSet = set;
+      x->dstBinding = k < 3 ? k : k + 4;
+      x->descriptorCount = 1;
+      x->descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      x->pBufferInfo = &bi[k];
    }
    ii[0].sampler = VK_NULL_HANDLE; ii[0].imageView = outImage.view; ii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
    for (k = 1; k < 3 + PVRC_TEX_SLOTS; k++)
@@ -382,7 +506,7 @@ static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, 
       wr[k].descriptorType = k == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       wr[k].pImageInfo = &ii[k - 3];
    }
-   vkUpdateDescriptorSets(device, 7, wr, 0, NULL);
+   vkUpdateDescriptorSets(device, 13, wr, 0, NULL);
 
    CHECK(vkResetCommandBuffer(cmd, 0));
    CHECK(vkBeginCommandBuffer(cmd, &cbi));
@@ -399,10 +523,26 @@ static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, 
 #define STEP(kernel, x, y) do { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[kernel]); \
       if ((x) && (y)) { vkCmdDispatch(cmd, (x), (y), 1); } mem_barrier(cmd); \
       vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queries, kernel); } while (0)
-   STEP(PVRC_K_SETUP, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
-   STEP(PVRC_K_SCAN, 1, 1);
-   STEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
-   STEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS]);
+#define INDIRECT(kernel, at) do { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[kernel]); \
+      vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + (at)) * 4); mem_barrier(cmd); \
+      vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queries, kernel); } while (0)
+   if (gpu)
+   {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[PVRC_K_GPUSRC]);
+      vkCmdDispatch(cmd, 1, 1, 1);
+      mem_barrier(cmd);
+      INDIRECT(PVRC_K_SETUP, PVRC_ST_SETUP_X);
+      STEP(PVRC_K_SCAN, 1, 1);
+      INDIRECT(PVRC_K_SCATTER, PVRC_ST_SETUP_X);
+      INDIRECT(PVRC_K_SORT, PVRC_ST_SORT_X);
+   }
+   else
+   {
+      STEP(PVRC_K_SETUP, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
+      STEP(PVRC_K_SCAN, 1, 1);
+      STEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
+      STEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS]);
+   }
    STEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[PVRC_K_CLEAR]);
    vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_CLEAR_X) * 4);
@@ -429,6 +569,11 @@ static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, 
                (ts[4] - ts[3]) * tick_ns / 1e6, (ts[5] - ts[4]) * tick_ns / 1e6);
    }
    memcpy(stats, (unsigned *)bb.mapped + PVRC_B_STATS(runs), PVRC_STATS * 4);
+   if (gpu && ((const unsigned *)fb.mapped)[PVRC_F_PRIMS] != prims)
+   {
+      printf("tile_test: numbered on the device to %u triangles, not %u\n", ((const unsigned *)fb.mapped)[PVRC_F_PRIMS], prims);
+      validation_errors++;
+   }
    /* the pool is left as the clear leaves it, all 0 */
    {
       const unsigned *pool = (const unsigned *)bb.mapped + PVRC_B_POOL(runs);
@@ -446,6 +591,10 @@ static double gpu_draw(const unsigned *frame, unsigned words, unsigned samples, 
    free_image(&outImage);
    free_image(&dummy);
    free_buffer(&fb);
+   free_buffer(&cb);
+   free_buffer(&tb);
+   free_buffer(&db);
+   free(gf);
    free_buffer(&rb);
    free_buffer(&bb);
    free_buffer(&ob);
@@ -476,6 +625,7 @@ int main(int argc, char **argv)
    const char *keep_s = getenv("TILE_KEEP") ? getenv("TILE_KEEP") : "0 1";
    const char *ppm = getenv("TILE_PPM");
    int validate = getenv("TILE_VALIDATE") && atoi(getenv("TILE_VALIDATE"));
+   const int use_gpu = !getenv("TILE_GPU") || atoi(getenv("TILE_GPU")) != 0;
    int a, runs = 0, same = 0, differ = 0;
    if (argc < 3)
    {
@@ -522,11 +672,12 @@ int main(int argc, char **argv)
             }
             clock_gettime(CLOCK_MONOTONIC, &t1);
             ref_ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
-            for (ki = 0; ki < nk; ki++)
+            for (ki = 0; ki < nk * (use_gpu ? 2 : 1); ki++)
             {
-               const unsigned keep = kl[ki];
+               const unsigned keep = kl[ki % nk];
+               const int as_gpu = ki >= nk;
                unsigned stats[PVRC_STATS], i, bad = 0, first = 0;
-               double ms = gpu_draw(frame, words, n, keep, got, stats);
+               double ms = gpu_draw(frame, words, n, keep, got, stats, as_gpu);
                for (i = 0; i < w * h; i++)
                   if (got[i] != ref[i])
                   {
@@ -539,17 +690,17 @@ int main(int argc, char **argv)
                   same++;
                else
                   differ++;
-               printf("tile_test: %s at %u sample%s, K %u: %s", argv[a], n, n > 1 ? "s" : "", keep, bad ? "DIFFERENT" : "the same");
+               printf("tile_test: %s at %u sample%s, K %u%s: %s", argv[a], n, n > 1 ? "s" : "", keep, as_gpu ? ", as the decode's" : "", bad ? "DIFFERENT" : "the same");
                if (bad)
                   printf(" (%u pixels; the first at %u,%u: %08x, the reference %08x)", bad, first % w, first / w, got[first], ref[first]);
-               printf("; %u primitives, %u passes, %u layers at most, %u rounds, %u runs walked whole, %u left out, %u passed over by the tiles' depths; device %.1f ms, reference %.1f ms\n",
+               printf("; %u primitives, %u passes, %u layers at most, %u rounds, %u runs walked whole, %u left out, %u clipped at the eye, %u passed over by the tiles' depths; device %.1f ms, reference %.1f ms\n",
                      frame[PVRC_F_PRIMS], frame[PVRC_F_PASSES], rst.layers_most, stats[PVRC_ST_PEELS] ? stats[PVRC_ST_PEELS] : 1,
-                     stats[PVRC_ST_SKIPPED], stats[PVRC_ST_DROPPED], stats[PVRC_ST_HIZ], ms, ref_ms);
+                     stats[PVRC_ST_SKIPPED], stats[PVRC_ST_DROPPED], rst.clipped, stats[PVRC_ST_HIZ], ms, ref_ms);
                if (bad && ppm)
                {
                   char name[256];
                   const char *base = strrchr(argv[a], '/') ? strrchr(argv[a], '/') + 1 : argv[a];
-                  snprintf(name, sizeof(name), "%s_%u_%u_gpu", base, n, keep);
+                  snprintf(name, sizeof(name), "%s_%u_%u%s_gpu", base, n, keep, as_gpu ? "_dec" : "");
                   write_ppm(ppm, name, got, w, h);
                   snprintf(name, sizeof(name), "%s_%u_%u_ref", base, n, keep);
                   write_ppm(ppm, name, ref, w, h);

@@ -5,8 +5,10 @@
 #include "ssaa.h"
 #include "rend/TexCache.h"
 #include "hw/pvr/pvr_mem.h"
+#include "rend/ta_gpu.h"
 
 #include <algorithm>
+#include <array>
 
 /* The kernels, by PVRC_K_*, as SPIR-V made from rend/tile/pvr_compute.h
  * when the source was: tools/rend/kernels_spv.sh, which checks they still
@@ -23,7 +25,13 @@ static_assert(4u * 4 * 1024 * 1024 / sizeof(Vertex) <= PVRC_RX_VTX, "a vertex's 
 static const u32 PoolEntries = 2u << 20;
 
 // The bindings of the kernels' one set
-enum { B_FRAME, B_REC, B_BIN, B_OUT, B_LAST, B_PAL, B_TEX, B_COUNT };
+enum { B_FRAME, B_REC, B_BIN, B_OUT, B_LAST, B_PAL, B_TEX, B_VTX, B_IDX, B_MOD, B_CMD, B_TRD, B_DFRM, B_COUNT };
+// (the buffers a frame of the GPU's TA decode is read from: B_VTX to B_DFRM)
+static const int GpuBindings = B_COUNT - B_VTX;
+
+// what PVRC_K_GPUSRC reads of the decode's buffers
+static_assert(PVRC_TAG_C_WORDS == TAG_C_WORDS && PVRC_TAG_C_COUNT == TAG_C_COUNT && PVRC_TAG_C_FIRST == TAG_C_FIRST
+		&& PVRC_TAG_O_OVERRUN == TAG_O_OVERRUN && PVRC_TAG_O_ZSCALE == TAG_O_ZSCALE, "the decode's words, as the kernels read them");
 
 /* ---- The frame's words ---- */
 
@@ -63,6 +71,11 @@ static inline u32 fbits(float f)
 u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u32 *primsOut)
 {
 	const rend_context& rc = pvrrc;
+	/* A frame of the GPU's TA decode (rc.gpu) has its vertices, indices and
+	 * volume triangles in the decode's buffers, its draw groups' index ranges
+	 * only there, and its 1/fZ_max: the numbering is PVRC_K_GPUSRC's (see
+	 * PVRC_SRC_WORDS), and none of those buffers is copied */
+	const bool gpu = rc.gpu;
 	const u32 passCount = (u32)rc.render_passes.used();
 	if (passCount == 0 || passCount > PVRC_PASS_MAX)
 		return 0;
@@ -73,9 +86,9 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	const u32 oMvp = oPoly + polys * PVRC_POLY_WORDS;
 	const u32 oSrc = oMvp + mvps * PVRC_MVP_WORDS;
 	const u32 oVtx = oSrc + (polys + mvps) * PVRC_SRC_WORDS;
-	const u32 oIdx = oVtx + rc.verts.used() * PVRC_VTX_WORDS;
-	const u32 oMod = oIdx + rc.idx.used();
-	const u32 total = oMod + rc.modtrig.used() * 9;
+	const u32 oIdx = gpu ? oVtx : oVtx + rc.verts.used() * PVRC_VTX_WORDS;
+	const u32 oMod = gpu ? oVtx : oIdx + rc.idx.used();
+	const u32 total = gpu ? oVtx : oMod + rc.modtrig.used() * 9;
 	if (total > room)
 		return 0;
 
@@ -89,13 +102,17 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	const int by1 = std::min((int)(baseScissor.offset.y + baseScissor.extent.height), (int)layout.height);
 	const u32 baseRect0 = rectWord(bx0, by0), baseRect1 = rectWord(bx1, by1);
 
-	/* The numbering, render pass by render pass, and the table of starts */
+	/* The numbering, render pass by render pass, and the table of starts.
+	 * (A frame of the decode's: entries of the table where there would be
+	 * numbers, and the third word a volume's count or a group's draw.) */
 	u32 prim = 0, sources = 0;
-	auto source = [&](u32 kind, u32 index) {
+	auto source = [&](u32 kind, u32 index, u32 third) {
 		out[oSrc + sources * PVRC_SRC_WORDS] = prim;
 		out[oSrc + sources * PVRC_SRC_WORDS + 1] = kind | index;
+		out[oSrc + sources * PVRC_SRC_WORDS + 2] = third;
 		sources++;
 	};
+	auto at = [&]() { return gpu ? sources : prim; };
 	// the modifier volumes' parameters: where the volume each is in ends
 	for (u32 m = 0; m < mvps; m++)
 	{
@@ -107,24 +124,24 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 		 * exclusion mode ends the volume, which is every triangle since the
 		 * last one that did; parameters without triangles are passed over */
 		int base = -1;
-		u32 at = prim;
 		for (u32 m = first; m < last; m++)
 		{
 			const ModifierVolumeParam& p = params[m];
 			if (p.count == 0)
 				continue;
-			source(PVRC_SRC_MODVOL, indexBase + m);
-			at += p.count;
+			source(PVRC_SRC_MODVOL, indexBase + m, p.count);
 			prim += p.count;
 			if (base == -1)
 				base = (int)m;
 			if (p.isp.DepthMode == 1 || p.isp.DepthMode == 2)
 			{
+				// (its last triangle's number; a frame of the decode's: its entry)
+				const u32 end = gpu ? sources - 1 : prim - 1;
 				for (u32 k = (u32)base; k <= m; k++)
 				{
 					if (params[k].count == 0)
 						continue;
-					out[oMvp + (indexBase + k) * PVRC_MVP_WORDS + PVRC_M_CLOSE_END] = at - 1;
+					out[oMvp + (indexBase + k) * PVRC_MVP_WORDS + PVRC_M_CLOSE_END] = end;
 					out[oMvp + (indexBase + k) * PVRC_MVP_WORDS + PVRC_M_CLOSE_BY] = indexBase + m;
 				}
 				base = -1;
@@ -135,9 +152,11 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 		for (u32 i = first; i < last; i++)
 		{
 			const PolyParam& pp = list.head()[i];
+			/* (the decode's groups: count is their vertices, first their
+			 * command's slot, or the translucent's place in the draw records) */
 			if (pp.count <= 2)
 				continue;
-			source(0, indexBase + i);
+			source(gpu && list.head() == rc.global_param_tr.head() ? PVRC_SRC_TRD : 0, indexBase + i, pp.first);
 			prim += pp.count - 2;
 		}
 	};
@@ -146,15 +165,15 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	{
 		const RenderPass& pass = rc.render_passes.head()[p];
 		u32 *pw = out + PVRC_F_PASS + p * PVRC_PASS_WORDS;
-		pw[PVRC_P_OP] = prim;
+		pw[PVRC_P_OP] = at();
 		strips(rc.global_param_op, previous.op_count, pass.op_count, 0);
-		pw[PVRC_P_MVO] = prim;
+		pw[PVRC_P_MVO] = at();
 		volumes(rc.global_param_mvo.head(), previous.mvo_count, pass.mvo_count, 0);
-		pw[PVRC_P_PT] = prim;
+		pw[PVRC_P_PT] = at();
 		strips(rc.global_param_pt, previous.pt_count, pass.pt_count, nop);
-		pw[PVRC_P_TR] = prim;
+		pw[PVRC_P_TR] = at();
 		strips(rc.global_param_tr, previous.tr_count, pass.tr_count, nop + npt);
-		pw[PVRC_P_TR_END] = prim;
+		pw[PVRC_P_TR_END] = at();
 		if (pass.mv_op_tr_shared)
 		{
 			pw[PVRC_P_MVT] = pw[PVRC_P_MVO];
@@ -162,14 +181,15 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 		}
 		else
 		{
-			pw[PVRC_P_MVT] = prim;
+			pw[PVRC_P_MVT] = at();
 			volumes(rc.global_param_mvo_tr.head(), previous.mvo_tr_count, pass.mvo_tr_count, nmvo);
-			pw[PVRC_P_MVT_END] = prim;
+			pw[PVRC_P_MVT_END] = at();
 		}
 		pw[PVRC_P_FLAGS] = pass.autosort ? PVRC_PF_AUTOSORT : 0;
 		previous = pass;
 	}
-	if (prim > MaxPrims() || ((prim + PVR_CHUNK_PRIMS - 1) >> PVR_CHUNK_LOG2) > layout.chunks)
+	// (the decode's frame: its numbering keeps to the room, PVRC_F_PRIM_ROOM)
+	if (!gpu && (prim > MaxPrims() || ((prim + PVR_CHUNK_PRIMS - 1) >> PVR_CHUNK_LOG2) > layout.chunks))
 		return 0;
 
 	/* The polygon parameters, with what the per-pixel renderer's pipeline
@@ -308,7 +328,7 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	out[PVRC_F_TILES_X] = tilesX;
 	out[PVRC_F_TILES_Y] = tilesY;
 	out[PVRC_F_TILE_LOG2] = layout.tileLog2;
-	out[PVRC_F_PRIMS] = prim;
+	out[PVRC_F_PRIMS] = gpu ? 0 : prim;
 	out[PVRC_F_PASSES] = passCount;
 	out[PVRC_F_FLAGS] = layout.lastPicture ? PVRC_FF_LAST_PICTURE : 0;
 	/* A framebuffer the game has not drawn to lately starts as the border
@@ -329,7 +349,9 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	/* Where the raster renderers clip a triangle with a vertex behind the
 	 * eye, which the kernels clip there too (pvr_compute.h,
 	 * rec_clip_plane()): their depth scale, over the kernels' 1/w scale */
-	out[PVRC_F_ZCLIP] = fbits(pvr_depth_scale(rc.fZ_max) * (1.f / vp.sz));
+	out[PVRC_F_ZCLIP] = fbits(gpu ? 1.f / vp.sz : pvr_depth_scale(rc.fZ_max) * (1.f / vp.sz));
+	out[PVRC_F_GPU] = gpu ? (u32)rc.idx.size : 0;
+	out[PVRC_F_PRIM_ROOM] = MaxPrims();
 	struct FragmentUniforms
 	{
 		float colorClampMin[4];
@@ -352,27 +374,30 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	}
 	out[PVRC_F_ALPHA_REF] = fbits(u.cp_AlphaTestValue);
 	out[PVRC_F_SHADE] = fbits(FPU_SHAD_SCALE.scale_factor / 256.f);
-	out[PVRC_F_CHUNKS] = (prim + PVR_CHUNK_PRIMS - 1) >> PVR_CHUNK_LOG2;
+	out[PVRC_F_CHUNKS] = gpu ? 0 : (prim + PVR_CHUNK_PRIMS - 1) >> PVR_CHUNK_LOG2;
 	out[PVRC_F_SOURCES] = sources;
 	out[PVRC_F_POOL] = layout.pool;
 	out[PVRC_F_O_POLY] = oPoly;
 	out[PVRC_F_O_MVP] = oMvp;
 	out[PVRC_F_O_SRC] = oSrc;
-	out[PVRC_F_O_VTX] = oVtx;
-	out[PVRC_F_O_IDX] = oIdx;
-	out[PVRC_F_O_MOD] = oMod;
+	out[PVRC_F_O_VTX] = gpu ? 0 : oVtx;
+	out[PVRC_F_O_IDX] = gpu ? 0 : oIdx;
+	out[PVRC_F_O_MOD] = gpu ? 0 : oMod;
 	out[PVRC_F_RUNS] = layout.runs;
 	MakeFogTexture((u8 *)(out + PVRC_F_FOG));
 
 	/* The parse's buffers, with flat shading's colours where the raster
 	 * renderers put them: only now, when nothing can leave the frame to
 	 * them any more, for they change the vertices as well */
-	SetProvokingVertices();
-	memcpy(out + oVtx, rc.verts.head(), rc.verts.used() * sizeof(Vertex));
-	memcpy(out + oIdx, rc.idx.head(), rc.idx.used() * 4);
-	memcpy(out + oMod, rc.modtrig.head(), rc.modtrig.used() * sizeof(ModTriangle));
+	if (!gpu)
+	{
+		SetProvokingVertices();
+		memcpy(out + oVtx, rc.verts.head(), rc.verts.used() * sizeof(Vertex));
+		memcpy(out + oIdx, rc.idx.head(), rc.idx.used() * 4);
+		memcpy(out + oMod, rc.modtrig.head(), rc.modtrig.used() * sizeof(ModTriangle));
+	}
 
-	*primsOut = prim;
+	*primsOut = gpu ? 0 : prim;
 	return total;
 }
 
@@ -455,11 +480,15 @@ struct ComputeDrawer::Resources
 	std::vector<std::vector<VkImageView>> setViews;
 	std::vector<std::vector<VkSampler>> setSamplers;
 	std::vector<u32> setUsed;
+	// ...and the buffers each set's B_VTX to B_DFRM are (the ring's slot, or the decode's)
+	std::vector<std::array<VkBuffer, GpuBindings>> setBuffers;
 	SlotTable slots;
 	VkImageView dummyView = VK_NULL_HANDLE;
 	std::vector<vk::DescriptorImageInfo> imageInfos;
 	std::vector<vk::WriteDescriptorSet> writes;
+	std::vector<vk::DescriptorBufferInfo> bufferInfos;
 	vk::UniqueSampler nearest;
+	bool gpu = false;	// this frame's is the decode's
 	// this frame's, between Prepare and Record
 	u32 words = 0, prims = 0;
 	u64 skipped = 0, dropped = 0, hiz = 0;
@@ -484,6 +513,8 @@ const char *ComputeDrawer::DeviceLacks()
 		return "too few texture bindings";
 	if (limits.maxComputeSharedMemorySize < PVRC_SORT_MAX * 4)
 		return "too little shared memory";
+	if (limits.maxPerStageDescriptorStorageBuffers < 3 + GpuBindings || limits.maxDescriptorSetStorageBuffers < 3 + GpuBindings)
+		return "too few storage buffers";
 	return nullptr;
 }
 
@@ -548,6 +579,12 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 		{ B_LAST, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute },
 		{ B_PAL, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute },
 		{ B_TEX, vk::DescriptorType::eCombinedImageSampler, PVRC_TEX_SLOTS, vk::ShaderStageFlagBits::eCompute },
+		{ B_VTX, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+		{ B_IDX, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+		{ B_MOD, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+		{ B_CMD, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+		{ B_TRD, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+		{ B_DFRM, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
 	};
 	r->setLayout = device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags(), B_COUNT, bindings));
 	r->pipelineLayout = device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), 1, &r->setLayout.get()));
@@ -566,7 +603,7 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 	}
 
 	const vk::DescriptorPoolSize sizes[] = {
-		{ vk::DescriptorType::eStorageBuffer, 3u * slots },
+		{ vk::DescriptorType::eStorageBuffer, (3u + GpuBindings) * slots },
 		{ vk::DescriptorType::eStorageImage, (u32)slots },
 		{ vk::DescriptorType::eCombinedImageSampler, (PVRC_TEX_SLOTS + 2u) * slots },
 	};
@@ -577,12 +614,13 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 	r->setSamplers.assign(slots, std::vector<VkSampler>(PVRC_TEX_SLOTS, VK_NULL_HANDLE));
 	r->setUsed.assign(slots, PVRC_TEX_SLOTS);	// (all of them to be written the first time)
 	r->imageInfos.reserve(PVRC_TEX_SLOTS + 8);
-	r->writes.reserve(PVRC_TEX_SLOTS + 8);
+	r->writes.reserve(PVRC_TEX_SLOTS + 8 + GpuBindings);
+	r->bufferInfos.reserve(GpuBindings);
 	r->nearest = device.createSamplerUnique(vk::SamplerCreateInfo(vk::SamplerCreateFlags(), vk::Filter::eNearest, vk::Filter::eNearest,
 			vk::SamplerMipmapMode::eNearest, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
 			vk::SamplerAddressMode::eClampToEdge));
 	std::vector<vk::DescriptorBufferInfo> buffers;
-	buffers.reserve(3 * slots);
+	buffers.reserve((3 + GpuBindings) * slots);
 	std::vector<vk::WriteDescriptorSet> writes;
 	for (int s = 0; s < slots; s++)
 	{
@@ -592,6 +630,17 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 		writes.push_back(vk::WriteDescriptorSet(r->sets[s], B_REC, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &buffers.back()));
 		buffers.push_back(vk::DescriptorBufferInfo(*r->bins->buffer, 0, VK_WHOLE_SIZE));
 		writes.push_back(vk::WriteDescriptorSet(r->sets[s], B_BIN, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &buffers.back()));
+		// (a frame of the parse's reads its vertices, indices and volumes from its own words; Prepare() changes them for the decode's)
+		for (int b = B_VTX; b < B_COUNT; b++)
+		{
+			buffers.push_back(vk::DescriptorBufferInfo(*r->ring->buffer, (vk::DeviceSize)s * r->ringWords * 4, (vk::DeviceSize)r->ringWords * 4));
+			writes.push_back(vk::WriteDescriptorSet(r->sets[s], b, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &buffers.back()));
+		}
+	}
+	{
+		std::array<VkBuffer, GpuBindings> ring;
+		ring.fill((VkBuffer)*r->ring->buffer);
+		r->setBuffers.assign(slots, ring);
 	}
 	device.updateDescriptorSets(writes, nullptr);
 
@@ -621,7 +670,7 @@ void ComputeDrawer::Term()
 
 bool ComputeDrawer::CanDraw() const
 {
-	if (!ready || pvrrc.isRTT || pvrrc.isRenderFramebuffer || pvrrc.gpu)
+	if (!ready || pvrrc.isRTT || pvrrc.isRenderFramebuffer || (pvrrc.gpu && gpuDraw == nullptr))
 		return false;
 	return true;
 }
@@ -656,12 +705,38 @@ bool ComputeDrawer::Prepare(bool last, const Texture *paletteTexture)
 		statFallback++;
 		return false;
 	}
+	r.gpu = pvrrc.gpu;
 
 	/* The set's textures, picture and palette, where they changed */
 	VulkanContext *context = VulkanContext::Instance();
 	const vk::DescriptorSet set = r.sets[slot];
 	r.imageInfos.clear();
 	r.writes.clear();
+	r.bufferInfos.clear();
+	/* ...and what the frame's vertices, indices and volumes are read from:
+	 * the ring's slot, or the decode's buffers (whose handles change only
+	 * when it is made again) */
+	{
+		const VkBuffer ring = (VkBuffer)*r.ring->buffer;
+		std::array<VkBuffer, GpuBindings> want;
+		if (r.gpu)
+			want = { (VkBuffer)gpuDraw->vertices, (VkBuffer)gpuDraw->indices, (VkBuffer)gpuDraw->modtrig,
+					(VkBuffer)gpuDraw->commands, (VkBuffer)gpuDraw->trDraws, (VkBuffer)gpuDraw->frame };
+		else
+			want.fill(ring);
+		std::array<VkBuffer, GpuBindings>& have = r.setBuffers[slot];
+		for (int b = 0; b < GpuBindings; b++)
+		{
+			if (have[b] == want[b])
+				continue;
+			if (want[b] == ring)
+				r.bufferInfos.push_back(vk::DescriptorBufferInfo(vk::Buffer(ring), (vk::DeviceSize)slot * r.ringWords * 4, (vk::DeviceSize)r.ringWords * 4));
+			else
+				r.bufferInfos.push_back(vk::DescriptorBufferInfo(vk::Buffer(want[b]), 0, VK_WHOLE_SIZE));
+			r.writes.push_back(vk::WriteDescriptorSet(set, B_VTX + b, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &r.bufferInfos.back()));
+			have[b] = want[b];
+		}
+	}
 	const VkImageView dummyView = (VkImageView)paletteTexture->GetImageView();
 	const VkSampler dummySampler = (VkSampler)*r.nearest;
 	auto write = [&](u32 binding, u32 element, vk::DescriptorType type, VkSampler sampler, VkImageView v, vk::ImageLayout l) {
@@ -748,10 +823,30 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 	};
 	const u32 tiles = words[PVRC_F_TILES_X] * words[PVRC_F_TILES_Y];
 	const u32 groups = (r.prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP;
-	step(PVRC_K_SETUP, groups, 1);
-	step(PVRC_K_SCAN, 1, 1);
-	step(PVRC_K_SCATTER, groups, 1);
-	step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
+	if (r.gpu)
+	{
+		/* A frame of the decode's: its numbering, and the dispatches of
+		 * the kernels whose sizes are the GPU's, from it */
+		auto indirect = [&](int kernel, u32 at) {
+			cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.pipelines[kernel]);
+			cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + at) * 4);
+			cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
+					vk::DependencyFlags(), vk::MemoryBarrier(vk::AccessFlagBits::eShaderWrite,
+							vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eIndirectCommandRead), nullptr, nullptr);
+		};
+		step(PVRC_K_GPUSRC, 1, 1);
+		indirect(PVRC_K_SETUP, PVRC_ST_SETUP_X);
+		step(PVRC_K_SCAN, 1, 1);
+		indirect(PVRC_K_SCATTER, PVRC_ST_SETUP_X);
+		indirect(PVRC_K_SORT, PVRC_ST_SORT_X);
+	}
+	else
+	{
+		step(PVRC_K_SETUP, groups, 1);
+		step(PVRC_K_SCAN, 1, 1);
+		step(PVRC_K_SCATTER, groups, 1);
+		step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
+	}
 	const u32 fw = PVRC_FINE_W(samples), fh = PVRC_FINE_H(samples);
 	step(PVRC_K_WALK, (extent.width + fw - 1) / fw, (extent.height + fh - 1) / fh);
 	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.pipelines[PVRC_K_CLEAR]);

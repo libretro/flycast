@@ -8,7 +8,8 @@ extern "C" {
 
 struct tile_ref_stats
 {
-   unsigned dropped;       /* triangles left out, a vertex behind the eye */
+   unsigned dropped;       /* triangles left out, a vertex at no depth */
+   unsigned clipped;       /* triangles with a vertex behind the eye, clipped */
    unsigned layers_most;   /* the most translucent fragments of a sample */
 };
 
