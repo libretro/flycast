@@ -84,7 +84,7 @@ ${CC:-cc} -O1 -c -o "$WORK/headless.o" tools/threads/headless.c
 ${CC:-cc} -std=c99 -O2 -Wall $DEVICE_FLAGS -iquote core/rend -Icore/libretro-common/include -iquote tools/pvr -c -o "$WORK/test.o" tools/pvr/ta_gpu_test.c
 ${CXX:-g++} $CORE_FLAGS -Itools/pvr -w -c -o "$WORK/cpu.o" tools/pvr/ta_gpu_test_cpu.cpp
 ${CXX:-g++} -fopenmp -rdynamic -o "$WORK/ta_gpu_test" "$WORK/headless.o" "$WORK/test.o" "$WORK/cpu.o" $OBJS \
-   -Wl,--wrap=dlopen -Wl,--wrap=_Z13ta_parse_vdrcP10TA_context $DEVICE_LIBS -lGL -lrt -lpthread -lm -ldl
+   -Wl,--wrap=dlopen -Wl,--wrap=_exit -Wl,--wrap=_Z13ta_parse_vdrcP10TA_context $DEVICE_LIBS -lGL -lrt -lpthread -lm -ldl
 # an OpenGL that does nothing, for the core's renderer (headless.sh's)
 nm -D --undefined-only "$WORK/ta_gpu_test" | awk '{print $NF}' | sed 's/@.*//' | grep '^gl' \
    | python3 tools/threads/headless_gl.py > "$WORK/nogl.c" || true

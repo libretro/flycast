@@ -170,6 +170,17 @@ static void setup(void)
 	ready = true;
 }
 
+/* The frontend ends with _exit(), which runs no atexit() handler: the
+ * totals and the verdict are printed on the way out here instead */
+extern "C" void __real__exit(int code);
+extern "C" void __wrap__exit(int code)
+{
+	if (ready)
+		report();
+	fflush(stdout);
+	__real__exit(code);
+}
+
 /* What differs between the parse's frame and a decode's: NULL for nothing */
 static const char *compare(TA_context *ctx, const TaGpuFrame &gf, const tgt_out &o, char *why, size_t room)
 {
