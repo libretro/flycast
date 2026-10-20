@@ -139,6 +139,7 @@
 #define PVRC_F_O_IDX      42u
 #define PVRC_F_O_MOD      43u
 #define PVRC_F_RUNS       44u  /* runs the bin buffer has room for (chunks x tiles) */
+#define PVRC_F_ZCLIP      45u  /* (float) the raster renderers' depth scale (1/fZ_max, rend/depth_scale.h) over the 1/w scale (XFORM's fifth): where they clip */
 #define PVRC_F_FOG        48u  /* the fog table, 256 bytes as MakeFogTexture() lays them out */
 #define PVRC_F_PASS       112u /* the render passes, PVRC_PASS_WORDS each */
 #define PVRC_PASS_WORDS   8u
@@ -244,7 +245,9 @@
 #define PVRC_RX_CULLED 4u  /* culled by its own parameter */
 #define PVRC_RX_OR    8u   /* OR'ed, not XOR'ed */
 #define PVRC_RX_MODE_SHIFT 4u  /* its parameter's mode */
-#define PVRC_RX_VTX   0x03ffffffu  /* (a polygon's) its first vertex */
+#define PVRC_RX_VTX   0x003fffffu  /* (a polygon's) its first vertex */
+#define PVRC_RX_NEG_AT 22u   /* (either's) a bit for each vertex behind the eye, in the order kept: see pvrc_rec_hits() */
+#define PVRC_RX_NEG   (7u << PVRC_RX_NEG_AT)
 #define PVRC_RX_SHIFT_AT 26u  /* the shift its x and y are kept at, 3 bits (either's) */
 
 /* The bin buffer: counts of each run (chunk x tiles of them), starts
@@ -260,7 +263,7 @@
 #define PVRC_ST_CLEAR_X   0u   /* the clear's dispatch: x, y, z */
 #define PVRC_ST_WORDS     3u   /* pool words used */
 #define PVRC_ST_SKIPPED   4u   /* runs walked over their whole chunk */
-#define PVRC_ST_DROPPED   5u   /* triangles with a vertex behind the eye, left out */
+#define PVRC_ST_DROPPED   5u   /* triangles with a vertex at no depth (or not a number), left out */
 #define PVRC_ST_PEELS     6u   /* the most rounds of translucent fragments a tile took */
 #define PVRC_ST_HIZ       7u   /* primitives the walks passed over by the tiles' depths */
 #define PVRC_STATS        8u
@@ -503,24 +506,103 @@ uint rec_shift(uint r)
 
 /* The most the edge from (@ax, @ay) to (@bx, @by) has over the pixels
  * @x0 to @x1, @y0 to @y1 (all in them), at shift @sh: at one of their
- * corners, for it is linear (a sample's place, shifted, is inside them) */
-int64_t pvrc_edge_max(int ax, int ay, int bx, int by, int x0, int y0, int x1, int y1, uint sh)
+ * corners, for it is linear (a sample's place, shifted, is inside them);
+ * with @neg, the most the edge turned the other way has */
+int64_t pvrc_edge_max(int ax, int ay, int bx, int by, int x0, int y0, int x1, int y1, uint sh, bool neg)
 {
    const int64_t dx = int64_t(bx - ax), dy = int64_t(by - ay);
    const int64_t px0 = int64_t((x0 * 256 >> sh) - ax), px1 = int64_t(((x1 + 1) * 256 >> sh) - ax);
    const int64_t py0 = int64_t((y0 * 256 >> sh) - ay), py1 = int64_t(((y1 + 1) * 256 >> sh) - ay);
+   if (neg)
+      return max(dy * px0, dy * px1) - min(dx * py0, dx * py1);
    return max(dx * py0, dx * py1) - min(dy * px0, dy * px1);
 }
 
-/* Whether no edge of primitive @r has all those pixels' samples outside it */
+/* The edges at (@px, @py) in 24.8: the one facing each vertex (at the
+ * primitive's shift: a sample's place, a multiple of 16, divides exactly) */
+i64vec3 rec_edges(uint r, int px, int py)
+{
+   const uint sh = rec_shift(r);
+   px >>= sh;
+   py >>= sh;
+   const int x0 = int(rec.w[r]), y0 = int(rec.w[r + 1u]);
+   const int x1 = int(rec.w[r + 2u]), y1 = int(rec.w[r + 3u]);
+   const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
+   return i64vec3(int64_t(x2 - x1) * int64_t(py - y1) - int64_t(y2 - y1) * int64_t(px - x1),
+         int64_t(x0 - x2) * int64_t(py - y2) - int64_t(y0 - y2) * int64_t(px - x2),
+         int64_t(x1 - x0) * int64_t(py - y0) - int64_t(y1 - y0) * int64_t(px - x0));
+}
+
+/* A triangle with a vertex behind the eye (its 1/w below 0), as the raster
+ * renderers draw it: the device clips it in its clip space, where a vertex
+ * is (x*w, y*w, Zc, w) with w = 1/z and Zc = min(S, w) (shaders/position.glsl,
+ * S its depth scale), to Zc >= 0, and draws what is left. That is the
+ * triangle's plane in homogeneous coordinates: where a place's barycentrics
+ * there are all positive and its Zc is not negative.
+ *
+ * A vertex's x and y on the screen are the same point whatever the sign of
+ * its w, and edge i times vertex i's 1/w is, up to one factor for the
+ * whole triangle, its homogeneous edge function: so the edges stay as they
+ * are, but the one facing a vertex behind the eye is turned the other way
+ * (the triangle is then the part of the plane beyond the other two: what
+ * lies before the eye of the two wedges its edges make), its facing is the
+ * other one for an odd number of them behind, and the barycentrics, 1/w
+ * and every attribute come from the same edges and 1/w as before
+ * (rec_bary()). Zc over w at a vertex is its depth in the raster renderer,
+ * min(S z, 1) for one in front and 1 for one behind, so the clip is one
+ * more edge, a linear function of the place too:
+ *    sum of edge i times 1/w of vertex i times min(S z, 1) of vertex i
+ * not below 0, z here 1/w over the 1/w scale (PVRC_F_ZCLIP is S over it).
+ * In floats, from the edges' integers, the same in the setup, the walk and
+ * the reference; nothing is clipped where no vertex is behind the eye. */
+vec3 rec_clip_plane(uint r)
+{
+   const float zs = FRMF(PVRC_F_ZCLIP);
+   vec3 g;
+   for (uint k = 0u; k < 3u; k++)
+   {
+      const float q = uintBitsToFloat(rec.w[r + PVRC_R_Q + k]);
+      PVRC_INVARIANT float d = q * zs;
+      PVRC_INVARIANT float gk = q * d;
+      g[k] = q > 0.0 && d < 1.0 ? gk : q;
+   }
+   return g;
+}
+
+float rec_clip_at(vec3 g, i64vec3 e)
+{
+   PVRC_INVARIANT float a = float(e.x) * g.x;
+   PVRC_INVARIANT float b = float(e.y) * g.y;
+   PVRC_INVARIANT float c = float(e.z) * g.z;
+   PVRC_INVARIANT float n = (a + b) + c;
+   return n;
+}
+
+/* Whether no edge of primitive @r has all those pixels' samples outside
+ * it, nor the clip of a triangle with a vertex behind the eye: the clip,
+ * whose floats have rounded, with room for that */
 bool pvrc_rec_hits(uint r, int x0, int y0, int x1, int y1)
 {
    const int ax = int(rec.w[r]), ay = int(rec.w[r + 1u]);
    const int bx = int(rec.w[r + 2u]), by = int(rec.w[r + 3u]);
    const int cx = int(rec.w[r + 4u]), cy = int(rec.w[r + 5u]);
    const uint sh = rec_shift(r);
-   return pvrc_edge_max(bx, by, cx, cy, x0, y0, x1, y1, sh) >= 0 && pvrc_edge_max(cx, cy, ax, ay, x0, y0, x1, y1, sh) >= 0
-         && pvrc_edge_max(ax, ay, bx, by, x0, y0, x1, y1, sh) >= 0;
+   const uint neg = (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_NEG_AT) & 7u;
+   if (!(pvrc_edge_max(bx, by, cx, cy, x0, y0, x1, y1, sh, (neg & 1u) != 0u) >= 0
+         && pvrc_edge_max(cx, cy, ax, ay, x0, y0, x1, y1, sh, (neg & 2u) != 0u) >= 0
+         && pvrc_edge_max(ax, ay, bx, by, x0, y0, x1, y1, sh, (neg & 4u) != 0u) >= 0))
+      return false;
+   if (neg == 0u)
+      return true;
+   const vec3 g = rec_clip_plane(r);
+   float most = -3.4e38, room = 0.0;
+   for (uint c = 0u; c < 4u; c++)
+   {
+      const i64vec3 e = rec_edges(r, ((c & 1u) != 0u ? x1 + 1 : x0) * 256, ((c & 2u) != 0u ? y1 + 1 : y0) * 256);
+      most = max(most, rec_clip_at(g, e));
+      room = max(room, dot(abs(vec3(float(e.x), float(e.y), float(e.z))), abs(g)));
+   }
+   return most + 1e-5 * room >= 0.0;
 }
 #endif
 
@@ -641,19 +723,22 @@ void main()
       x[k] = pvrc_fixed(px[k] * down);
       y[k] = pvrc_fixed(py[k] * down);
       q[k] = sz * vz[k];
-      /* behind the eye, or at no depth: the raster renderers clip it
-       * there; such a triangle is left out (and counted) */
-      if (!(q[k] > 0.0) || q[k] > 3.4e37 || isnan(px[k]) || isnan(py[k]))
+      /* at no depth, or one past what a float takes: such a triangle is
+       * left out (and counted); behind the eye, it is clipped
+       * (rec_clip_plane()) */
+      if (!(abs(q[k]) > 0.0) || abs(q[k]) > 3.4e37 || isnan(px[k]) || isnan(py[k]))
          bad = true;
    }
    const int64_t cross = int64_t(x[1] - x[0]) * int64_t(y[2] - y[0]) - int64_t(x[2] - x[0]) * int64_t(y[1] - y[0]);
    /* counter-clockwise the device's way (a positive area in its formula)
-    * when cross is negative: that is its front, as the pipelines have it */
-   const bool front = cross < 0;
+    * when cross is negative: that is its front, as the pipelines have it;
+    * the other way round with an odd number of vertices behind the eye */
+   const uint behind = (q[0] < 0.0 ? 1u : 0u) + (q[1] < 0.0 ? 1u : 0u) + (q[2] < 0.0 ? 1u : 0u);
+   const bool front = (cross < 0) != ((behind & 1u) != 0u);
    const uint cull = (isp >> 27) & 3u;
    const bool culledOwn = (cull == 3u && !front) || (cull == 2u && front);
    uint extra = provoking;
-   bool empty = bad || cross == 0;
+   bool empty = bad || cross == 0 || behind == 3u;
    if (modvol)
    {
       const uint mode = isp >> 29;
@@ -673,6 +758,8 @@ void main()
       uint u = vi[1]; vi[1] = vi[2]; vi[2] = u;
    }
    extra |= shift << PVRC_RX_SHIFT_AT;
+   const uint neg = (q[0] < 0.0 ? 1u : 0u) | (q[1] < 0.0 ? 2u : 0u) | (q[2] < 0.0 ? 4u : 0u);
+   extra |= neg << PVRC_RX_NEG_AT;
    const uint r = prim * PVRC_REC_WORDS;
    for (uint k = 0u; k < 3u; k++)
    {
@@ -683,11 +770,18 @@ void main()
    }
    rec.w[r + PVRC_R_SRC] = src;
    rec.w[r + PVRC_R_EXTRA] = extra;
-   /* the pixels whose samples it can cover, inside its clip and the picture */
+   /* the pixels whose samples it can cover, inside its clip and the picture
+    * (with a vertex behind the eye, its part of the plane is not inside
+    * its vertices: all of them) */
    int bx0 = int(((int64_t(min(min(x[0], x[1]), x[2])) << shift) - 255) >> 8);
    int by0 = int(((int64_t(min(min(y[0], y[1]), y[2])) << shift) - 255) >> 8);
    int bx1 = int((int64_t(max(max(x[0], x[1]), x[2])) << shift) >> 8);
    int by1 = int((int64_t(max(max(y[0], y[1]), y[2])) << shift) >> 8);
+   if (neg != 0u)
+   {
+      bx0 = by0 = 0;
+      bx1 = by1 = 0x7fffffff;
+   }
    bx0 = max(bx0, int(rect0 & 0xffffu));
    by0 = max(by0, int(rect0 >> 16));
    bx1 = min(bx1, int(rect1 & 0xffffu) - 1);
@@ -964,7 +1058,6 @@ bool rec_in_tile(uint r)
    return pvrc_rec_hits(r, int(g_fine.x), int(g_fine.y), int(g_fine.z), int(g_fine.w));
 }
 
-i64vec3 rec_edges(uint r, int px, int py);
 float pvrc_depth(float w);
 uint rec_poly(uint r);
 
@@ -1201,27 +1294,20 @@ bool edge_in(int64_t e, int dx, int dy)
    return e > 0 || (e == 0 && (dy < 0 || (dy == 0 && dx > 0)));
 }
 
-/* The edges at (@px, @py) in 24.8: the one facing each vertex (at the
- * primitive's shift: a sample's place, a multiple of 16, divides exactly) */
-i64vec3 rec_edges(uint r, int px, int py)
-{
-   const uint sh = rec_shift(r);
-   px >>= sh;
-   py >>= sh;
-   const int x0 = int(rec.w[r]), y0 = int(rec.w[r + 1u]);
-   const int x1 = int(rec.w[r + 2u]), y1 = int(rec.w[r + 3u]);
-   const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
-   return i64vec3(int64_t(x2 - x1) * int64_t(py - y1) - int64_t(y2 - y1) * int64_t(px - x1),
-         int64_t(x0 - x2) * int64_t(py - y2) - int64_t(y0 - y2) * int64_t(px - x2),
-         int64_t(x1 - x0) * int64_t(py - y0) - int64_t(y1 - y0) * int64_t(px - x0));
-}
-
+/* Whether the place whose edges are @e is inside: each edge (turned for a
+ * vertex behind the eye), and the clip for such a triangle
+ * (rec_clip_plane()) */
 bool rec_inside(uint r, i64vec3 e)
 {
    const int x0 = int(rec.w[r]), y0 = int(rec.w[r + 1u]);
    const int x1 = int(rec.w[r + 2u]), y1 = int(rec.w[r + 3u]);
    const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
-   return edge_in(e.x, x2 - x1, y2 - y1) && edge_in(e.y, x0 - x2, y0 - y2) && edge_in(e.z, x1 - x0, y1 - y0);
+   const uint neg = (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_NEG_AT) & 7u;
+   if (neg == 0u)
+      return edge_in(e.x, x2 - x1, y2 - y1) && edge_in(e.y, x0 - x2, y0 - y2) && edge_in(e.z, x1 - x0, y1 - y0);
+   const int64_t s0 = (neg & 1u) != 0u ? -1 : 1, s1 = (neg & 2u) != 0u ? -1 : 1, s2 = (neg & 4u) != 0u ? -1 : 1;
+   return edge_in(s0 * e.x, int(s0) * (x2 - x1), int(s0) * (y2 - y1)) && edge_in(s1 * e.y, int(s1) * (x0 - x2), int(s1) * (y0 - y2))
+         && edge_in(s2 * e.z, int(s2) * (x1 - x0), int(s2) * (y1 - y0)) && rec_clip_at(rec_clip_plane(r), e) >= 0.0;
 }
 
 /* Whether the lane's pixel is in a primitive's pixels: a few compares

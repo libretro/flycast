@@ -44,6 +44,7 @@ typedef struct
    unsigned vi[3];
    unsigned src, extra;
    unsigned shift;	/* x and y divided by 2^shift (pvrc_xy_shift()) */
+   unsigned neg;	/* a bit for each vertex behind the eye (PVRC_RX_NEG_AT) */
    int bx0, by0, bx1, by1;
    int live;
 } Rec;
@@ -55,7 +56,7 @@ static unsigned ref_dropped;
 static void setup(unsigned prim, Rec *r)
 {
    unsigned osrc = F[PVRC_F_O_SRC], lo = 0, hi = F[PVRC_F_SOURCES], i, src, index, k, isp, rect0, rect1, cull;
-   int modvol, culledOwn, front, empty, bad = 0;
+   int modvol, culledOwn, front, empty, bad = 0, behind;
    float vx[3], vy[3], vz[3];
    ref_s64 cross;
    float px[3], py[3], most = 0.0f, down;
@@ -122,15 +123,16 @@ static void setup(unsigned prim, Rec *r)
       r->x[k] = pvrc_fixed(px[k] * down);
       r->y[k] = pvrc_fixed(py[k] * down);
       r->q[k] = ff(PVRC_F_XFORM + 4) * vz[k];
-      if (!(r->q[k] > 0.0f) || r->q[k] > 3.4e37f || px[k] != px[k] || py[k] != py[k])
+      if (!(fabs(r->q[k]) > 0.0f) || fabs(r->q[k]) > 3.4e37f || px[k] != px[k] || py[k] != py[k])
          bad = 1;
    }
    r->shift = shift;
    cross = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(r->y[2] - r->y[0]) - (ref_s64)(r->x[2] - r->x[0]) * (ref_s64)(r->y[1] - r->y[0]);
-   front = cross < 0;
+   behind = (r->q[0] < 0.0f) + (r->q[1] < 0.0f) + (r->q[2] < 0.0f);
+   front = (cross < 0) != ((behind & 1) != 0);
    cull = (isp >> 27) & 3;
    culledOwn = (cull == 3 && !front) || (cull == 2 && front);
-   empty = bad || cross == 0;
+   empty = bad || cross == 0 || behind == 3;
    if (modvol)
    {
       unsigned mode = isp >> 29;
@@ -151,6 +153,7 @@ static void setup(unsigned prim, Rec *r)
       f = r->q[1]; r->q[1] = r->q[2]; r->q[2] = f;
       u = r->vi[1]; r->vi[1] = r->vi[2]; r->vi[2] = u;
    }
+   r->neg = (r->q[0] < 0.0f ? 1u : 0u) | (r->q[1] < 0.0f ? 2u : 0u) | (r->q[2] < 0.0f ? 4u : 0u);
    r->src = src;
    {
       int mnx = r->x[0] < r->x[1] ? r->x[0] : r->x[1], mny = r->y[0] < r->y[1] ? r->y[0] : r->y[1];
@@ -168,6 +171,12 @@ static void setup(unsigned prim, Rec *r)
          by0 = (int)(ay0 >= 0 ? ay0 / 256 : -((-ay0 + 255) / 256));
          bx1 = (int)(ax1 >= 0 ? ax1 / 256 : -((-ax1 + 255) / 256));
          by1 = (int)(ay1 >= 0 ? ay1 / 256 : -((-ay1 + 255) / 256));
+      }
+      if (r->neg != 0)
+      {
+         /* (the kernel's: all of its clip) */
+         bx0 = by0 = 0;
+         bx1 = by1 = 0x7fffffff;
       }
       if (bx0 < (int)(rect0 & 0xffff)) bx0 = (int)(rect0 & 0xffff);
       if (by0 < (int)(rect0 >> 16)) by0 = (int)(rect0 >> 16);
@@ -210,10 +219,39 @@ static void rec_edges(const Rec *r, int px, int py, ref_s64 *e)
    e[2] = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(py - r->y[0]) - (ref_s64)(r->y[1] - r->y[0]) * (ref_s64)(px - r->x[0]);
 }
 
+/* The clip of a triangle with a vertex behind the eye (the kernels'
+ * rec_clip_plane(), rec_clip_at()) */
+static float rec_clip_at(const Rec *r, const ref_s64 *e)
+{
+   const float zs = ff(PVRC_F_ZCLIP);
+   float g[3], a, b, c;
+   int k;
+   for (k = 0; k < 3; k++)
+   {
+      const float q = r->q[k];
+      const float d = q * zs;
+      const float gk = q * d;
+      g[k] = q > 0.0f && d < 1.0f ? gk : q;
+   }
+   a = (float)e[0] * g[0];
+   b = (float)e[1] * g[1];
+   c = (float)e[2] * g[2];
+   return (a + b) + c;
+}
+
 static int rec_inside(const Rec *r, const ref_s64 *e)
 {
-   return edge_in(e[0], r->x[2] - r->x[1], r->y[2] - r->y[1]) && edge_in(e[1], r->x[0] - r->x[2], r->y[0] - r->y[2])
-         && edge_in(e[2], r->x[1] - r->x[0], r->y[1] - r->y[0]);
+   int s0, s1, s2;
+   if (r->neg == 0)
+      return edge_in(e[0], r->x[2] - r->x[1], r->y[2] - r->y[1]) && edge_in(e[1], r->x[0] - r->x[2], r->y[0] - r->y[2])
+            && edge_in(e[2], r->x[1] - r->x[0], r->y[1] - r->y[0]);
+   s0 = (r->neg & 1) ? -1 : 1;
+   s1 = (r->neg & 2) ? -1 : 1;
+   s2 = (r->neg & 4) ? -1 : 1;
+   return edge_in(s0 * e[0], s0 * (r->x[2] - r->x[1]), s0 * (r->y[2] - r->y[1]))
+         && edge_in(s1 * e[1], s1 * (r->x[0] - r->x[2]), s1 * (r->y[0] - r->y[2]))
+         && edge_in(s2 * e[2], s2 * (r->x[1] - r->x[0]), s2 * (r->y[1] - r->y[0]))
+         && rec_clip_at(r, e) >= 0.0f;
 }
 
 static int rec_covers(const Rec *r, int px, int py)

@@ -15,6 +15,8 @@
 static_assert(sizeof(compute_spv) / sizeof(compute_spv[0]) == PVRC_KERNELS + 1, "a kernel for each PVRC_K_*");
 static_assert(sizeof(Vertex) == PVRC_VTX_WORDS * 4, "the kernels read the parse's vertices word for word");
 static_assert(sizeof(ModTriangle) == 9 * 4, "...and its modifier volume triangles");
+// (a record keeps a vertex's number in PVRC_RX_VTX: NAOMI 2's four times the TA data, all vertices)
+static_assert(4u * 4 * 1024 * 1024 / sizeof(Vertex) <= PVRC_RX_VTX, "a vertex's number in a record");
 
 /* The bin pool's entries: a run for each tile a primitive touches, for a
  * frame's every primitive (4 MiB) */
@@ -324,27 +326,10 @@ u32 ComputeFrame::Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u
 	out[PVRC_F_XFORM + 2] = fbits(vp.tx);
 	out[PVRC_F_XFORM + 3] = fbits(vp.ty);
 	out[PVRC_F_XFORM + 4] = fbits(vp.sz);
-	/* A triangle with a corner behind the eye or at no depth, which the
-	 * raster renderers clip at the eye's plane and the kernels would leave
-	 * out (pvr_compute.h's setup): such a frame is theirs */
-	auto drawable = [&](float x, float y, float z) {
-		const float q = vp.sz * z;
-		const float px = vp.sx * x + vp.tx;
-		const float py = vp.sy * y + vp.ty;
-		// (not NaN, by its bits, whatever the compiler does with floats)
-		u32 qb, xb, yb;
-		memcpy(&qb, &q, 4);
-		memcpy(&xb, &px, 4);
-		memcpy(&yb, &py, 4);
-		return (qb & 0x7fffffffu) <= 0x7f800000u && q > 0.f && q <= 3.4e37f
-				&& (xb & 0x7fffffffu) <= 0x7f800000u && (yb & 0x7fffffffu) <= 0x7f800000u;
-	};
-	for (const Vertex *v = rc.verts.head(), *end = v + rc.verts.used(); v < end; v++)
-		if (!drawable(v->x, v->y, v->z))
-			return 0;
-	for (const ModTriangle *t = rc.modtrig.head(), *end = t + rc.modtrig.used(); t < end; t++)
-		if (!drawable(t->x0, t->y0, t->z0) || !drawable(t->x1, t->y1, t->z1) || !drawable(t->x2, t->y2, t->z2))
-			return 0;
+	/* Where the raster renderers clip a triangle with a vertex behind the
+	 * eye, which the kernels clip there too (pvr_compute.h,
+	 * rec_clip_plane()): their depth scale, over the kernels' 1/w scale */
+	out[PVRC_F_ZCLIP] = fbits(pvr_depth_scale(rc.fZ_max) * (1.f / vp.sz));
 	struct FragmentUniforms
 	{
 		float colorClampMin[4];
@@ -624,7 +609,7 @@ void ComputeDrawer::Term()
 	if (res)
 	{
 		if (statFrames + statFallback != 0)
-			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn, %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles behind the eye left out, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
+			NOTICE_LOG(RENDERER, "Vulkan compute renderer: %llu frames drawn, %llu left to the raster renderer; %llu runs walked over their chunk, %llu triangles at no depth left out, at most %u rounds of translucent fragments, %llu primitives passed over by the tiles' depths",
 					(unsigned long long)statFrames, (unsigned long long)statFallback, (unsigned long long)res->skipped,
 					(unsigned long long)res->dropped, res->peels, (unsigned long long)res->hiz);
 	}
