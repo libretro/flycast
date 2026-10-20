@@ -81,7 +81,9 @@
  * triangle, which is the same order) and blended in floats; under SSAA a
  * translucent fragment is shaded and its depth taken once a pixel, at its
  * centre, as are a modifier volume's depths. Texture filtering is the
- * device's sampler, given the derivatives the setup's planes have.
+ * device's sampler, given the derivatives a fragment shader has: the
+ * differences across a 2x2 block of pixels, from the setup's planes
+ * (frag_grads()).
  *
  * Test mode (spec constant PVRC_TEST, tools/rend/tile_test): the depth
  * compared is 1/w itself and a texture is a function of its coordinates,
@@ -1475,8 +1477,9 @@ float frag_mix1(uint r, Bary b, uint k)
          uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX + 2u], k)));
 }
 
-/* A perspective-correct coordinate's change for a step of the edges by
- * (@d0, @d1, @d2), from its numerator and denominator */
+/* A perspective-correct coordinate's change from the place whose edges are
+ * @e to the place a step of the edges by @d away, from its numerator and
+ * denominator: (num + dnum) / (den + dden) - num / den */
 vec2 frag_duv(uint r, i64vec3 e, vec3 d, uint ku)
 {
    const vec3 q = vec3(uintBitsToFloat(rec.w[r + PVRC_R_Q]), uintBitsToFloat(rec.w[r + PVRC_R_Q + 1u]), uintBitsToFloat(rec.w[r + PVRC_R_Q + 2u]));
@@ -1492,13 +1495,23 @@ vec2 frag_duv(uint r, i64vec3 e, vec3 d, uint ku)
             uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX + 2u], ku + c)));
       const float num = dot(eq, a);
       const float dnum = dot(dq, a);
-      res[c] = (dnum * den - num * dden) / (den * den);
+      res[c] = (dnum * den - num * dden) / (den * (den + dden));
    }
    return res;
 }
 
 /* A fragment's texture coordinates' derivatives, at the place whose edges
- * are @e (for texturing; test mode has no use for them) */
+ * are @e (for texturing; test mode has no use for them): what a fragment
+ * shader's implicit ones are, the differences of the coordinates across
+ * the 2x2 block of pixels (at even x and y) the pixel is in - from its top
+ * left pixel to the one right of it and to the one below it, at the same
+ * place in each pixel, all four from the triangle's planes wherever it
+ * covers - rather than the exact derivatives at the place. A perspective
+ * triangle's coordinates are not linear over a pixel; seen at a grazing
+ * angle the two differ enough to move the level of detail the device
+ * picks, and so its mipmap level and its anisotropic filtering's taps.
+ * The edges' steps in 64 bits: a vertex far off the screen (one behind
+ * the eye) has differences that times 256 do not fit in 32. */
 void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
 {
    if (PVRC_TEST == 0u && (flags & PVRC_QF_TEXTURE) != 0u)
@@ -1508,15 +1521,22 @@ void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
       const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
       /* a pixel across: each edge changes by -dy * 256, down by dx * 256
        * (256 at the primitive's shift) */
-      const float step = float(256u >> rec_shift(r));
-      const vec3 dx = vec3(float(-(y2 - y1)), float(-(y0 - y2)), float(-(y1 - y0))) * step;
-      const vec3 dy = vec3(float(x2 - x1), float(x0 - x2), float(x1 - x0)) * step;
-      f.duvx = frag_duv(r, e, dx, 5u);
-      f.duvy = frag_duv(r, e, dy, 5u);
+      const int sh = 8 - int(rec_shift(r));
+      const i64vec3 ix = i64vec3(-(y2 - y1), -(y0 - y2), -(y1 - y0)) << sh;
+      const i64vec3 iy = i64vec3(x2 - x1, x0 - x2, x1 - x0) << sh;
+      /* (the block's top left pixel, exactly) */
+      i64vec3 tl = e;
+      if ((g_px & 1) != 0)
+         tl -= ix;
+      if ((g_py & 1) != 0)
+         tl -= iy;
+      const vec3 dx = vec3(ix), dy = vec3(iy);
+      f.duvx = frag_duv(r, tl, dx, 5u);
+      f.duvy = frag_duv(r, tl, dy, 5u);
       if ((flags & PVRC_QF_TWO_VOLUMES) != 0u)
       {
-         f.duv1x = frag_duv(r, e, dx, 9u);
-         f.duv1y = frag_duv(r, e, dy, 9u);
+         f.duv1x = frag_duv(r, tl, dx, 9u);
+         f.duv1y = frag_duv(r, tl, dy, 9u);
       }
    }
 }
