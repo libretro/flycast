@@ -30,6 +30,7 @@
  * textures are the texture pool's (DX11TexturePool), which made the views
  * the kernels write through. */
 #pragma once
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d11.h>
 #include "comptr.h"

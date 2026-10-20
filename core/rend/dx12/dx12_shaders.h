@@ -20,6 +20,7 @@
  * tools/rend/kernels_dx12.sh), and the texture kernels the Direct3D 11
  * renderer has (rend/texdecode_dxbc.inc). Nothing is compiled when the
  * core runs, and it needs no compiler. */
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d12.h>
 

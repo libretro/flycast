@@ -43,6 +43,7 @@
  * The table is looked up by key for every draw: open addressing, made with
  * the context; nothing is allocated to find or add a pipeline. Only the
  * thread that renders touches it. */
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d12.h>
 #include "types.h"

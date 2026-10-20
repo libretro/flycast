@@ -6,6 +6,7 @@
 #ifndef REND_DXGI_BUDGET_H
 #define REND_DXGI_BUDGET_H
 
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <dxgi.h>
 #include <dxgi1_4.h>

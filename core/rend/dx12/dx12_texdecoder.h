@@ -37,6 +37,7 @@
  * frame's draws, into the same command list: nothing waits for the GPU,
  * and nothing is allocated or compiled while a game runs - the pipelines
  * are made when the renderer starts. */
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d12.h>
 #include "rend/dx11/comptr.h"

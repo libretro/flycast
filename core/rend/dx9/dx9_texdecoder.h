@@ -23,6 +23,7 @@
  * texture needs none of this: its texels go to the texture as they are
  * (DX9Texture::GpuDecode()). */
 #pragma once
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d9.h>
 #include "rend/dx11/comptr.h"

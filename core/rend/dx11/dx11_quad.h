@@ -19,6 +19,7 @@
 #pragma once
 /* (Direct3D's headers before the emulator's: hw/pvr/pvr_regs.h has macros
  * with the names of some of their parameters) */
+#include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
