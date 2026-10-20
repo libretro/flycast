@@ -1,0 +1,36 @@
+name: Old libstdc++ atomics
+
+# retro_atomic.h's C++11 backend, as a libstdc++ before P0558R1 (GCC 8
+# and older) parses it with the enumerators the core passes: issue #1215.
+# tools/threads/old_stl.sh.
+
+on:
+  push:
+    paths:
+      - 'core/libretro-common/include/retro_atomic.h'
+      - 'core/libretro/emu_baton.h'
+      - 'core/rend/vulkan/pso.*'
+      - 'tools/threads/old_stl*'
+      - '.github/workflows/old-stl.yml'
+  pull_request:
+    paths:
+      - 'core/libretro-common/include/retro_atomic.h'
+      - 'core/libretro/emu_baton.h'
+      - 'core/rend/vulkan/pso.*'
+      - 'tools/threads/old_stl*'
+      - '.github/workflows/old-stl.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  old-stl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host <atomic>, then the libstdc++ 8 one
+        run: sh tools/threads/old_stl.sh
+      - name: The same under clang
+        run: CXX=clang++ sh tools/threads/old_stl.sh
