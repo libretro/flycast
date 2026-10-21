@@ -139,6 +139,8 @@ const char *ComputeDrawer::DeviceLacks()
 		return "no 64-bit integers in shaders";
 	if (!context->SupportsSampledImageArrayIndexing())
 		return "no indexing of an array of textures";
+	if (!context->SupportsNonUniformTextureIndexing() && !context->SupportsSubgroupBallotCompute())
+		return "no non-uniform indexing of an array of textures, nor subgroup ballot";
 	if (limits.maxComputeWorkGroupInvocations < PVRC_WG || limits.maxComputeWorkGroupSize[0] < PVRC_WG)
 		return "workgroups too small";
 	if (limits.maxPerStageDescriptorSamplers < PVRC_TEX_SLOTS + 2 || limits.maxPerStageDescriptorSampledImages < PVRC_TEX_SLOTS + 2
@@ -233,8 +235,11 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 		const vk::SpecializationInfo specInfo(4, entries, sizeof(spec), spec);
 		for (int k = 1; k <= PVRC_KERNELS; k++)
 		{
+			// (the walk's textures taken in turns where the device cannot index them non-uniformly)
+			const bool waterfall = k == PVRC_K_WALK && !context->SupportsNonUniformTextureIndexing();
 			vk::UniqueShaderModule module = device.createShaderModuleUnique(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(),
-					compute_spv_size[k], compute_spv[k]));
+					waterfall ? sizeof(compute_spv_walk_waterfall) : compute_spv_size[k],
+					waterfall ? compute_spv_walk_waterfall : compute_spv[k]));
 			const vk::PipelineShaderStageCreateInfo stage(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute, *module, "main", &specInfo);
 			(set == 0 ? r->pipelines : r->rttPipelines)[k] = device.createComputePipelineUnique(context->GetPipelineCache(),
 					vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *r->pipelineLayout));

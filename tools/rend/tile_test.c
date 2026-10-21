@@ -187,6 +187,8 @@ static void init(const char *dir, int validate)
    VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
    VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
    VkPhysicalDeviceFeatures features;
+   VkPhysicalDeviceDescriptorIndexingFeaturesEXT indexing = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT };
+   const char *dev_exts[] = { VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME };
    VkCommandPoolCreateInfo cpi = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
    VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
    VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
@@ -236,6 +238,15 @@ static void init(const char *dir, int validate)
    dci.queueCreateInfoCount = 1;
    dci.pQueueCreateInfos = &qci;
    dci.pEnabledFeatures = &features;
+   /* the walk's array of textures indexed non-uniformly (but for
+    * TILE_WATERFALL: its lanes take their textures in turns) */
+   if (!getenv("TILE_WATERFALL"))
+   {
+      indexing.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+      dci.pNext = &indexing;
+      dci.enabledExtensionCount = 1;
+      dci.ppEnabledExtensionNames = dev_exts;
+   }
    CHECK(vkCreateDevice(gpu, &dci, NULL, &device));
    vkGetDeviceQueue(device, 0, 0, &queue);
    cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;

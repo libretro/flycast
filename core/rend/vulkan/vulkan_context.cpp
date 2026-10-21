@@ -140,6 +140,7 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 	bool hasEds = false;
 	bool hasEds3 = false;
 	bool hasCacheControl = false;
+	bool hasDescriptorIndexing = false;
 	VulkanContext::Instance()->dedicatedAllocationSupported = false;
 	std::vector<const char *> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 	for (int i = 0; i < num_required_device_extensions; i++)
@@ -168,6 +169,8 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 			hasEds3 = true;
 		else if (!strcmp(property.extensionName, "VK_EXT_pipeline_creation_cache_control"))
 			hasCacheControl = true;
+		else if (!strcmp(property.extensionName, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME))
+			hasDescriptorIndexing = true;
 	}
 	VulkanContext::Instance()->dedicatedAllocationSupported &= getMemReq2Supported;
 
@@ -185,10 +188,15 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 	VulkanContext::Instance()->extendedDynamicState = false;
 	VulkanContext::Instance()->extendedDynamicState3 = false;
 	VulkanContext::Instance()->pipelineCacheControl = false;
+	/* The compute renderer's array of textures indexed by a slot that
+	 * differs between the lanes of a subgroup (vulkan/compute_drawer.h) */
+	VkPhysicalDeviceDescriptorIndexingFeaturesEXT descriptorIndexing = {};
+	descriptorIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
+	VulkanContext::Instance()->nonUniformTextureIndexing = false;
 	vk::PhysicalDeviceProperties deviceProperties;
 	physicalDevice.getProperties(&deviceProperties);
 	void *featuresChain = nullptr;
-	if ((hasEds || hasEds3 || hasCacheControl) && ::vkGetPhysicalDeviceFeatures2 != nullptr
+	if ((hasEds || hasEds3 || hasCacheControl || hasDescriptorIndexing) && ::vkGetPhysicalDeviceFeatures2 != nullptr
 			&& VK_VERSION_MINOR(deviceProperties.apiVersion) >= 1)
 	{
 		eds.pNext = &eds3;
@@ -208,7 +216,13 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 			link = &eds3.pNext;
 		if (!hasCacheControl)
 			*link = cacheControl.pNext;
+		if (hasDescriptorIndexing)
+		{
+			descriptorIndexing.pNext = features2.pNext;
+			features2.pNext = &descriptorIndexing;
+		}
 		::vkGetPhysicalDeviceFeatures2((VkPhysicalDevice)physicalDevice, &features2);
+		const bool useNonUniform = hasDescriptorIndexing && descriptorIndexing.shaderSampledImageArrayNonUniformIndexing;
 		const bool useEds = hasEds && eds.extendedDynamicState;
 		const bool useEds3 = hasEds3 && eds3.colorBlendEnable && eds3.colorBlendEquation && eds3.colorWriteMask;
 		const bool useCacheControl = hasCacheControl && cacheControl.pipelineCreationCacheControl;
@@ -216,6 +230,15 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 		void *chain = nullptr;
 		eds3 = {};
 		eds3.sType = pso_ext::STRUCTURE_TYPE_EDS3_FEATURES;
+		if (useNonUniform)
+		{
+			descriptorIndexing = {};
+			descriptorIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
+			descriptorIndexing.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+			descriptorIndexing.pNext = chain;
+			chain = &descriptorIndexing;
+			deviceExtensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+		}
 		if (useCacheControl)
 		{
 			cacheControl.pNext = chain;
@@ -239,6 +262,21 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 		VulkanContext::Instance()->extendedDynamicState = useEds;
 		VulkanContext::Instance()->extendedDynamicState3 = useEds3;
 		VulkanContext::Instance()->pipelineCacheControl = useCacheControl;
+		VulkanContext::Instance()->nonUniformTextureIndexing = useNonUniform;
+	}
+	/* ...and where it cannot be, its lanes taking their textures in turns:
+	 * Vulkan 1.1's subgroup ballot, in compute shaders */
+	VulkanContext::Instance()->subgroupBallotCompute = false;
+	if (VK_VERSION_MINOR(deviceProperties.apiVersion) >= 1 && ::vkGetPhysicalDeviceProperties2 != nullptr)
+	{
+		VkPhysicalDeviceSubgroupProperties subgroup = {};
+		subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+		VkPhysicalDeviceProperties2 properties2 = {};
+		properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		properties2.pNext = &subgroup;
+		::vkGetPhysicalDeviceProperties2((VkPhysicalDevice)physicalDevice, &properties2);
+		VulkanContext::Instance()->subgroupBallotCompute = (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0
+				&& (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_BALLOT_BIT) != 0;
 	}
 
 	// create a Device

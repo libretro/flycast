@@ -20,7 +20,8 @@
 # integers in shaders: Mesa's software one (lavapipe) is used where it is
 # installed. TILE_VALIDATE=1 the validation layer. The programs, kernels
 # and frames are made in $WORK (default: a new directory in $TMPDIR), kept
-# with KEEP=1 or when $WORK is given.
+# with KEEP=1 or when $WORK is given. TILE_WATERFALL=1: the walk that takes
+# its textures in turns, for a device without non-uniform indexing.
 #
 # TILE_DEVICE=d3d12: the frames drawn by the Direct3D 12 renderers' kernels
 # instead (tile_test_d3d12.c), as HLSL made DXIL by kernels_dx12.sh
@@ -51,11 +52,13 @@ k=1
 while [ $k -le "$(awk '$1 == "#define" && $2 == "PVRC_KERNELS" { print $3 }' core/rend/tile/pvr_compute.h)" ]; do
    { echo "#version 450"; echo "#define PVR_SHADER_GLSL"; echo "#define PVRC_SHADER_GLSL"; echo "#define PVRC_KERNEL $k"; echo "#define PVRC_EXACT"
      if [ $k = "$K_WALK" ]; then echo "#define PVR_LANE_COUNT 8"; echo "#define PVR_LANE_GROUP_SIZE 256"; else echo "#define PVR_LANE_NONE"; fi
+     if [ $k = "$K_WALK" ] && [ -n "$TILE_WATERFALL" ]; then echo "#define PVRC_TEX_WATERFALL"; fi
      for h in core/rend/tile/pvr_lane.h core/rend/tile/pvr_tile.h core/rend/tile/pvr_modvol.h core/rend/tile/pvr_resolve.h core/rend/ssaa_pattern.h core/rend/tile/pvr_compute.h; do
         sed '/^#include/d' $h
      done
    } > "$WORK/k$k.comp"
-   glslangValidator -V -g0 --target-env vulkan1.0 -S comp -o "$WORK/k$k.spv" "$WORK/k$k.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
+   env=vulkan1.0; if [ $k = "$K_WALK" ] && [ -n "$TILE_WATERFALL" ]; then env=vulkan1.1; fi
+   glslangValidator -V -g0 --target-env $env -S comp -o "$WORK/k$k.spv" "$WORK/k$k.comp" > "$WORK/log" || { cat "$WORK/log"; exit 1; }
    k=$((k + 1))
 done
 

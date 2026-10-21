@@ -4,16 +4,16 @@
  * tools/rend/kernels_dx12.sh makes HLSL of them): made by
  * tools/rend/kernels_dx12.sh update from them. Not to be edited.
  * dxc libdxcompiler.so: 1.8(dev;4662-416fab6b); libdxil.so: 1.8
- * kernel 1 0 2aef020681bf9dd287d7c1ce28c6fd2d4bcf7a4c
- * kernel 2 0 04799bf6aff0ad8b2e2689ce1d8c8fe92206b20d
- * kernel 3 0 550b1ee30e21d580ebb91770f778027dbf53674e
- * kernel 4 0 a4b44406ce7210923155f16dc6064a43981f4d53
- * kernel 5 1 f3f1c10f3a418da78c510ebf9c72648589fafd1c
- * kernel 5 2 730e8821e129ceecc2a57fe041ce619ab5100dec
- * kernel 5 4 7218e5f1a74faf8e6aedde698969cf4236491b99
- * kernel 5 8 dc79b201f1d4c460b012961bf80c3680e1ec2ec4
- * kernel 6 0 8e10d54f56902a1389985bf134a2d8698802a7b3
- * kernel 7 0 b2825656e0f829c409bc0bb674c573270fb0718b
+ * kernel 1 0 e0462f58fc4e6e035a16cd2b4a1d0e35371b232d
+ * kernel 2 0 b230649d40ae361826835b536251bbe84472d72d
+ * kernel 3 0 309f579502ac7bb104dc69508c9b3dd0e86f41dc
+ * kernel 4 0 c00d8195204f15c34799b7c5f45da226fcc61fd8
+ * kernel 5 1 03194bfdaed536fc6504fd3d436c41caae9f3ec5
+ * kernel 5 2 554cf83dd88b09505cb6736ed21e64e13b6da582
+ * kernel 5 4 ff5fcb7a84a816d639b9ea49fb319779b88afba0
+ * kernel 5 8 0d5e1eaf059c6d8bf7f0fcb24c4377c72d96761b
+ * kernel 6 0 de12a69aa923eb80fff8f2bb4efbb4c9b20f2285
+ * kernel 7 0 5f054bdc812aab1ce52a0b6d87ab9add31bdd996
  */
 static const u32 dx12_compute_dxil_1_0[] = {
 0x43425844,0x85761b8e,0xfd4b60af,0x12ce8845,0x160342e1,0x00000001,0x00002028,0x00000006,

@@ -88,10 +88,13 @@ gl_source() {
    echo "#define TEXD_GL_LOC(n) layout(location = n)"; cat core/rend/texdecode.h
 }
 
-# one array: @1 its name, @2 the kernel's text (@3: opengl, for OpenGL's SPIR-V)
+# one array: @1 its name, @2 the kernel's text (@3: opengl, for OpenGL's
+# SPIR-V; vulkan1.1, for a kernel with subgroup operations)
 spv_array() {
    if [ "$3" = opengl ]; then
       glslangValidator -G -g0 --target-env opengl -S comp -o "$WORK/k.spv" "$2" > "$WORK/log" || { cat "$WORK/log" >&2; exit 1; }
+   elif [ "$3" = vulkan1.1 ]; then
+      glslangValidator -V -g0 --target-env vulkan1.1 -S comp -o "$WORK/k.spv" "$2" > "$WORK/log" || { cat "$WORK/log" >&2; exit 1; }
    else
       glslangValidator -V -g0 --target-env vulkan1.0 -S comp -o "$WORK/k.spv" "$2" > "$WORK/log" || { cat "$WORK/log" >&2; exit 1; }
    fi
@@ -102,9 +105,11 @@ spv_array() {
 
 # a compute kernel's text: the shared rules' headers without their
 # #includes, then pvr_compute.h; the walk exchanges between lanes through
-# shared memory (pvr_lane.h), the others have no use for it
+# shared memory (pvr_lane.h), the others have no use for it. @2: waterfall,
+# the walk for a device without non-uniform indexing of its textures
 compute_source() {
    echo "#version 450"; echo "#define PVR_SHADER_GLSL"; echo "#define PVRC_SHADER_GLSL"; echo "#define PVRC_KERNEL $1"
+   if [ "$2" = waterfall ]; then echo "#define PVRC_TEX_WATERFALL"; fi
    if [ "$1" = "$PVRC_K_WALK" ]; then echo "#define PVR_LANE_COUNT 8"; echo "#define PVR_LANE_GROUP_SIZE 256"; else echo "#define PVR_LANE_NONE"; fi
    for h in core/rend/tile/pvr_lane.h core/rend/tile/pvr_tile.h core/rend/tile/pvr_modvol.h core/rend/tile/pvr_resolve.h core/rend/ssaa_pattern.h core/rend/tile/pvr_compute.h; do
       sed '/^#include/d' $h
@@ -126,6 +131,8 @@ sums() {
          echo " * kernel $k $(sha1sum < "$WORK/s.comp" | cut -c1-40)"
          k=$((k + 1))
       done
+      compute_source $PVRC_K_WALK waterfall > "$WORK/s.comp"
+      echo " * kernel walk-waterfall $(sha1sum < "$WORK/s.comp" | cut -c1-40)"
    elif [ "$1" = ta ] || [ "$1" = tagl ]; then
       k=1
       while [ $k -le "$TAG_KERNELS" ]; do
@@ -266,6 +273,9 @@ make_compute() {
    printf 'static const size_t compute_spv_size[] = { 0'
    k=1; while [ $k -le "$PVRC_KERNELS" ]; do printf ', sizeof(compute_spv_%d)' $k; k=$((k + 1)); done
    echo ' };'
+   echo "// the walk with PVRC_TEX_WATERFALL (SPIR-V 1.3, Vulkan 1.1's subgroups)"
+   compute_source $PVRC_K_WALK waterfall > "$WORK/s.comp"
+   spv_array compute_spv_walk_waterfall "$WORK/s.comp" vulkan1.1
 }
 
 # The raster modules, one a line: the name, the stage, the #defines

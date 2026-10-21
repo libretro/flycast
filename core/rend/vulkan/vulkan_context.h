@@ -99,6 +99,8 @@ public:
 	bool SupportsSamplerAnisotropy() const { return samplerAnisotropy; }
 	bool SupportsShaderInt64() const { return shaderInt64; }
 	bool SupportsSampledImageArrayIndexing() const { return sampledImageArrayIndexing; }
+	bool SupportsNonUniformTextureIndexing() const { return nonUniformTextureIndexing; }
+	bool SupportsSubgroupBallotCompute() const { return subgroupBallotCompute; }
 	bool SupportsStorageImageExtendedFormats() const { return storageImageExtendedFormats; }
 	u32 GetApiVersion() const { return apiVersion; }
 	bool SupportsDedicatedAllocation() const { return dedicatedAllocationSupported; }
@@ -168,6 +170,8 @@ public:
 	bool sampleRateShading = false;
 	bool shaderInt64 = false;		// enabled on the device when it has it
 	bool sampledImageArrayIndexing = false;	// ...and this, shaderSampledImageArrayDynamicIndexing
+	bool nonUniformTextureIndexing = false;	// ...and shaderSampledImageArrayNonUniformIndexing (VK_EXT_descriptor_indexing)
+	bool subgroupBallotCompute = false;	// Vulkan 1.1's subgroup ballot in compute shaders
 	/* VK_EXT_extended_dynamic_state and _state3 (pso.h), and
 	 * VK_EXT_pipeline_creation_cache_control: caches without a lock */
 	bool extendedDynamicState = false;

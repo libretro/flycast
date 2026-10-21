@@ -1163,7 +1163,27 @@ layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outImage;
 layout(set = 0, binding = 4) uniform sampler2D lastPicture;
 layout(set = 0, binding = 5) uniform sampler2D palette;
 layout(set = 0, binding = 6) uniform sampler2D textures[PVRC_TEX_SLOTS];
-#define PVRC_TEXTURE_GRAD(slot, uv, dx, dy) textureGrad(textures[slot], uv, dx, dy)
+/* Each lane's pixel has its own polygon, so the slot can differ between
+ * the lanes of a subgroup, and the array is indexed by it as a non-uniform
+ * index (shaderSampledImageArrayNonUniformIndexing); without that, the
+ * device given PVRC_TEX_WATERFALL: the lanes take their textures in turns,
+ * a slot at a time */
+#if defined(PVRC_TEX_WATERFALL)
+#extension GL_KHR_shader_subgroup_ballot : require
+vec4 pvrc_texture_grad(uint slot, vec2 uv, vec2 dx, vec2 dy)
+{
+   for (;;)
+   {
+      const uint first = subgroupBroadcastFirst(slot);
+      if (first == slot)
+         return textureGrad(textures[first], uv, dx, dy);
+   }
+}
+#define PVRC_TEXTURE_GRAD(slot, uv, dx, dy) pvrc_texture_grad(slot, uv, dx, dy)
+#else
+#extension GL_EXT_nonuniform_qualifier : require
+#define PVRC_TEXTURE_GRAD(slot, uv, dx, dy) textureGrad(textures[nonuniformEXT(slot)], uv, dx, dy)
+#endif
 #endif
 
 shared uint s_prim[512];	/* the primitives of a batch kept, in order (two batches' in turn, the walk of one going on as the next is read) */
