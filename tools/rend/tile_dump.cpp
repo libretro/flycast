@@ -67,7 +67,7 @@ struct DumpSlots : public ComputeFrame::Slots
 	}
 };
 
-static ComputeFrame packer;
+static VulkanComputeFrame packer;
 static std::vector<u32> words;
 static u32 frames, written, rttFrames, rttWritten;
 

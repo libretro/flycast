@@ -43,54 +43,31 @@
 #include "drawer.h"
 #include "gpu_timer.h"
 #include "texture.h"
-#include "rend/tile/pvr_compute.h"
+#include "rend/tile/compute_frame.h"
 
 #include <memory>
 #include <vector>
 
 /* The frame's words for the kernels (PVRC_F_*), from the render context
- * (pvrrc): the drawers' own transforms and clip rectangles. Also what the
- * tests build their frames with (tools/rend/tile_test). */
-class ComputeFrame : public BaseDrawer
+ * (pvrrc), by the Vulkan renderers' transforms and clip rectangles. Also
+ * what the tests build their frames with (tools/rend/tile_dump). */
+class VulkanComputeFrame : public ComputeFrame, public BaseDrawer
 {
-public:
-	struct Slots
+protected:
+	const xform& Begin() override
 	{
-		// a texture's slot (PVRC_TEX_SLOTS of them), or PVRC_NONE when they are all taken
-		virtual u32 Slot(u64 texid, TSP tsp) = 0;
-		virtual ~Slots() = default;
-	};
-	struct Layout
+		matrices.CalcMatrices(&pvrrc);
+		return matrices.GetViewportMatrix();
+	}
+	void BaseScissor(int& x, int& y, int& width, int& height) override
 	{
-		u32 width, height;	// the picture's
-		u32 tileLog2;		// of the coarse tiles
-		u32 pool;		// entries of the bin pool
-		u32 runs;		// runs the bin buffer has room for
-		u32 chunks;		// ...for this many chunks
-		bool lastPicture;	// start from the picture before
-		bool lastScaled;	// ...one of another size
-		u32 rttScale;		// a render to a texture: Render To Texture Upscaling's (else 0)
-	};
-	/* The words, in @out (room for @room); their count, or 0 when the frame
-	 * does not fit there, has more primitives or textures than there is
-	 * room for, or more render passes than the kernels take; @prims, the
-	 * number of primitives. Flat polygons have their first vertex's colours
-	 * made those of their last, as the raster renderers have them. */
-	u32 Pack(const Layout& layout, Slots& slots, u32 *out, u32 room, u32 *prims);
-	/* Why a frame is left to the raster renderer: Pack()'s reasons (after
-	 * it returned 0), and the drawer's */
-	enum { Why_None, Why_Passes, Why_Room, Why_Textures, Why_Rtt, Why_Osd, Why_Picture, Why_Decode, Why_Count };
-	u32 why = Why_None;
-
-	// the most words a frame of this machine takes, and the most primitives
-	static u32 MaxWords();
-	static u32 MaxPrims();
-	// the coarse tiles' size for a picture this wide (log2)
-	static u32 TileLog2(u32 width) { return width > 1280 ? 6 : 5; }
-	// the most coarse tiles a texture rendered to has (at the most upscaling there is)
-	static u32 MaxRttTiles();
-	// Render To Texture Upscaling, as the renders to a texture have it
-	static u32 RttScale();
+		SetBaseScissor();
+		x = baseScissor.offset.x;
+		y = baseScissor.offset.y;
+		width = (int)baseScissor.extent.width;
+		height = (int)baseScissor.extent.height;
+	}
+	void ProvokingVertices() override { SetProvokingVertices(); }
 };
 
 class ComputeDrawer
@@ -145,6 +122,6 @@ private:
 	CommandPool *commandPool = nullptr;
 	SamplerManager *samplerManager = nullptr;
 	const TaGpuDraw *gpuDraw = nullptr;
-	ComputeFrame frame;
+	VulkanComputeFrame frame;
 	GpuFrameTimer timer;
 };
