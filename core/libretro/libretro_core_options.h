@@ -507,7 +507,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       CORE_OPTION_NAME "_gpu_texture_decode",
       "GPU Texture Decoding",
       NULL,
-      "Convert textures from the Dreamcast's formats on the GPU instead of the CPU, from their bytes in video memory as they are. The textures are the same either way; this takes the work off the CPU. Vulkan, Direct3D 11 and OpenGL 3 and later; Direct3D 9 only with 'Enabled, Direct3D 9 too'. Textures that are upscaled or dumped are always converted on the CPU. Planar 16-bit textures go to the GPU as they are on every renderer, whatever this says.",
+      "Convert textures from the Dreamcast's formats on the GPU instead of the CPU, from their bytes in video memory as they are. The textures are the same either way; this takes the work off the CPU. Vulkan, Direct3D 11 and 12, and OpenGL 3 and later; Direct3D 9 only with 'Enabled, Direct3D 9 too'. Textures that are upscaled or dumped are always converted on the CPU. Planar 16-bit textures go to the GPU as they are on every renderer, whatever this says.",
       NULL,
       "video",
       {
