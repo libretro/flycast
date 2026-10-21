@@ -13,6 +13,14 @@
  *   number of the kernel wanted (TAG_K_*): the core has the kernels as
  *   SPIR-V in ta_gpu_spv.inc, which tools/rend/kernels_spv.sh makes and
  *   checks (tools/pvr/ta_gpu_test.sh runs the check).
+ * - by an HLSL compiler (Direct3D 12, shader model 5.1), with
+ *   TAG_SHADER_HLSL defined and TAG_KERNEL: the kernels' text is GLSL's,
+ *   which TAG_SHADER_HLSL's words below make HLSL of, but for what the
+ *   preprocessor cannot change, which tools/rend/kernels_dx12.sh changes
+ *   as it makes the core's DXBC of them (rend/dx12/dx12_ta_dxbc.inc): a
+ *   buffer's words "b.w[i]" read "b_w[i]", a kernel's
+ *   "layout(local_size_x = N) in;" and "void main()" its threads and
+ *   entry point, an array's "uint[3](...)" its "{...}".
  * So it is written in what the two have in common: functions of unsigned
  * and signed 32-bit integers by value, and small structures. Where words
  * are read and written is the reader's business: TAG_TA(i) is the i-th
@@ -107,7 +115,60 @@
  * the others follow it in order */
 #define TAG_GL_BINDING 2
 
-#if defined(TAG_SHADER_GLSL)
+#if defined(TAG_SHADER_HLSL)
+/* Direct3D 12: the buffers as root descriptors, in the order of GLSL's
+ * bindings (the frame's data and the tables read only); and for the two
+ * kernels that go round as many workgroups as were dispatched, that
+ * number, which HLSL does not tell them */
+StructuredBuffer<uint> ta_w : register(t0);
+StructuredBuffer<uint> tab_w : register(t1);
+RWStructuredBuffer<uint> vtx_w : register(u0);
+RWStructuredBuffer<uint> mtr_w : register(u1);
+RWStructuredBuffer<uint> idx_w : register(u2);
+RWStructuredBuffer<uint> work_w : register(u3);
+RWStructuredBuffer<uint> rec_w : register(u4);
+RWStructuredBuffer<uint> cmd_w : register(u5);
+RWStructuredBuffer<uint> frm_w : register(u6);
+RWStructuredBuffer<uint> trd_w : register(u7);
+RWStructuredBuffer<uint> trp_w : register(u8);
+#if TAG_KERNEL == TAG_K_PREPASS
+RWStructuredBuffer<uint> srt_w : register(u9);
+#endif
+cbuffer TagDispatch : register(b0)
+{
+   uint tag_groups;
+};
+
+#define TAG_TA(i) ta_w[i]
+#define TAG_TAB(i) tab_w[i]
+#define TAG_VFLAG(p) work_w[tab_w[TAG_T_W_VFLAG] + (p)]
+#if TAG_KERNEL == TAG_K_EMIT
+#define TAG_IDX_PUT(at, v) { if ((at) < tab_w[TAG_T_ROOM_IDX]) idx_w[at] = (v); }
+#endif
+
+#define TAG_FN
+#define tag_u32 uint
+#define tag_s32 int
+#define TAG_U32(x) uint(x)
+#define TAG_S32(x) int(x)
+#define TAG_STRUCT(n) struct n
+#define TAG_STRUCT_END(n) ;
+#define TAG_F(b) asfloat(b)
+#define TAG_B(f) asuint(f)
+/* (GLSL's words in the kernels, in HLSL's) */
+#define uvec3 uint3
+#define uintBitsToFloat asfloat
+#define floatBitsToUint asuint
+#define findMSB(a) int(firstbithigh(a))
+#define shared groupshared
+#define barrier GroupMemoryBarrierWithGroupSync
+#define memoryBarrierBuffer DeviceMemoryBarrier
+#define atomicAdd(a, b) InterlockedAdd(a, b)
+#define atomicOr(a, b) InterlockedOr(a, b)
+#define atomicMax(a, b) InterlockedMax(a, b)
+#define gl_NumWorkGroups uint3(tag_groups, 1u, 1u)
+
+#elif defined(TAG_SHADER_GLSL)
 
 #if defined(TAG_SHADER_GL)
 /* OpenGL (TAG_SHADER_GL, with #version 430): no descriptor sets, and the
@@ -384,7 +445,7 @@ static INLINE void tag_c_set(const tag_u32 *ta, const tag_u32 *tab, tag_u32 *vfl
 #define TAG_CH       8     /* ...and strips a thread */
 #define TAG_CH_N     (TAG_CH_WG * TAG_CH)
 
-#if !defined(TAG_SHADER_GLSL)
+#if !defined(TAG_SHADER_GLSL) && !defined(TAG_SHADER_HLSL)
 /* The work buffer's parts (TAG_T_W_VFLAG to TAG_T_W_SLOTH, @w[9]) for
  * frames of up to @verts vertices, @strips strips and @slots draw groups;
  * its size in words */
@@ -430,7 +491,7 @@ TAG_FN tag_u32 tag_nan2(tag_u32 a, tag_u32 b)
 
 TAG_FN tag_u32 tag_clz(tag_u32 a)
 {
-#if defined(TAG_SHADER_GLSL)
+#if defined(TAG_SHADER_GLSL) || defined(TAG_SHADER_HLSL)
    return a == 0u ? 32u : 31u - TAG_U32(findMSB(a));
 #else
    tag_u32 n = 0u;
@@ -799,7 +860,7 @@ TAG_FN tag_u32 tag_sat(tag_u32 b)
  * not.) */
 TAG_FN tag_u32 tag_sat8(tag_u32 b)
 {
-#if defined(TAG_SHADER_GLSL)
+#if defined(TAG_SHADER_GLSL) || defined(TAG_SHADER_HLSL)
    precise float p = TAG_F(tag_sat(b)) * 255.0;
    return TAG_U32(p);
 #else
@@ -811,7 +872,7 @@ TAG_FN tag_u32 tag_sat8(tag_u32 b)
  * clamped intensity times 255, truncated */
 TAG_FN tag_u32 tag_int8(tag_u32 f, tag_u32 i)
 {
-#if defined(TAG_SHADER_GLSL)
+#if defined(TAG_SHADER_GLSL) || defined(TAG_SHADER_HLSL)
    precise float it = TAG_F(tag_sat(i)) * 255.0;
    precise float p = TAG_F(f) * it;
    return TAG_U32(p);
@@ -1403,7 +1464,7 @@ TAG_FN tag_u32 tag_bleed_fix(tag_u32 u, tag_u32 w)
 /* =================================================================== */
 /* The kernels                                                         */
 /* =================================================================== */
-#if defined(TAG_SHADER_GLSL) && defined(TAG_KERNEL)
+#if (defined(TAG_SHADER_GLSL) || defined(TAG_SHADER_HLSL)) && defined(TAG_KERNEL)
 
 /* The most strips there is room for: as many as the lists have polygon
  * parameters (more, and the full parse overruns) */
@@ -1857,24 +1918,40 @@ void main()
 #if TAG_KERNEL == TAG_K_BLEED
 /* A workgroup for strip gl_WorkGroupID.x: if it heads a group of three
  * indices or more and is textured, the vertices from its first index's to
- * its last's are looked at together, and fixed if they all can be */
+ * its last's are looked at together, and fixed if they all can be.
+ * (Whether, and which, its first thread finds out for all of them, through
+ * shared memory: a barrier is then reached or not by the whole workgroup
+ * as any compiler can see, which HLSL's wants.) */
 layout(local_size_x = 64) in;
 shared uint s_ok;
+shared uint s_v[3];
 void main()
 {
-   uint k = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
-   uint sst = tab.w[TAG_T_W_SSTATE];
-   if (work.w[sst + k * TAG_ST_WORDS + 1u] != 0u || frm.w[TAG_O_OVERRUN] != 0u)
-      return;
-   uint hdr = work.w[tab.w[TAG_T_W_SSUM] + k * TAG_SS_WORDS + 4u];
-   uint r = tag_strip_record(k, hdr);
-   if (r == TAG_NONE || TAG_INFO_TEX(tab.w[hdr + TAG_H_INFO]) == 0u || rec.w[r + TAG_C_COUNT] < 3u)
-      return;
-   uint f = rec.w[r + TAG_C_FIRST], c = rec.w[r + TAG_C_COUNT];
-   uint a = idx.w[f], b = idx.w[f + c - 1u], v;
-   uint z = vtx.w[a * TAG_V_WORDS + TAG_V_Z];
+   uint k = gl_WorkGroupID.x, t = gl_LocalInvocationID.x, v;
    if (t == 0u)
-      s_ok = 1u;
+   {
+      uint sst = tab.w[TAG_T_W_SSTATE];
+      s_ok = 0u;
+      if (work.w[sst + k * TAG_ST_WORDS + 1u] == 0u && frm.w[TAG_O_OVERRUN] == 0u)
+      {
+         uint hdr = work.w[tab.w[TAG_T_W_SSUM] + k * TAG_SS_WORDS + 4u];
+         uint r = tag_strip_record(k, hdr);
+         if (r != TAG_NONE && TAG_INFO_TEX(tab.w[hdr + TAG_H_INFO]) != 0u && rec.w[r + TAG_C_COUNT] >= 3u)
+         {
+            uint f = rec.w[r + TAG_C_FIRST], c = rec.w[r + TAG_C_COUNT];
+            s_v[0] = idx.w[f];
+            s_v[1] = idx.w[f + c - 1u];
+            s_v[2] = hdr;
+            s_ok = 1u;
+         }
+      }
+   }
+   barrier();
+   if (s_ok == 0u)
+      return;
+   uint a = s_v[0], b = s_v[1], hdr = s_v[2];
+   uint z = vtx.w[a * TAG_V_WORDS + TAG_V_Z];
+   /* (everyone has read s_ok before any clears it) */
    barrier();
    for (v = a + t; v <= b; v += 64u)
    {
@@ -1966,18 +2043,29 @@ void main()
  * indices running keeps what the last of them wrote. Here a run of 64
  * indices at a time reads, then writes. */
 layout(local_size_x = 64) in;
+/* (the strip's first index and how many move, as its first thread found
+ * them: through shared memory, as TAG_K_BLEED's) */
+shared uint s_fn[2];
 void main()
 {
    uint k = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
-   if (frm.w[TAG_O_OVERRUN] != 0u)
-      return;
-   uint hdr = work.w[tab.w[TAG_T_W_SSUM] + k * TAG_SS_WORDS + 4u];
-   if ((tab.w[hdr + TAG_H_STATE + TAG_S_PCW] & 2u) != 0u)
-      return;   /* Gouraud */
-   uint r = tag_strip_record(k, hdr);
-   if (r == TAG_NONE || rec.w[r + TAG_C_COUNT] <= 2u)
-      return;
-   uint f = rec.w[r + TAG_C_FIRST], n = rec.w[r + TAG_C_COUNT] - 2u, base;
+   if (t == 0u)
+   {
+      s_fn[1] = 0u;
+      if (frm.w[TAG_O_OVERRUN] == 0u)
+      {
+         uint hdr = work.w[tab.w[TAG_T_W_SSUM] + k * TAG_SS_WORDS + 4u];
+         uint r = tag_strip_record(k, hdr);
+         /* (not Gouraud) */
+         if ((tab.w[hdr + TAG_H_STATE + TAG_S_PCW] & 2u) == 0u && r != TAG_NONE && rec.w[r + TAG_C_COUNT] > 2u)
+         {
+            s_fn[0] = rec.w[r + TAG_C_FIRST];
+            s_fn[1] = rec.w[r + TAG_C_COUNT] - 2u;
+         }
+      }
+   }
+   barrier();
+   uint f = s_fn[0], n = s_fn[1], base;
    for (base = 0u; base < n; base += 64u)
    {
       uint i = base + t, dst = 0u, c0 = 0u, c1 = 0u, c2 = 0u, c3 = 0u;
@@ -2075,10 +2163,16 @@ void main()
  * frame's, before anything moves their colours (TAG_K_PROVOKE). */
 layout(local_size_x = 64) in;
 shared uint s_any;
+shared uint s_n;
 void main()
 {
    uint t = gl_LocalInvocationID.x, base = tab.w[TAG_T_PREP], nverts = tab.w[TAG_T_NVERTS], c, i;
-   uint n = srt.w[base];
+   /* (how many, as the first thread read it: through shared memory, as
+    * TAG_K_BLEED's) */
+   if (t == 0u)
+      s_n = srt.w[base];
+   barrier();
+   uint n = s_n;
    for (c = gl_WorkGroupID.x; c < n; c += gl_NumWorkGroups.x)
    {
       uint at = base + 1u + c * TAG_PC_WORDS;
