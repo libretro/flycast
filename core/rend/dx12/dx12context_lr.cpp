@@ -278,7 +278,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 	releasedFirst = releasedCount = 0;
 
 	// the heaps
-	ok = ok && srvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, OitSsaaFirst + DX12_OIT_TABLE_SIZE, true, DX12_SRV_FIRST_FREE);
+	ok = ok && srvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SrvHeapSize, true, DX12_SRV_FIRST_FREE);
 	if (ok)
 		// (the table's own; the UAVs' are handed out by DX12TexDecoder from UavFirst on)
 		srvHeap.Range(DX12_SRV_FIRST_FREE, UavFirst);
@@ -295,7 +295,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 		uav.Format = DXGI_FORMAT_R8G8B8A8_UINT;
 		uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-		for (u32 i = UavFirst; i < OitSsaaFirst + DX12_OIT_TABLE_SIZE; i++)
+		for (u32 i = UavFirst; i < SrvHeapSize; i++)
 			device->CreateUnorderedAccessView(nullptr, nullptr, &uav, srvHeap.Cpu(i));
 	}
 	ok = ok && MakeRootSignatures();

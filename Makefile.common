@@ -293,6 +293,7 @@ ifeq ($(HAVE_D3D12), 1)
 					$(CORE_DIR)/core/rend/dx12/dx12_renderer.cpp \
 					$(CORE_DIR)/core/rend/dx12/dx12_shaders.cpp \
 					$(CORE_DIR)/core/rend/dx12/dx12_ta_decoder.cpp \
+					$(CORE_DIR)/core/rend/dx12/dx12_compute.cpp \
 					$(CORE_DIR)/core/rend/dx12/dx12_texdecoder.cpp \
 					$(CORE_DIR)/core/rend/dx12/dx12_texture.cpp \
 					$(CORE_DIR)/core/rend/dx12/oit/dx12_oitrenderer.cpp

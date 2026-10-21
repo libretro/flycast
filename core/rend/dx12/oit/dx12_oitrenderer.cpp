@@ -59,7 +59,9 @@
  * modifier volumes count where they cover a pixel's first sample. */
 #include "../dx12_renderer.h"
 #include "../dx12_quad.h"
+#include "../dx12_compute.h"
 #include "rend/oit_size.h"
+#include "rend/rend_method.h"
 #include "rend/ssaa_rate.h"
 #include "hw/pvr/ta.h"
 #include <algorithm>
@@ -78,6 +80,9 @@ class DX12OITRenderer final : public DX12Renderer
 public:
 	bool Init() override
 	{
+		/* (Rendering Method: Compute draws into the screen's pictures, which
+		 * it writes through unordered access views) */
+		storagePictures = rend_compute_wanted;
 		if (!DX12Renderer::Init())
 			return false;
 		if (!MakeBuffers(PlannedSize(screen_width, screen_height)))
@@ -108,11 +113,21 @@ public:
 		oitBands[0] = oitBands[1] = 1;
 		oitRoomyFrames[0] = oitRoomyFrames[1] = 0;
 		band = {};
+		InitCompute();
 		return true;
 	}
 
+	void Resize(int w, int h) override
+	{
+		DX12Renderer::Resize(w, h);
+		InitCompute();
+	}
+
+	bool Render() override;
+
 	void Term() override
 	{
+		compute.Term();
 		if (context != nullptr)
 		{
 			for (DX12Image& picture : pictures)
@@ -157,6 +172,48 @@ protected:
 	}
 
 private:
+	/* ---- Rendering Method: Compute (dx12_compute.h) ----
+	 * The frames it can draw are drawn into the screen's pictures by it, and
+	 * the others below; made with SSAA's samples, when the renderer starts
+	 * and when the screen changes size */
+	DX12ComputeDrawer compute;
+	void InitCompute()
+	{
+		if (rend_compute_wanted && device != nullptr)
+		{
+			compute.SetGpuDraw(&taDecoder);
+			compute.Init((u32)std::max(screen_width, 1), (u32)std::max(screen_height, 1), ssaaSamples);
+		}
+		else
+			compute.Term();
+	}
+	/* The frame in pvrrc drawn by it into the screen's picture, and shown;
+	 * false if it is not (nothing recorded then) */
+	bool RenderCompute();
+	// ...a render to a texture, into its texture
+	bool RenderComputeRtt();
+	/* The frame's words by the per-pixel renderer's own rules */
+	struct ComputeRules : public ComputeFrame
+	{
+		DX12OITRenderer *renderer = nullptr;
+		const xform& Begin() override
+		{
+			renderer->matrices.CalcMatrices(&pvrrc);
+			return renderer->matrices.GetViewportMatrix();
+		}
+		void BaseScissor(int& x, int& y, int& width, int& height) override
+		{
+			renderer->SetBaseScissor();
+			const D3D12_RECT& r = renderer->baseScissor;
+			x = r.left;
+			y = r.top;
+			width = r.right - r.left;
+			height = r.bottom - r.top;
+		}
+		void ProvokingVertices() override { renderer->SetProvokingVertices(); }
+	};
+	ComputeRules computeRules;
+
 	enum { COUNT_SLOTS = 4, COUNT_WORDS = 256 };
 	struct Buffer
 	{
@@ -1142,6 +1199,108 @@ void DX12OITRenderer::DrawFrame()
 	countHead = (countHead + 1) % COUNT_SLOTS;
 	// (the target is left bound: the overlay goes onto it, and the end of the render takes it; with SSAA, its depth is of samples)
 	context->SetTargets(targetRtv, ssaa ? ~0u : depth.rtv);
+}
+
+/* ---- Rendering Method: Compute ---- */
+
+bool DX12OITRenderer::Render()
+{
+	/* (a render to a texture with an empty pixel clip writes nothing: Render()'s) */
+	if (compute.Ready() && device != nullptr && !pvrrc.isRenderFramebuffer
+			&& !(pvrrc.isRTT && (pvrrc.fb_X_CLIP.max < pvrrc.fb_X_CLIP.min || pvrrc.fb_Y_CLIP.max < pvrrc.fb_Y_CLIP.min)))
+	{
+		if (pvrrc.isRTT && !texPool.TargetsStorable())
+			compute.Fallback(ComputeFrame::Why_Rtt);
+		else if (!compute.CanDraw())
+			compute.Fallback(ComputeFrame::Why_Decode);
+		else if (pvrrc.isRTT ? RenderComputeRtt() : RenderCompute())
+			return !pvrrc.isRTT;
+	}
+	return DX12Renderer::Render();
+}
+
+bool DX12OITRenderer::RenderComputeRtt()
+{
+	u32 width, height;
+	RttSize(width, height);
+	computeRules.renderer = this;
+	if (!compute.Prepare(computeRules, ~0u, false, width, height))
+		return false;
+	// (the frame's textures were looked at; the texture drawn into is taken now, which can be one of them)
+	if (!BeginRTT())
+	{
+		rttTexture = nullptr;
+		return false;
+	}
+	DX12PooledTexture *spare = rttTexture->Spare();
+	context->Transition(paletteTexture, (D3D12_RESOURCE_STATES)(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+	context->Transition(spare->resource, spare->state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	compute.Record(spare->resource);
+	EndRTT();
+	return true;
+}
+
+bool DX12OITRenderer::RenderCompute()
+{
+	/* the frontend may still be showing what is in the screen's next
+	 * picture: it is waited for, if Process() has not (and not again by the
+	 * per-pixel renderer, if it draws the frame after all) */
+	if (!heldFromProcess)
+		context->WaitPresentIndex();
+	heldFromProcess = true;
+	SsaaDepth(false);
+	screenIndex = (int)context->GetPresentIndex();
+	if (!EnsureScreen(screen_width, screen_height))
+		return false;
+	ScreenTarget& target = screenTargets[screenIndex];
+	// (made for the screen's size: Resize() makes it again)
+	if (compute.Width() != screenWidth || compute.Height() != screenHeight)
+	{
+		compute.Fallback(ComputeFrame::Why_Room);
+		return false;
+	}
+	matrices.CalcMatrices(&pvrrc);
+	/* The picture to start from, where the render covers only part of the
+	 * screen: read where it is; or copied first where it cannot be - this
+	 * frame's own picture (the frontend's one picture, version 1), or one
+	 * the frontend has (version 2), which it leaves in COPY_SOURCE with the
+	 * frontends there are, as BeginScreen() copies it */
+	u32 last = ~0u;
+	bool scaled = false;
+	bool copy = false;
+	DX12Image *image = KeepsLastPicture() ? LastPictureImage() : nullptr;
+	if (image != nullptr)
+	{
+		const bool handedOver = context->IsHandedOver(image);
+		copy = image == &target.image || handedOver;
+		if (copy && (!havePicture || image->width != compute.Width() || image->height != compute.Height()
+				|| (handedOver && image->state != D3D12_RESOURCE_STATE_COPY_SOURCE)))
+		{
+			compute.Fallback(ComputeFrame::Why_Picture);
+			return false;
+		}
+		last = copy ? compute.StartSrv() : image->srv;
+		// (the picture kept from another context or size: filtered over this one, as BeginScreen() draws it)
+		scaled = !havePicture;
+	}
+	computeRules.renderer = this;
+	if (!compute.Prepare(computeRules, last, scaled))
+		return false;
+	if (image != nullptr && copy)
+	{
+		context->Transition(*image, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		compute.CopyStart(image->resource);
+	}
+	else if (image != nullptr)
+		context->Transition(*image, (D3D12_RESOURCE_STATES)(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+	context->Transition(paletteTexture, (D3D12_RESOURCE_STATES)(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+	context->Transition(target.image, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	compute.Record(target.image.resource);
+	// (what goes over it is drawn into it, and it is handed over, as any other frame of the screen)
+	context->Transition(target.image, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	EndScreen();
+	heldFromProcess = false;
+	return true;
 }
 
 Renderer* rend_OITD3D12()

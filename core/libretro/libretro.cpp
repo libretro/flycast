@@ -879,8 +879,9 @@ static void update_variables(bool first_startup)
    else
       GDROM_TICK      = 1500000;
 
-   /* Rendering Method: the compute renderer is drawn by the Vulkan per-pixel
-    * renderer, which draws what it cannot; it is set up when that is */
+   /* Rendering Method: the compute renderer is drawn by the Vulkan and
+    * Direct3D 12 per-pixel renderers, which draw what it cannot; it is set
+    * up when they are */
    {
       const bool compute_before = rend_compute_wanted;
       var.key = CORE_OPTION_NAME "_rendering_method";
@@ -946,6 +947,8 @@ static void update_variables(bool first_startup)
    }
    if (rend_compute_wanted && settings.pvr.rend == 4)
       settings.pvr.rend = 5;
+   else if (rend_compute_wanted && settings.pvr.rend == 9)
+      settings.pvr.rend = 10;
    if (!first_startup && previous_renderer != settings.pvr.rend)
 	  renderer_changed = true;
 
@@ -2523,7 +2526,7 @@ static bool set_dx12_hw_render(void)
 		environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void *)&negotiation_interface);
 
 	if (settings.pvr.rend == 0)
-		settings.pvr.rend = 9;
+		settings.pvr.rend = rend_compute_wanted ? 10 : 9;	// (Compute is drawn by the per-pixel renderer)
 	else if (settings.pvr.rend == 3)
 		settings.pvr.rend = 10;
 	renderer_changed = true;

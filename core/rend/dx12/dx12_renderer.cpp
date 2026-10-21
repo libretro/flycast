@@ -30,16 +30,19 @@ extern int screen_width, screen_height;
 
 /* An image of the renderer's own: a committed texture, with its place in
  * the bindless table (at @srv if given, one taken otherwise) and a render
- * target view if it is one */
-static bool makeImage(DX12Image& image, u32 width, u32 height, DXGI_FORMAT format, bool target, u32 srv = ~0u)
+ * target view if it is one; with @storage, unordered access views can be
+ * made of it too, for the compute renderer to draw into */
+static bool makeImage(DX12Image& image, u32 width, u32 height, DXGI_FORMAT format, bool target, u32 srv = ~0u, bool storage = false)
 {
 	DX12Context *context = DX12Context::Instance();
 	image = DX12Image();
 	image.width = width;
 	image.height = height;
 	image.state = target ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	if (!dx12_make_texture(context->GetDevice(), width, height, 1, format,
-			target ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE, image.state, image.resource))
+	D3D12_RESOURCE_FLAGS flags = target ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE;
+	if (storage)
+		flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if (!dx12_make_texture(context->GetDevice(), width, height, 1, format, flags, image.state, image.resource))
 		return false;
 	image.srv = srv != ~0u ? srv : context->Srv().Alloc();
 	if (image.srv == ~0u)
@@ -207,6 +210,8 @@ bool DX12Renderer::Init()
 	texDecoder.Init(context);
 	// (what the decoder has been asked for goes into the list a readback submits early)
 	context->SetBeforeSubmit([](void *decoder) { ((DX12TexDecoder *)decoder)->Flush(); }, &texDecoder);
+	// (the pictures rendered to: drawn into by the compute renderer too, when it is wanted)
+	texPool.SetTargetStorage(storagePictures);
 	texPool.Init(context->GetVramBudget(), &texDecoder);
 	DX12Texture::SetDecoder(texDecoder.Ready() ? &texDecoder : nullptr);
 	DX12Texture::SetPool(&texPool);
@@ -850,7 +855,7 @@ void DX12Renderer::ClearTarget(const DX12Image& image, const float color[4])
 
 bool DX12Renderer::MakeScreenTarget(ScreenTarget& target, u32 width, u32 height)
 {
-	if (!makeImage(target.image, width, height, DX12FrameFormat, true))
+	if (!makeImage(target.image, width, height, DX12FrameFormat, true, ~0u, storagePictures))
 	{
 		target.image = DX12Image();
 		return false;
@@ -1144,6 +1149,21 @@ void DX12Renderer::KeepPicture()
 
 /* ---- Renders to textures ---- */
 
+void DX12Renderer::RttSize(u32& widthPow2, u32& heightPow2)
+{
+	const u32 origWidth = pvrrc.fb_X_CLIP.max + 1;
+	const u32 origHeight = pvrrc.fb_Y_CLIP.max + 1;
+	heightPow2 = 8;
+	while (heightPow2 < origHeight)
+		heightPow2 *= 2;
+	widthPow2 = 8;
+	while (widthPow2 < origWidth)
+		widthPow2 *= 2;
+	const u32 scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
+	widthPow2 *= scale;
+	heightPow2 *= scale;
+}
+
 bool DX12Renderer::BeginRTT()
 {
 	DEBUG_LOG(RENDERER, "RenderToTexture packmode=%d stride=%d - %d,%d -> %d,%d @ %08x", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
@@ -1158,19 +1178,11 @@ bool DX12Renderer::BeginRTT()
 	const u32 origHeight = pvrrc.fb_Y_CLIP.max + 1;
 	const u32 clipX = pvrrc.fb_X_CLIP.min, clipY = pvrrc.fb_Y_CLIP.min;
 	const u32 clipWidth = origWidth - clipX, clipHeight = origHeight - clipY;
-	u32 upscaledWidth = origWidth;
-	u32 upscaledHeight = origHeight;
-	u32 heightPow2 = 8;
-	while (heightPow2 < upscaledHeight)
-		heightPow2 *= 2;
-	u32 widthPow2 = 8;
-	while (widthPow2 < upscaledWidth)
-		widthPow2 *= 2;
 	const u32 scale = settings.rend.RenderToTextureUpscale > 1 ? settings.rend.RenderToTextureUpscale : 1;
-	upscaledWidth *= scale;
-	upscaledHeight *= scale;
-	widthPow2 *= scale;
-	heightPow2 *= scale;
+	const u32 upscaledWidth = origWidth * scale;
+	const u32 upscaledHeight = origHeight * scale;
+	u32 widthPow2, heightPow2;
+	RttSize(widthPow2, heightPow2);
 
 	if (!EnsureDepth(widthPow2, heightPow2))
 		return false;

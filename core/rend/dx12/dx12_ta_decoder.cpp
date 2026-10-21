@@ -323,6 +323,9 @@ bool DX12TaDecoder::Init()
 	draw.vertices = { r->buffers[B_VTX]->GetGPUVirtualAddress(), (UINT)r->sizes[B_VTX], sizeof(Vertex) };
 	draw.indices = { r->buffers[B_IDX]->GetGPUVirtualAddress(), (UINT)r->sizes[B_IDX], DXGI_FORMAT_R32_UINT };
 	draw.modtrig = { r->buffers[B_MOD]->GetGPUVirtualAddress(), (UINT)r->sizes[B_MOD], sizeof(float) * 3 };
+	draw.vertexResource = r->buffers[B_VTX];
+	draw.indexResource = r->buffers[B_IDX];
+	draw.modtrigResource = r->buffers[B_MOD];
 	draw.commands = r->buffers[B_CMD];
 	draw.shadowCommands = (u64)sz.headers * TAG_C_WORDS * 4;
 	draw.trDraws = r->buffers[B_TRD];

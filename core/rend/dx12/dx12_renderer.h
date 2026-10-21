@@ -202,6 +202,9 @@ protected:
 	 * first one has been handed over (version 2) already: it takes the
 	 * place of the one handed over, which stays the frontend's */
 	ScreenTarget extraTarget;
+	/* The screen's pictures can be drawn into by the compute renderer
+	 * (unordered access views of them): set before they are made */
+	bool storagePictures = false;
 	bool lastInExtra = false;		// the last picture is in it
 	u32 screenWidth = 0;
 	u32 screenHeight = 0;
@@ -335,14 +338,23 @@ protected:
 	void DrawGpu(const DrawState& state, const u32 *constants, u32 listType, bool shadow, u32 first, u32 count);
 	u32 statBatches = 0, statBatched = 0;
 
+	/* The screen's picture made ready (EnsureScreen()) and handed over once
+	 * the frame is drawn into it (EndScreen()); a render to a texture's
+	 * texture taken (BeginRTT()) and given to the texture once it is drawn
+	 * (EndRTT()): Render()'s, and the compute renderer's (dx12_compute.h) */
+	bool EnsureScreen(u32 width, u32 height);
+	void EndScreen();
+	bool BeginRTT();
+	void EndRTT();
+	/* The size of the texture a render to a texture draws into: from the
+	 * frame's first pixel to the pixel clip's last, in powers of two, times
+	 * Render To Texture Upscaling */
+	static void RttSize(u32& widthPow2, u32& heightPow2);
+
 private:
 	bool ProcessLocked(TA_context* ctx);
 	bool BeginScreen();
 	void BeginScreenSsaa(ScreenTarget& target);
-	void EndScreen();
-	bool BeginRTT();
-	void EndRTT();
-	bool EnsureScreen(u32 width, u32 height);
 	bool MakeScreenTarget(ScreenTarget& target, u32 width, u32 height);
 	void CheckKeptPicture();
 	void CheckFogTexture();

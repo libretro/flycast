@@ -141,6 +141,8 @@ bool DX12TexturePool::MakeResource(DX12PooledTexture *t, u32 f, u32 width, u32 h
 		flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 	else if (t->writable)
 		flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if (f == TARGET && targetStorage)
+		flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 	t->state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	if (!dx12_make_texture(context->GetDevice(), width, height, levels, format, flags, t->state, t->resource))
 		return false;

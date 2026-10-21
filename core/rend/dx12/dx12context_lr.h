@@ -184,6 +184,12 @@ public:
 	static const u32 UavCount = 4096;
 	static const u32 OitFirst = UavFirst + UavCount;
 	static const u32 OitSsaaFirst = OitFirst + DX12_OIT_TABLE_SIZE;
+	/* ...then the compute renderer's tables of views (dx12_compute.h), one
+	 * for each piece of its ring; and the end of the heap */
+	static const u32 ComputeFirst = OitSsaaFirst + DX12_OIT_TABLE_SIZE;
+	static const u32 ComputeTableSize = 11;
+	static const u32 ComputeTables = 4;
+	static const u32 SrvHeapSize = ComputeFirst + ComputeTables * ComputeTableSize;
 	/* The per-pixel renderer's table the shaders read: SSAA's or not */
 	void BindOitTable(bool ssaa)
 	{

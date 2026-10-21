@@ -64,6 +64,10 @@ struct DX12TaDraw
 	D3D12_VERTEX_BUFFER_VIEW vertices{};
 	D3D12_INDEX_BUFFER_VIEW indices{};
 	D3D12_VERTEX_BUFFER_VIEW modtrig{};
+	// ...and their buffers (the compute renderer reads them through views of its own)
+	ID3D12Resource *vertexResource = nullptr;
+	ID3D12Resource *indexResource = nullptr;
+	ID3D12Resource *modtrigResource = nullptr;
 	/* The opaque and punch-through draw groups' commands, a draw's
 	 * arguments each, at their slot (PolyParam::first); the second ones for
 	 * shadows (TA_GPU_SHADOWS) this many bytes on */
@@ -112,6 +116,10 @@ public:
 	 * outputs left in the states the draws read them in */
 	void Record(TA_context *ctx);
 	const DX12TaDraw& Draw() const { return draw; }
+	/* The outputs into the state compute kernels read them in (unordered
+	 * access: the compute renderer's, dx12_compute.h), for a frame drawn
+	 * from them by kernels and not by draws */
+	void ForKernels() { States(true); }
 	/* The per-triangle renderer's: room for the translucent triangles it
 	 * sorts (TA_GPU_SORT), made with the rest; and whether there is */
 	void WantSort(bool on) { sortWanted = on; }

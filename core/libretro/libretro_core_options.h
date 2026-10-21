@@ -518,12 +518,12 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "enabled",
    },
-#if defined(HAVE_VULKAN) || defined(HAVE_GL4)
+#if defined(HAVE_VULKAN) || defined(HAVE_GL4) || defined(HAVE_D3D12)
    {
       CORE_OPTION_NAME "_rendering_method",
       "Rendering Method",
       NULL,
-      "How the screen's frames are drawn. Rasterizer draws them with the GPU's rasterizer. Compute draws them tile by tile with compute shaders, the way the Dreamcast does, translucent polygons sorted per pixel with none left out; frames it cannot draw yet (renders to textures) are drawn by the per-pixel rasterizer. Vulkan only; experimental.",
+      "How the screen's frames are drawn. Rasterizer draws them with the GPU's rasterizer. Compute draws them tile by tile with compute shaders, the way the Dreamcast does, translucent polygons sorted per pixel with none left out; frames it cannot draw yet (renders to textures) are drawn by the per-pixel rasterizer. Vulkan and Direct3D 12 only (Direct3D 12: shader model 6.0 with 64-bit integers); experimental.",
       NULL,
       "video",
       {

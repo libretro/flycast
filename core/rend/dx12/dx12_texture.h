@@ -77,6 +77,10 @@ public:
 	 * and goes then. */
 	DX12PooledTexture *MakeOwn(u32 type, u32 width, u32 height, u32 levels);
 	void Give(DX12PooledTexture *texture);
+	/* The pictures rendered to made for unordered access views too (the
+	 * compute renderer's renders to a texture): before Init() */
+	void SetTargetStorage(bool on) { targetStorage = on; }
+	bool TargetsStorable() const { return targetStorage; }
 	enum { FORMATS = 6, TARGET = 5 };
 	const TexPoolBook& Book() const { return book; }
 
@@ -88,6 +92,7 @@ private:
 	bool ready = false;
 	bool usable[FORMATS] = {};
 	bool writable[FORMATS] = {};
+	bool targetStorage = false;
 	DX12PooledTexture *all = nullptr;
 };
 
