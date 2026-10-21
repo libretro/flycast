@@ -86,6 +86,19 @@ public:
 			Term();
 			return false;
 		}
+		/* The translucent polygons' numbers past the root constant's, an
+		 * instance's: 0 for every draw but a frame decoded on the GPU's
+		 * translucent ones (DX12TaDraw::instances) */
+		u32 *zero = nullptr;
+		if (!MakeBuffer(noInstance, 256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ)
+				|| FAILED(noInstance.resource->Map(0, nullptr, (void **)&zero)))
+		{
+			WARN_LOG(RENDERER, "DX12 per-pixel renderer initialization failed");
+			Term();
+			return false;
+		}
+		memset(zero, 0, 256);
+		noInstance.resource->Unmap(0, nullptr);
 		countHead = 0;
 		for (u32 i = 0; i < COUNT_SLOTS; i++)
 		{
@@ -109,6 +122,7 @@ public:
 			pointersWidth = pointersHeight = 0;
 			DropBuffer(pixels);
 			DropBuffer(counter);
+			DropBuffer(noInstance);
 			if (counts.resource && countsMapped != nullptr)
 				counts.resource->Unmap(0, nullptr);
 			countsMapped = nullptr;
@@ -122,6 +136,11 @@ public:
 
 protected:
 	bool BindsScreen() const override { return false; }
+	/* GPU-side TA processing: the translucent draw records number each
+	 * strip (TA_GPU_INSTANCE), which picks its number from the instances'
+	 * buffer; no sorting here */
+	u32 TaFlags() const override { return TA_GPU_DRAW | TA_GPU_PROVOKE | TA_GPU_INSTANCE; }
+	bool TaSorts() const override { return false; }
 	// SSAA: two pictures of samples, and the lists first
 	u32 SsaaColorImages() const override { return 2; }
 	u32 SsaaFixedKib(u32 width, u32 height) const override { return (u32)std::min<u64>(PlannedSize(width, height) >> 10, 0xffffffffu); }
@@ -211,6 +230,7 @@ private:
 	DX12DescriptorHeap clearHeap;
 	/* The translucent polygons' parameters, in the ring */
 	std::vector<u32> trPolyParamsData;
+	Buffer noInstance;		// a zero, the instances' buffer of a frame parsed on the CPU
 	/* A frame drawn in horizontal bands (DrawFrame()): the band being
 	 * drawn, in pixels of the target - from its top to its bottom, which is
 	 * 0 when the frame is drawn whole */
@@ -454,6 +474,17 @@ bool DX12OITRenderer::MakePictures(u32 width, u32 height)
  * shadows, and its second volume's TSP */
 bool DX12OITRenderer::UploadTrPolyParams()
 {
+	/* (a frame decoded on the GPU: its words are the decode's, and its
+	 * strips' numbers the instances' buffer's) */
+	if (pvrrc.gpu)
+	{
+		const DX12TaDraw& gpu = taDecoder.Draw();
+		context->Cmd()->SetGraphicsRootShaderResourceView(6, gpu.trParams);
+		context->Cmd()->IASetVertexBuffers(1, 1, &gpu.instances);
+		return true;
+	}
+	const D3D12_VERTEX_BUFFER_VIEW none = { noInstance.resource->GetGPUVirtualAddress(), 256, 4 };
+	context->Cmd()->IASetVertexBuffers(1, 1, &none);
 	const int count = pvrrc.global_param_tr.used();
 	trPolyParamsData.resize(std::max(count, 1) * 2);
 	trPolyParamsData[0] = trPolyParamsData[1] = 0;
@@ -734,7 +765,8 @@ void DX12OITRenderer::DrawPoly(u32 listType, bool autosort, u32 pass, const Poly
 	}
 	constants.sampler = dx12_sampler_index(poly.tsp);
 	constants.sampler1 = dx12_sampler_index(poly.tsp1);
-	constants.polyNumber = listType == ListType_Translucent ? (u32)(&poly - pvrrc.global_param_tr.head()) : 0;
+	// (of a frame decoded on the GPU, the strip's number is its draw record's: the instance's)
+	constants.polyNumber = listType == ListType_Translucent && !pvrrc.gpu ? (u32)(&poly - pvrrc.global_param_tr.head()) : 0;
 
 	// Depth and stencil
 	DX12PsoKey key{};
@@ -792,7 +824,11 @@ void DX12OITRenderer::DrawPoly(u32 listType, bool autosort, u32 pass, const Poly
 
 	u32 words[DX12Context::PolyConstantCount];
 	memcpy(words, &constants, sizeof(words));
-	Draw(state, words, count, first);
+	// (a frame decoded on the GPU: a draw group by its arguments there)
+	if (pvrrc.gpu)
+		DrawGpu(state, words, listType, false, first, count);
+	else
+		Draw(state, words, count, first);
 }
 
 void DX12OITRenderer::DrawList(u32 listType, bool autosort, u32 pass, const List<PolyParam>& polys, u32 first, u32 last)

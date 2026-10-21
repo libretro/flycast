@@ -537,7 +537,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       CORE_OPTION_NAME "_ta_processing",
       "TA Processing",
       NULL,
-      "Where the lists the game sends the tile accelerator are made into vertices and indices. GPU does it with compute shaders, straight from the data as the game sent it, into the GPU's own buffers, the same to the byte, and the frame is drawn from them. Vulkan, and OpenGL 4.3 or later with persistently mapped buffers (4.4, or ARB_buffer_storage).",
+      "Where the lists the game sends the tile accelerator are made into vertices and indices. GPU does it with compute shaders, straight from the data as the game sent it, into the GPU's own buffers, the same to the byte, and the frame is drawn from them. Vulkan, Direct3D 12, and OpenGL 4.3 or later with persistently mapped buffers (4.4, or ARB_buffer_storage).",
       NULL,
       "video",
       {

@@ -8,14 +8,16 @@
  * validation layer is on with TAG_VALIDATE=1, and any error it reports
  * fails the test. Before any frame, the integer single precision of the
  * header (tag_fadd() and the others) is checked against this CPU's own
- * floating point on special values and a few million random ones. */
+ * floating point on special values and a few million random ones. Built
+ * with TGT_REPLAY, the device is another program's, Direct3D 12's
+ * (ta_gpu_test_replay.c). */
 #define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
-#ifndef TGT_GL
+#if !defined(TGT_GL) && !defined(TGT_REPLAY)
 #include <vulkan/vulkan.h>
 #endif
 
@@ -178,7 +180,9 @@ void tgt_sorted(unsigned *srt, unsigned words, unsigned checks)
    srt_gpu_checks = srt_model_checks = checks;
 }
 
-#ifdef TGT_GL
+#if defined(TGT_REPLAY)
+#include "ta_gpu_test_replay.c"
+#elif defined(TGT_GL)
 #include "ta_gpu_test_gl.c"
 #else
 /* ---- Vulkan ---- */

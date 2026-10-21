@@ -31,6 +31,7 @@
 #include "dx12_overlay.h"
 #include "dx12_texdecoder.h"
 #include "dx12_texture.h"
+#include "dx12_ta_decoder.h"
 #include <vector>
 
 /* The Direct3D 12 renderer: translucent polygons sorted by triangle or by
@@ -83,6 +84,8 @@ public:
 	bool Render() override;
 	void KeepPicture() override;
 	u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override;
+	// (TA processing switched on or off)
+	void OptionsChanged() override;
 
 protected:
 	struct VertexConstants
@@ -132,6 +135,27 @@ protected:
 	DX12TextureCache texCache;
 	DX12Overlay overlay;
 	TransformMatrix<false> matrices;
+
+	/* GPU-side TA processing (dx12_ta_decoder.h): a frame it decodes is
+	 * drawn from its buffers, its draws' arguments the GPU's */
+	DX12TaDecoder taDecoder;
+	/* How a frame decoded on the GPU is drawn (ta_gpu_prepare()'s
+	 * TA_GPU_*); 0: none is - every frame is parsed */
+	virtual u32 TaFlags() const
+	{
+		/* sorted translucent triangles sorted from the frame's depths, as
+		 * GenSorted() sorts them (TA_GPU_SORT); sorted by strip, the polygons
+		 * are sorted from their vertices, which a frame decoded on the GPU
+		 * has there alone: such a frame is parsed */
+		return TA_GPU_DRAW | TA_GPU_PROVOKE | TA_GPU_SHADOWS
+				| (!settings.pvr.Emulation.AlphaSortMode && taDecoder.CanSort() ? TA_GPU_SORT : TA_GPU_NO_SORT);
+	}
+	/* Whether the decoder is to have room for sorted translucent triangles (TA_GPU_SORT) */
+	virtual bool TaSorts() const { return true; }
+	/* ...its vertex constants, with the GPU's 1/fZ_max copied in: in a
+	 * buffer of the default heap, which the ring's words are copied to */
+	ComPtr<ID3D12Resource> gpuVtxConstants;
+	D3D12_RESOURCE_STATES gpuVtxConstantsState = D3D12_RESOURCE_STATE_COPY_DEST;
 
 	/* A render's vertices, indexes and modifier volumes, in the upload
 	 * ring, one after the other: views of them */
@@ -221,6 +245,9 @@ protected:
 	/* The polygons, the volumes and the indexes, and the sorted triangles'
 	 * indexes after those (sortedIndexes), and the constants, in the ring */
 	bool UploadGeometry();
+	/* ...and the constants alone (UploadGeometry()'s, and a frame decoded
+	 * on the GPU's: its 1/fZ_max copied in from the decode's words) */
+	bool UploadConstants();
 	/* What every polygon of the frame is drawn with */
 	void SetupFrame();
 
@@ -301,6 +328,11 @@ protected:
 	u32 batchCount = 0;
 	void Draw(const DrawState& state, const u32 *constants, u32 indexCount, u32 firstIndex);
 	void FlushBatch();
+	/* A draw group of a frame decoded on the GPU (pvrrc.gpu), drawn by its
+	 * arguments there: an opaque or punch-through one by its command (or,
+	 * @shadow, its second one, for shadows), a translucent one by its
+	 * records, with their count. Recorded as itself. */
+	void DrawGpu(const DrawState& state, const u32 *constants, u32 listType, bool shadow, u32 first, u32 count);
 	u32 statBatches = 0, statBatched = 0;
 
 private:
@@ -323,11 +355,14 @@ private:
 			ShadowPass shadowPass = ShadowPass::None, const D3D12_RECT *within = nullptr);
 	void DrawShadowed(u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 			const ScreenBounds& area, const D3D12_RECT& scissor);
-	void DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool multipass);
-	void DrawPrepass(const std::vector<SortTrigDrawParam>& polys);
+	void DrawSorted(const SortTrigDrawParam *polys, u32 count, bool multipass);
+	void DrawPrepass(const SortTrigDrawParam *polys, u32 count);
+	/* (a frame decoded on the GPU) the draws are of the sorted indices,
+	 * whose counts are the CPU's */
+	bool gpuSorted = false;
 	bool prepassDraw = false;	// DrawPoly() draws for the depth prepass
 	void DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
-	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass);
+	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass, int render_pass);
 
 	/* The framebuffer the game wrote itself, for a frame that is that */
 	DX12Image fbTexture;

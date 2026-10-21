@@ -1572,6 +1572,14 @@ void retro_run (void)
          renderer->OptionsChanged();
       }
 #endif
+#ifdef HAVE_D3D12
+      /* ...and so with Direct3D 12 */
+      if (renderer != NULL && (settings.pvr.rend == 9 || settings.pvr.rend == 10))
+      {
+         rend_prepare_renderer();
+         renderer->OptionsChanged();
+      }
+#endif
 #ifdef HAVE_GL4
       /* ...and so with OpenGL, its state bound for it */
       if (renderer != NULL && (settings.pvr.rend == 0 || settings.pvr.rend == 3))

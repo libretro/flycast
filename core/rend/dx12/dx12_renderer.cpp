@@ -213,7 +213,34 @@ bool DX12Renderer::Init()
 	// the pipelines, and SSAA's pictures and pipelines made from them
 	PreparePipelines();
 	SetupSsaa(screen_width, screen_height);
+	/* GPU-side TA processing, if it is on: here, not in a frame; and the
+	 * buffer its frames' vertex constants go to (UploadConstants()) */
+	if (!gpuVtxConstants)
+	{
+		D3D12_HEAP_PROPERTIES heap{};
+		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+		D3D12_RESOURCE_DESC desc{};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		gpuVtxConstantsState = D3D12_RESOURCE_STATE_COPY_DEST;
+		if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, gpuVtxConstantsState, nullptr,
+				__uuidof(ID3D12Resource), (void **)gpuVtxConstants.put())))
+			gpuVtxConstants.reset();
+	}
+	taDecoder.WantSort(TaSorts());
+	taDecoder.Setup(TaFlags() != 0 && gpuVtxConstants && ta_gpu_wanted());
 	return true;
+}
+
+void DX12Renderer::OptionsChanged()
+{
+	if (context != nullptr)
+		taDecoder.Setup(TaFlags() != 0 && gpuVtxConstants && ta_gpu_wanted());
 }
 
 void DX12Renderer::Term()
@@ -232,6 +259,14 @@ void DX12Renderer::Term()
 	DX12Texture::SetDecoder(nullptr);
 	texPool.Term();
 	texDecoder.Term();
+	taDecoder.Term();
+	if (gpuVtxConstants)
+	{
+		gpuVtxConstants->AddRef();
+		context->Release(gpuVtxConstants.get());
+		gpuVtxConstants.reset();
+	}
+	gpuVtxConstantsState = D3D12_RESOURCE_STATE_COPY_DEST;
 	overlay.Term();
 	DropImage(fbTexture);
 	DropRestored();
@@ -444,6 +479,7 @@ bool DX12Renderer::Process(TA_context* ctx)
 
 bool DX12Renderer::ProcessLocked(TA_context* ctx)
 {
+	taDecoder.BeginFrame();
 	if (!ctx->rend.isRTT)
 		overlay.Prepare();
 	if (!ctx->rend.isRTT && !ctx->rend.isRenderFramebuffer)
@@ -462,7 +498,14 @@ bool DX12Renderer::ProcessLocked(TA_context* ctx)
 	/* SSAA draws flat strips at a single rate: the parse looks for them
 	 * then, and only then */
 	ta_set_flat_strips(ssaaSamples > 1);
-	bool result = ta_parse_vdrc(ctx);
+	/* GPU-side TA processing: the header pass makes the frame ready to be
+	 * drawn from the GPU's decode, in the full parse's place, which is
+	 * recorded now; or it is parsed as ever */
+	bool result;
+	if (!taDecoder.Ready() || !taDecoder.Prepare(ctx, TaFlags(), &result))
+		result = ta_parse_vdrc(ctx);
+	else if (result)
+		taDecoder.Record(ctx);
 	// the textures the frame's polygons asked for that are made on the GPU, before the draws
 	texDecoder.Flush();
 
@@ -535,6 +578,9 @@ void DX12Renderer::SetBaseScissor()
 // first (as in the Vulkan renderers).
 void DX12Renderer::SetProvokingVertices()
 {
+	// (a frame decoded on the GPU has had it done there: TA_GPU_PROVOKE)
+	if (pvrrc.gpu)
+		return;
 	auto setProvokingVertex = [](const List<PolyParam>& list) {
 		for (int i = 0; i < list.used(); i++)
 		{
@@ -592,6 +638,16 @@ void DX12Renderer::SortTriangles()
 
 bool DX12Renderer::UploadGeometry()
 {
+	if (pvrrc.gpu)
+	{
+		// (the decode's, on the GPU)
+		const DX12TaDraw& gpu = taDecoder.Draw();
+		vertexView = gpu.vertices;
+		indexView = gpu.indices;
+		modVolView = gpu.modtrig;
+		haveModVols = pvrrc.gpu_modtrig != 0;
+		return UploadConstants();
+	}
 	const u32 vertexBytes = pvrrc.verts.bytes();
 	const u32 indexBytes = pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
 	const u32 modVolBytes = pvrrc.modtrig.bytes();
@@ -629,7 +685,11 @@ bool DX12Renderer::UploadGeometry()
 	modVolView.SizeInBytes = modVolBytes;
 	modVolView.StrideInBytes = sizeof(float) * 3;
 	haveModVols = modVolBytes != 0;
+	return UploadConstants();
+}
 
+bool DX12Renderer::UploadConstants()
+{
 	/* The constants: the normal matrix, made for a picture whose first line
 	 * is the top one and whose clip space has y going up: the other way up
 	 * from the Vulkan renderers', whose matrices these are, and nothing
@@ -651,6 +711,23 @@ bool DX12Renderer::UploadGeometry()
 	memcpy(c.cpu + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, &frag, sizeof(frag));
 	vtxConstantsGpu = c.gpu;
 	fragConstantsGpu = c.gpu + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+	if (pvrrc.gpu && gpuVtxConstants)
+	{
+		/* A frame decoded on the GPU: its fZ_max is the GPU's. The vertex
+		 * constants go to the buffer of the default heap, and the depth's
+		 * scale (scale[3]) from the decode's words: three copies that do not
+		 * overlap, which the transitions put after the last frame's draws
+		 * and before this one's. */
+		ID3D12GraphicsCommandList *cmd = context->Cmd();
+		ID3D12Resource *dst = gpuVtxConstants;
+		context->Transition(dst, gpuVtxConstantsState, D3D12_RESOURCE_STATE_COPY_DEST);
+		static_assert(offsetof(VertexConstants, scale) == 0 && sizeof(VertexConstants) == 32, "the scale's fourth word is the depth's");
+		cmd->CopyBufferRegion(dst, 0, c.buffer, c.offset, 12);
+		taDecoder.CopyDepthScale(dst, 12);
+		cmd->CopyBufferRegion(dst, 16, c.buffer, c.offset + 16, 16);
+		context->Transition(dst, gpuVtxConstantsState, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+		vtxConstantsGpu = dst->GetGPUVirtualAddress();
+	}
 	return true;
 }
 
@@ -1253,7 +1330,17 @@ bool DX12Renderer::Render()
 		return true;
 	}
 
-	SortTriangles();
+	/* (a frame decoded on the GPU has its sorted passes sorted already, and
+	 * their indices went straight to the decoder's room for them when the
+	 * decode was recorded: see TA_GPU_SORT) */
+	if (!pvrrc.gpu)
+		SortTriangles();
+	else
+	{
+		for (std::vector<u32>& idx : sortedIndexes)
+			idx.clear();
+		sortedIndexCount = 0;
+	}
 	if (pvrrc.isRTT ? !BeginRTT() : !BeginScreen())
 	{
 		rttTexture = nullptr;
@@ -1495,7 +1582,32 @@ void DX12Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& p
 	static_assert(sizeof(PolyConstants) == DX12Context::PolyConstantCount * 4, "the polygon's root constants");
 	u32 words[DX12Context::PolyConstantCount];
 	memcpy(words, &constants, sizeof(words));
-	Draw(state, words, count, first);
+	// (a frame decoded on the GPU: a draw group by its arguments there)
+	if (pvrrc.gpu && !gpuSorted)
+		DrawGpu(state, words, listType, shadowPass != ShadowPass::None, first, count);
+	else
+		Draw(state, words, count, first);
+}
+
+void DX12Renderer::DrawGpu(const DrawState& state, const u32 *constants, u32 listType, bool shadow, u32 first, u32 count)
+{
+	FlushBatch();
+	if (state.pso == nullptr)
+		return;
+	context->SetPipeline(state.pso);
+	context->SetScissor(state.scissor);
+	context->SetStencilRef(state.stencilRef);
+	context->SetTopology(state.topology);
+	context->SetRootConstants(constants, DX12Context::PolyConstantCount);
+	const DX12TaDraw& gpu = taDecoder.Draw();
+	const u64 stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+	ID3D12GraphicsCommandList *cmd = context->Cmd();
+	statBatches++;
+	statBatched++;
+	if (listType == ListType_Translucent)
+		cmd->ExecuteIndirect(gpu.drawIndexed, count, gpu.trDraws, (first + 1) * stride, gpu.trDraws, first * stride);
+	else
+		cmd->ExecuteIndirect(gpu.drawIndexed, 1, gpu.commands, (shadow ? gpu.shadowCommands : 0) + first * stride, nullptr, 0);
 }
 
 // The polygons of a list that take shadows, drawn again where they are in a
@@ -1505,7 +1617,9 @@ void DX12Renderer::DrawShadowed(u32 listType, const List<PolyParam>& polys, u32 
 {
 	const PolyParam *pp_end = polys.head() + last;
 	for (const PolyParam *pp = polys.head() + first; pp != pp_end; pp++)
-		if (CanDrawShadowed(listType, pp) && PolyOverlaps(pp, area))
+		/* (of a frame decoded on the GPU, the GPU has said which groups reach
+		 * into the volumes: the others' second commands draw nothing) */
+		if (CanDrawShadowed(listType, pp) && (pvrrc.gpu || PolyOverlaps(pp, area)))
 			DrawPoly(listType, false, *pp, pp->first, pp->count,
 					ShadowLaterWins(listType, pp) ? ShadowPass::LaterWins : ShadowPass::EarlierWins,
 					&scissor);
@@ -1527,10 +1641,21 @@ ID3D12PipelineState *DX12Renderer::ModVolPipeline(bool depthTest, bool depthWrit
 	return context->Pipelines().Get(key);
 }
 
-void DX12Renderer::DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool multipass)
+void DX12Renderer::DrawSorted(const SortTrigDrawParam *polys, u32 count, bool multipass)
 {
-	for (const SortTrigDrawParam& param : polys)
-		DrawPoly(ListType_Translucent, true, *param.ppid, pvrrc.idx.used() + param.first, param.count);
+	/* (a frame decoded on the GPU: its sorted indices are this frame's in
+	 * the decoder's room for them, and name the GPU's vertices) */
+	const u32 base = pvrrc.gpu ? 0 : pvrrc.idx.used();
+	if (pvrrc.gpu)
+	{
+		if (count == 0)
+			return;
+		FlushBatch();
+		context->SetIndexBuffer(taDecoder.Draw().sorted);
+		gpuSorted = true;
+	}
+	for (u32 i = 0; i < count; i++)
+		DrawPoly(ListType_Translucent, true, *polys[i].ppid, base + polys[i].first, polys[i].count);
 
 	if (multipass && settings.rend.TranslucentPolygonDepthMask)
 	{
@@ -1540,8 +1665,9 @@ void DX12Renderer::DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool 
 		FlushBatch();
 		ID3D12GraphicsCommandList *cmd = context->Cmd();
 		context->SetTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		for (const SortTrigDrawParam& param : polys)
+		for (u32 i = 0; i < count; i++)
 		{
+			const SortTrigDrawParam& param = polys[i];
 			if (param.count <= 2 || param.ppid->isp.ZWriteDis)
 				continue;
 			D3D12_RECT scissorRect;
@@ -1551,20 +1677,40 @@ void DX12Renderer::DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool 
 			if (pso == nullptr)
 				continue;
 			context->SetPipeline(pso);
-			cmd->DrawIndexedInstanced(param.count, 1, pvrrc.idx.used() + param.first, 0, 0);
+			cmd->DrawIndexedInstanced(param.count, 1, base + param.first, 0, 0);
 		}
+	}
+	if (pvrrc.gpu)
+	{
+		FlushBatch();
+		context->SetIndexBuffer(indexView);
+		gpuSorted = false;
 	}
 }
 
 // The depth prepass of a sorted list: rend/sorter.h
-void DX12Renderer::DrawPrepass(const std::vector<SortTrigDrawParam>& polys)
+void DX12Renderer::DrawPrepass(const SortTrigDrawParam *polys, u32 count)
 {
-	if (polys.empty())
+	if (count == 0)
 		return;
+	// (as DrawSorted(): of a frame decoded on the GPU, the indices are in the decoder's room)
+	const u32 base = pvrrc.gpu ? 0 : pvrrc.idx.used();
+	if (pvrrc.gpu)
+	{
+		FlushBatch();
+		context->SetIndexBuffer(taDecoder.Draw().sorted);
+		gpuSorted = true;
+	}
 	prepassDraw = true;
-	for (const SortTrigDrawParam& param : polys)
-		DrawPoly(ListType_Translucent, true, *param.ppid, pvrrc.idx.used() + param.first, param.count);
+	for (u32 i = 0; i < count; i++)
+		DrawPoly(ListType_Translucent, true, *polys[i].ppid, base + polys[i].first, polys[i].count);
 	prepassDraw = false;
+	if (pvrrc.gpu)
+	{
+		FlushBatch();
+		context->SetIndexBuffer(indexView);
+		gpuSorted = false;
+	}
 }
 
 void DX12Renderer::DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last)
@@ -1583,7 +1729,7 @@ void DX12Renderer::DrawList(u32 listType, bool sortTriangles, const List<PolyPar
 	}
 }
 
-void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass)
+void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass, int render_pass)
 {
 	if (count == 0 || !haveModVols)
 		return;
@@ -1649,8 +1795,11 @@ void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 	context->SetScissor(baseScissor);
 	context->SetVertexBuffer(vertexView);
 
-	// The polygons that take shadows, again, where they are in a volume
-	const ScreenBounds area = ModVolBounds(first, count);
+	/* The polygons that take shadows, again, where they are in a volume
+	 * (whose bounds the header pass has worked out for a frame decoded on
+	 * the GPU, which has the volumes' triangles: TA_GPU_SHADOWS) */
+	const f32 *ga = pvrrc.gpu_shadow_area[render_pass < 10 ? render_pass : 0];
+	const ScreenBounds area = pvrrc.gpu ? ScreenBounds{ ga[0], ga[1], ga[2], ga[3] } : ModVolBounds(first, count);
 	if (!area.empty())
 	{
 		int rect[4];
@@ -1688,14 +1837,26 @@ void DX12Renderer::DrawFrame()
 				current_pass.mvo_count - previous_pass.mvo_count, current_pass.autosort);
 		DrawList(ListType_Opaque, false, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count);
 		DrawList(ListType_Punch_Through, false, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count);
-		DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, previous_pass, current_pass);
+		DrawModVols(previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, previous_pass, current_pass, render_pass);
 		if (current_pass.autosort)
 		{
-			DrawPrepass(prepassPolys[render_pass]);
-			if (!settings.pvr.Emulation.AlphaSortMode)
-				DrawSorted(sortedPolys[render_pass], render_pass < pvrrc.render_passes.used() - 1);
+			// (a frame decoded on the GPU with a sorted pass was sorted by triangle: TA_GPU_SORT)
+			if (pvrrc.gpu)
+			{
+				u32 n;
+				const SortTrigDrawParam *prepass = ta_gpu_prepass(render_pass, &n);
+				DrawPrepass(prepass, n);
+				const SortTrigDrawParam *sorted = ta_gpu_sorted(render_pass, &n);
+				DrawSorted(sorted, n, render_pass < pvrrc.render_passes.used() - 1);
+			}
+			else if (!settings.pvr.Emulation.AlphaSortMode)
+			{
+				DrawPrepass(prepassPolys[render_pass].data(), (u32)prepassPolys[render_pass].size());
+				DrawSorted(sortedPolys[render_pass].data(), (u32)sortedPolys[render_pass].size(), render_pass < pvrrc.render_passes.used() - 1);
+			}
 			else
 			{
+				DrawPrepass(prepassPolys[render_pass].data(), (u32)prepassPolys[render_pass].size());
 				SortPParams(previous_pass.tr_count, current_pass.tr_count - previous_pass.tr_count);
 				DrawList(ListType_Translucent, true, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
 			}

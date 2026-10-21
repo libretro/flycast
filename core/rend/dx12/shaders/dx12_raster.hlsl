@@ -521,6 +521,10 @@ struct OITVertexOut
 	INTERPOLATION float4 col1 : COLOR2;		// the second volume's, for opaque and punch-through polygons
 	INTERPOLATION float4 spec1 : COLOR3;
 	AT_SAMPLE float2 uv1 : TEXCOORD2;
+	/* a translucent polygon's number in its list: the root constant's, and
+	 * its strip's for a frame whose translucent strips are drawn by the
+	 * GPU's records (the per-instance attribute) */
+	nointerpolation uint polyNumber : POLYNUMBER;
 #if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
 	uint coverage : SV_Coverage;
 #elif defined(DX12_SAMPLE_RATE) && DX12_OIT_PASS == DX12_PASS_COLOR
@@ -539,6 +543,8 @@ struct OITVertexIn
 	float4 col1 : COLOR2;
 	float4 spec1 : COLOR3;
 	float2 uv1 : TEXCOORD2;
+	// (an instance's: 0 but for the GPU's translucent draw records, whose StartInstanceLocation picks it)
+	uint instNumber : POLYNUMBER;
 };
 
 OITVertexOut main(in OITVertexIn vin)
@@ -551,6 +557,7 @@ OITVertexOut main(in OITVertexIn vin)
 	vo.col1 = vin.col1;
 	vo.spec1 = vin.spec1;
 	vo.uv1 = vin.uv1;
+	vo.polyNumber = polyNumber + vin.instNumber;
 	return vo;
 }
 #endif
@@ -816,7 +823,7 @@ float4 main(in OITVertexOut inpix) : SV_Target
 #else
 	pixel.depth = depth;
 #endif
-	pixel.seq_num = polyNumber;
+	pixel.seq_num = inpix.polyNumber;
 #ifdef DX12_SSAA
 	pixel.seq_num |= coverage << COVERAGE_SHIFT;
 #endif

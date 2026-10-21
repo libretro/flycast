@@ -93,6 +93,8 @@ static const D3D12_INPUT_ELEMENT_DESC OITLayout[] =
 	{ "COLOR",    2, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, col1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 	{ "COLOR",    3, DXGI_FORMAT_R8G8B8A8_UNORM,  0, (UINT)offsetof(Vertex, spc1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 	{ "TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT,    0, (UINT)offsetof(Vertex, u1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	// (a translucent strip's number, an instance's: in the second vertex buffer)
+	{ "POLYNUMBER", 0, DXGI_FORMAT_R32_UINT,      1, 0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 };
 static const D3D12_INPUT_ELEMENT_DESC PositionLayout[] =
 {
