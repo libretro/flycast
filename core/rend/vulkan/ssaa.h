@@ -19,15 +19,8 @@
 #include "hw/pvr/ta.h"
 #include "hw/pvr/Renderer_if.h"
 #include "rend/tile/pvr_tile.h"
-
-/* Whether a polygon is drawn at a single rate. The bit means something for
- * a sprite and the background always, for other strips only while the
- * decoder looks for flat ones: it is what the game left there otherwise. */
-static inline bool SsaaSingleRate(const PolyParam& pp)
-{
-	return (pp.pcw.full & PVR_PCW_SINGLE_RATE) != 0
-			&& (ta_flat_strips() || pp.pcw.ParaType == ParamType_Sprite || &pp == pvrrc.global_param_op.head());
-}
+// (SsaaSingleRate(): which polygons are drawn at a single rate)
+#include "rend/ssaa_rate.h"
 
 // a pipeline's multisample state: @samples a pixel, shaded at each sample or once a pixel
 static inline vk::PipelineMultisampleStateCreateInfo SsaaMultisample(u32 samples, bool perSample)

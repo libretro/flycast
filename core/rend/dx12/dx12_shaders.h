@@ -47,6 +47,16 @@ enum class DX12Shader
 	OITFinalVS = 17,
 	OITFinalPS = 18,
 	OITModVolPS = 19,
+	/* SSAA's (DX12_SSAA): each of these four is smooth at each sample, flat
+	 * at each sample, smooth once a pixel, flat once a pixel */
+	SsaaPolyPS = 20,
+	SsaaOITDepthPS = 24,
+	SsaaOITColorPS = 28,
+	SsaaOITListPS = 32,			// once a pixel: smooth, flat
+	SsaaOITFinalPS = 34,		// the lists put together and the samples resolved
+	SsaaOITFinalSamplePS = 35,	// ...put together into each sample
+	SsaaOITModVolPS = 36,
+	SsaaResolvePS = 37,
 };
 
 D3D12_SHADER_BYTECODE dx12_shader(DX12Shader shader);

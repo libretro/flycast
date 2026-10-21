@@ -14,6 +14,17 @@
 //   DX12_OIT_FINAL_VS, DX12_OIT_FINAL_PS  the lists put together over the picture
 //   DX12_OIT_MODVOL_PS             a translucent modifier volume marking the lists
 //
+// SSAA (DX12Renderer's notes in dx12_renderer.h): the frame drawn into
+// pictures of 2, 4 or 8 samples a pixel and resolved by the shared rule
+// (rend/tile/pvr_resolve.h). Its shaders are these with DX12_SSAA defined,
+// and DX12_SAMPLE_RATE for a polygon's: 1, shaded at each sample, its
+// inputs taken there; 2, once a pixel, its inputs at the pixel's centre
+// as without SSAA (or, where it covers only some of the samples, at their
+// centroid: without SSAA it would only be drawn where it covers the
+// centre), and its textures filtered with the derivatives at the centres.
+// Without DX12_SSAA they are what they were, to the byte. Its own:
+//   DX12_SSAA_RESOLVE_PS           the samples resolved into the picture
+//
 // What the Direct3D 11 renderer made a pixel shader of its own for, a
 // polygon's bits (#if there), is read here from the root constants, and
 // branched on (if): the same operations in the same order, so what a pixel
@@ -31,20 +42,30 @@
 //   u1, u2, u3, t4, t6  the per-pixel renderer's lists, heads, counter, stencil and depth
 //   t5        the per-pixel renderer's translucent polygons' parameters
 
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 1
+#define AT_SAMPLE sample
+#else
+#define AT_SAMPLE
+#endif
 #if !defined(DX12_GOURAUD) || DX12_GOURAUD == 1
-#define INTERPOLATION
+#define INTERPOLATION AT_SAMPLE
 #else
 #define INTERPOLATION nointerpolation
 #endif
 #define PI 3.1415926
 
+#ifdef DX12_MS_TABLE
+// (the table's pictures of samples, SSAA's: read by the shaders that resolve them, which read nothing else of it)
+Texture2DMS<float4> msTextures[DX12_SRV_TABLE_SIZE] : register(t0, space1);
+#else
 Texture2D textures[DX12_SRV_TABLE_SIZE] : register(t0, space1);
+#endif
 SamplerState samplers[DX12_SAMPLER_TABLE_SIZE] : register(s0, space1);
 // nearest, clamped: the fog table's and the palette's
 SamplerState pointSampler : register(s0);
 SamplerState linearSampler : register(s1);
 
-#if !defined(DX12_QUAD_VS) && !defined(DX12_QUAD_PS)
+#if !defined(DX12_QUAD_VS) && !defined(DX12_QUAD_PS) && !defined(DX12_SSAA_RESOLVE_PS)
 cbuffer PolyConstants : register(b1)
 {
 	float4 clipTest;
@@ -82,7 +103,48 @@ cbuffer FragmentConstants : register(b2)
 	float sp_FOG_DENSITY;
 	float shade_scale_factor;
 	uint pixelBufferCount;	// how many pixels the per-pixel lists have room for
+#ifdef DX12_SSAA
+	uint ssaaMask;			// SSAA: every sample of a pixel, a bit each
+	uint ssaaLog2;			// ...log2 of how many
+#endif
 };
+
+#if defined(DX12_SSAA) && (defined(DX12_SSAA_RESOLVE_PS) || defined(DX12_OIT_FINAL_PS))
+// (a unorm8 colour's bytes, red lowest, as its picture holds them, and back: exact)
+uint packUnorm8(float4 v)
+{
+	const uint4 b = uint4(round(saturate(v) * 255.0));
+	return b.r | (b.g << 8) | (b.b << 16) | (b.a << 24);
+}
+float4 unpackUnorm8(uint c)
+{
+	return float4(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u), float(c >> 24)) / 255.0;
+}
+#endif
+
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
+// (inpix's: the polygon's input there, at the pixel's centre where it covers all of its samples, else at the centroid of those it covers)
+#define AT_CENTRE(v) (inpix.coverage == ssaaMask ? EvaluateAttributeSnapped(v, int2(0, 0)) : EvaluateAttributeCentroid(v))
+/* ...and a texture filtered with the derivatives of its coordinates at the
+ * pixels' centres, as without SSAA: where the polygon covers only some of
+ * a pixel's samples its coordinates are taken at their centroid, so the
+ * differences across a 2x2 block of pixels with such a pixel in it (along
+ * every edge between two triangles) are not the texture's footprint, and
+ * anisotropic filtering would take its texels along that wrong line - a
+ * dotted line of speckles on each edge */
+static float4 uvGrad;
+static float4 uv1Grad;
+#define TEX(t, s, coords, g) textures[t].SampleGrad(samplers[s], coords, (g).xy, (g).zw)
+#else
+#define AT_CENTRE(v) (v)
+#define TEX(t, s, coords, g) textures[t].Sample(samplers[s], coords)
+#endif
+// (a flat input is not interpolated, and is not to be asked for at a place)
+#if !defined(DX12_GOURAUD) || DX12_GOURAUD == 1
+#define AT_CENTRE_SMOOTH(v) AT_CENTRE(v)
+#else
+#define AT_CENTRE_SMOOTH(v) (v)
+#endif
 
 // A vertex's z is the guest's 1/w, which is what the PowerVR compares
 // depths by: the clip space position is (x * w, y * w, S, w), so that the
@@ -104,6 +166,7 @@ precise float4 transformVertex(float3 pos)
 
 // The fog coefficient for a depth, worked out the way the PowerVR2 does
 // it: see DX11FogFunction
+#ifndef DX12_MS_TABLE
 float fog_mode2(float w)
 {
 	float z = min(max(w * sp_FOG_DENSITY, 1.0), 255.9999);
@@ -120,6 +183,7 @@ float fog_mode2(float w)
 	float cur = floor(textures[DX12_SRV_FOG].SampleLevel(pointSampler, float2(u, 0.75), 0).r * 255.0 + 0.5);
 	return floor((next * blend + cur * (255.0 - blend)) / 256.0) / 256.0;
 }
+#endif
 
 #ifdef DX12_POLY_VS
 struct VertexIn
@@ -152,14 +216,25 @@ VertexOut main(in VertexIn vin)
 #ifdef DX12_POLY_PS
 struct Pixel
 {
-	float4 pos : SV_POSITION;
+	AT_SAMPLE float4 pos : SV_POSITION;
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
-	float2 uv : TEXCOORD0;
+	AT_SAMPLE float2 uv : TEXCOORD0;
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
+	uint coverage : SV_Coverage;
+#endif
 };
 
 float4 main(in Pixel inpix) : SV_Target
 {
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
+	// (first, while nothing is discarded: derivatives are defined only then)
+	if ((polyFlags & DX12_PF_TEXTURE) != 0)
+	{
+		const float2 c = EvaluateAttributeSnapped(inpix.uv, int2(0, 0));
+		uvGrad = float4(ddx(c), ddy(c));
+	}
+#endif
 	// (the guest's 1/w at this pixel)
 	const float w = inpix.pos.w;
 	const uint shadInstr = (polyFlags >> DX12_PF_SHAD_INSTR_SHIFT) & 3;
@@ -174,7 +249,7 @@ float4 main(in Pixel inpix) : SV_Target
 			discard;
 	}
 
-	float4 color = inpix.col;
+	float4 color = AT_CENTRE_SMOOTH(inpix.col);
 	if ((polyFlags & DX12_PF_USE_ALPHA) == 0)
 		color.a = 1.0;
 	float4 offset;
@@ -184,19 +259,19 @@ float4 main(in Pixel inpix) : SV_Target
 		// its base and offset colours, is scaled before the texture is
 		// combined with them. The texture itself is not.
 		color.rgb *= shade_scale_factor;
-		offset = float4(inpix.spec.rgb * shade_scale_factor, inpix.spec.a);
+		offset = float4(AT_CENTRE_SMOOTH(inpix.spec).rgb * shade_scale_factor, AT_CENTRE_SMOOTH(inpix.spec).a);
 	}
 	else
-		offset = inpix.spec;
+		offset = AT_CENTRE_SMOOTH(inpix.spec);
 	if ((polyFlags & DX12_PF_TEXTURE) != 0)
 	{
 		float4 texcol;
 		if ((polyFlags & DX12_PF_PALETTE) == 0)
-			texcol = textures[texIndex].Sample(samplers[samplerIndex], inpix.uv);
+			texcol = TEX(texIndex, samplerIndex, AT_CENTRE(inpix.uv), uvGrad);
 		else
 		{
 			// palette_index is where the middle of the palette's first colour is in the row of 1024
-			float2 c = float2(textures[texIndex].Sample(samplers[samplerIndex], inpix.uv).r * (255.0 / 1024.0) + palette_index, 0.5);
+			float2 c = float2(TEX(texIndex, samplerIndex, AT_CENTRE(inpix.uv), uvGrad).r * (255.0 / 1024.0) + palette_index, 0.5);
 			texcol = textures[DX12_SRV_PALETTE].SampleLevel(pointSampler, c, 0);
 		}
 		if (bumpmap)
@@ -337,8 +412,14 @@ struct Pixel
 RWStructuredBuffer<Pixel> PixelBuffer : register(u1);
 RWTexture2D<uint> abufferPointers : register(u2);
 RWByteAddressBuffer PixelCounter : register(u3);
+#ifdef DX12_SSAA
+// (SSAA: the samples' - the per-pixel renderer's table of views is the one of them then)
+Texture2DMS<uint2> shadow_stencil : register(t4);
+Texture2DMS<float> DepthTex : register(t6);
+#else
 Texture2D<uint2> shadow_stencil : register(t4);
 Texture2D<float> DepthTex : register(t6);
+#endif
 
 #define ZERO				0
 #define ONE					1
@@ -386,10 +467,25 @@ bool getShadowEnable(PolyParam pp)
 	return (pp.tsp_isp_pcw & 1) != 0;
 }
 
+#ifdef DX12_SSAA
+/* SSAA: a translucent fragment is kept once a pixel, with the samples it
+ * covers in the eight bits above its polygon's number (which is then under
+ * 2^22) */
+#define COVERAGE_SHIFT 22
+uint getCoverage(Pixel pixel)
+{
+	return (pixel.seq_num >> COVERAGE_SHIFT) & 0xFFu;
+}
+uint getPolyNumber(Pixel pixel)
+{
+	return pixel.seq_num & 0x003FFFFFu;
+}
+#else
 uint getPolyNumber(Pixel pixel)
 {
 	return pixel.seq_num & 0x3FFFFFFFu;
 }
+#endif
 
 #define SHADOW_STENCIL 0x40000000u
 #define SHADOW_ACC	   0x80000000u
@@ -418,13 +514,18 @@ float4 unpackColors(uint u)
 #if defined(DX12_OIT_VS) || defined(DX12_OIT_PS)
 struct OITVertexOut
 {
-	precise float4 pos : SV_POSITION;
+	precise AT_SAMPLE float4 pos : SV_POSITION;
 	INTERPOLATION float4 col : COLOR0;
 	INTERPOLATION float4 spec : COLOR1;
-	float2 uv : TEXCOORD0;
+	AT_SAMPLE float2 uv : TEXCOORD0;
 	INTERPOLATION float4 col1 : COLOR2;		// the second volume's, for opaque and punch-through polygons
 	INTERPOLATION float4 spec1 : COLOR3;
-	float2 uv1 : TEXCOORD2;
+	AT_SAMPLE float2 uv1 : TEXCOORD2;
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
+	uint coverage : SV_Coverage;
+#elif defined(DX12_SAMPLE_RATE) && DX12_OIT_PASS == DX12_PASS_COLOR
+	uint sampleIndex : SV_SampleIndex;
+#endif
 };
 #endif
 
@@ -455,6 +556,16 @@ OITVertexOut main(in OITVertexIn vin)
 #endif
 
 #ifdef DX12_OIT_PS
+/* (SSAA: a pixel's stencil at the sample being shaded, or the first one
+ * the polygon covers when it is shaded once a pixel: a modifier volume's
+ * edge is then a pixel's, not a sample's, for it) */
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
+#define STENCIL_AT(c) shadow_stencil.Load(c, firstbitlow(inpix.coverage))
+#elif defined(DX12_SAMPLE_RATE)
+#define STENCIL_AT(c) shadow_stencil.Load(c, inpix.sampleIndex)
+#else
+#define STENCIL_AT(c) shadow_stencil[c]
+#endif
 uint getNextPixelIndex()
 {
 	uint index;
@@ -475,8 +586,51 @@ float4 main(in OITVertexOut inpix) : SV_Target
 	const bool twoVolumes = (oitFlags & DX12_OF_TWO_VOLUMES) != 0;
 	const bool bumpmap = (polyFlags & DX12_PF_BUMPMAP) != 0;
 	const bool offsetOn = (polyFlags & DX12_PF_OFFSET) != 0;
-
+#if defined(DX12_SAMPLE_RATE) && DX12_SAMPLE_RATE == 2
 #if DX12_OIT_PASS == DX12_PASS_OIT
+	// (the depth's differences across the pixel: for its depth at each sample)
+	const float dzdx = ddx_fine(inpix.pos.z);
+	const float dzdy = ddy_fine(inpix.pos.z);
+#endif
+	// (first, while nothing is discarded: derivatives are defined only then)
+	if ((polyFlags & DX12_PF_TEXTURE) != 0)
+	{
+		const float2 c = EvaluateAttributeSnapped(inpix.uv, int2(0, 0));
+		uvGrad = float4(ddx(c), ddy(c));
+		if (twoVolumes)
+		{
+			const float2 c1 = EvaluateAttributeSnapped(inpix.uv1, int2(0, 0));
+			uv1Grad = float4(ddx(c1), ddy(c1));
+		}
+	}
+#endif
+
+#if DX12_OIT_PASS == DX12_PASS_OIT && defined(DX12_SSAA)
+	/* Manual depth testing, at each sample the fragment covers, with its
+	 * depth there (the depth is a plane across the screen: the centre's
+	 * and its differences to the next pixels give it at any place),
+	 * which leaves the samples it is seen at. It is kept, and sorted, with
+	 * its depth at the centroid of those: the centre's, extrapolated past
+	 * the triangle where the triangle only clips the pixel, would sort it
+	 * in front of or behind its neighbours wrongly - a dotted line of
+	 * wrong colours along the edges between a model's polygons. */
+	uint coverage = 0u;
+	float2 osum = float2(0.0, 0.0);
+	float on = 0.0;
+	for (uint s = 0u; s < (1u << ssaaLog2); s++)
+	{
+		const float2 o = GetRenderTargetSamplePosition(s);
+		if ((inpix.coverage & (1u << s)) != 0u && depth + dzdx * o.x + dzdy * o.y >= DepthTex.Load(int2(inpix.pos.xy), s))
+		{
+			coverage |= 1u << s;
+			osum += o;
+			on += 1.0;
+		}
+	}
+	if (coverage == 0u)
+		discard;
+	const float fragDepth = coverage == ssaaMask ? depth : depth + dot(osum / on, float2(dzdx, dzdy));
+#elif DX12_OIT_PASS == DX12_PASS_OIT
 	// Manual depth testing
 	float frontDepth = DepthTex[uint2(inpix.pos.xy)];
 	if (depth < frontDepth)
@@ -491,9 +645,9 @@ float4 main(in OITVertexOut inpix) : SV_Target
 			discard;
 	}
 
-	float4 color = inpix.col;
-	float4 offset = inpix.spec;
-	float2 uv = inpix.uv;
+	float4 color = AT_CENTRE_SMOOTH(inpix.col);
+	float4 offset = AT_CENTRE_SMOOTH(inpix.spec);
+	float2 uv = AT_CENTRE(inpix.uv);
 	bool area1 = false;
 	int2 cur_blend_mode = int2((oitFlags >> DX12_OF_SRC_SHIFT) & 15, (oitFlags >> DX12_OF_DST_SHIFT) & 15);
 	bool cur_use_alpha = (polyFlags & DX12_PF_USE_ALPHA) != 0;
@@ -502,13 +656,13 @@ float4 main(in OITVertexOut inpix) : SV_Target
 	uint cur_fog_control = (polyFlags >> DX12_PF_FOG_SHIFT) & 3;
 
 #if DX12_OIT_PASS == DX12_PASS_COLOR
-	const uint stencil = shadow_stencil[uint2(inpix.pos.xy)].g;
+	const uint stencil = STENCIL_AT(uint2(inpix.pos.xy)).g;
 	if (twoVolumes)
 	{
 		if (stencil == 0x81u) {
-			color = inpix.col1;
-			offset = inpix.spec1;
-			uv = inpix.uv1;
+			color = AT_CENTRE_SMOOTH(inpix.col1);
+			offset = AT_CENTRE_SMOOTH(inpix.spec1);
+			uv = AT_CENTRE(inpix.uv1);
 			area1 = true;
 			cur_blend_mode = int2((oitFlags >> DX12_OF_SRC1_SHIFT) & 15, (oitFlags >> DX12_OF_DST1_SHIFT) & 15);
 			cur_use_alpha = (oitFlags & DX12_OF_USE_ALPHA1) != 0;
@@ -535,20 +689,20 @@ float4 main(in OITVertexOut inpix) : SV_Target
 		float4 texcol;
 		// only the first volume's texture is ever one of palette indices
 		if (area1)
-			texcol = textures[texIndex1].Sample(samplers[samplerIndex1], uv);
+			texcol = TEX(texIndex1, samplerIndex1, uv, uv1Grad);
 		else if ((polyFlags & DX12_PF_PALETTE) == 0)
-			texcol = textures[texIndex].Sample(samplers[samplerIndex], uv);
+			texcol = TEX(texIndex, samplerIndex, uv, uvGrad);
 		else
 		{
 			// palette_index is where the middle of the palette's first colour is in the row of 1024
-			float2 c = float2(textures[texIndex].Sample(samplers[samplerIndex], uv).r * (255.0 / 1024.0) + palette_index, 0.5);
+			float2 c = float2(TEX(texIndex, samplerIndex, uv, uvGrad).r * (255.0 / 1024.0) + palette_index, 0.5);
 			texcol = textures[DX12_SRV_PALETTE].SampleLevel(pointSampler, c, 0);
 		}
 		if (bumpmap)
 		{
 			float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
 			float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
-			texcol.a = clamp(inpix.spec.a + inpix.spec.r * sin(s) + inpix.spec.g * cos(s) * cos(r - 2.0 * PI * inpix.spec.b), 0.0, 1.0);
+			texcol.a = clamp(AT_CENTRE_SMOOTH(inpix.spec).a + AT_CENTRE_SMOOTH(inpix.spec).r * sin(s) + AT_CENTRE_SMOOTH(inpix.spec).g * cos(s) * cos(r - 2.0 * PI * AT_CENTRE_SMOOTH(inpix.spec).b), 0.0, 1.0);
 			texcol.rgb = float3(1.0, 1.0, 1.0);
 		}
 		else if (cur_ignore_tex_alpha)
@@ -657,8 +811,15 @@ float4 main(in OITVertexOut inpix) : SV_Target
 
 	Pixel pixel;
 	pixel.color = packColors(clamp(color, 0.0, 1.0));
+#ifdef DX12_SSAA
+	pixel.depth = fragDepth;
+#else
 	pixel.depth = depth;
+#endif
 	pixel.seq_num = polyNumber;
+#ifdef DX12_SSAA
+	pixel.seq_num |= coverage << COVERAGE_SHIFT;
+#endif
 	uint next;
 	InterlockedExchange(abufferPointers[coords], idx, next);
 	pixel.next = next;
@@ -678,15 +839,28 @@ float4 main(uint vertexId : SV_VertexID) : SV_Position
 }
 #endif
 
+#if defined(DX12_OIT_FINAL_PS) || defined(DX12_OIT_MODVOL_PS)
+/* A pixel's fragments sorted, at most. With SSAA a translucent fragment
+ * is kept once a pixel with the samples it covers, so where a polygon's
+ * triangles share an edge that crosses the pixel, each of them has one
+ * there: small triangles - a character's - give a pixel two or three for
+ * each layer, and the layers kept are three times as many. */
+#ifdef DX12_SSAA
+#define OIT_MAX_PIXELS (3 * DX12_OIT_MAX_PIXELS)
+#else
+#define OIT_MAX_PIXELS DX12_OIT_MAX_PIXELS
+#endif
+#endif
+
 #ifdef DX12_OIT_FINAL_PS
-static uint pixel_list[DX12_OIT_MAX_PIXELS];
+static uint pixel_list[OIT_MAX_PIXELS];
 
 int fillAndSortFragmentArray(uint2 coords)
 {
 	// Load fragments into a local memory array for sorting
 	uint idx = abufferPointers[coords];
 	int count = 0;
-	for (; idx != EOL && count < DX12_OIT_MAX_PIXELS; count++)
+	for (; idx != EOL && count < OIT_MAX_PIXELS; count++)
 	{
 		const Pixel p = PixelBuffer[idx];
 		// Insertion sort. The entry before the first one is not looked at.
@@ -706,18 +880,30 @@ int fillAndSortFragmentArray(uint2 coords)
 	return count;
 }
 
+#ifdef DX12_SSAA
+/* Blend the @num_frag sorted fragments back-to-front onto @finalColor:
+ * those that cover sample @sampleBit */
+float4 blendFragments(int num_frag, float4 finalColor, uint sampleBit)
+#else
 // Blend fragments back-to-front, onto the opaque polygons' picture (at texIndex of the table)
 float4 resolveAlphaBlend(uint2 coords)
+#endif
 {
+#ifndef DX12_SSAA
 	// Copy and sort fragments into a local array
 	int num_frag = fillAndSortFragmentArray(coords);
 
 	float4 finalColor = textures[texIndex].Load(int3(coords, 0));
+#endif
 	float4 secondaryBuffer = 0.0; // Secondary accumulation buffer
 
 	for (int i = 0; i < num_frag; i++)
 	{
 		const Pixel pixel = PixelBuffer[pixel_list[i]];
+#ifdef DX12_SSAA
+		if ((getCoverage(pixel) & sampleBit) == 0u)
+			continue;
+#endif
 		const PolyParam pp = TrPolyParam[getPolyNumber(pixel)];
 		bool area1 = false;
 		bool shadowed = false;
@@ -808,6 +994,37 @@ float4 resolveAlphaBlend(uint2 coords)
 	return finalColor;
 }
 
+#if defined(DX12_SSAA) && !defined(DX12_OIT_PER_SAMPLE)
+/* SSAA, into the picture: the list sorted once, put together at each
+ * sample onto that sample's opaque colour (at texIndex of the table), and
+ * the samples resolved by the shared rule (rend/tile/pvr_resolve.h): each
+ * as the unorm8 its picture holds, (sum + N/2) / N per channel */
+float4 main(float4 pos : SV_Position) : SV_Target
+{
+	uint2 coords = uint2(pos.xy);
+	int num_frag = fillAndSortFragmentArray(coords);
+	uint rb = 0u;
+	uint ga = 0u;
+	for (uint s = 0u; s < (1u << ssaaLog2); s++)
+	{
+		uint c = packUnorm8(blendFragments(num_frag, msTextures[texIndex].Load(int2(coords), s), 1u << s));
+		rb += pvr_resolve_rb(c);
+		ga += pvr_resolve_ga(c);
+	}
+	// The lists start empty for the next pass, or the next frame
+	abufferPointers[coords] = EOL;
+	return unpackUnorm8(pvr_resolve_join(rb, ga, ssaaLog2));
+}
+#elif defined(DX12_SSAA)
+/* ...and, of a render pass that is not the last, each sample put together
+ * into the samples the next one draws over. (The lists are emptied after
+ * it, for all the samples of a pixel read them: DX12OITRenderer::Resolve().) */
+float4 main(float4 pos : SV_Position, uint sampleIndex : SV_SampleIndex) : SV_Target
+{
+	uint2 coords = uint2(pos.xy);
+	return blendFragments(fillAndSortFragmentArray(coords), msTextures[texIndex].Load(int2(coords), sampleIndex), 1u << sampleIndex);
+}
+#else
 float4 main(float4 pos : SV_Position) : SV_Target
 {
 	uint2 coords = uint2(pos.xy);
@@ -818,19 +1035,31 @@ float4 main(float4 pos : SV_Position) : SV_Target
 	return color;
 }
 #endif
+#endif
 
 #ifdef DX12_OIT_MODVOL_PS
 // A translucent modifier volume: the pixels of the lists it covers marked,
 // by its mode (oitFlags, DX12_OF_MV_). Nothing is written to the target.
+#ifdef DX12_SSAA
+void main(in float4 pos : SV_POSITION, in uint coverage : SV_Coverage)
+#else
 void main(in float4 pos : SV_POSITION)
+#endif
 {
+#ifdef DX12_SSAA
+	/* Once a pixel, where the volume covers the pixel's first sample: two
+	 * of its triangles that share an edge cover each sample once between
+	 * them, but may both have a fragment at a pixel the edge crosses */
+	if ((coverage & 1u) == 0u)
+		return;
+#endif
 	const uint mode = oitFlags & 3;
 	const float depth = pos.z;
 	uint2 coords = uint2(pos.xy);
 
 	uint idx = abufferPointers[coords];
 	int list_len = 0;
-	while (idx != EOL && list_len < DX12_OIT_MAX_PIXELS)
+	while (idx != EOL && list_len < OIT_MAX_PIXELS)
 	{
 		const Pixel pixel = PixelBuffer[idx];
 		const PolyParam pp = TrPolyParam[getPolyNumber(pixel)];
@@ -864,5 +1093,31 @@ void main(in float4 pos : SV_POSITION)
 		idx = pixel.next;
 		list_len++;
 	}
+}
+#endif
+
+#ifdef DX12_SSAA_RESOLVE_PS
+/* SSAA's resolve: the picture of samples at resolveTex of the table into
+ * the picture bound, a pixel each, by the shared rule
+ * (rend/tile/pvr_resolve.h): each sample as the unorm8 its picture holds,
+ * (sum + N/2) / N per channel. Drawn with DX12_OIT_FINAL_VS. */
+cbuffer ResolveConstants : register(b1)
+{
+	uint resolveTex;
+	uint resolveLog2;
+};
+
+float4 main(float4 pos : SV_Position) : SV_Target
+{
+	const int2 coords = int2(pos.xy);
+	uint rb = 0u;
+	uint ga = 0u;
+	for (uint s = 0u; s < (1u << resolveLog2); s++)
+	{
+		uint c = packUnorm8(msTextures[resolveTex].Load(coords, s));
+		rb += pvr_resolve_rb(c);
+		ga += pvr_resolve_ga(c);
+	}
+	return unpackUnorm8(pvr_resolve_join(rb, ga, resolveLog2));
 }
 #endif

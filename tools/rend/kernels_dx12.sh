@@ -6,6 +6,8 @@
 #   core/rend/dx12/dx12_dxbc.inc  rend/dx12/shaders/dx12_raster.hlsl, each
 #                                 shader with its defines and
 #                                 rend/dx12/dx12_shader_flags.h in front
+#                                 (SSAA's, with rend/tile/pvr_lane.h and
+#                                 pvr_resolve.h before that)
 #
 #   sh tools/rend/kernels_dx12.sh update   made again from the sources
 #   sh tools/rend/kernels_dx12.sh check    whether it is the sources' still
@@ -28,6 +30,8 @@ cd "$(dirname "$0")/../.."
 INC=core/rend/dx12/dx12_dxbc.inc
 SRC=core/rend/dx12/shaders/dx12_raster.hlsl
 FLAGS=core/rend/dx12/dx12_shader_flags.h
+LANE=core/rend/tile/pvr_lane.h
+RESOLVE=core/rend/tile/pvr_resolve.h
 # number:profile:defines (the numbers are dx12_shaders.h's DX12Shader)
 SHADERS="1:vs_5_1:DX12_POLY_VS,DX12_GOURAUD=1 2:vs_5_1:DX12_POLY_VS,DX12_GOURAUD=0 3:ps_5_1:DX12_POLY_PS,DX12_GOURAUD=1 4:ps_5_1:DX12_POLY_PS,DX12_GOURAUD=0 5:vs_5_1:DX12_MODVOL_VS 6:ps_5_1:DX12_MODVOL_PS 7:vs_5_1:DX12_QUAD_VS 8:ps_5_1:DX12_QUAD_PS"
 # the per-pixel renderer's: the vertex shaders, then a pixel shader for each pass and interpolation
@@ -36,7 +40,24 @@ SHADERS="$SHADERS 11:ps_5_1:DX12_OIT_PS,DX12_GOURAUD=1,DX12_OIT_PASS=0 12:ps_5_1
 SHADERS="$SHADERS 13:ps_5_1:DX12_OIT_PS,DX12_GOURAUD=1,DX12_OIT_PASS=1 14:ps_5_1:DX12_OIT_PS,DX12_GOURAUD=0,DX12_OIT_PASS=1"
 SHADERS="$SHADERS 15:ps_5_1:DX12_OIT_PS,DX12_GOURAUD=1,DX12_OIT_PASS=2 16:ps_5_1:DX12_OIT_PS,DX12_GOURAUD=0,DX12_OIT_PASS=2"
 SHADERS="$SHADERS 17:vs_5_1:DX12_OIT_FINAL_VS 18:ps_5_1:DX12_OIT_FINAL_PS 19:ps_5_1:DX12_OIT_MODVOL_PS"
-COUNT=19
+# SSAA's (DX12_SSAA; a polygon's shaded at each sample, DX12_SAMPLE_RATE=1, or once a pixel, 2):
+# the per-triangle renderer's polygons, smooth and flat at each rate
+S="DX12_SSAA"
+SHADERS="$SHADERS 20:ps_5_1:DX12_POLY_PS,$S,DX12_GOURAUD=1,DX12_SAMPLE_RATE=1 21:ps_5_1:DX12_POLY_PS,$S,DX12_GOURAUD=0,DX12_SAMPLE_RATE=1"
+SHADERS="$SHADERS 22:ps_5_1:DX12_POLY_PS,$S,DX12_GOURAUD=1,DX12_SAMPLE_RATE=2 23:ps_5_1:DX12_POLY_PS,$S,DX12_GOURAUD=0,DX12_SAMPLE_RATE=2"
+# the per-pixel renderer's: the depth and colour passes the same way, the lists' once a pixel
+for pass in 0 1; do
+   b=$((24 + pass * 4))
+   SHADERS="$SHADERS $b:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=1,DX12_OIT_PASS=$pass,DX12_SAMPLE_RATE=1"
+   SHADERS="$SHADERS $((b + 1)):ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=0,DX12_OIT_PASS=$pass,DX12_SAMPLE_RATE=1"
+   SHADERS="$SHADERS $((b + 2)):ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=1,DX12_OIT_PASS=$pass,DX12_SAMPLE_RATE=2"
+   SHADERS="$SHADERS $((b + 3)):ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=0,DX12_OIT_PASS=$pass,DX12_SAMPLE_RATE=2"
+done
+SHADERS="$SHADERS 32:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=1,DX12_OIT_PASS=2,DX12_SAMPLE_RATE=2 33:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=0,DX12_OIT_PASS=2,DX12_SAMPLE_RATE=2"
+# the lists put together and resolved, or put together at each sample; the translucent volumes; the resolve
+SHADERS="$SHADERS 34:ps_5_1:DX12_OIT_FINAL_PS,$S,DX12_MS_TABLE 35:ps_5_1:DX12_OIT_FINAL_PS,$S,DX12_MS_TABLE,DX12_OIT_PER_SAMPLE"
+SHADERS="$SHADERS 36:ps_5_1:DX12_OIT_MODVOL_PS,$S 37:ps_5_1:DX12_SSAA_RESOLVE_PS,$S,DX12_MS_TABLE"
+COUNT=37
 CC_WIN=${CC_WIN:-x86_64-w64-mingw32-gcc}
 WINE=${WINE-wine}
 
@@ -49,6 +70,8 @@ source_of() {
    echo "$1" | tr ',' '\n' | while read d; do
       case "$d" in *=*) echo "#define ${d%%=*} ${d#*=}" ;; *) echo "#define $d" ;; esac
    done
+   # (SSAA's resolve: the shared rule, rend/tile/pvr_resolve.h, as HLSL)
+   case ",$1," in *,DX12_SSAA,*) echo "#define PVR_SHADER_HLSL"; echo "#define PVR_LANE_NONE"; cat $LANE $RESOLVE | grep -v "^#include" ;; esac
    cat $FLAGS $SRC
 }
 

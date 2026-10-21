@@ -43,10 +43,24 @@
  * 11 did by itself; the translucent polygons' parameters go to the GPU in
  * the upload ring, as a root descriptor. The rest is the per-triangle
  * renderer's: the textures, renders to textures, the screen's pictures,
- * the last picture, the batching of the draws. */
+ * the last picture, the batching of the draws.
+ *
+ * SSAA (dx12_renderer.h), as the Vulkan per-pixel renderer has it: the
+ * screen's opaque and punch-through polygons are drawn into two pictures of
+ * samples (the base renderer's SsaaColor), with the samples' depth and
+ * stencil, which the shaders read through the table of views for them
+ * (DX12Context::OitSsaaFirst); a translucent fragment of a sorted list is
+ * put in the lists once a pixel, with the samples it covers and is in
+ * front of the opaque depth at; the last render pass's lists are sorted
+ * once a pixel, blended at each sample onto that sample's opaque colour,
+ * and the samples resolved by the shared rule into the screen's picture,
+ * in one pass; one that is not the last puts each sample together into the
+ * other picture of samples, for the next to draw over. Translucent
+ * modifier volumes count where they cover a pixel's first sample. */
 #include "../dx12_renderer.h"
 #include "../dx12_quad.h"
 #include "rend/oit_size.h"
+#include "rend/ssaa_rate.h"
 #include "hw/pvr/ta.h"
 #include <algorithm>
 
@@ -72,7 +86,6 @@ public:
 			Term();
 			return false;
 		}
-		PreparePipelines();
 		countHead = 0;
 		for (u32 i = 0; i < COUNT_SLOTS; i++)
 		{
@@ -102,12 +115,17 @@ public:
 			DropBuffer(counts);
 			bufferSize = room = pixelBufferRoom = 0;
 			depthViewed = nullptr;
+			clearHeap.Term();
 		}
 		DX12Renderer::Term();
 	}
 
 protected:
 	bool BindsScreen() const override { return false; }
+	// SSAA: two pictures of samples, and the lists first
+	u32 SsaaColorImages() const override { return 2; }
+	u32 SsaaFixedKib(u32 width, u32 height) const override { return (u32)std::min<u64>(PlannedSize(width, height) >> 10, 0xffffffffu); }
+	void PreparePipelines() override;
 	void DrawFrame() override;
 	D3D12_RECT CutScissor(const D3D12_RECT& rect) const override
 	{
@@ -139,7 +157,6 @@ private:
 	void DropBuffer(Buffer& buffer);
 	bool MakePictures(u32 width, u32 height);
 	bool UploadTrPolyParams();
-	void PreparePipelines();
 	/* The counter back to 0: the lists are empty, the buffer filled from its start */
 	void ResetCount();
 	/* The counter, as the draws before left it, copied into @word of @slot
@@ -162,7 +179,7 @@ private:
 	void DrawPoly(u32 listType, bool autosort, u32 pass, const PolyParam& poly, u32 first, u32 count);
 	void DrawList(u32 listType, bool autosort, u32 pass, const List<PolyParam>& polys, u32 first, u32 last);
 	void DrawModifierVolumes(bool translucent, int first, int count, const ModifierVolumeParam *params);
-	void Resolve(u32 targetRtv, u32 opaqueSrv);
+	void Resolve(u32 targetRtv, u32 opaqueSrv, bool intoSamples);
 	void ClearStencil()
 	{
 		DepthStates(D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
@@ -189,6 +206,9 @@ private:
 	u32 picturesHeight = 0;
 	// the depth buffer the table's depth and stencil views are of
 	ID3D12Resource *depthViewed = nullptr;
+	/* A view of the lists' heads where the CPU has it, for them to be
+	 * cleared with (SSAA, a render pass that is not the last: Resolve()) */
+	DX12DescriptorHeap clearHeap;
 	/* The translucent polygons' parameters, in the ring */
 	std::vector<u32> trPolyParamsData;
 	/* A frame drawn in horizontal bands (DrawFrame()): the band being
@@ -276,6 +296,7 @@ bool DX12OITRenderer::MakeBuffers(u64 wanted)
 	uav.Buffer.NumElements = room;
 	uav.Buffer.StructureByteStride = OIT_FRAGMENT_BYTES;
 	device->CreateUnorderedAccessView(pixels.resource, nullptr, &uav, context->Srv().Cpu(DX12Context::OitFirst + 0));
+	device->CreateUnorderedAccessView(pixels.resource, nullptr, &uav, context->Srv().Cpu(DX12Context::OitSsaaFirst + 0));
 
 	// the counter: a word, counted up by the shaders
 	if (!MakeBuffer(counter, 256, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
@@ -289,6 +310,7 @@ bool DX12OITRenderer::MakeBuffers(u64 wanted)
 	counterUav.Buffer.NumElements = 4;
 	counterUav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
 	device->CreateUnorderedAccessView(counter.resource, nullptr, &counterUav, context->Srv().Cpu(DX12Context::OitFirst + 2));
+	device->CreateUnorderedAccessView(counter.resource, nullptr, &counterUav, context->Srv().Cpu(DX12Context::OitSsaaFirst + 2));
 
 	// the counts read back, mapped once
 	if (!counts.resource)
@@ -369,11 +391,16 @@ bool DX12OITRenderer::MakePictures(u32 width, u32 height)
 		uav.Format = DXGI_FORMAT_R32_UINT;
 		uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 		device->CreateUnorderedAccessView(pointers.resource, nullptr, &uav, context->Srv().Cpu(DX12Context::OitFirst + 1));
+		device->CreateUnorderedAccessView(pointers.resource, nullptr, &uav, context->Srv().Cpu(DX12Context::OitSsaaFirst + 1));
+		if (clearHeap.Heap() != nullptr || clearHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, false))
+			device->CreateUnorderedAccessView(pointers.resource, nullptr, &uav, clearHeap.Cpu(0));
 		pointersWidth = width;
 		pointersHeight = height;
 	}
 
-	if (!pictures[0].resource || width > picturesWidth || height > picturesHeight)
+	/* (with SSAA the screen is drawn into the pictures of samples: these
+	 * are for the renders to textures) */
+	if (!SsaaActive() && (!pictures[0].resource || width > picturesWidth || height > picturesHeight))
 	{
 		width = std::max(width, picturesWidth);
 		height = std::max(height, picturesHeight);
@@ -402,10 +429,10 @@ bool DX12OITRenderer::MakePictures(u32 width, u32 height)
 		picturesWidth = width;
 		picturesHeight = height;
 	}
-	if (!EnsureDepth(width, height))
+	if (!EnsureDepth(SsaaActive() ? targetWidth : width, SsaaActive() ? targetHeight : height))
 		return false;
-	// the shaders' views of the depth buffer's planes, when it is another
-	if (depthViewed != depth.resource.get())
+	// the shaders' views of the depth buffer's planes, when it is another (SSAA's have their own)
+	if (!SsaaActive() && depthViewed != depth.resource.get())
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC view{};
 		view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -756,6 +783,10 @@ void DX12OITRenderer::DrawPoly(u32 listType, bool autosort, u32 pass, const Poly
 		key.dst = poly.tsp.DstInstr;
 	}
 	key.cull = poly.isp.CullMode == 3 ? 2 : poly.isp.CullMode == 2 ? 1 : 0;
+	// SSAA: shaded at each sample, or once a pixel - into the lists always
+	key.samples = context->TargetSamples();
+	if (key.samples != 0)
+		key.rate = pass == DX12_PASS_OIT || SsaaSingleRate(poly) ? DX12_RATE_PIXEL : DX12_RATE_SAMPLE;
 	state.pso = context->Pipelines().Get(key);
 	state.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 
@@ -819,6 +850,8 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			key.kind = DX12_PSO_OIT_MODVOL;
 			key.depthFunc = 7;
 			key.cull = cull;
+			key.samples = context->TargetSamples();
+			key.rate = key.samples != 0 ? DX12_RATE_PIXEL : DX12_RATE_NONE;
 			pso = context->Pipelines().Get(key);
 			constants[13] = !param.isp.VolumeLast && mv_mode > 0 ? DX12_OF_MV_OR : DX12_OF_MV_XOR;
 			if (pso != nullptr)
@@ -876,25 +909,43 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 
 /* The lists put together over the opaque polygons' picture (at @opaqueSrv
  * of the table), into @targetRtv: the whole picture, not the part the game
- * clips its drawing to - what is outside that has to be written too */
-void DX12OITRenderer::Resolve(u32 target, u32 opaqueSrv)
+ * clips its drawing to - what is outside that has to be written too. With
+ * SSAA, from the samples: resolved into @target, of one sample, when
+ * @intoSamples is not set; else into the samples of @target, and the lists
+ * emptied after. */
+void DX12OITRenderer::Resolve(u32 target, u32 opaqueSrv, bool intoSamples)
 {
 	FlushBatch();
-	context->SetTargets(target, ~0u);
 	DX12PsoKey key{};
 	key.kind = DX12_PSO_OIT_FINAL;
 	key.writeColor = true;
 	key.depthFunc = 7;
+	if (SsaaActive())
+	{
+		key.rate = intoSamples ? DX12_RATE_SAMPLE : DX12_RATE_PIXEL;
+		key.samples = intoSamples ? ssaaLog2 : 0;
+	}
+	context->SetTargets(target, ~0u, key.samples);
 	ID3D12PipelineState *pso = context->Pipelines().Get(key);
 	if (pso == nullptr)
 		return;
 	context->SetPipeline(pso);
-	context->SetScissor(CutScissor(D3D12_RECT{ 0, 0, (LONG)targetWidth, (LONG)targetHeight }));
+	const D3D12_RECT area = CutScissor(D3D12_RECT{ 0, 0, (LONG)targetWidth, (LONG)targetHeight });
+	context->SetScissor(area);
 	context->SetTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	u32 constants[DX12Context::PolyConstantCount] = {};
 	constants[8] = opaqueSrv;
 	context->SetRootConstants(constants, DX12Context::PolyConstantCount);
 	context->Cmd()->DrawInstanced(4, 1, 0, 0);
+	if (key.rate == DX12_RATE_SAMPLE && clearHeap.Heap() != nullptr && area.right > area.left && area.bottom > area.top)
+	{
+		/* (the samples of a pixel all read its list: it is emptied once they
+		 * are done, for the next render pass) */
+		ListsBarrier();
+		const UINT eol[4] = { ~0u, ~0u, ~0u, ~0u };
+		context->Cmd()->ClearUnorderedAccessViewUint(context->Srv().Gpu(DX12Context::OitSsaaFirst + 1), clearHeap.Cpu(0),
+				pointers.resource, eol, 1, &area);
+	}
 }
 
 void DX12OITRenderer::DrawFrame()
@@ -903,6 +954,12 @@ void DX12OITRenderer::DrawFrame()
 		return;
 	context->SetViewport((float)targetWidth, (float)targetHeight);
 	ID3D12GraphicsCommandList *cmd = context->Cmd();
+	/* SSAA: the screen drawn into the pictures of samples, with the views of
+	 * their depth and stencil in the table the shaders read */
+	const bool ssaa = SsaaActive();
+	DX12Image *pictures = ssaa ? ssaaColor : this->pictures;
+	const u32 samples = ssaa ? ssaaLog2 : 0;
+	context->BindOitTable(ssaa);
 
 	/* A framebuffer the game has not drawn to lately starts as the border
 	 * colour, which is what the OpenGL renderers clear it to (never a
@@ -915,8 +972,8 @@ void DX12OITRenderer::DrawFrame()
 		clear[1] = VO_BORDER_COL.Green / 255.f;
 		clear[2] = VO_BORDER_COL.Blue / 255.f;
 	}
-	for (DX12Image& picture : pictures)
-		context->Transition(picture, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	for (int i = 0; i < 2; i++)
+		context->Transition(pictures[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
 	cmd->ClearRenderTargetView(context->Rtv().Cpu(pictures[0].rtv), clear, 0, nullptr);
 	if (pvrrc.isRTT)
 		// (what is outside the pixel clip, as the per-triangle renderer leaves it)
@@ -967,14 +1024,14 @@ void DX12OITRenderer::DrawFrame()
 		ResetCount();
 		DepthStates(D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 		context->Transition(pictures[cur], D3D12_RESOURCE_STATE_RENDER_TARGET);
-		context->SetTargets(pictures[cur].rtv, depth.rtv);
+		context->SetTargets(pictures[cur].rtv, depth.rtv, samples);
 		DrawList(ListType_Opaque, false, DX12_PASS_DEPTH, pvrrc.global_param_op, previous_pass.op_count, current_pass.op_count);
 		DrawList(ListType_Punch_Through, false, DX12_PASS_DEPTH, pvrrc.global_param_pt, previous_pass.pt_count, current_pass.pt_count);
 		DrawModifierVolumes(false, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, pvrrc.global_param_mvo.head());
 
 		// Colour, the stencil read by the shaders
 		DepthStates(D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-		context->SetTargets(pictures[cur].rtv, dsvReadStencil);
+		context->SetTargets(pictures[cur].rtv, dsvReadStencil, samples);
 
 		/* A render that covers only part of the screen leaves the rest as
 		 * it was: the last picture goes in first, under everything */
@@ -1002,7 +1059,7 @@ void DX12OITRenderer::DrawFrame()
 		{
 			// into the lists, tested against the depth by the shaders as well
 			DepthStates(D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_READ);
-			context->SetTargets(pictures[cur].rtv, dsvReadOnly);
+			context->SetTargets(pictures[cur].rtv, dsvReadOnly, samples);
 			DrawList(ListType_Translucent, true, DX12_PASS_OIT, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
 			ListsBarrier();
 			// how many pixels this band's pass asked for, copied out
@@ -1013,14 +1070,16 @@ void DX12OITRenderer::DrawFrame()
 
 		// The translucent modifier volumes, and the lists put together
 		const u32 target = finalPass ? targetRtv : pictures[cur ^ 1].rtv;
-		context->SetTargets(target, ~0u);
+		/* (nothing is written to it; with SSAA the volumes are drawn with the
+		 * samples, for where they cover a pixel's first sample) */
+		context->SetTargets(ssaa ? pictures[cur].rtv : target, ~0u, samples);
 		if (current_pass.mv_op_tr_shared)
 			DrawModifierVolumes(true, previous_pass.mvo_count, current_pass.mvo_count - previous_pass.mvo_count, pvrrc.global_param_mvo.head());
 		else
 			DrawModifierVolumes(true, previous_pass.mvo_tr_count, current_pass.mvo_tr_count - previous_pass.mvo_tr_count, pvrrc.global_param_mvo_tr.head());
 		ListsBarrier();
 		context->Transition(pictures[cur], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-		Resolve(target, pictures[cur].srv);
+		Resolve(target, pictures[cur].srv, !finalPass);
 		ListsBarrier();
 
 		if (!finalPass)
@@ -1028,7 +1087,7 @@ void DX12OITRenderer::DrawFrame()
 			// The translucent polygons' depth, for the passes after this one
 			DepthStates(D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 			context->Transition(pictures[cur], D3D12_RESOURCE_STATE_RENDER_TARGET);
-			context->SetTargets(pictures[cur].rtv, depth.rtv);
+			context->SetTargets(pictures[cur].rtv, depth.rtv, samples);
 			DrawList(ListType_Translucent, current_pass.autosort, DX12_PASS_DEPTH, pvrrc.global_param_tr, previous_pass.tr_count, current_pass.tr_count);
 			// the next pass draws on what this one put together
 			cur ^= 1;
@@ -1045,8 +1104,8 @@ void DX12OITRenderer::DrawFrame()
 	countBands[countHead] = bandCount;
 	countRtt[countHead] = pvrrc.isRTT;
 	countHead = (countHead + 1) % COUNT_SLOTS;
-	// (the target is left bound: the overlay goes onto it, and the end of the render takes it)
-	context->SetTargets(targetRtv, depth.rtv);
+	// (the target is left bound: the overlay goes onto it, and the end of the render takes it; with SSAA, its depth is of samples)
+	context->SetTargets(targetRtv, ssaa ? ~0u : depth.rtv);
 }
 
 Renderer* rend_OITD3D12()

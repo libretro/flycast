@@ -171,11 +171,15 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 	desc.pRootSignature = root;
 	DX12Shader vs, ps;
+	/* SSAA's shaders: by rate, then smooth or flat (dx12_shaders.h) */
+	const int rateShader = (key.gouraud ? 0 : 1) + (key.rate == DX12_RATE_PIXEL ? 2 : 0);
 	switch (key.kind)
 	{
 	case DX12_PSO_POLY:
 		vs = key.gouraud ? DX12Shader::PolyVS : DX12Shader::PolyFlatVS;
 		ps = key.gouraud ? DX12Shader::PolyPS : DX12Shader::PolyFlatPS;
+		if (key.rate != DX12_RATE_NONE)
+			ps = (DX12Shader)((int)DX12Shader::SsaaPolyPS + rateShader);
 		desc.InputLayout = { MainLayout, (UINT)ARRAY_SIZE(MainLayout) };
 		break;
 	case DX12_PSO_MODVOL:
@@ -186,16 +190,25 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 	case DX12_PSO_OIT:
 		vs = key.gouraud ? DX12Shader::OITVS : DX12Shader::OITFlatVS;
 		ps = (DX12Shader)((int)(key.gouraud ? DX12Shader::OITDepthPS : DX12Shader::OITDepthFlatPS) + 2 * (int)std::min<u32>(key.pass, DX12_PASS_OIT));
+		if (key.rate != DX12_RATE_NONE)
+			// (the lists' are once a pixel only)
+			ps = key.pass >= DX12_PASS_OIT ? (DX12Shader)((int)DX12Shader::SsaaOITListPS + (key.gouraud ? 0 : 1))
+					: (DX12Shader)((int)DX12Shader::SsaaOITDepthPS + 4 * (int)key.pass + rateShader);
 		desc.InputLayout = { OITLayout, (UINT)ARRAY_SIZE(OITLayout) };
 		break;
 	case DX12_PSO_OIT_FINAL:
 		vs = DX12Shader::OITFinalVS;
-		ps = DX12Shader::OITFinalPS;
+		ps = key.rate == DX12_RATE_PIXEL ? DX12Shader::SsaaOITFinalPS : key.rate == DX12_RATE_SAMPLE ? DX12Shader::SsaaOITFinalSamplePS
+				: DX12Shader::OITFinalPS;
 		break;
 	case DX12_PSO_OIT_MODVOL:
 		vs = DX12Shader::ModVolVS;
-		ps = DX12Shader::OITModVolPS;
+		ps = key.rate != DX12_RATE_NONE ? DX12Shader::SsaaOITModVolPS : DX12Shader::OITModVolPS;
 		desc.InputLayout = { PositionLayout, (UINT)ARRAY_SIZE(PositionLayout) };
+		break;
+	case DX12_PSO_SSAA_RESOLVE:
+		vs = DX12Shader::OITFinalVS;
+		ps = DX12Shader::SsaaResolvePS;
 		break;
 	default:
 		vs = DX12Shader::QuadVS;
@@ -254,7 +267,9 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 	desc.NumRenderTargets = 1;
 	desc.RTVFormats[0] = DX12FrameFormat;
 	desc.DSVFormat = key.depthBound ? DX12DepthFormat : DXGI_FORMAT_UNKNOWN;
-	desc.SampleDesc.Count = 1;
+	desc.SampleDesc.Count = 1u << key.samples;
+	// (SSAA's samples where rend/ssaa_pattern.h has them)
+	desc.SampleDesc.Quality = key.samples != 0 ? DX12StandardPattern : 0;
 
 	wchar_t name[24];
 	swprintf(name, 24, L"fc%016llx", (unsigned long long)packed);
@@ -321,6 +336,7 @@ bool DX12Pipelines::Init(ID3D12Device *device, ID3D12RootSignature *root)
 	used = 0;
 	statMade = statMadeInFrame = statFromLibrary = 0;
 	storedSinceLoad = 0;
+	fileKeys = 0;
 	keys.clear();
 	keys.reserve(MaxKeys);
 	if (FAILED(device->QueryInterface(__uuidof(ID3D12Device1), (void **)&device1)))
@@ -455,14 +471,84 @@ void DX12Pipelines::MakeAtStart()
 			k.special = s;
 			Add(k.Pack());
 		}
-	// what earlier runs made
+	// what earlier runs made (SSAA's, when it is taken up: MakeForSamples())
+	fileKeys = fromFile;
 	std::vector<u64> kept(keys.begin(), keys.begin() + fromFile);
 	for (u64 key : kept)
-		if (DX12PsoKey::Valid(key))
+		if (DX12PsoKey::Valid(key) && DX12PsoKey::Unpack(key).samples == 0)
 			Add(key);
 	started = true;
 	NOTICE_LOG(RENDERER, "DX12: %u pipelines made at the start (%u from the library, %u keys from earlier runs)",
 			statMade, statFromLibrary, (u32)fromFile);
+}
+
+void DX12Pipelines::MakeForSamples(u32 log2n)
+{
+	if (log2n == 0 || log2n > 3 || slots == nullptr)
+		return;
+	// (what is made already is found in the table: only what is not gets made)
+	started = false;
+	const u32 before = statMade;
+	// (the table's keys of one sample now: what is made below goes into it too)
+	std::vector<u64> single;
+	single.reserve(used);
+	for (u32 i = 0; i < SLOTS; i++)
+		if (slots[i].key != 0 && DX12PsoKey::Unpack(slots[i].key).samples == 0)
+			single.push_back(slots[i].key);
+	std::sort(single.begin(), single.end());
+	for (u64 packed : single)
+	{
+		DX12PsoKey k = DX12PsoKey::Unpack(packed);
+		k.samples = log2n;
+		switch (k.kind)
+		{
+		case DX12_PSO_POLY:
+			k.rate = DX12_RATE_SAMPLE;
+			Add(k.Pack());
+			k.rate = DX12_RATE_PIXEL;
+			Add(k.Pack());
+			break;
+		case DX12_PSO_OIT:
+			if (k.pass != DX12_PASS_OIT)
+			{
+				k.rate = DX12_RATE_SAMPLE;
+				Add(k.Pack());
+			}
+			k.rate = DX12_RATE_PIXEL;
+			Add(k.Pack());
+			break;
+		case DX12_PSO_OIT_FINAL:
+			// into the next render pass's samples; resolved into the picture, of one sample
+			k.rate = DX12_RATE_SAMPLE;
+			Add(k.Pack());
+			k.samples = 0;
+			k.rate = DX12_RATE_PIXEL;
+			Add(k.Pack());
+			break;
+		case DX12_PSO_OIT_MODVOL:
+			k.rate = DX12_RATE_PIXEL;
+			Add(k.Pack());
+			break;
+		case DX12_PSO_SSAA_RESOLVE:
+			break;
+		default:
+			// the volumes, the quads: shaded once a pixel, written to every sample covered
+			Add(k.Pack());
+			break;
+		}
+	}
+	// the resolve, into the screen's picture
+	DX12PsoKey r{};
+	r.kind = DX12_PSO_SSAA_RESOLVE;
+	r.writeColor = true;
+	r.depthFunc = 7;
+	Add(r.Pack());
+	// what earlier runs made with this many
+	for (size_t i = 0; i < fileKeys && i < keys.size(); i++)
+		if (DX12PsoKey::Valid(keys[i]) && DX12PsoKey::Unpack(keys[i]).samples == log2n)
+			Add(keys[i]);
+	started = true;
+	NOTICE_LOG(RENDERER, "DX12: %u pipelines made for SSAA %u (%u from library)", statMade - before, 1u << log2n, statFromLibrary);
 }
 
 void DX12Pipelines::LoadFile()

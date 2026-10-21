@@ -41,6 +41,7 @@ struct DX12Quad
 		key.writeColor = true;
 		key.special = special;
 		key.depthBound = context->HasDepthBound();
+		key.samples = context->TargetSamples();
 		ID3D12PipelineState *pso = context->Pipelines().Get(key);
 		if (pso == nullptr)
 			return;

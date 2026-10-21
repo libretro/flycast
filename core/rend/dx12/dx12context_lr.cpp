@@ -16,6 +16,7 @@
 */
 #include "dx12context_lr.h"
 #include "rend/dxgi_budget.h"
+#include "rend/ssaa_pattern.h"
 #include <algorithm>
 
 DX12Context DX12Context::instance;
@@ -122,6 +123,33 @@ bool DX12Context::CanWriteUAV(DXGI_FORMAT format) const
 	return device && SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support)))
 			&& (support.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) != 0
 			&& (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0;
+}
+
+u32 DX12Context::SsaaSamples(u32 requested, u32 perSampleKib, u32 fixedKib, const char *what) const
+{
+	if (requested <= 1 || !device)
+		return 1;
+	// the counts the frame's colour and depth can both be drawn with, in the standard pattern
+	u32 counts = 1;
+	for (u32 n = 2; n <= SSAA_MAX_SAMPLES; n <<= 1)
+	{
+		bool ok = true;
+		for (DXGI_FORMAT format : { DX12FrameFormat, DX12DepthFormat })
+		{
+			D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels{};
+			levels.Format = format;
+			levels.SampleCount = n;
+			ok = ok && SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &levels, sizeof(levels)))
+					&& levels.NumQualityLevels > 0;
+		}
+		if (ok)
+			counts |= n;
+	}
+	const u32 deviceSamples = ssaa_device_samples(requested, counts);
+	const u32 samples = ssaa_clamp_samples(deviceSamples, vramBudget.available_kib(), fixedKib, perSampleKib);
+	NOTICE_LOG(RENDERER, "%s: SSAA %u samples a pixel (asked %u, the device can draw %u; %u MB a sample, %u MB of the budget left)",
+			what, samples, requested, deviceSamples, perSampleKib >> 10, vramBudget.available_kib() >> 10);
+	return samples;
 }
 
 bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
@@ -250,14 +278,15 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 	releasedFirst = releasedCount = 0;
 
 	// the heaps
-	ok = ok && srvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, OitFirst + DX12_OIT_TABLE_SIZE, true, DX12_SRV_FIRST_FREE);
+	ok = ok && srvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, OitSsaaFirst + DX12_OIT_TABLE_SIZE, true, DX12_SRV_FIRST_FREE);
 	if (ok)
 		// (the table's own; the UAVs' are handed out by DX12TexDecoder from UavFirst on)
 		srvHeap.Range(DX12_SRV_FIRST_FREE, UavFirst);
 	ok = ok && samplerHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, DX12_SAMPLER_TABLE_SIZE, true, DX12_SAMPLER_TABLE_SIZE);
 	ok = ok && rtvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1024, false, TRANSIENT_RTVS);
 	transientRtv = 0;
-	ok = ok && dsvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 4, false);
+	// (the depth's three views, and SSAA's depth's)
+	ok = ok && dsvHeap.Init(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 8, false);
 	if (ok)
 	{
 		// every place in the table something: a view of nothing
@@ -266,7 +295,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 		uav.Format = DXGI_FORMAT_R8G8B8A8_UINT;
 		uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-		for (u32 i = UavFirst; i < OitFirst + DX12_OIT_TABLE_SIZE; i++)
+		for (u32 i = UavFirst; i < OitSsaaFirst + DX12_OIT_TABLE_SIZE; i++)
 			device->CreateUnorderedAccessView(nullptr, nullptr, &uav, srvHeap.Cpu(i));
 	}
 	ok = ok && MakeRootSignatures();
@@ -505,7 +534,8 @@ void DX12Context::BindRaster()
 	cmd->SetGraphicsRootSignature(rasterRoot);
 	cmd->SetGraphicsRootDescriptorTable(3, srvHeap.Gpu(0));
 	cmd->SetGraphicsRootDescriptorTable(4, samplerHeap.Gpu(0));
-	cmd->SetGraphicsRootDescriptorTable(5, srvHeap.Gpu(OitFirst));
+	cmd->SetGraphicsRootDescriptorTable(5, srvHeap.Gpu(oitTableSsaa ? OitSsaaFirst : OitFirst));
+	bound.oitSsaa = oitTableSsaa;
 	bound.rootConstantsSet = false;
 	bound.pso = nullptr;
 }
@@ -723,13 +753,16 @@ void DX12Context::Transition(DX12Image& image, D3D12_RESOURCE_STATES state)
 	Transition(image.resource, image.state, state);
 }
 
-void DX12Context::SetTargets(u32 rtv, u32 dsv)
+void DX12Context::SetTargets(u32 rtv, u32 dsv, u32 samples)
 {
+	// (a list started here forgets what was bound: before the samples are noted)
+	ID3D12GraphicsCommandList *cmd = Cmd();
+	bound.samples = samples;
 	if (rtv == bound.rtv && dsv == bound.dsv && rtv >= TRANSIENT_RTVS)
 		return;
 	const D3D12_CPU_DESCRIPTOR_HANDLE r = rtvHeap.Cpu(rtv);
 	const D3D12_CPU_DESCRIPTOR_HANDLE d = dsvHeap.Cpu(dsv);
-	Cmd()->OMSetRenderTargets(rtv != ~0u ? 1 : 0, rtv != ~0u ? &r : nullptr, FALSE, dsv != ~0u ? &d : nullptr);
+	cmd->OMSetRenderTargets(rtv != ~0u ? 1 : 0, rtv != ~0u ? &r : nullptr, FALSE, dsv != ~0u ? &d : nullptr);
 	bound.rtv = rtv;
 	bound.dsv = dsv;
 }

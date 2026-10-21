@@ -139,7 +139,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       CORE_OPTION_NAME "_ssaa",
       "SSAA",
       NULL,
-      "Supersampling: each pixel of the Internal Resolution drawn from 2, 4 or 8 samples, its edges smoothed. Sprites and the HUD stay as they are. Vulkan only; fewer samples when the device or its video memory has not room for these. 8x is best with the Compute rendering method; with the rasterizer it is costly at high Internal Resolutions.",
+      "Supersampling: each pixel of the Internal Resolution drawn from 2, 4 or 8 samples, its edges smoothed. Sprites and the HUD stay as they are. Vulkan and Direct3D 12 only; fewer samples when the device or its video memory has not room for these. 8x is best with the Compute rendering method; with the rasterizer it is costly at high Internal Resolutions.",
       NULL,
       "video",
       {

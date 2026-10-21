@@ -40,6 +40,13 @@
  * again. A library the driver no longer takes (a new driver) is started
  * again empty; the keys stay.
  *
+ * SSAA (dx12_renderer.h): a pipeline also has the samples a pixel of what
+ * it draws into, and for a polygon whether it is shaded at each sample or
+ * once a pixel. When SSAA is taken up (the renderer starts, or changes
+ * size), every pipeline of one sample there is gets made for the count
+ * taken, at both rates (MakeForSamples()): a frame draws into the screen's
+ * samples with what a frame without SSAA draws with, so it finds them made.
+ *
  * The table is looked up by key for every draw: open addressing, made with
  * the context; nothing is allocated to find or add a pipeline. Only the
  * thread that renders touches it. */
@@ -90,8 +97,13 @@ enum class DX12Stencil
 enum { DX12_BLEND_KEY = 0, DX12_BLEND_ALPHA = 1, DX12_BLEND_FACTOR = 2 };
 /* Which shaders: the per-triangle renderer's polygons, the modifier
  * volumes, the quads; the per-pixel renderer's polygons (in a pass, DX12_PASS_),
- * its lists put together, its translucent modifier volumes */
-enum { DX12_PSO_POLY = 0, DX12_PSO_MODVOL = 1, DX12_PSO_QUAD = 2, DX12_PSO_OIT = 3, DX12_PSO_OIT_FINAL = 4, DX12_PSO_OIT_MODVOL = 5 };
+ * its lists put together, its translucent modifier volumes; SSAA's resolve */
+enum { DX12_PSO_POLY = 0, DX12_PSO_MODVOL = 1, DX12_PSO_QUAD = 2, DX12_PSO_OIT = 3, DX12_PSO_OIT_FINAL = 4, DX12_PSO_OIT_MODVOL = 5,
+	DX12_PSO_SSAA_RESOLVE = 6 };
+/* SSAA's rates (DX12PsoKey::rate): none; a polygon shaded at each sample;
+ * once a pixel. (The lists put together: at each sample into samples, or
+ * resolved into a picture of one; a translucent volume: with SSAA.) */
+enum { DX12_RATE_NONE = 0, DX12_RATE_SAMPLE = 1, DX12_RATE_PIXEL = 2 };
 
 struct DX12PsoKey
 {
@@ -108,6 +120,8 @@ struct DX12PsoKey
 	u32 special;		// DX12_BLEND_
 	bool depthBound;	// a depth and stencil is bound (its format is in the pipeline)
 	u32 pass;			// DX12_PASS_, of a DX12_PSO_OIT pipeline
+	u32 samples;		// SSAA: log2 of the samples a pixel of what it draws into (0: one)
+	u32 rate;			// SSAA: DX12_RATE_
 
 	u64 Pack() const
 	{
@@ -116,7 +130,9 @@ struct DX12PsoKey
 				| ((u64)((u32)stencil & 15) << 17) | ((u64)(cull & 3) << 21) | ((u64)(special & 3) << 23)
 				| ((u64)depthBound << 25) | ((u64)(pass & 3) << 26)
 				// (never 0: an empty slot's)
-				| (1ull << 28);
+				| (1ull << 28)
+				// (after it: a key without SSAA is the one it was before SSAA)
+				| ((u64)(samples & 3) << 29) | ((u64)(rate & 3) << 31);
 	}
 	static DX12PsoKey Unpack(u64 v)
 	{
@@ -135,14 +151,16 @@ struct DX12PsoKey
 		k.special = (v >> 23) & 3;
 		k.depthBound = (v >> 25) & 1;
 		k.pass = (v >> 26) & 3;
+		k.samples = (v >> 29) & 3;
+		k.rate = (v >> 31) & 3;
 		return k;
 	}
 	/* Whether a key read from a file is one this core makes */
 	static bool Valid(u64 v)
 	{
 		const DX12PsoKey k = Unpack(v);
-		return (v >> 29) == 0 && (v >> 28) == 1 && k.kind <= DX12_PSO_OIT_MODVOL && (u32)k.stencil < (u32)DX12Stencil::Count
-				&& k.cull <= 2 && k.special <= DX12_BLEND_FACTOR && k.pass <= DX12_PASS_OIT;
+		return (v >> 33) == 0 && ((v >> 28) & 1) == 1 && k.kind <= DX12_PSO_SSAA_RESOLVE && (u32)k.stencil < (u32)DX12Stencil::Count
+				&& k.cull <= 2 && k.special <= DX12_BLEND_FACTOR && k.pass <= DX12_PASS_OIT && k.rate <= DX12_RATE_PIXEL;
 	}
 };
 
@@ -157,6 +175,10 @@ public:
 	void MakeAtStart();
 	/* One more a renderer wants made before a game draws */
 	void Prepare(const DX12PsoKey& key) { Add(key.Pack()); }
+	/* SSAA of 2^@log2n samples taken up: every pipeline of one sample made
+	 * for that many, at each rate it can be drawn at, and the keys of that
+	 * many kept from earlier runs (those made already are found made) */
+	void MakeForSamples(u32 log2n);
 
 	/* The pipeline of @key: the table's, or made now (and counted) */
 	ID3D12PipelineState *Get(const DX12PsoKey& key)
@@ -180,7 +202,7 @@ public:
 	u32 statFromLibrary = 0;	// handed back by the library, not compiled
 
 private:
-	enum { SLOTS = 4096 };
+	enum { SLOTS = 8192 };	// (SSAA makes each pipeline of a polygon again at two rates)
 	struct Slot
 	{
 		u64 key;
@@ -201,6 +223,7 @@ private:
 	ID3D12PipelineLibrary *library = nullptr;
 	std::vector<u8> libraryData;		// what the library was made from: it reads it for as long as it lives
 	std::vector<u64> keys;				// the file's, then those made
+	size_t fileKeys = 0;				// how many of them are the file's
 	u32 storedSinceLoad = 0;
 	bool started = false;
 };

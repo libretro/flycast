@@ -21,6 +21,8 @@
 #include "hw/pvr/pvr_mem.h"
 #include "rend/rtt_watch.h"
 #include "rend/last_picture.h"
+#include "rend/ssaa_pattern.h"
+#include "rend/ssaa_rate.h"
 #include <algorithm>
 #include <cmath>
 
@@ -58,6 +60,61 @@ static bool makeImage(DX12Image& image, u32 width, u32 height, DXGI_FORMAT forma
 		}
 		context->GetDevice()->CreateRenderTargetView(image.resource, nullptr, context->Rtv().Cpu(image.rtv));
 	}
+	return true;
+}
+
+/* A picture of @samples samples a pixel in the standard pattern (SSAA's),
+ * committed: of the frame's colour, with a place in the bindless table (a
+ * view of its samples) and a render target view; or of its depth and
+ * stencil, with no views (DX12Renderer::SetupSsaa() makes those) */
+static bool makeSamples(DX12Image& image, u32 width, u32 height, u32 samples, bool depthStencil)
+{
+	DX12Context *context = DX12Context::Instance();
+	ID3D12Device *device = context->GetDevice();
+	image = DX12Image();
+	image.width = width;
+	image.height = height;
+	image.state = depthStencil ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+	D3D12_HEAP_PROPERTIES heap{};
+	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = width;
+	desc.Height = height;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = depthStencil ? DX12DepthResourceFormat : DX12FrameFormat;
+	desc.SampleDesc.Count = samples;
+	desc.SampleDesc.Quality = DX12StandardPattern;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	desc.Flags = depthStencil ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	D3D12_CLEAR_VALUE clear{};
+	if (depthStencil)
+		clear.Format = DX12DepthFormat;
+	else
+	{
+		clear.Format = DX12FrameFormat;
+		clear.Color[3] = 1.f;
+	}
+	if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, image.state, &clear,
+			__uuidof(ID3D12Resource), (void **)image.resource.put())))
+	{
+		WARN_LOG(RENDERER, "DX12: SSAA picture creation failed (%d x %d, %d samples)", width, height, samples);
+		image = DX12Image();
+		return false;
+	}
+	if (depthStencil)
+		return true;
+	image.srv = context->Srv().Alloc();
+	image.rtv = context->Rtv().Alloc();
+	if (image.srv == ~0u || image.rtv == ~0u)
+		return false;
+	D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+	view.Format = DX12FrameFormat;
+	view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+	view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	device->CreateShaderResourceView(image.resource, &view, context->Srv().Cpu(image.srv));
+	device->CreateRenderTargetView(image.resource, nullptr, context->Rtv().Cpu(image.rtv));
 	return true;
 }
 
@@ -153,6 +210,9 @@ bool DX12Renderer::Init()
 	texPool.Init(context->GetVramBudget(), &texDecoder);
 	DX12Texture::SetDecoder(texDecoder.Ready() ? &texDecoder : nullptr);
 	DX12Texture::SetPool(&texPool);
+	// the pipelines, and SSAA's pictures and pipelines made from them
+	PreparePipelines();
+	SetupSsaa(screen_width, screen_height);
 	return true;
 }
 
@@ -161,6 +221,8 @@ void DX12Renderer::Term()
 	if (context == nullptr)
 		return;
 	FlushBatch();
+	DropSsaa();
+	ta_set_flat_strips(false);
 	context->SetFrame(nullptr);
 	context->SetBeforeSubmit(nullptr, nullptr);
 	dx12_rtt_term();
@@ -199,9 +261,116 @@ void DX12Renderer::Term()
 
 /* The size rendered at has changed, and the context is the same: the
  * screen's pictures are made again at the new size when the next frame is
- * drawn, and the last picture goes with them - EnsureScreen() */
+ * drawn, and the last picture goes with them - EnsureScreen(). SSAA's are
+ * made again now, or SSAA is taken up or left: a change of the option is
+ * one of size. */
 void DX12Renderer::Resize(int w, int h)
 {
+	if (device != nullptr)
+		SetupSsaa((u32)std::max(w, 0), (u32)std::max(h, 0));
+}
+
+/* ---- SSAA ---- */
+
+void DX12Renderer::SetupSsaa(u32 width, u32 height)
+{
+	u32 samples = 1;
+	if (settings.rend.Ssaa > 1 && width != 0 && height != 0)
+		samples = context->SsaaSamples(settings.rend.Ssaa, ssaa_per_sample_kib(width, height, 4 * SsaaColorImages() + 8),
+				SsaaFixedKib(width, height), BindsScreen() ? "DX12 per-triangle renderer" : "DX12 per-pixel renderer");
+	if (samples == ssaaSamples && (samples == 1 || (width == ssaaWidth && height == ssaaHeight)))
+		return;
+	DropSsaa();
+	if (samples <= 1)
+		return;
+	bool ok = true;
+	for (u32 i = 0; i < SsaaColorImages() && i < 2; i++)
+		ok = ok && makeSamples(ssaaColor[i], width, height, samples, false);
+	ok = ok && makeSamples(otherDepth.image, width, height, samples, true);
+	if (ok)
+	{
+		otherDepth.stencilState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		otherDepth.image.rtv = context->Dsv().Alloc();
+		otherDepth.dsvReadStencil = context->Dsv().Alloc();
+		otherDepth.dsvReadOnly = context->Dsv().Alloc();
+		ok = otherDepth.image.rtv != ~0u && otherDepth.dsvReadStencil != ~0u && otherDepth.dsvReadOnly != ~0u;
+	}
+	if (!ok)
+	{
+		WARN_LOG(RENDERER, "DX12: SSAA off: its pictures could not be made");
+		DropSsaa();
+		return;
+	}
+	D3D12_DEPTH_STENCIL_VIEW_DESC view{};
+	view.Format = DX12DepthFormat;
+	view.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+	device->CreateDepthStencilView(otherDepth.image.resource, &view, context->Dsv().Cpu(otherDepth.image.rtv));
+	view.Flags = D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+	device->CreateDepthStencilView(otherDepth.image.resource, &view, context->Dsv().Cpu(otherDepth.dsvReadStencil));
+	view.Flags = D3D12_DSV_FLAG_READ_ONLY_STENCIL | D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+	device->CreateDepthStencilView(otherDepth.image.resource, &view, context->Dsv().Cpu(otherDepth.dsvReadOnly));
+	// the per-pixel renderer's views of its samples' stencil and depth (its shaders read them)
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+	device->CreateShaderResourceView(otherDepth.image.resource, &srv, context->Srv().Cpu(DX12Context::OitSsaaFirst + 3));
+	srv.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+	device->CreateShaderResourceView(otherDepth.image.resource, &srv, context->Srv().Cpu(DX12Context::OitSsaaFirst + 4));
+	ssaaSamples = samples;
+	ssaaLog2 = SSAA_LOG2(samples);
+	ssaaWidth = width;
+	ssaaHeight = height;
+	context->Pipelines().MakeForSamples(ssaaLog2);
+}
+
+void DX12Renderer::DropSsaa()
+{
+	if (context == nullptr)
+		return;
+	SsaaDepth(false);
+	for (DX12Image& image : ssaaColor)
+		DropImage(image);
+	if (otherDepth.image.resource)
+	{
+		otherDepth.image.resource->AddRef();
+		context->Release(otherDepth.image.resource.get());
+	}
+	for (u32 dsv : { otherDepth.image.rtv, otherDepth.dsvReadStencil, otherDepth.dsvReadOnly })
+		if (dsv != ~0u)
+			context->Dsv().Free(dsv);
+	otherDepth.image = DX12Image();
+	otherDepth.dsvReadStencil = otherDepth.dsvReadOnly = ~0u;
+	ssaaSamples = 1;
+	ssaaLog2 = 0;
+	ssaaWidth = ssaaHeight = 0;
+}
+
+void DX12Renderer::SsaaDepth(bool in)
+{
+	if (in == ssaaDepthIn || (in && (ssaaSamples <= 1 || !otherDepth.image.resource)))
+		return;
+	std::swap(depth, otherDepth.image);
+	std::swap(stencilState, otherDepth.stencilState);
+	std::swap(dsvReadStencil, otherDepth.dsvReadStencil);
+	std::swap(dsvReadOnly, otherDepth.dsvReadOnly);
+	ssaaDepthIn = in;
+}
+
+void DX12Renderer::SsaaResolve(u32 srv)
+{
+	DX12PsoKey key{};
+	key.kind = DX12_PSO_SSAA_RESOLVE;
+	key.writeColor = true;
+	key.depthFunc = 7;
+	ID3D12PipelineState *pso = context->Pipelines().Get(key);
+	if (pso == nullptr)
+		return;
+	context->SetPipeline(pso);
+	context->SetTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+	const u32 constants[2] = { srv, ssaaLog2 };
+	context->SetRootConstants(constants, 2);
+	context->Cmd()->DrawInstanced(4, 1, 0, 0);
 }
 
 u64 DX12Renderer::GetTexture(TSP tsp, TCW tcw, int area)
@@ -290,6 +459,9 @@ bool DX12Renderer::ProcessLocked(TA_context* ctx)
 		texCache.Clear();
 	}
 
+	/* SSAA draws flat strips at a single rate: the parse looks for them
+	 * then, and only then */
+	ta_set_flat_strips(ssaaSamples > 1);
 	bool result = ta_parse_vdrc(ctx);
 	// the textures the frame's polygons asked for that are made on the GPU, before the draws
 	texDecoder.Flush();
@@ -516,6 +688,8 @@ void DX12Renderer::MakeFragmentConstants(FragmentConstants& constants)
 	constants.alphaTestValue = ((PT_ALPHA_REF & 0xFF) - 0.5f) / 255.0f;
 	constants.shadeScale = FPU_SHAD_SCALE.scale_factor / 256.f;
 	constants.pixelBufferCount = pixelBufferRoom;
+	constants.ssaaMask = SsaaActive() ? (1u << ssaaSamples) - 1 : 1;
+	constants.ssaaLog2 = SsaaActive() ? ssaaLog2 : 0;
 }
 
 void DX12Renderer::SetupFrame()
@@ -532,6 +706,9 @@ bool DX12Renderer::EnsureDepth(u32 width, u32 height)
 {
 	if (depth.resource && depth.width >= width && depth.height >= height)
 		return true;
+	// (SSAA's is made at the screen's size, and with it: SetupSsaa())
+	if (ssaaDepthIn)
+		return false;
 	width = std::max(width, depth.width);
 	height = std::max(height, depth.height);
 	// (the one there was goes once the GPU is done with it; its views' places are used again)
@@ -695,8 +872,13 @@ void DX12Renderer::DrawLastPicture(u32 width, u32 height)
 bool DX12Renderer::BeginScreen()
 {
 	screenIndex = (int)context->GetPresentIndex();
+	// (SSAA: drawn into the samples, with their depth, when they are the screen's size)
+	SsaaDepth(ssaaSamples > 1 && ssaaWidth == (u32)screen_width && ssaaHeight == (u32)screen_height);
 	if (!EnsureScreen(screen_width, screen_height))
+	{
+		SsaaDepth(false);
 		return false;
+	}
 	ScreenTarget& target = screenTargets[screenIndex];
 	targetRtv = target.image.rtv;
 	targetWidth = screenWidth;
@@ -708,6 +890,11 @@ bool DX12Renderer::BeginScreen()
 		// (the per-pixel renderer clears and binds its own pictures, and this one at the end)
 		context->Transition(target.image, D3D12_RESOURCE_STATE_RENDER_TARGET);
 		SetBaseScissor();
+		return true;
+	}
+	if (SsaaActive())
+	{
+		BeginScreenSsaa(target);
 		return true;
 	}
 
@@ -767,14 +954,90 @@ bool DX12Renderer::BeginScreen()
 	return true;
 }
 
+/* The screen's frame with SSAA: its samples cleared, or, under a render
+ * that covers only part of the screen, the last picture drawn into them
+ * (each of a pixel's samples its pixel's colour, which resolves to it) */
+void DX12Renderer::BeginScreenSsaa(ScreenTarget& target)
+{
+	DX12Image& samples = ssaaColor[0];
+	context->Transition(samples, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	context->SetTargets(samples.rtv, depth.rtv, ssaaLog2);
+	float color[4] = { 0.f, 0.f, 0.f, 1.f };
+	const bool keep = KeepsLastPicture();
+	if (!keep && pvrrc.clearFramebuffer)
+	{
+		color[0] = VO_BORDER_COL.Red / 255.f;
+		color[1] = VO_BORDER_COL.Green / 255.f;
+		color[2] = VO_BORDER_COL.Blue / 255.f;
+	}
+	ClearTarget(samples, color);
+	DX12Image *last = keep ? LastPictureImage() : nullptr;
+	if (last != nullptr)
+	{
+		/* Drawn from where it is when it can be read there; a picture the
+		 * frontend has (version 2), left in the state it was handed over
+		 * in, is copied into this frame's picture first, which the resolve
+		 * writes all of later */
+		const bool handedOver = context->IsHandedOver(last);
+		DX12Image *from = nullptr;
+		if (!handedOver || last->state == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+			from = last;
+		else if (havePicture && last->state == D3D12_RESOURCE_STATE_COPY_SOURCE && last->width == target.image.width
+				&& last->height == target.image.height)
+		{
+			context->Transition(target.image, D3D12_RESOURCE_STATE_COPY_DEST);
+			context->Cmd()->CopyResource(target.image.resource, last->resource);
+			from = &target.image;
+		}
+		if (from != nullptr)
+		{
+			context->Transition(*from, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			context->SetViewport((float)screenWidth, (float)screenHeight);
+			const D3D12_RECT whole = { 0, 0, (LONG)screenWidth, (LONG)screenHeight };
+			context->SetScissor(whole);
+			DX12Quad::Draw(from->srv, !havePicture, -1.f, -1.f, 2.f, 2.f);
+		}
+	}
+	context->Cmd()->ClearDepthStencilView(context->Dsv().Cpu(depth.rtv), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.f, 0, 0, nullptr);
+	context->SetViewport((float)screenWidth, (float)screenHeight);
+	SetBaseScissor();
+}
+
 void DX12Renderer::EndScreen()
 {
 	FlushBatch();
 	ScreenTarget& target = screenTargets[screenIndex];
+	const bool ssaa = SsaaActive();
+	if (ssaa)
+	{
+		/* The samples resolved into the picture, all of it. Their contents
+		 * are not wanted after that: discarded, which a tiler need not
+		 * store (the next frame clears them). */
+		DepthStates(D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+		context->Cmd()->DiscardResource(depth.resource, nullptr);
+		SsaaDepth(false);
+		// (the per-pixel renderer resolves them itself, as it puts its lists together)
+		if (BindsScreen())
+		{
+			context->Transition(ssaaColor[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			context->Transition(target.image, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			context->SetTargets(target.image.rtv, ~0u);
+			context->SetViewport((float)screenWidth, (float)screenHeight);
+			const D3D12_RECT whole = { 0, 0, (LONG)screenWidth, (LONG)screenHeight };
+			context->SetScissor(whole);
+			SsaaResolve(ssaaColor[0].srv);
+		}
+		for (u32 i = 0; i < SsaaColorImages() && i < 2; i++)
+		{
+			context->Transition(ssaaColor[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
+			context->Cmd()->DiscardResource(ssaaColor[i].resource, nullptr);
+		}
+	}
 	// what goes over the picture, onto it (with the depth test off: whatever depth is bound is not looked at)
 	if (!overlay.IsEmpty())
 	{
-		context->SetTargets(target.image.rtv, depth.rtv);
+		// (with SSAA, none: the depth of one sample may be smaller than the screen)
+		context->SetTargets(target.image.rtv, ssaa ? ~0u : depth.rtv);
 		context->SetViewport((float)screenWidth, (float)screenHeight);
 		const D3D12_RECT whole = { 0, 0, (LONG)screenWidth, (LONG)screenHeight };
 		context->SetScissor(whole);
@@ -809,6 +1072,8 @@ bool DX12Renderer::BeginRTT()
 	DEBUG_LOG(RENDERER, "RenderToTexture packmode=%d stride=%d - %d,%d -> %d,%d @ %08x", FB_W_CTRL.fb_packmode, FB_W_LINESTRIDE.stride * 8,
 			FB_X_CLIP.min, FB_Y_CLIP.min, FB_X_CLIP.max, FB_Y_CLIP.max, FB_W_SOF1 & VRAM_MASK);
 	matrices.CalcMatrices(&pvrrc);
+	// (one sample a pixel, SSAA or not)
+	SsaaDepth(false);
 
 	rttAddr = FB_W_SOF1 & VRAM_MASK;
 	// the frame from its first pixel, as far as the pixel clip goes (see TransformMatrix)
@@ -981,6 +1246,7 @@ bool DX12Renderer::Render()
 	if (!held && !pvrrc.isRTT)
 		context->WaitPresentIndex();
 
+	SsaaDepth(false);
 	if (pvrrc.isRenderFramebuffer)
 	{
 		DrawFramebuffer();
@@ -997,6 +1263,7 @@ bool DX12Renderer::Render()
 	if (!UploadGeometry())
 	{
 		context->SetTargets(~0u, ~0u);
+		SsaaDepth(false);
 		rttTexture = nullptr;
 		return false;
 	}
@@ -1217,6 +1484,10 @@ void DX12Renderer::DrawPoly(u32 listType, bool sortTriangles, const PolyParam& p
 		key.dst = poly.tsp.DstInstr;
 	}
 	key.cull = poly.isp.CullMode == 3 ? 2 : poly.isp.CullMode == 2 ? 1 : 0;
+	// SSAA: shaded at each sample, or once a pixel
+	key.samples = context->TargetSamples();
+	if (key.samples != 0)
+		key.rate = SsaaSingleRate(poly) ? DX12_RATE_PIXEL : DX12_RATE_SAMPLE;
 	state.pso = context->Pipelines().Get(key);
 	state.topology = prepassDraw || (sortTriangles && !settings.pvr.Emulation.AlphaSortMode)
 			? D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
@@ -1252,6 +1523,7 @@ ID3D12PipelineState *DX12Renderer::ModVolPipeline(bool depthTest, bool depthWrit
 	key.cull = cull;
 	key.writeColor = writeColor;
 	key.special = special;
+	key.samples = context->TargetSamples();
 	return context->Pipelines().Get(key);
 }
 

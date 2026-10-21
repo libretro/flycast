@@ -54,7 +54,25 @@
  *    ExecuteIndirect, with their arguments in the ring;
  *  - the frame a picture for each of the frontend's sync indexes, handed
  *    over with the fence that says when it is drawn (version 2) or copied
- *    by the frontend (version 1). */
+ *    by the frontend (version 1).
+ *
+ * SSAA (the core option; rend/ssaa_pattern.h), as the Vulkan renderers
+ * have it (vulkan/ssaa.h): the screen's frames are drawn into a picture of
+ * 2, 4 or 8 samples a pixel in the standard pattern and a depth of as many
+ * (SsaaColor, the samples' depth), made when the renderer starts or
+ * changes size - never in a frame - and resolved into the screen's picture
+ * by a shader with the shared rule (rend/tile/pvr_resolve.h), not the
+ * device's resolve. How many: the most of those asked for that the device
+ * draws with, then that the video memory budget the context read at the
+ * start has room for (DX12Context::SsaaSamples()). Polygons are shaded at
+ * each sample, but for the ones drawn at a single rate
+ * (rend/ssaa_rate.h: sprites, the background, flat strips), shaded once a
+ * pixel as without SSAA; the per-pixel renderer's translucent polygons are
+ * put in its lists once a pixel with the samples they cover. The VMUs'
+ * screens and the crosshairs go on the picture after the resolve. Renders
+ * to textures have one sample a pixel, as without SSAA (Direct3D 12 has no
+ * memory that is only backed when used, which is where the Vulkan
+ * renderers supersample them). */
 class DX12Renderer : public Renderer
 {
 public:
@@ -82,6 +100,8 @@ protected:
 		float fogDensity;
 		float shadeScale;
 		u32 pixelBufferCount;	// the per-pixel renderer's: how many pixels its lists have room for
+		u32 ssaaMask;			// SSAA's: every sample of a pixel, a bit each
+		u32 ssaaLog2;
 	};
 	/* The polygon's root constants, as shaders/dx12_raster.hlsl reads them */
 	struct PolyConstants
@@ -138,6 +158,15 @@ protected:
 	D3D12_RESOURCE_STATES stencilState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	u32 dsvReadStencil = ~0u;
 	u32 dsvReadOnly = ~0u;
+	/* (while the screen is drawn with SSAA, the samples' depth is the one
+	 * there, and the depth of one sample is kept here: SsaaDepth()) */
+	struct
+	{
+		DX12Image image;
+		D3D12_RESOURCE_STATES stencilState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		u32 dsvReadStencil = ~0u;
+		u32 dsvReadOnly = ~0u;
+	} otherDepth;
 	bool EnsureDepth(u32 width, u32 height);
 	/* The depth's planes into these states */
 	void DepthStates(D3D12_RESOURCE_STATES depthPlane, D3D12_RESOURCE_STATES stencilPlane);
@@ -198,6 +227,34 @@ protected:
 	/* The frontend was waited for in Process(), for the Render() after it */
 	bool heldFromProcess = false;
 
+	/* ---- SSAA ---- */
+	u32 ssaaSamples = 1;		// the screen's samples a pixel (1: off)
+	u32 ssaaLog2 = 0;
+	u32 ssaaWidth = 0, ssaaHeight = 0;	// the size its pictures are made for
+	/* The pictures of samples the screen's frames are drawn into: one; the
+	 * per-pixel renderer's two (SsaaColorImages()) */
+	DX12Image ssaaColor[2];
+	bool ssaaDepthIn = false;	// the samples' depth is in depth (SsaaDepth())
+	/* SSAA of what the option asks, for a screen of @width x @height: its
+	 * pictures made, its pipelines too; or off. At the start and when the
+	 * size changes. */
+	void SetupSsaa(u32 width, u32 height);
+	void DropSsaa();
+	/* The samples' depth in depth (and in the views of the per-pixel
+	 * renderer's table for them), or the depth of one sample */
+	void SsaaDepth(bool in);
+	/* Whether the frame being drawn is drawn into the samples */
+	bool SsaaActive() const { return ssaaDepthIn; }
+	/* What a renderer has of SSAA's: how many pictures of samples, and how
+	 * much video memory it takes for itself first (KiB) */
+	virtual u32 SsaaColorImages() const { return 1; }
+	virtual u32 SsaaFixedKib(u32 width, u32 height) const { return 0; }
+	/* The pipelines a renderer wants made before a game draws (at Init(),
+	 * before SSAA's are made from them) */
+	virtual void PreparePipelines() {}
+	/* The picture of samples at @srv of the table resolved into what is bound */
+	void SsaaResolve(u32 srv);
+
 	/* The frame's polygons: into what Begin...() bound */
 	virtual void DrawFrame();
 	/* What is bound by the time DrawFrame() is called: the per-pixel
@@ -249,6 +306,7 @@ protected:
 private:
 	bool ProcessLocked(TA_context* ctx);
 	bool BeginScreen();
+	void BeginScreenSsaa(ScreenTarget& target);
 	void EndScreen();
 	bool BeginRTT();
 	void EndRTT();

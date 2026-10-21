@@ -112,6 +112,12 @@ public:
 	bool IsFormatSupported(TextureType type) const { return (unsigned)type < 5 && formatSupported[(int)type]; }
 	bool CanRenderTo(DXGI_FORMAT format) const;
 	bool CanWriteUAV(DXGI_FORMAT format) const;
+	/* SSAA's samples a pixel (rend/ssaa_pattern.h): the most of @requested
+	 * (1, 2, 4 or 8) or fewer that the device draws the frame's colour and
+	 * depth with in the standard pattern, and then that the video memory
+	 * budget read at the start has room for: @perSampleKib for each sample,
+	 * after @fixedKib. 1 is SSAA off. Said in the log, by @what. */
+	u32 SsaaSamples(u32 requested, u32 perSampleKib, u32 fixedKib, const char *what) const;
 
 	/* ---- Recording and submitting ---- */
 
@@ -171,10 +177,25 @@ public:
 	 * is recorded and not after: the next of a ring of them */
 	u32 TransientRtv() { return transientRtv = (transientRtv + 1) % TRANSIENT_RTVS; }
 	static const u32 TRANSIENT_RTVS = 64;
-	/* The bindless table starts here; the UAVs after it; then the per-pixel renderer's table */
+	/* The bindless table starts here; the UAVs after it; then the per-pixel
+	 * renderer's table, and its table for SSAA's samples after that (the
+	 * same lists, the depth and stencil views of the samples') */
 	static const u32 UavFirst = DX12_SRV_TABLE_SIZE;
 	static const u32 UavCount = 4096;
 	static const u32 OitFirst = UavFirst + UavCount;
+	static const u32 OitSsaaFirst = OitFirst + DX12_OIT_TABLE_SIZE;
+	/* The per-pixel renderer's table the shaders read: SSAA's or not */
+	void BindOitTable(bool ssaa)
+	{
+		// (kept for a list started after this: BindRaster() binds it again)
+		oitTableSsaa = ssaa;
+		BindRaster();
+		if (ssaa != bound.oitSsaa)
+		{
+			cmdList->SetGraphicsRootDescriptorTable(5, srvHeap.Gpu(ssaa ? OitSsaaFirst : OitFirst));
+			bound.oitSsaa = ssaa;
+		}
+	}
 	/* How many root constants a polygon has (shaders/dx12_raster.hlsl, PolyConstants) */
 	static const u32 PolyConstantCount = 14;
 
@@ -271,10 +292,13 @@ public:
 		}
 	}
 	/* The render target and depth (or none), each with a view in its heap
-	 * (a transient render target view is set whatever was bound) */
-	void SetTargets(u32 rtv, u32 dsv);
+	 * (a transient render target view is set whatever was bound), of 2^@samples
+	 * samples a pixel (SSAA's) */
+	void SetTargets(u32 rtv, u32 dsv, u32 samples = 0);
 	void ForgetTargets() { bound.rtv = bound.dsv = ~0u - 1; }
 	bool HasDepthBound() const { return bound.dsv != ~0u && bound.dsv != ~0u - 1; }
+	/* log2 of the samples a pixel of what is bound: what a pipeline drawing into it is made for */
+	u32 TargetSamples() const { return bound.samples; }
 
 	/* ---- The frame ---- */
 
@@ -373,8 +397,11 @@ private:
 		float blendFactor[4];
 		bool blendFactorSet;
 		bool rasterBound;
+		bool oitSsaa;
+		u32 samples;
 	} bound;
 	u32 transientRtv = 0;
+	bool oitTableSsaa = false;	// the per-pixel renderer's table wanted: SSAA's or not (BindOitTable())
 
 	// a picture read back, through this buffer, mapped
 	ComPtr<ID3D12Resource> readback;
@@ -398,6 +425,10 @@ private:
 
 /* What a render's draw calls and the format of every picture are */
 static const DXGI_FORMAT DX12FrameFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+/* SSAA's pictures' quality: the standard multisample pattern
+ * (D3D12_STANDARD_MULTISAMPLE_PATTERN, which mingw-w64's d3d12.h lacks),
+ * the positions rend/ssaa_pattern.h has */
+static const UINT DX12StandardPattern = 0xffffffffu;
 static const DXGI_FORMAT DX12DepthFormat = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
 
 /* The depth and stencil: a float for the depth, as the Vulkan renderers have it */
