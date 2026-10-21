@@ -31,8 +31,13 @@ static unsigned fu(float f)
 }
 
 /* The kernels' 64-bit integers, for the edges (C89 has no long long: this
- * is for the machines the test runs on, whose long is 64 bits) */
+ * is for the machines the test runs on, whose long is 64 bits, and
+ * Windows', whose __int64 is: tile_test_d3d12.c's) */
+#if defined(_WIN32)
+typedef __int64 ref_s64;
+#else
 typedef long ref_s64;
+#endif
 typedef char ref_s64_is_64_bits[sizeof(ref_s64) >= 8 ? 1 : -1];
 
 /* ---- Setup, as the setup kernel does it ---- */

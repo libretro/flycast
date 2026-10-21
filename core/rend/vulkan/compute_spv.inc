@@ -3,13 +3,13 @@
  * PVRC_KERNEL): made by tools/rend/kernels_spv.sh update from them. Not
  * to be edited.
  * glslang 11:15.1.0
- * kernel 1 73603861a0c7a684c8aeb1e9b563d0f1999eba22
- * kernel 2 c96d49fc7f17797a1ee961323634e11306ec7cca
- * kernel 3 6b411ed9c064f7a2e053fdc4e982c57ae76053b6
- * kernel 4 6b748bfb5566a57db487910e4f5286ecd7708887
- * kernel 5 4281d4dfcb4d46f355569cc8fc5f668c3f870104
- * kernel 6 42ca77a74273559fd3cb146bf29febc43ddcdd42
- * kernel 7 9ddf62ffd5284a1ce37625d5625d4ba326f3dfd4
+ * kernel 1 9e874d25bb641335e9b6f2daaee4f7c0380dd3e5
+ * kernel 2 b9b0293f2449ce073d89aa83d76c43620d8693f1
+ * kernel 3 9df0d4b2d759e154f93bcf97d1fc3e66bd31768e
+ * kernel 4 9869d690688dd77f56faa3304eb6667dcdc49fdd
+ * kernel 5 9e2b55316346b743dbc4a3e6dcb685a66a41196c
+ * kernel 6 b067eb1e2ee731bbcbec0b2848e921e6fbcbaacd
+ * kernel 7 c4aca01f8b4cd372a072b02065c8ebbf50fffbc7
  */
 static const u32 compute_spv_1[] = {
 0x07230203,0x00010000,0x0008000b,0x00000701,0x00000000,0x00020011,0x00000001,0x00020011,

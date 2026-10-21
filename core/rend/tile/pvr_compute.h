@@ -10,7 +10,19 @@
  *   kernel wanted (PVRC_K_*), after pvr_lane.h, pvr_tile.h, pvr_modvol.h,
  *   pvr_resolve.h and ssaa_pattern.h (tools/rend/kernels_spv.sh puts them
  *   in front, and the core has the kernels as SPIR-V in
- *   vulkan/compute_spv.inc).
+ *   vulkan/compute_spv.inc);
+ * - by an HLSL compiler (shader model 6.0, HLSL 2021), with
+ *   PVRC_SHADER_HLSL defined instead, and PVRC_SAMPLES, PVRC_KEEP and
+ *   PVRC_TEST, Vulkan's specialization constants, defined too: the
+ *   kernels' text is GLSL's, which PVRC_SHADER_HLSL's words below make
+ *   HLSL of, but for what the preprocessor cannot change, which
+ *   tools/rend/kernels_dx12.sh changes as it makes the Direct3D 12
+ *   renderers' DXIL of them (dx12/dx12_compute_dxil.inc): a buffer's
+ *   words "b.w[i]" read "b_w[i]", a kernel's "layout(local_size_x = N)
+ *   in;" its threads, a global variable is "static", a vector of one
+ *   value "vec4(v)" is "(vec4)(v)", a 64-bit constant "Nl" is
+ *   "int64_t(N)", and an atomic whose old value is used has it in a
+ *   variable.
  *
  * The frame, as the CPU's parse leaves it (ta_parse_vdrc()), goes to the
  * GPU once, in one buffer of words (PVRC_F_*): a header, the render passes,
@@ -91,7 +103,12 @@
 #ifndef PVR_COMPUTE_H
 #define PVR_COMPUTE_H
 
-#if !defined(PVRC_SHADER_GLSL)
+/* (either shading language's kernel) */
+#if defined(PVRC_SHADER_GLSL) || defined(PVRC_SHADER_HLSL)
+#define PVRC_SHADER
+#endif
+
+#if !defined(PVRC_SHADER)
 #include "pvr_lane.h"
 #include "pvr_tile.h"
 #include "pvr_modvol.h"
@@ -322,7 +339,7 @@
 #define PVRC_K_MAX 8u
 #define PVRC_WALK_SHARED_FIXED 16896u
 #define PVRC_FRAGMENT_BYTES 12u
-#if !defined(PVRC_SHADER_GLSL)
+#if !defined(PVRC_SHADER)
 PVR_FN pvr_u32 pvrc_fragments_kept(pvr_u32 shared_bytes)
 {
    pvr_u32 k = PVRC_K_MAX;
@@ -359,6 +376,94 @@ layout(std430, set = 0, binding = 11) readonly buffer TrDraws { uint w[]; } dtrd
 layout(std430, set = 0, binding = 12) readonly buffer DecodeFrame { uint w[]; } dfrm;
 
 #define FRMF(i) uintBitsToFloat(frm.w[i])
+
+#elif defined(PVRC_SHADER_HLSL) && defined(PVRC_KERNEL)
+/* Direct3D 12 (dx12/dx12_compute.cpp): the buffers as a table of views,
+ * unordered access views all of them (the frame's words are in memory the
+ * CPU writes, which a shader resource view could have too, but the
+ * decode's frame has them written by PVRC_K_GPUSRC), in the order of
+ * GLSL's bindings - views and not root descriptors: what a kernel reads
+ * past a buffer's end is 0 then, as Vulkan's robust buffers have it,
+ * where a compiler may read a word before the test that would have left
+ * it unread (the walk's rec_poly() of PVRC_NONE); for the walk, the textures' slots (a word each: the
+ * texture's place in the renderer's bindless table | its sampler's in the
+ * sampler table << 16), the bindless table, the samplers, the places in
+ * the table of the picture to start from and of the palette, and the
+ * picture drawn, a view of its own. */
+#ifndef PVRC_SAMPLES
+#define PVRC_SAMPLES 1u
+#endif
+#define PVRC_LOG2N SSAA_LOG2(PVRC_SAMPLES)
+#ifndef PVRC_KEEP
+#define PVRC_KEEP 4u
+#endif
+#ifndef PVRC_TEST
+#define PVRC_TEST 0u
+#endif
+
+#if PVRC_KERNEL == PVRC_K_GPUSRC
+globallycoherent RWStructuredBuffer<uint> frm_w : register(u0);
+#else
+RWStructuredBuffer<uint> frm_w : register(u0);
+#endif
+RWStructuredBuffer<uint> rec_w : register(u1);
+RWStructuredBuffer<uint> bin_w : register(u2);
+RWStructuredBuffer<uint> vtx_w : register(u3);
+RWStructuredBuffer<uint> idx_w : register(u4);
+RWStructuredBuffer<uint> mvt_w : register(u5);
+RWStructuredBuffer<uint> dcmd_w : register(u6);
+RWStructuredBuffer<uint> dtrd_w : register(u7);
+RWStructuredBuffer<uint> dfrm_w : register(u8);
+#if PVRC_KERNEL == PVRC_K_WALK
+RWStructuredBuffer<uint> slot_w : register(u9);
+cbuffer PvrcPictures : register(b0)
+{
+   uint pvrc_last;		/* the picture to start from, in the table */
+   uint pvrc_palette;	/* the palette */
+};
+Texture2D<float4> pvrc_table[] : register(t0, space1);
+SamplerState pvrc_samplers[] : register(s0, space1);
+SamplerState pvrc_linear : register(s0);
+RWTexture2D<unorm float4> outImage : register(u0, space2);
+#define lastPicture pvrc_table[pvrc_last]
+#define palette pvrc_table[pvrc_palette]
+#define PVRC_TEXTURE_GRAD(slot, uv, dx, dy) pvrc_table[NonUniformResourceIndex(slot_w[slot] & 0xffffu)].SampleGrad( \
+      pvrc_samplers[NonUniformResourceIndex(slot_w[slot] >> 16)], uv, dx, dy)
+#define textureLod(t, uv, lod) t.SampleLevel(pvrc_linear, uv, lod)
+#define texelFetch(t, p, lod) t.Load(int3(p, lod))
+#define imageStore(image, p, v) image[p] = (v)
+#endif
+
+/* (GLSL's words in the kernels, in HLSL's) */
+#define vec2 float2
+#define vec3 float3
+#define vec4 float4
+#define ivec2 int2
+#define uvec2 uint2
+#define uvec4 uint4
+#define i64vec3 int64_t3
+#define uintBitsToFloat asfloat
+#define floatBitsToUint asuint
+#define bitCount countbits
+#define findLSB firstbitlow
+#define shared groupshared
+#define barrier GroupMemoryBarrierWithGroupSync
+#define memoryBarrierBuffer DeviceMemoryBarrier
+#define atomicAdd(a, b) InterlockedAdd(a, b)
+#define atomicOr(a, b) InterlockedOr(a, b)
+#define atomicMin(a, b) InterlockedMin(a, b)
+#define atomicMax(a, b) InterlockedMax(a, b)
+/* (the invocation's numbers, which HLSL has as the entry point's
+ * arguments: set by pvrc_entry(), at the end, which calls the kernel's
+ * main(); the sort, the one kernel that asks how many workgroups there
+ * are, is always dispatched a workgroup a coarse tile across) */
+#define main pvrc_main
+static uint3 gl_GlobalInvocationID;
+static uint3 gl_WorkGroupID;
+static uint gl_LocalInvocationIndex;
+#define gl_NumWorkGroups uint3(pvrc_tiles(), 1u, 1u)
+
+#define FRMF(i) uintBitsToFloat(frm.w[i])
 #endif
 
 /* ---- The rules ---- */
@@ -366,7 +471,7 @@ layout(std430, set = 0, binding = 12) readonly buffer DecodeFrame { uint w[]; } 
 /* Every operation as it is written, none fused (tools/rend/tile_test builds
  * the kernels with PVRC_EXACT, for the reference to have their bits; the
  * renderer's are made without, and the device fuses where it likes) */
-#if defined(PVRC_SHADER_GLSL) && defined(PVRC_EXACT)
+#if defined(PVRC_SHADER) && defined(PVRC_EXACT)
 #define PVRC_PRECISE precise
 #else
 #define PVRC_PRECISE
@@ -375,7 +480,7 @@ layout(std430, set = 0, binding = 12) readonly buffer DecodeFrame { uint w[]; } 
  * writes is compared for equality with the one another pass takes at the
  * same place, and the two have to be the same bits (as the raster
  * renderer's depth and colour passes have them, from one formula) */
-#if defined(PVRC_SHADER_GLSL)
+#if defined(PVRC_SHADER)
 #define PVRC_INVARIANT precise
 #else
 #define PVRC_INVARIANT
@@ -466,11 +571,11 @@ PVR_FN pvr_f32 pvrc_from8(pvr_u32 b)
 
 /* The fog coefficient for a 1/w, the PowerVR2's way: see fog_mode2() in
  * vulkan/shaders/oit.frag, whose table lookups these are */
-#if defined(PVRC_SHADER_GLSL)
+#if defined(PVRC_SHADER)
 #define PVRC_FOG_BYTE(i) ((frm.w[PVRC_F_FOG + ((i) >> 2)] >> (8u * ((i) & 3u))) & 255u)
 #endif
 PVR_FN pvr_f32 pvrc_fog_lut(pvr_f32 w, pvr_f32 density
-#if !defined(PVRC_SHADER_GLSL)
+#if !defined(PVRC_SHADER)
       , const unsigned char *table
 #endif
       )
@@ -491,7 +596,7 @@ PVR_FN pvr_f32 pvrc_fog_lut(pvr_f32 w, pvr_f32 density
    i = floor(t);
    blend = floor((t - i) * 256.0f);
    idx = PVR_U32(e * 16.0f + i);
-#if defined(PVRC_SHADER_GLSL)
+#if defined(PVRC_SHADER)
    next = PVR_F32(PVRC_FOG_BYTE(idx));
    cur = PVR_F32(PVRC_FOG_BYTE(idx + 128u));
 #else
@@ -503,7 +608,7 @@ PVR_FN pvr_f32 pvrc_fog_lut(pvr_f32 w, pvr_f32 density
 
 /* The depth the raster renderer writes for a fragment at @w (its 1/w, as
  * gl_FragCoord.w has it); in test mode 1/w itself */
-#if defined(PVRC_SHADER_GLSL)
+#if defined(PVRC_SHADER)
 PVR_FN pvr_f32 pvrc_depth(pvr_f32 w)
 {
    PVRC_INVARIANT float z;
@@ -531,7 +636,7 @@ PVR_FN pvr_u32 pvrc_test_texel(pvr_u32 slot, pvr_f32 u, pvr_f32 v)
 
 /* ---- The CPU's side: sizes ---- */
 
-#if !defined(PVRC_SHADER_GLSL)
+#if !defined(PVRC_SHADER)
 /* Words of the bin buffer for @runs runs and a pool of @pool entries */
 PVR_FN pvr_u32 pvrc_bin_words(pvr_u32 runs, pvr_u32 pool)
 {
@@ -541,7 +646,7 @@ PVR_FN pvr_u32 pvrc_bin_words(pvr_u32 runs, pvr_u32 pool)
 
 /* ---- The kernels ---- */
 
-#if defined(PVRC_SHADER_GLSL) && defined(PVRC_KERNEL)
+#if defined(PVRC_SHADER) && defined(PVRC_KERNEL)
 
 
 
@@ -1053,10 +1158,13 @@ void main()
 #if PVRC_KERNEL == PVRC_K_WALK
 layout(local_size_x = 256) in;
 
+#if defined(PVRC_SHADER_GLSL)
 layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outImage;
 layout(set = 0, binding = 4) uniform sampler2D lastPicture;
 layout(set = 0, binding = 5) uniform sampler2D palette;
 layout(set = 0, binding = 6) uniform sampler2D textures[PVRC_TEX_SLOTS];
+#define PVRC_TEXTURE_GRAD(slot, uv, dx, dy) textureGrad(textures[slot], uv, dx, dy)
+#endif
 
 shared uint s_prim[512];	/* the primitives of a batch kept, in order (two batches' in turn, the walk of one going on as the next is read) */
 shared uint s_zlo[512], s_zhi[512];	/* the depth each has over the tile, least and most (float bits) */
@@ -1629,7 +1737,7 @@ vec4 tex_fetch(uint slot, vec2 uv, vec2 dx, vec2 dy)
       const uint h = pvrc_test_texel(slot, uv.x, uv.y);
       return vec4(pvrc_from8(h), pvrc_from8(h >> 8), pvrc_from8(h >> 16), pvrc_from8(h >> 24));
    }
-   return textureGrad(textures[slot], uv, dx, dy);
+   return PVRC_TEXTURE_GRAD(slot, uv, dx, dy);
 }
 
 float fog_lut(float w)
@@ -2641,6 +2749,23 @@ void main()
       bin.w[st + PVRC_ST_SORT_X + 1u] = chunks;
       bin.w[st + PVRC_ST_SORT_X + 2u] = 1u;
    }
+}
+#endif
+
+#if defined(PVRC_SHADER_HLSL)
+/* The entry point: the invocation's numbers where the kernels look for
+ * GLSL's (and pvr_lane.h's exchanges for the thread's index), then the
+ * kernel */
+[numthreads(PVRC_THREADS, 1, 1)]
+void pvrc_entry(uint3 global : SV_DispatchThreadID, uint3 group : SV_GroupID, uint local : SV_GroupIndex)
+{
+   gl_GlobalInvocationID = global;
+   gl_WorkGroupID = group;
+   gl_LocalInvocationIndex = local;
+#if !defined(PVR_LANE_NONE) && !defined(PVR_LANE_SUBGROUP)
+   pvr_lane_self = local;
+#endif
+   pvrc_main();
 }
 #endif
 

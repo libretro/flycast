@@ -21,6 +21,13 @@
 # installed. TILE_VALIDATE=1 the validation layer. The programs, kernels
 # and frames are made in $WORK (default: a new directory in $TMPDIR), kept
 # with KEEP=1 or when $WORK is given.
+#
+# TILE_DEVICE=d3d12: the frames drawn by the Direct3D 12 renderers' kernels
+# instead (tile_test_d3d12.c), as HLSL made DXIL by kernels_dx12.sh
+# compute-test, which needs DXC=/path/to/dxc; the program built with
+# mingw-w64 (CC_WIN, default x86_64-w64-mingw32-gcc) and run under wine
+# (WINE, "" on Windows) with vkd3d-proton's d3d12.dll and d3d12core.dll
+# from $D3D12_DLLS where that is given.
 set -e
 cd "$(dirname "$0")/../.."
 if [ -z "$WORK" ]; then
@@ -29,6 +36,9 @@ if [ -z "$WORK" ]; then
 fi
 mkdir -p "$WORK"
 sh tools/rend/kernels_spv.sh check
+DEVICE=${TILE_DEVICE:-vulkan}
+[ "$DEVICE" = vulkan ] || [ "$DEVICE" = d3d12 ] || { echo "TILE_DEVICE is vulkan or d3d12" >&2; exit 2; }
+[ "$DEVICE" = vulkan ] || sh tools/rend/kernels_dx12.sh check
 
 # the header as C89 and as C++
 printf '#include "pvr_compute.h"\nint main(void) { return (int)pvrc_fixed(1.0f) + (int)pvrc_fragments_kept(16384u); }\n' > "$WORK/c89.c"
@@ -57,9 +67,45 @@ ${CC:-cc} -o "$WORK/tile_test" "$WORK/tile_test.o" "$WORK/tile_ref.o" -lvulkan -
 LVP=/usr/share/vulkan/icd.d/lvp_icd.json
 [ -f $LVP ] && [ -z "$VK_ICD_FILENAMES" ] && export VK_ICD_FILENAMES=$LVP
 
+# ...or Direct3D 12's: the kernels for each count of samples, and K (its own,
+# pvrc_fragments_kept() of 32 KiB, for 0) the test draws with
+if [ "$DEVICE" = d3d12 ]; then
+   K_D3D12=$(awk -F= '$1 == "PVRC_KEEP_D3D12" { print $2 }' tools/rend/kernels_dx12.sh)
+   mkdir -p "$WORK/dxil"
+   for n in ${TILE_SAMPLES:-1 2 4 8}; do
+      for k in ${TILE_KEEP:-0 1}; do
+         [ "$k" = 0 ] && k=$K_D3D12
+         sh tools/rend/kernels_dx12.sh compute-test "$WORK/dxil" $n $k
+      done
+   done
+   ${CC_WIN:-x86_64-w64-mingw32-gcc} -std=c99 -O2 -ffp-contract=off -Wall -Icore/rend/tile -Icore/libretro-common/include \
+      -o "$WORK/dxil/tile_test_d3d12.exe" tools/rend/tile_test_d3d12.c tools/rend/tile_ref.c -ld3d12 -ldxguid
+   if [ -n "$D3D12_DLLS" ]; then
+      cp "$D3D12_DLLS/d3d12.dll" "$D3D12_DLLS/d3d12core.dll" "$WORK/dxil/"
+      export WINEDLLOVERRIDES="d3d12,d3d12core=n"
+   fi
+fi
+WINE=${WINE-wine}
+winpath() {
+   if [ -n "$WINE" ]; then echo "Z:$1"; else echo "$1"; fi
+}
+# @1... the frames
+compare() {
+   if [ "$DEVICE" = vulkan ]; then
+      "$WORK/tile_test" "$WORK" "$@"
+   else
+      # (wine's Vulkan, which vkd3d-proton draws with, wants a display: a virtual one where there is none)
+      XVFB=
+      [ -n "$WINE" ] && [ -z "$DISPLAY" ] && command -v xvfb-run > /dev/null && XVFB="xvfb-run -a"
+      w=
+      for f in "$@"; do w="$w $(winpath "$f")"; done
+      ( cd "$WORK/dxil" && $XVFB env -u TMPDIR WINEDEBUG=-all $WINE ./tile_test_d3d12.exe "$(winpath "$WORK/dxil")" $w ) 2>&1 | grep -v '^X connection'
+   fi
+}
+
 if [ "$1" = -f ]; then
    shift
-   "$WORK/tile_test" "$WORK" "$@" | tee "$WORK/out"
+   compare "$@" | tee "$WORK/out"
    [ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ]
    exit $?
 fi
@@ -91,5 +137,5 @@ TILE_DUMP_DIR="$WORK/frames" LD_PRELOAD="$WORK/libGLESv2.so.2" "$WORK/tile_dump"
 grep '^tile_dump' "$WORK/dump.out" || true
 DUMPED=$(ls "$WORK/frames"/frame_*.bin "$WORK/frames"/rtt_*.bin 2>/dev/null || true)
 [ -n "$DUMPED" ] || { echo "tile_test: no frames written" >&2; exit 1; }
-"$WORK/tile_test" "$WORK" $DUMPED | tee "$WORK/out"
+compare $DUMPED | tee "$WORK/out"
 [ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ]
