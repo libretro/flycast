@@ -29,11 +29,6 @@ FILE *	fmemopen (void *__restrict, size_t, const char *__restrict);
 	#include <linux/ashmem.h>
 	#ifndef ASHMEM_DEVICE
 		#define ASHMEM_DEVICE "/dev/ashmem"
-		#undef PAGE_MASK
-		#define PAGE_MASK (PAGE_SIZE-1)
-	#else
-		#define PAGE_SIZE 4096
-		#define PAGE_MASK (PAGE_SIZE-1)
 	#endif
 
 // Android specific ashmem-device stuff for creating shared memory regions

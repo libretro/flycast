@@ -646,7 +646,7 @@ void common_libretro_setup(void)
 
 #if defined(__MACH__) || defined(__linux__)
    DEBUG_LOG(BOOT, "Linux paging: %08lX %08X %08X\n",sysconf(_SC_PAGESIZE),PAGE_SIZE,PAGE_MASK);
-   verify(PAGE_MASK==(sysconf(_SC_PAGESIZE)-1));
+   verify((PAGE_SIZE % sysconf(_SC_PAGESIZE)) == 0);
 #endif
 }
 

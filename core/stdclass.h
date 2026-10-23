@@ -12,8 +12,17 @@
 
 #ifdef _ANDROID
 #include <sys/mman.h>
+#endif
+/* The core's page: what it protects memory by and divides it into. A
+ * multiple of the system's, so it may be larger than the system's own.
+ * Android's NDK r28 on no longer defines PAGE_SIZE on 64-bit processors,
+ * whose devices may have 16 KB pages: 16 KB there, on 4 KB devices too. */
+#ifndef PAGE_SIZE
+#if defined(_ANDROID) && (defined(__aarch64__) || defined(__x86_64__))
+#define PAGE_SIZE 16384
 #else
 #define PAGE_SIZE 4096
+#endif
 #endif
 
 #undef PAGE_MASK
