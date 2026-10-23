@@ -1077,6 +1077,25 @@ CFLAGS       += $(HOST_CPU_FLAGS)
 CXXFLAGS     += $(HOST_CPU_FLAGS)
 RZDCY_CFLAGS += $(HOST_CPU_FLAGS)
 
+# The SH4's floating point is done in the host's, and has to come out the
+# same to the bit on every host: what a game works out is in its memory, and
+# a netplay peer, or a state taken to another machine, has to have it too.
+# So no multiply and add made into one fused multiply-add where the code
+# has two operations (it rounds once where the code rounds twice: an ARM
+# host's compiler does that unasked, an x86-64 one does not), and on 32-bit
+# x86 the SSE unit and not the x87, whose registers keep more bits than a
+# float has and which does not go by the rounding mode the SH4 sets (in
+# MXCSR, hw/sh4/sh4_core_regs.cpp): games set rounding towards zero. And
+# none of fast-math, which the platforms above that ask for -Ofast or
+# -ffast-math would have: it lets the compiler reorder sums, which then come
+# out another way (this comes after their flags, and wins).
+ifeq (,$(findstring msvc,$(platform)))
+	CORE_DEFINES += -ffp-contract=off -fno-fast-math
+	ifeq ($(HOST_CPU_FLAGS),-DHOST_CPU=$(HOST_CPU_X86))
+		CORE_DEFINES += -msse2 -mfpmath=sse
+	endif
+endif
+
 # The OpenGL per-pixel renderer needs OpenGL 4.3, which is desktop OpenGL
 # only. It is built wherever the core is built for desktop OpenGL 3 and up.
 # Whether it is used is up to the Alpha Sorting core option: set to

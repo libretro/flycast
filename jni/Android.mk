@@ -50,7 +50,9 @@ CORE_DEFINES :=
 
 include $(ROOT_DIR)/Makefile.common
 
-COREFLAGS := -ffast-math -D__LIBRETRO__ -DHAVE_GLSYM_PRIVATE -DINLINE="inline" -DANDROID -D_ANDROID -DHAVE_OPENGLES -DHAVE_OPENGLES2 $(GLFLAGS) $(INCFLAGS) $(DYNAFLAGS) $(CORE_DEFINES)
+# (no fast-math, and no fused multiply-adds the code does not ask for: the
+# SH4's floating point has to come out the same on every host, see Makefile)
+COREFLAGS := -ffp-contract=off -D__LIBRETRO__ -DHAVE_GLSYM_PRIVATE -DINLINE="inline" -DANDROID -D_ANDROID -DHAVE_OPENGLES -DHAVE_OPENGLES2 $(GLFLAGS) $(INCFLAGS) $(DYNAFLAGS) $(CORE_DEFINES)
 COREFLAGS += -DNDEBUG -DNO_VERIFY
 
 ifeq ($(NO_THREADS),1)
