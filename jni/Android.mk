@@ -38,10 +38,9 @@ else ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
   WITH_DYNAREC := arm
   HAVE_NEON := 1
 else ifeq ($(TARGET_ARCH_ABI),x86)
-  # The 32-bit x86 recompiler's code is not position independent, and a
-  # library with text relocations is not loaded from Android 6 on: the
-  # interpreters
-  NO_REC := 1
+  # (the recompiler writes all its own code at run time: the library has
+  # no text relocations, which Android 6 on refuses)
+  WITH_DYNAREC := x86
 else ifeq ($(TARGET_ARCH_ABI),x86_64)
   WITH_DYNAREC := x86_64
 endif
@@ -73,6 +72,7 @@ ifeq ($(TARGET_ARCH_ABI),x86_64)
 endif
 
 ifeq ($(TARGET_ARCH_ABI), x86)
+	COREFLAGS += -fno-operator-names
 	COREFLAGS += -DHOST_CPU=$(HOST_CPU_X86)
 endif
 

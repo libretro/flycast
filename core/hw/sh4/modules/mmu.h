@@ -109,7 +109,8 @@ u32 mmu_full_lookup(u32 va, const TLB_Entry **entry, u32& rv);
  * page whose TLB entry is loaded or invalidated is forgotten on its own.
  * Emptying costs by how much of the tables has been used since the last
  * time, which is little: the parts that were are kept note of. */
-#if !defined(NO_MMU) && (HOST_CPU == CPU_ARM || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64)
+#if !defined(NO_MMU) && (HOST_CPU == CPU_ARM || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64 \
+		|| (HOST_CPU == CPU_X86 && FEAT_SHREC == DYNAREC_JIT))
 #define MMU_HOST_PAGE_LUT 1
 extern uintptr_t mmu_read_lut[0x100000];
 extern uintptr_t mmu_write_lut[0x100000];

@@ -346,16 +346,7 @@ ifneq ($(filter $(WITH_DYNAREC), x86_64 x64),)
 # Recompiler (x86 32bit)
 else ifneq ($(filter $(WITH_DYNAREC), i386 i686 x86),)
 	DYNAREC_USED = 1
-	ifneq ($(filter $(platform), unix android),)
-		SOURCES_ASM += $(CORE_DIR)/core/rec-x86/rec_lin86_asm.S
-	else
-		SOURCES_ASM += $(CORE_DIR)/core/rec-x86/rec_win86_asm.S
-		#SOURCES_ASM += $(CORE_DIR)/core/hw/arm7/arm7_win86_asm.S
-	endif
-	SOURCES_CXX += $(CORE_DIR)/core/rec-x86/rec_x86_asm.cpp \
-						$(CORE_DIR)/core/rec-x86/rec_x86_driver.cpp \
-						$(CORE_DIR)/core/rec-x86/rec_x86_il.cpp \
-						$(CORE_DIR)/core/rec-x86/x86_emitter.cpp
+	SOURCES_CXX += $(CORE_DIR)/core/rec-x86/rec_x86.cpp
 endif
 
 

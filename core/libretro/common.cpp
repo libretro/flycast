@@ -84,13 +84,13 @@ static LONG ExceptionHandler(EXCEPTION_POINTERS *ExceptionInfo)
    }
 #endif
 #if FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_X86
-   if ( ngen_Rewrite((size_t&)ep->ContextRecord->Eip,*(size_t*)ep->ContextRecord->Esp,ep->ContextRecord->Eax) )
+   // (the same, for the 32-bit recompiler)
    {
-      //remove the call from call stack
-      ep->ContextRecord->Esp+=4;
-      //restore the addr from eax to ecx so its valid again
-      ep->ContextRecord->Ecx=ep->ContextRecord->Eax;
-      return EXCEPTION_CONTINUE_EXECUTION;
+      const u8 *const pc = (const u8 *)ep->ContextRecord->Eip;
+
+      if (pc > CodeCache && pc < CodeCache + CODE_SIZE + TEMP_CODE_SIZE
+            && ngen_Rewrite((size_t&)ep->ContextRecord->Eip, 0, 0))
+         return EXCEPTION_CONTINUE_EXECUTION;
    }
 #endif
    ERROR_LOG(COMMON, "[GPF]Unhandled access to : %p", address);
@@ -355,15 +355,10 @@ static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
       context_to_segfault(&ctx, segfault_ctx);
    }
 #elif HOST_CPU==CPU_X86
-   if (ngen_Rewrite((size_t&)ctx.pc, *(size_t*)ctx.esp, ctx.eax))
-   {
-      //remove the call from call stack
-      ctx.esp += 4;
-      //restore the addr from eax to ecx so it's valid again
-      ctx.ecx = ctx.eax;
-
-      context_to_segfault(&ctx, segfault_ctx);
-   }
+	if (dyna_cde && ngen_Rewrite((unat&)ctx.pc, 0, 0))
+	{
+		context_to_segfault(&ctx, segfault_ctx);
+	}
 #elif HOST_CPU == CPU_X64
 	else if (dyna_cde && ngen_Rewrite((unat&)ctx.pc, 0, 0))
 	{

@@ -248,7 +248,8 @@
 #endif
 
 #ifndef FEAT_DSPREC
-	#if HOST_CPU == CPU_X86 || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64
+	// (32-bit x86 has the interpreter: its recompiler was the old one, which is gone)
+	#if HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64
 		#define FEAT_DSPREC DYNAREC_JIT
 	#else
 		#define FEAT_DSPREC DYNAREC_NONE
