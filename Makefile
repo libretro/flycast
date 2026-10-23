@@ -92,7 +92,8 @@ ifeq ($(shell uname -a),)
 	system_platform = win
 else ifneq ($(findstring Darwin,$(shell uname -a)),)
 	system_platform = osx
-	arch = intel
+	# (arch=arm from the caller asks for an Apple silicon build)
+	arch ?= intel
 	ifeq ($(shell uname -p),powerpc)
 		arch = ppc
 	endif
@@ -115,6 +116,7 @@ HOST_CPU_X86=0x20000001
 HOST_CPU_ARM=0x20000002
 HOST_CPU_MIPS=0x20000003
 HOST_CPU_X64=0x20000004
+HOST_CPU_GENERIC=0x20000005
 HOST_CPU_ARM64=0x20000006
 
 ifeq ($(STATIC_LINKING),1)
@@ -146,11 +148,21 @@ ifneq (,$(findstring unix,$(platform)))
 		SINGLE_PREC_FLAGS=1
 		HAVE_GENERIC_JIT = 0
 	else ifeq ($(WITH_DYNAREC), x86)
-		CFLAGS += -m32 -D TARGET_LINUX_x86 -D TARGET_NO_AREC
+		CFLAGS += -m32 -D TARGET_LINUX_x86
 		SINGLE_PREC_FLAGS=1
 		MFLAGS += -m32
 		ASFLAGS += --32
 		LDFLAGS += -m32
+		HAVE_GENERIC_JIT = 0
+		# The 32-bit x86 recompiler crashes on the first frame in a Linux
+		# shared library (it ends up running the library's GOT): the
+		# interpreters, until it is mended
+		WITH_DYNAREC =
+		HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_X86)
+		NO_REC = 1
+	else ifneq ($(filter $(WITH_DYNAREC), arm64 aarch64),)
+		# 64-bit ARM Linux: the ARM64 recompiler, not the generic one
+		# beside it (the two define the same functions)
 		HAVE_GENERIC_JIT = 0
 	endif
 	PLATFORM_EXT := unix
@@ -714,13 +726,69 @@ else ifneq (,$(findstring osx,$(platform)))
 	PLATCFLAGS += -D__MACOSX__ -DOSX
 	GL_LIB := -framework OpenGL
 	PLATFORM_EXT := unix
-	# Target Dynarec
+	# Vulkan through the frontend's MoltenVK
+	HAVE_VULKAN = 1
+	# Target Dynarec. What is built for goes by arch (arm: Apple silicon),
+	# not by the machine doing the building, so that either can be built
+	# on either.
 	ifeq ($(ARCH), $(filter $(ARCH), ppc))
 		WITH_DYNAREC =
-    else
+	else ifeq ($(arch),arm)
+		# Apple silicon: the recompilers' code and assembly are for ELF
+		# systems, and Apple's W^X rules (MAP_JIT) are not followed yet, so
+		# no recompiler here: the interpreters, as on iOS
+		ARCH = arm64
+		WITH_DYNAREC =
 		HAVE_GENERIC_JIT = 0
+		NO_REC = 1
+		HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_ARM64)
+		OSX_ARCHFLAGS = -arch arm64
+	else
+		ARCH = x86_64
+		WITH_DYNAREC = x86_64
+		HAVE_GENERIC_JIT = 0
+		OSX_ARCHFLAGS = -arch x86_64
 	endif
+	# CROSS_COMPILE=1: the SDK and the target triple come from the caller
+	ifeq ($(CROSS_COMPILE),1)
+		OSX_ARCHFLAGS = -target $(LIBRETRO_APPLE_PLATFORM) -isysroot $(LIBRETRO_APPLE_ISYSROOT)
+	endif
+	CFLAGS   += $(OSX_ARCHFLAGS)
+	LDFLAGS  += $(OSX_ARCHFLAGS)
 	HAVE_OPENMP=0
+
+# iOS and tvOS, 64-bit ARM. Apple's systems give no memory that is both
+# writable and executable there, so no recompiler: the interpreters.
+else ifneq (,$(filter ios-arm64 tvos-arm64,$(platform)))
+	EXT    ?= dylib
+	ifeq ($(platform),tvos-arm64)
+		TARGET := $(TARGET_NAME)_libretro_tvos.$(EXT)
+		APPLE_SDK := appletvos
+		APPLE_MINVER := -mtvos-version-min=13.0
+	else
+		TARGET := $(TARGET_NAME)_libretro_ios.$(EXT)
+		APPLE_SDK := iphoneos
+		APPLE_MINVER := -miphoneos-version-min=13.0
+	endif
+	ifeq ($(IOSSDK),)
+		IOSSDK := $(shell xcodebuild -version -sdk $(APPLE_SDK) Path)
+	endif
+	CC  = clang -arch arm64 -isysroot $(IOSSDK) $(APPLE_MINVER)
+	CXX = clang++ -arch arm64 -isysroot $(IOSSDK) $(APPLE_MINVER)
+	SHARED += -dynamiclib
+	LDFLAGS += -stdlib=libc++
+	fpic = -fPIC
+	GLES = 1
+	GL_LIB := -framework OpenGLES
+	HAVE_VULKAN = 1
+	SINGLE_PREC_FLAGS = 1
+	PLATFORM_EXT := unix
+	ARCH = arm64
+	WITH_DYNAREC =
+	HAVE_GENERIC_JIT = 0
+	NO_REC = 1
+	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_ARM64)
+	HAVE_OPENMP = 0
 
 # iOS
 else ifneq (,$(findstring ios,$(platform)))
@@ -863,6 +931,27 @@ else ifneq (,$(findstring armv,$(platform)))
 	ASFLAGS += $(CFLAGS) -c
 	DEFINES += -DTHREADED_RENDERING_DEFAULT
 
+# LG webOS, 32-bit ARM (the SDK's arm-webos-linux-gnueabi toolchain: the
+# softfp float ABI, which calls as soft-float code does). OpenGL ES 2 only:
+# no Vulkan, no OpenMP.
+else ifeq ($(platform), webos)
+	EXT    ?= so
+	TARGET := $(TARGET_NAME)_libretro.$(EXT)
+	SHARED += -shared -Wl,--version-script=link.T -Wl,--no-undefined
+	fpic := -fPIC
+	LIBS += -lrt
+	FORCE_GLES = 1
+	HAVE_VULKAN = 0
+	HAVE_OPENMP = 0
+	SINGLE_PREC_FLAGS = 1
+	CPUFLAGS += -marm -march=armv7-a -mfpu=neon -mfloat-abi=softfp -D__arm__ -DARM_ASM -DNOSSE -DNO_ASM
+	CFLAGS += $(CPUFLAGS)
+	CXXFLAGS += $(CPUFLAGS)
+	PLATFORM_EXT := unix
+	ARCH = arm
+	WITH_DYNAREC = arm
+	HAVE_GENERIC_JIT = 0
+
 # emscripten
 else ifeq ($(platform), emscripten)
 	EXT       ?= bc
@@ -894,16 +983,21 @@ else
 	SINGLE_PREC_FLAGS=1
 	CC ?= gcc
 	CXX ?= g++
+	WINDOWS_BUILD = 1
+	# win64 and win32 name the CPU built for, whatever the machine is
+ifeq ($(platform), win64)
+	WITH_DYNAREC = x86_64
+else ifeq ($(platform), win32)
+	WITH_DYNAREC = x86
+endif
 ifeq ($(WITH_DYNAREC), x86)
 	LDFLAGS += -m32
 	CFLAGS += -m32
 endif
 	HAVE_VULKAN = 1
-ifeq ($(platform), win)
 	HAVE_D3D11 ?= 1
 	HAVE_D3D9 ?= 1
 	HAVE_D3D12 ?= 1
-endif
 
 endif
 
@@ -931,7 +1025,7 @@ ifeq ($(ARM_FLOAT_ABI_HARD),1)
 	CFLAGS += -DARM_HARDFP
 endif
 
-ifeq ($(WITH_DYNAREC), $(filter $(WITH_DYNAREC), x86_64 x64))
+ifneq (,$(filter $(WITH_DYNAREC), x86_64 x64))
 	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_X64)
 	HAVE_LTCG = 0
 endif
@@ -944,12 +1038,18 @@ ifeq ($(WITH_DYNAREC), arm)
 	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_ARM)
 endif
 
-ifeq ($(WITH_DYNAREC), $(filter $(WITH_DYNAREC), arm64 aarch64))
+ifneq (,$(filter $(WITH_DYNAREC), arm64 aarch64))
 	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_ARM64)
 endif
 
 ifeq ($(WITH_DYNAREC), mips)
 	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_MIPS)
+endif
+
+# No recompiler for this processor (WITH_DYNAREC empty, or one there is
+# none for): the generic CPU
+ifeq ($(HOST_CPU_FLAGS),)
+	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_GENERIC)
 endif
 
 ifeq ($(FORCE_GLES),1)
@@ -958,7 +1058,7 @@ ifeq ($(FORCE_GLES),1)
 else ifneq (,$(findstring gles,$(platform)))
 	GLES = 1
 	GL_LIB := -lGLESv2
-else ifeq ($(platform), win)
+else ifeq ($(WINDOWS_BUILD), 1)
 	GL_LIB := -lopengl32
 else ifneq (,$(findstring osx,$(platform)))
 	GL_LIB := -framework OpenGL
@@ -1094,7 +1194,7 @@ else
 	CFLAGS += -DTARGET_NO_OPENMP
 	CXXFLAGS += -DTARGET_NO_OPENMP
 endif
-ifeq ($(platform), win)
+ifeq ($(WINDOWS_BUILD), 1)
 	LDFLAGS_END += -Wl,-Bstatic -lgomp -lwsock32 -lws2_32 -liphlpapi
 endif
 	NEED_CXX11=1
@@ -1143,7 +1243,7 @@ ifeq ($(NEED_CXX11), 1)
 endif
 
 # Content files are memory-mapped where the platform has mmap().
-ifeq ($(platform), win)
+ifeq ($(WINDOWS_BUILD), 1)
 else ifeq ($(platform), libnx)
 else ifeq ($(platform), emscripten)
 else
