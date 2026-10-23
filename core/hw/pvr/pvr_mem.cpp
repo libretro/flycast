@@ -238,9 +238,9 @@ T DYNACALL pvr_read_area1(u32 addr)
 	// aligned to its size: the last bytes of video memory are not a way out of it
 	return *(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)];
 }
-template u8 pvr_read_area1<u8>(u32 addr);
-template u16 pvr_read_area1<u16>(u32 addr);
-template u32 pvr_read_area1<u32>(u32 addr);
+template u8 DYNACALL pvr_read_area1<u8>(u32 addr);
+template u16 DYNACALL pvr_read_area1<u16>(u32 addr);
+template u32 DYNACALL pvr_read_area1<u32>(u32 addr);
 
 //write
 template<typename T>
@@ -257,9 +257,9 @@ void DYNACALL pvr_write_area1(u32 addr, T data)
 
 	*(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)] = data;
 }
-template void pvr_write_area1<u8>(u32 addr, u8 data);
-template void pvr_write_area1<u16>(u32 addr, u16 data);
-template void pvr_write_area1<u32>(u32 addr, u32 data);
+template void DYNACALL pvr_write_area1<u8>(u32 addr, u8 data);
+template void DYNACALL pvr_write_area1<u16>(u32 addr, u16 data);
+template void DYNACALL pvr_write_area1<u32>(u32 addr, u32 data);
 
 void TAWrite(u32 address, u32* data, u32 count)
 {
@@ -344,7 +344,7 @@ u32 vri(u32 addr)
 }
 
 template<typename T, bool upper>
-T pvr_read_area4(u32 addr)
+T DYNACALL pvr_read_area4(u32 addr)
 {
 	bool access32 = (upper ? SB_LMMODE1 : SB_LMMODE0) == 1;
 	if (access32)
@@ -352,15 +352,15 @@ T pvr_read_area4(u32 addr)
 	else
 		return *(T*)&vram[addr & VRAM_MASK];
 }
-template u8 pvr_read_area4<u8, false>(u32 addr);
-template u16 pvr_read_area4<u16, false>(u32 addr);
-template u32 pvr_read_area4<u32, false>(u32 addr);
-template u8 pvr_read_area4<u8, true>(u32 addr);
-template u16 pvr_read_area4<u16, true>(u32 addr);
-template u32 pvr_read_area4<u32, true>(u32 addr);
+template u8 DYNACALL pvr_read_area4<u8, false>(u32 addr);
+template u16 DYNACALL pvr_read_area4<u16, false>(u32 addr);
+template u32 DYNACALL pvr_read_area4<u32, false>(u32 addr);
+template u8 DYNACALL pvr_read_area4<u8, true>(u32 addr);
+template u16 DYNACALL pvr_read_area4<u16, true>(u32 addr);
+template u32 DYNACALL pvr_read_area4<u32, true>(u32 addr);
 
 template<typename T, bool upper>
-void pvr_write_area4(u32 addr, T data)
+void DYNACALL pvr_write_area4(u32 addr, T data)
 {
 	bool access32 = (upper ? SB_LMMODE1 : SB_LMMODE0) == 1;
 	if (access32)
@@ -368,9 +368,9 @@ void pvr_write_area4(u32 addr, T data)
 	else
 		*(T*)&vram[addr & VRAM_MASK] = data;
 }
-template void pvr_write_area4<u8, false>(u32 addr, u8 data);
-template void pvr_write_area4<u16, false>(u32 addr, u16 data);
-template void pvr_write_area4<u32, false>(u32 addr, u32 data);
-template void pvr_write_area4<u8, true>(u32 addr, u8 data);
-template void pvr_write_area4<u16, true>(u32 addr, u16 data);
-template void pvr_write_area4<u32, true>(u32 addr, u32 data);
+template void DYNACALL pvr_write_area4<u8, false>(u32 addr, u8 data);
+template void DYNACALL pvr_write_area4<u16, false>(u32 addr, u16 data);
+template void DYNACALL pvr_write_area4<u32, false>(u32 addr, u32 data);
+template void DYNACALL pvr_write_area4<u8, true>(u32 addr, u8 data);
+template void DYNACALL pvr_write_area4<u16, true>(u32 addr, u16 data);
+template void DYNACALL pvr_write_area4<u32, true>(u32 addr, u32 data);

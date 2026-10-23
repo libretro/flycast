@@ -838,10 +838,10 @@ T DYNACALL mmu_ReadMem(u32 adr)
 		mmu_raise_exception(rv, adr, MMU_TT_DREAD);
 	return _vmem_readt<T, T>(addr);
 }
-template u8 mmu_ReadMem(u32 adr);
-template u16 mmu_ReadMem(u32 adr);
-template u32 mmu_ReadMem(u32 adr);
-template u64 mmu_ReadMem(u32 adr);
+template u8 DYNACALL mmu_ReadMem(u32 adr);
+template u16 DYNACALL mmu_ReadMem(u32 adr);
+template u32 DYNACALL mmu_ReadMem(u32 adr);
+template u64 DYNACALL mmu_ReadMem(u32 adr);
 
 u16 DYNACALL mmu_IReadMem16(u32 vaddr)
 {
@@ -868,10 +868,10 @@ void DYNACALL mmu_WriteMem(u32 adr, T data)
 		mmu_raise_exception(rv, adr, MMU_TT_DWRITE);
 	_vmem_writet<T>(addr, data);
 }
-template void mmu_WriteMem(u32 adr, u8 data);
-template void mmu_WriteMem(u32 adr, u16 data);
-template void mmu_WriteMem(u32 adr, u32 data);
-template void mmu_WriteMem(u32 adr, u64 data);
+template void DYNACALL mmu_WriteMem(u32 adr, u8 data);
+template void DYNACALL mmu_WriteMem(u32 adr, u16 data);
+template void DYNACALL mmu_WriteMem(u32 adr, u32 data);
+template void DYNACALL mmu_WriteMem(u32 adr, u64 data);
 
 bool mmu_TranslateSQW(u32 adr, u32* out)
 {
