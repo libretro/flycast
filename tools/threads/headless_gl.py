@@ -31,6 +31,9 @@ void glGetIntegerv(unsigned name, int *out)
       case 0x821B: *out = getenv("HEADLESS_GLES") ? 3 : 4; break;   /* GL_MAJOR_VERSION */
       case 0x821C: *out = getenv("HEADLESS_GLES") ? 0 : 5; break;   /* GL_MINOR_VERSION */
       case 0x0D33: *out = 4096; break;   /* GL_MAX_TEXTURE_SIZE */
+      /* glsm keeps a binding per unit: none would be written past (and,
+       * on a 32-bit host, over the heap's own bookkeeping) */
+      case 0x8B4D: *out = 16; break;     /* GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS */
       default:     *out = 0; break;
    }
 }
