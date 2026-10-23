@@ -203,6 +203,7 @@ retro_log_printf_t         log_cb = NULL;
 retro_video_refresh_t      video_cb = NULL;
 retro_input_poll_t         poll_cb = NULL;
 retro_input_state_t        input_cb = NULL;
+static retro_input_state_t frontend_input_cb = NULL;
 retro_audio_sample_batch_t audio_batch_cb = NULL;
 retro_environment_t        environ_cb = NULL;
 retro_environment_t        frontend_clear_thread_waits_cb = NULL;
@@ -437,9 +438,40 @@ void retro_set_input_poll(retro_input_poll_t cb)
    poll_cb = cb;
 }
 
+/* The frontend's input is polled once a retro_run, as late as it can be:
+ * when the game first asks for its inputs in the frame (the maple bus
+ * transfer that reads the controllers, a NAOMI's I/O board), or at the
+ * end of a frame in which it does not ask. A frontend that reads its
+ * devices when the core polls (RetroArch's "Normal" polling) then hands
+ * the game the pad as it is at the moment the game reads it. It used to
+ * be polled at the end of each frame, for the next one: a press that came
+ * while the frontend waited for the screen between two frames was read a
+ * frame late. (RetroArch's "Late" polling reads at the first input_state
+ * after a poll, and its "Early" before each retro_run, either way.)
+ *
+ * Threaded rendering polls at the start of retro_run, on the libretro
+ * thread, before the emulation thread runs the frame (CaptureInput()). */
+static bool input_polled;
+
+static void input_poll_once(void)
+{
+   if (input_polled)
+      return;
+   input_polled = true;
+   if (poll_cb != NULL)
+      poll_cb();
+}
+
+static int16_t input_state_polled(unsigned port, unsigned device, unsigned index, unsigned id)
+{
+   input_poll_once();
+   return frontend_input_cb(port, device, index, id);
+}
+
 void retro_set_input_state(retro_input_state_t cb)
 {
-   input_cb = cb;
+   frontend_input_cb = cb;
+   input_cb = cb != NULL ? input_state_polled : NULL;
 }
 
 static void input_set_deadzone_stick( int percent )
@@ -1620,7 +1652,8 @@ void retro_run (void)
       /* One frame, the one non-threaded rendering would make: the machine
        * runs on the emulation thread up to vblank while this thread draws
        * the renders it starts on the way. */
-      poll_cb();
+      input_polled = false;
+      input_poll_once();
 
       /* Latch input on this (the libretro) thread, once per frame, so the emu
        * thread never calls input_cb itself. Keeps input sampling deterministic
@@ -1673,6 +1706,7 @@ void retro_run (void)
 #endif
    {
 	   rtt_watch_frame();
+	   input_polled = false;
 	   /* A reset the machine asked for itself (dc_request_reset(): a game
 	    * writing the reset register, the test switch of a NAOMI without a
 	    * BIOS) stops the processor and is made at the next frame - here,
@@ -1685,6 +1719,8 @@ void retro_run (void)
 		   retro_atomic_store_release_int(&reset_requested, 0);
 	   }
 	   dc_run();
+	   /* (a frame in which the game read no input polls all the same) */
+	   input_poll_once();
 
 	   /* Emit exactly this frame's audio as one consecutive batch, so the
 	    * frame's video and audio are delivered together per retro_run. */
@@ -3497,7 +3533,9 @@ void os_DoEvents(void)
 				}
 			mouse_ports_read = 0;
 		}
-		poll_cb();
+		/* (this frame's poll, if the game asked for nothing in it: the
+		 * next frame's is made when it first does) */
+		input_poll_once();
 	}
 
 	/* Always return control to retro_run here, once a frame. Previously
