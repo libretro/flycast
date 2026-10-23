@@ -1071,6 +1071,8 @@ static void gl_delete_shaders()
 	gl.modvol_shader.program = 0;
 }
 
+static void own_target_term(void);	// (RenderFrame()'s framebuffer)
+
 static void gl_term(void)
 {
 	glcache.DeleteTextures(ARRAY_SIZE(vmuTextureId), vmuTextureId);
@@ -1091,6 +1093,7 @@ static void gl_term(void)
 	fogTextureId = 0;
 	glcache.DeleteTextures(1, &paletteTextureId);
 	paletteTextureId = 0;
+	own_target_term();
 
 	gl_delete_shaders();
 }
@@ -1216,9 +1219,105 @@ static void upload_vertex_indices()
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER,pvrrc.idx.bytes(),pvrrc.idx.head(),GL_STREAM_DRAW);
 }
 
+/* The picture of a frame for the screen, drawn into a framebuffer of the
+ * renderer's own and copied to the frontend's at the end.
+ *
+ * The depth is 1/w, scaled by 1/fZ_max (rend/depth_scale.h), and needs a
+ * float depth buffer: a frame whose fZ_max is 100000 (Virtua Fighter 4's,
+ * which has a vertex that far) puts its sky, at a 1/w of 0.003, at a depth
+ * of 3e-8 - below the step of a 24-bit depth buffer, where it is the same
+ * depth as the background plane behind it, and its depth test, greater,
+ * fails: the sky was not drawn, and a wedge of the background plane's
+ * colour showed through it, on one frame of the fade to white. The
+ * frontend's framebuffer has the depth buffer it has (RetroArch's: 24
+ * bits), so this renderer draws into one with gl.depth_format's - 32-bit
+ * float, as the per-pixel renderer and Vulkan's have - wherever there is
+ * one (OpenGL 3, OpenGL ES 3). It is made when the size of the picture
+ * changes, not in a frame, and starts out as what the frontend's has (the
+ * picture so far: a frame need not clear it). */
+#ifndef GL_RGBA8
+#define GL_RGBA8 0x8058			/* (OpenGL ES 3's, under OpenGL ES 2's headers) */
+#endif
+#ifndef GL_DEPTH_STENCIL_ATTACHMENT
+#define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
+#endif
+static GLuint own_fbo, own_color, own_depth;
+static int own_w, own_h;
+
+static void own_target_term(void)
+{
+	if (own_fbo != 0)
+		glDeleteFramebuffers(1, &own_fbo);
+	if (own_color != 0)
+		glDeleteRenderbuffers(1, &own_color);
+	if (own_depth != 0)
+		glDeleteRenderbuffers(1, &own_depth);
+	own_fbo = own_color = own_depth = 0;
+	own_w = own_h = 0;
+}
+
+/* The framebuffer the screen's picture is drawn in bound, w x h: true if
+ * it is the renderer's own (own_target_present() copies it to the
+ * frontend's), false if it is the frontend's */
+static bool own_target_bind(int w, int h)
+{
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
+	if (gl.depth_format != GL_DEPTH32F_STENCIL8 || w <= 0 || h <= 0)
+		return false;
+	const GLuint target = hw_render.get_current_framebuffer();
+	if (own_fbo == 0 || own_w != w || own_h != h)
+	{
+		own_target_term();
+		glGenRenderbuffers(1, &own_color);
+		glBindRenderbuffer(RARCH_GL_RENDERBUFFER, own_color);
+		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, GL_RGBA8, w, h);
+		glGenRenderbuffers(1, &own_depth);
+		glBindRenderbuffer(RARCH_GL_RENDERBUFFER, own_depth);
+		glRenderbufferStorage(RARCH_GL_RENDERBUFFER, gl.depth_format, w, h);
+		glBindRenderbuffer(RARCH_GL_RENDERBUFFER, 0);
+		glGenFramebuffers(1, &own_fbo);
+		glBindFramebuffer(RARCH_GL_FRAMEBUFFER, own_fbo);
+		glFramebufferRenderbuffer(RARCH_GL_FRAMEBUFFER, RARCH_GL_COLOR_ATTACHMENT0, RARCH_GL_RENDERBUFFER, own_color);
+		glFramebufferRenderbuffer(RARCH_GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, RARCH_GL_RENDERBUFFER, own_depth);
+		if (glCheckFramebufferStatus(RARCH_GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		{
+			WARN_LOG(RENDERER, "OpenGL: no framebuffer with a float depth buffer: drawing into the frontend's");
+			own_target_term();
+			glBindFramebuffer(RARCH_GL_FRAMEBUFFER, target);
+			return false;
+		}
+		own_w = w;
+		own_h = h;
+		glcache.Disable(GL_SCISSOR_TEST);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, target);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, own_fbo);
+		glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	}
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, own_fbo);
+	return true;
+#else
+	(void)w; (void)h;
+	return false;
+#endif
+}
+
+// The picture drawn in the renderer's own framebuffer to the frontend's, which is left bound
+static void own_target_present(void)
+{
+#if defined(GL_READ_FRAMEBUFFER) && defined(GL_DRAW_FRAMEBUFFER)
+	const GLuint target = hw_render.get_current_framebuffer();
+	glcache.Disable(GL_SCISSOR_TEST);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, own_fbo);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
+	glBlitFramebuffer(0, 0, own_w, own_h, 0, 0, own_w, own_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	glBindFramebuffer(RARCH_GL_FRAMEBUFFER, target);
+#endif
+}
+
 static bool RenderFrame(void)
 {
 	int vmu_screen_number = 0 ;
+	bool own_target = false;
 	int lightgun_port = 0 ;
 
 	DoCleanup();
@@ -1380,6 +1479,8 @@ static bool RenderFrame(void)
 	{
 		if (settings.rend.PowerVR2Filter && !pvrrc.isRenderFramebuffer)
 			postProcessor.SelectFramebuffer();
+		else
+			own_target = own_target_bind(screen_width, screen_height);
 		glViewport(0, 0, screen_width, screen_height);
 		/* in a new context, the picture kept from the old one (rend/last_picture.h) */
 		gl_restore_picture();
@@ -1522,6 +1623,8 @@ static bool RenderFrame(void)
 
 	KillTex = false;
 
+	if (own_target)
+		own_target_present();
 	if (is_rtt)
 		ReadRTTBuffer();
 	// (the frontend's own drawing has the context as it was)
