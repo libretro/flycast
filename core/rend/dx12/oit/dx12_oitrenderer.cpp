@@ -711,6 +711,8 @@ void DX12OITRenderer::PreparePipelines()
 			// the lists: nothing written but the lists
 			k.pass = DX12_PASS_OIT;
 			k.blend = false;
+			// (no blend, no instructions: as DrawPoly() keys them, not the last blend's above)
+			k.src = k.dst = 0;
 			k.writeColor = false;
 			k.depthFunc = 6;
 			k.depthWrite = false;
