@@ -298,8 +298,14 @@ raster_list() {
    for g in 0 1; do for p in 0 1 2; do for r in 0 1 2; do
       [ $p = 2 ] && [ $r = 1 ] && continue
       ss=; [ $r != 0 ] && ss=,SSAA=1
-      echo "OIT_FRAG_G${g}_P${p}_R$r frag pp_Gouraud=$g,PASS=$p,pp_SampleRate=$r$ss key oit_header.glsl oit.frag"
+      # (the lists' pass with SSAA tests the depth at each sample: oit_sample_depth.glsl)
+      sd=; [ $p = 2 ] && [ $r = 2 ] && sd="pattern oit_header.glsl oit_sample_depth.glsl"
+      echo "OIT_FRAG_G${g}_P${p}_R$r frag pp_Gouraud=$g,PASS=$p,pp_SampleRate=$r$ss key ${sd:-oit_header.glsl} oit.frag"
    done; done; done
+   # (...and where the device says which samples its depth test passed: VK_EXT_post_depth_coverage)
+   for g in 0 1; do
+      echo "OIT_FRAG_G${g}_P2_R2_PDC frag pp_Gouraud=$g,PASS=2,pp_SampleRate=2,SSAA=1,POST_DEPTH_COVERAGE=1 pdc key pattern oit_header.glsl oit_sample_depth.glsl oit.frag"
+   done
    echo "OIT_MODVOL_FRAG frag - key oit_header.glsl oit_modvol.frag"
    echo "OIT_CLEAR_FRAG frag - key oit_header.glsl oit_clear.frag"
    for m in 0 1 2 3; do
@@ -321,6 +327,8 @@ raster_source() {
       case $part in
       key) cat core/rend/vulkan/pso_key.h ;;
       resolve) echo "#define PVR_SHADER_GLSL"; echo "#define PVR_LANE_NONE"; sed -e '1,2d' -e '$d' core/rend/tile/pvr_resolve_text.inc ;;
+      pdc) echo "#extension GL_ARB_post_depth_coverage : require" ;;
+      pattern) echo "#define PVR_SHADER_GLSL"; echo "#define PVR_LANE_NONE"; sed '/^#include/d' core/rend/tile/pvr_lane.h core/rend/ssaa_pattern.h ;;
       *) cat $RS/$part ;;
       esac
    done

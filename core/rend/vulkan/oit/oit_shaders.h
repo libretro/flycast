@@ -23,6 +23,7 @@
 #include "../vulkan.h"
 #include "../utils.h"
 #include "../shaders.h"
+#include "../vulkan_context.h"
 
 enum class Pass { Depth, Color, OIT };
 
@@ -69,7 +70,12 @@ public:
 	void Init()
 	{
 		modules.Make(RSPV_MODVOL_VERT, RSPV_MODVOL_VERT);
-		modules.Make(RSPV_OIT_VERT_G0, RSPV_OIT_FINAL_VERT);
+		modules.Make(RSPV_OIT_VERT_G0, RSPV_OIT_FRAG_G1_P2_R2);
+		// (SSAA's lists taking the samples the depth test passed: only where the device has that)
+		postDepthCoverage = VulkanContext::Instance()->postDepthCoverage;
+		if (postDepthCoverage)
+			modules.Make(RSPV_OIT_FRAG_G0_P2_R2_PDC, RSPV_OIT_FRAG_G1_P2_R2_PDC);
+		modules.Make(RSPV_OIT_MODVOL_FRAG, RSPV_OIT_FINAL_VERT);
 	}
 	vk::ShaderModule GetVertexShader(const VertexShaderParams& params) const
 	{
@@ -80,6 +86,8 @@ public:
 	{
 		// G0_P0_R0 ... G0_P2_R2, without the lists' at each sample: eight a gouraud
 		static const int byPassRate[3][3] = { { 0, 1, 2 }, { 3, 4, 5 }, { 6, -1, 7 } };
+		if (params.pass == Pass::OIT && params.sampleRate == 2 && postDepthCoverage)
+			return modules.Get(params.gouraud ? RSPV_OIT_FRAG_G1_P2_R2_PDC : RSPV_OIT_FRAG_G0_P2_R2_PDC);
 		return modules.Get((RasterSpv)(RSPV_OIT_FRAG_G0_P0_R0 + (params.gouraud ? 8 : 0) + byPassRate[(int)params.pass][params.sampleRate]));
 	}
 	vk::ShaderModule GetModVolVertexShader() const { return modules.Get(RSPV_MODVOL_VERT); }
@@ -112,4 +120,5 @@ public:
 private:
 	RasterModules modules;
 	u32 samples = 1;
+	bool postDepthCoverage = false;	// the device's (VulkanContext::postDepthCoverage), as Init() found it
 };

@@ -168,6 +168,7 @@ public:
 	bool drawIndirectFirstInstance = false;
 	bool drawIndirectCount = false;		// VK_KHR_draw_indirect_count
 	bool sampleRateShading = false;
+	bool postDepthCoverage = false;		// VK_EXT_post_depth_coverage: SSAA's per-pixel lists (vulkan/shaders/oit_sample_depth.glsl)
 	bool shaderInt64 = false;		// enabled on the device when it has it
 	bool sampledImageArrayIndexing = false;	// ...and this, shaderSampledImageArrayDynamicIndexing
 	bool nonUniformTextureIndexing = false;	// ...and shaderSampledImageArrayNonUniformIndexing (VK_EXT_descriptor_indexing)

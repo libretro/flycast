@@ -129,6 +129,7 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 	VulkanContext::Instance()->multiDrawIndirect = supportedFeatures.multiDrawIndirect;
 	VulkanContext::Instance()->drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
 	VulkanContext::Instance()->drawIndirectCount = false;
+	VulkanContext::Instance()->postDepthCoverage = false;
 	// (SSAA's shading per sample: see VulkanContext::SsaaSamples())
 	VulkanContext::Instance()->sampleRateShading = supportedFeatures.sampleRateShading;
 	// (the compute renderer's edge arithmetic, and its array of textures: vulkan/compute_drawer.h)
@@ -162,6 +163,12 @@ static bool createDevice(retro_vulkan_context* context, VkInstance instance, VkP
 			// (GPU-side TA processing's translucent draws: see TaDecoder)
 			deviceExtensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
 			VulkanContext::Instance()->drawIndirectCount = true;
+		}
+		else if (!strcmp(property.extensionName, VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME))
+		{
+			// (SSAA: the per-pixel renderer's lists take the samples the depth test passed)
+			deviceExtensions.push_back(VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME);
+			VulkanContext::Instance()->postDepthCoverage = true;
 		}
 		else if (!strcmp(property.extensionName, "VK_EXT_extended_dynamic_state"))
 			hasEds = true;

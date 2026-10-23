@@ -1,10 +1,22 @@
 // The per-pixel renderer's polygons (oit_shaders.cpp), after oit_header.glsl.
 // Made with pp_Gouraud (0 or 1), PASS (0 depth, 1 colour, 2 the lists) and
 // pp_SampleRate (0 without SSAA; with it, 1 shaded at each sample, 2 once a
-// pixel) defined, and SSAA with SSAA: tools/rend/kernels_spv.sh. What else
+// pixel) defined, and SSAA with SSAA (and the lists' pass once a pixel
+// with POST_DEPTH_COVERAGE, where the device has that, after
+// oit_sample_depth.glsl too): tools/rend/kernels_spv.sh. What else
 // a polygon needs are the bits of the key (pso_key.h).
 
 layout (constant_id = PSO_SC_KEY) const int sc_key = -1;
+
+#ifdef POST_DEPTH_COVERAGE
+/* SSAA, the lists' pass, where the device has VK_EXT_post_depth_coverage:
+ * the depth test (greater or equal, against the opaque polygons' depth,
+ * read-only) is done before the shader, at each sample, and the samples
+ * it passed are the ones in gl_SampleMaskIn - exactly the test the shader
+ * would do by hand, by the device that wrote the depth */
+layout (early_fragment_tests) in;
+layout (post_depth_coverage) in;
+#endif
 
 #define PI 3.1415926
 
@@ -107,9 +119,7 @@ layout (set = 0, binding = 6) uniform sampler2D palette;
 layout (input_attachment_index = 0, set = 0, binding = 4) uniform usubpassInputMS shadow_stencil;
 #define STENCIL_LOAD() subpassLoad(shadow_stencil, OWN_SAMPLE)
 #endif
-#if PASS == PASS_OIT
-layout (input_attachment_index = 0, set = 0, binding = 5) uniform subpassInputMS DepthTex;
-#endif
+// (the lists' pass: DepthTex is oit_sample_depth.glsl's)
 #else
 #if PASS == PASS_COLOR
 layout (input_attachment_index = 0, set = 0, binding = 4) uniform usubpassInput shadow_stencil;
@@ -188,6 +198,10 @@ void main()
 {
 #if pp_SampleRate == 2
 	// (first, while nothing is discarded: derivatives are defined only then)
+	#if PASS == PASS_OIT
+		// (the depth's differences to the next pixels: for its depth at each sample, oit_sample_depth.glsl)
+		const highp vec2 dz = vec2(dFdxFine(FRAG_DEPTH), dFdyFine(FRAG_DEPTH));
+	#endif
 	if (pp_Texture == 1)
 	{
 		const vec2 c = interpolateAtOffset(in_vtx_uv, vec2(0.0));
@@ -200,15 +214,18 @@ void main()
 	}
 #endif
 	#if PASS == PASS_OIT && defined(SSAA)
-		/* Manual depth testing, at each sample the fragment covers (with its
-		 * depth at the pixel's centre: it is shaded once a pixel), which
-		 * leaves the samples it is seen at */
-		uint coverage = 0u;
-		for (int s = 0; s < SSAA_SAMPLES; s++)
-			if ((gl_SampleMaskIn[0] & (1 << s)) != 0 && FRAG_DEPTH >= subpassLoad(DepthTex, s).r)
-				coverage |= 1u << s;
+		/* The samples the fragment is seen at: those the device's depth test
+		 * passed, before the shader (POST_DEPTH_COVERAGE); or depth tested
+		 * here, at each sample it covers with its depth there. It is kept
+		 * with its depth at their centroid (oit_sample_depth.glsl). */
+		#ifdef POST_DEPTH_COVERAGE
+		const uint coverage = uint(gl_SampleMaskIn[0]);
+		#else
+		const uint coverage = oitSampleDepthTest(uint(gl_SampleMaskIn[0]), FRAG_DEPTH, dz);
+		#endif
 		if (coverage == 0u)
 			discard;
+		const highp float keptDepth = oitKeptDepth(coverage, FRAG_DEPTH, dz);
 	#elif PASS == PASS_OIT
 		// Manual depth testing
 		highp float frontDepth = subpassLoad(DepthTex).r;
@@ -402,7 +419,11 @@ void main()
 
 		Pixel pixel;
 		pixel.color = packColors(clamp(color, vec4(0.0), vec4(1.0)));
-		pixel.depth = FRAG_DEPTH;
+		#ifdef SSAA
+			pixel.depth = keptDepth;
+		#else
+			pixel.depth = FRAG_DEPTH;
+		#endif
 		pixel.seq_num = uint(pushConstants.pp_Number) + vtx_pp;
 		#ifdef SSAA
 			pixel.seq_num |= coverage << COVERAGE_SHIFT;
