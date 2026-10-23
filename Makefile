@@ -932,7 +932,9 @@ else ifeq ($(platform), webos)
 	TARGET := $(TARGET_NAME)_libretro.$(EXT)
 	SHARED += -shared -Wl,--version-script=link.T -Wl,--no-undefined
 	fpic := -fPIC
-	LIBS += -lrt
+	# -ldl: the SDK links its libglibc_polyfills.a into every library, and
+	# its aligned_alloc() looks the C library's up with dlsym()
+	LIBS += -lrt -ldl
 	FORCE_GLES = 1
 	HAVE_VULKAN = 0
 	HAVE_OPENMP = 0

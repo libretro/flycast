@@ -369,3 +369,8 @@ bx lr
 #endif
 
 #endif
+
+#if defined(__linux__) && defined(__ELF__)
+/* No executable stack: without this note the linker gives the library one */
+.section .note.GNU-stack,"",%progbits
+#endif
