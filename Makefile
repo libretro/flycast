@@ -154,9 +154,11 @@ ifneq (,$(findstring unix,$(platform)))
 		ASFLAGS += --32
 		LDFLAGS += -m32
 		HAVE_GENERIC_JIT = 0
-		# The 32-bit x86 recompiler crashes on the first frame in a Linux
-		# shared library (it ends up running the library's GOT): the
-		# interpreters, until it is mended
+		# The interpreters: the 32-bit x86 recompiler is the old one, left
+		# behind by the rest - it has no way through a guest MMU exception
+		# (a C++ throw, which cannot unwind through its code), its memory
+		# stubs call handlers taken before they are set, and what it emits
+		# for today's SH4 blocks is not right
 		WITH_DYNAREC =
 		HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_X86)
 		NO_REC = 1
@@ -993,6 +995,10 @@ endif
 ifeq ($(WITH_DYNAREC), x86)
 	LDFLAGS += -m32
 	CFLAGS += -m32
+	# the interpreters, as on 32-bit x86 Linux: see there
+	WITH_DYNAREC =
+	HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_X86)
+	NO_REC = 1
 endif
 	HAVE_VULKAN = 1
 	HAVE_D3D11 ?= 1

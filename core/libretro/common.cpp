@@ -59,13 +59,15 @@ static LONG ExceptionHandler(EXCEPTION_POINTERS *ExceptionInfo)
 
    //printf("[EXC] During access to : 0x%X\n", address);
 
+#if FEAT_SHREC != DYNAREC_NONE
 	if (bm_RamWriteAccess(address))
 	{
 		return EXCEPTION_CONTINUE_EXECUTION;
 	}
-	else if (rtt_watch_fault(address) || VramLockedWrite(address))
+#endif
+	if (rtt_watch_fault(address) || VramLockedWrite(address))
       return EXCEPTION_CONTINUE_EXECUTION;
-#ifndef TARGET_NO_NVMEM
+#if !defined(TARGET_NO_NVMEM) && FEAT_SHREC != DYNAREC_NONE
    if (BM_LockedWrite(address))
       return EXCEPTION_CONTINUE_EXECUTION;
 #endif
