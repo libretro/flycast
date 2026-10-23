@@ -1735,7 +1735,6 @@ void retro_reset (void)
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
 static void context_reset(void)
 {
-	INFO_LOG(RENDERER, "context_reset.");
    context_resets++;
    take_pending_size();
    gl_ctx_resetting = false;
@@ -2910,12 +2909,9 @@ bool retro_load_game(const struct retro_game_info *game)
 
       snprintf(data_dir, sizeof(data_dir), "%s%s", game_dir, "data");
 
-      INFO_LOG(COMMON, "Creating dir: %s", data_dir);
       struct stat buf;
       if (!path_is_directory(data_dir))
-      {
          path_mkdir(data_dir);
-      }
    }
 
    u32 preferred;
@@ -2988,9 +2984,9 @@ bool retro_load_game(const struct retro_game_info *game)
             DEBUG_LOG(BOOT, "Creating dir: %s", save_dir);
             path_mkdir(save_dir);
          }
-      } else {
-         strncpy(save_dir, g_roms_dir, sizeof(save_dir));
       }
+      else
+         strncpy(save_dir, g_roms_dir, sizeof(save_dir));
       INFO_LOG(BOOT, "Setting save dir to %s", save_dir);
       snprintf(eeprom_file, sizeof(eeprom_file), "%s%s.eeprom", save_dir, g_base_name);
       snprintf(nvmem_file, sizeof(nvmem_file), "%s%s.nvmem", save_dir, g_base_name);
@@ -3027,7 +3023,6 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 void retro_unload_game(void)
 {
-	INFO_LOG(COMMON, "Flycast unloading game");
    /* The machine is going, video memory with it: nothing is to be written
     * there after this (the context is destroyed later than this). */
    rtt_watch_forget();
@@ -3251,7 +3246,7 @@ const char* retro_get_system_directory(void)
 
 void retro_get_system_info(struct retro_system_info *info)
 {
-   info->library_name = "Flycast";
+   info->library_name = "ParaLLEl DC";
 #ifndef GIT_VERSION
 #define GIT_VERSION ""
 #endif
