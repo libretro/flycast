@@ -114,6 +114,12 @@ static INLINE void AdjustDelaySlotException(SH4ThrownException& ex)
 }
 
 // The SH4 sets the signaling bit to 0 for qNaN (unlike all recent CPUs). Some games relies on this.
+/* Otherwise a NaN is the one NaN an ARM host gives, its default NaN, which
+ * the SH4's thread asks for there (sh4_core_regs.cpp): the same on every
+ * host, as what a game works out has to be. An x86 one gives a NaN made
+ * from an operand's, or one with the sign set, and comes here to be given
+ * that one; an ARM one has nothing to do. (The x86-64 recompiler does the
+ * same in its code.) */
 static INLINE float fixNaN(f32 f)
 {
 #ifdef STRICT_MODE
@@ -124,6 +130,12 @@ static INLINE float fixNaN(f32 f)
 //	// fast-math
 //	if ((hex & 0x7fffffff) > 0x7f800000)
 //		hex = 0x7fbfffff;
+#elif HOST_CPU == CPU_X86 || HOST_CPU == CPU_X64
+	if (f != f)
+	{
+		const u32 nan = 0x7fc00000;
+		memcpy(&f, &nan, sizeof(f));
+	}
 #endif
 	return f;
 }
@@ -137,6 +149,12 @@ static INLINE f64 fixNaN64(f64 f)
 		hex = 0x7ff7ffffffffffffll;
 	// fast-math
 //	return (*(u64 *)&f & 0x7fffffffffffffffll) <= 0x7f80000000000000ll ? f : 0x7ff7ffffffffffffll;
+#elif HOST_CPU == CPU_X86 || HOST_CPU == CPU_X64
+	if (f != f)
+	{
+		const u64 nan = 0x7ff8000000000000ull;
+		memcpy(&f, &nan, sizeof(f));
+	}
 #endif
 	return f;
  }

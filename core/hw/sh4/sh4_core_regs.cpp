@@ -94,8 +94,12 @@ static void setHostRoundingMode()
         if (fpscr.RM==1)  //if round to 0 , set the flag
            temp|=(3<<13);
 
-        if (fpscr.DN)     //denormals are considered 0
-           temp|=(1<<15);
+        /* Denormals are zero, as results (FTZ, bit 15) and as operands
+         * (DAZ, bit 6), as on the SH4 and as an ARM host's FZ has it. With
+         * FTZ alone a very small number the game had in memory was used as
+         * it was here and as zero there: two machines came out different. */
+        if (fpscr.DN)
+           temp|=(1<<15)|(1<<6);
         asm("ldmxcsr %0" : : "m"(temp));
 #elif HOST_CPU==CPU_ARM
         static const unsigned int x = 0x04086060;

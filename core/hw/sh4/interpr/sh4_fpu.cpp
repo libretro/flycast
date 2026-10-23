@@ -115,6 +115,7 @@ sh4op(i1111_nnnn_mmmm_0001)
 
 		double drn=GetDR(n), drm=GetDR(m);
 		drn-=drm;
+		CHECK_FPU_64(drn);
 		//dr[n] -= dr[m];
 		SetDR(n,drn);
 	}
@@ -136,6 +137,7 @@ sh4op(i1111_nnnn_mmmm_0010)
 
 		double drn=GetDR(n), drm=GetDR(m);
 		drn*=drm;
+		CHECK_FPU_64(drn);
 		//dr[n] *= dr[m];
 		SetDR(n,drn);
 	}
@@ -159,6 +161,7 @@ sh4op(i1111_nnnn_mmmm_0011)
 
 		double drn=GetDR(n), drm=GetDR(m);
 		drn/=drm;
+		CHECK_FPU_64(drn);
 		SetDR(n,drn);
 	}
 }
@@ -475,7 +478,7 @@ sh4op(i1111_nnnn_1011_1101)
 	{
 		u32 n = (op >> 9) & 0x07;
 		u32*p=&fpul;
-		*((float*)p) = (float)GetDR(n);
+		*((float*)p) = fixNaN((float)GetDR(n));
 	}
 	else
 	{
@@ -491,7 +494,7 @@ sh4op(i1111_nnnn_1010_1101)
 	{
 		u32 n = (op >> 9) & 0x07;
 		u32* p = &fpul;
-		SetDR(n,(double)*((float*)p));
+		SetDR(n,fixNaN64((double)*((float*)p)));
 	}
 	else
 	{

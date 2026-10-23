@@ -1133,19 +1133,32 @@ public:
 				}
 				break;
 
+			/* FIPR and FTRV in doubles, the sums in the order the reference
+			 * implementations in hw/sh4/dyna/shil_canonical.h take them, as
+			 * the interpreter and the x86-64 recompiler do: a float times a
+			 * float is exact in a double, so the only roundings are those of
+			 * the sums and of the result, and the result is theirs to the
+			 * last bit. (Fused in doubles is the same as not: the product
+			 * has nothing to round.) They used to be done in floats here,
+			 * with fused multiply-adds, and a game's vertices came out a bit
+			 * different on an ARM machine: netplay against an x86 one, or a
+			 * state taken from one to the other, parted at once. */
 			case shop_fipr:
 				Add(x9, x28, sh4_context_mem_operand(op.rs1.reg_ptr()).GetOffset());
 				Ld1(v0.V4S(), MemOperand(x9));
-				if (op.rs1._reg != op.rs2._reg)
-				{
-					Add(x9, x28, sh4_context_mem_operand(op.rs2.reg_ptr()).GetOffset());
-					Ld1(v1.V4S(), MemOperand(x9));
-					Fmul(v0.V4S(), v0.V4S(), v1.V4S());
-				}
-				else
-					Fmul(v0.V4S(), v0.V4S(), v0.V4S());
-				Faddp(v1.V4S(), v0.V4S(), v0.V4S());
-				Faddp(regalloc.MapVRegister(op.rd), v1.V2S());
+				Add(x9, x28, sh4_context_mem_operand(op.rs2.reg_ptr()).GetOffset());
+				Ld1(v1.V4S(), MemOperand(x9));
+				Fcvtl(v16.V2D(), v0.V2S());
+				Fcvtl2(v17.V2D(), v0.V4S());
+				Fcvtl(v18.V2D(), v1.V2S());
+				Fcvtl2(v19.V2D(), v1.V4S());
+				Fmul(v16.V2D(), v16.V2D(), v18.V2D());	// the first two products
+				Fmul(v17.V2D(), v17.V2D(), v19.V2D());	// and the last two
+				Faddp(d16, v16.V2D());					// first + second
+				Fadd(d16, d16, d17);					// + third
+				Mov(d17, v17.V2D(), 1);
+				Fadd(d16, d16, d17);					// + fourth
+				Fcvt(regalloc.MapVRegister(op.rd), d16);
 				break;
 
 			case shop_ftrv:
@@ -1156,10 +1169,30 @@ public:
 				Ld1(v2.V4S(), MemOperand(x9, 16, PostIndex));
 				Ld1(v3.V4S(), MemOperand(x9, 16, PostIndex));
 				Ld1(v4.V4S(), MemOperand(x9, 16, PostIndex));
-				Fmul(v5.V4S(), v1.V4S(), s0, 0);
-				Fmla(v5.V4S(), v2.V4S(), s0, 1);
-				Fmla(v5.V4S(), v3.V4S(), s0, 2);
-				Fmla(v5.V4S(), v4.V4S(), s0, 3);
+				// the vector's elements, and each column times its element, two rows to a register
+				Fcvtl(v6.V2D(), v0.V2S());
+				Fcvtl2(v7.V2D(), v0.V4S());
+				{
+					const VRegister *const column[4] = { &v1, &v2, &v3, &v4 };
+					for (int col = 0; col < 4; col++)
+					{
+						const VRegister& element = col < 2 ? d6 : d7;
+						Fcvtl(v18.V2D(), column[col]->V2S());	// rows 0 and 1
+						Fcvtl2(v19.V2D(), column[col]->V4S());	// rows 2 and 3
+						if (col == 0)
+						{
+							Fmul(v16.V2D(), v18.V2D(), element, col & 1);
+							Fmul(v17.V2D(), v19.V2D(), element, col & 1);
+						}
+						else
+						{
+							Fmla(v16.V2D(), v18.V2D(), element, col & 1);
+							Fmla(v17.V2D(), v19.V2D(), element, col & 1);
+						}
+					}
+				}
+				Fcvtn(v5.V2S(), v16.V2D());
+				Fcvtn2(v5.V4S(), v17.V2D());
 				Add(x9, x28, sh4_context_mem_operand(op.rd.reg_ptr()).GetOffset());
 				St1(v5.V4S(), MemOperand(x9));
 				break;

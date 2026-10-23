@@ -1450,15 +1450,19 @@ public:
 
             case shop_fadd:
                GenBinaryFOp(op, &BlockCompiler::addss);
+               GenNaNFix(regalloc.MapXRegister(op.rd));
                break;
             case shop_fsub:
                GenBinaryFOp(op, &BlockCompiler::subss);
+               GenNaNFix(regalloc.MapXRegister(op.rd));
                break;
             case shop_fmul:
                GenBinaryFOp(op, &BlockCompiler::mulss);
+               GenNaNFix(regalloc.MapXRegister(op.rd));
                break;
             case shop_fdiv:
                GenBinaryFOp(op, &BlockCompiler::divss);
+               GenNaNFix(regalloc.MapXRegister(op.rd));
                break;
 
             case shop_fabs:
@@ -1474,9 +1478,21 @@ public:
 
             case shop_fsqrt:
                sqrtss(regalloc.MapXRegister(op.rd), regalloc.MapXRegister(op.rs1));
+               GenNaNFix(regalloc.MapXRegister(op.rd));
                break;
 
             case shop_fmac:
+					/* One rounding, of the sum, as the interpreter and the
+					 * other recompilers have it (the reference is std::fma). A
+					 * processor with no FMA instructions used to get a multiply
+					 * and an add here, two roundings: the same game on two
+					 * machines came out different, and netplay between them
+					 * parted. Such a processor has the reference called. */
+					if (!cpu.has(Xbyak::util::Cpu::tFMA))
+					{
+						shil_chf[op.op](&op);
+						break;
+					}
 					{
 						Xbyak::Xmm rs1 = regalloc.MapXRegister(op.rs1);
 						Xbyak::Xmm rs2 = regalloc.MapXRegister(op.rs2);
@@ -1501,14 +1517,8 @@ public:
 						{
 							movss(rd, rs1);
 						}
-						if (cpu.has(Xbyak::util::Cpu::tFMA))
-							vfmadd231ss(rd, rs2, rs3);
-						else
-						{
-							movss(xmm0, rs2);
-							mulss(xmm0, rs3);
-							addss(rd, xmm0);
-						}
+						vfmadd231ss(rd, rs2, rs3);
+						GenNaNFix(rd);
 					}
                break;
 
@@ -1518,6 +1528,7 @@ public:
    				mov(eax, 0x3f800000);	// 1.0
    				movd(regalloc.MapXRegister(op.rd), eax);
    				divss(regalloc.MapXRegister(op.rd), xmm0);
+               GenNaNFix(regalloc.MapXRegister(op.rd));
                break;
 
             case shop_fsetgt:
@@ -1563,6 +1574,7 @@ public:
 					lea(rax, Ctx(op.rs1.reg_ptr()));
 					lea(rcx, Ctx(op.rs2.reg_ptr()));
 					x64_emit_fipr(*this, regalloc.MapXRegister(op.rd));
+					GenNaNFix(regalloc.MapXRegister(op.rd));
 					break;
 
             case shop_ftrv:
@@ -1571,6 +1583,7 @@ public:
 					lea(rax, Ctx(op.rs1.reg_ptr()));		// the vector
 					lea(rcx, Ctx(op.rs2.reg_ptr()));		// the matrix
 					x64_emit_ftrv(*this);
+					GenNaNFix4();
 					lea(rax, Ctx(op.rd.reg_ptr()));
 					movups(xword[rax], xmm0);
 					break;
@@ -2872,6 +2885,42 @@ public:
 	   }
 	   else
 			(this->*natop)(rd, regalloc.MapRegister(*rs2));
+	}
+
+	/* A NaN comes out as the one NaN an ARM host gives, its default NaN,
+	 * 0x7fc00000 (which the SH4's thread asks for there: sh4_core_regs.cpp,
+	 * and the interpreter here: fixNaN() in sh4_core.h). An x86 processor
+	 * gives a NaN made from an operand's, or 0xffc00000: the same game had
+	 * other bits in its memory here than there, which netplay between the
+	 * two, or a state taken from one to the other, soon found. Games make
+	 * NaNs in the course of things. The branch is rarely taken. */
+	void GenNaNFix(const Xbyak::Xmm& rd)
+	{
+		Xbyak::Label ok;
+		ucomiss(rd, rd);
+		jnp(ok);
+		mov(eax, 0x7fc00000);
+		movd(rd, eax);
+		L(ok);
+	}
+
+	// The same for FTRV's four results, in xmm0. Uses xmm1 and xmm2.
+	void GenNaNFix4()
+	{
+		Xbyak::Label ok;
+		movaps(xmm1, xmm0);
+		cmpunordps(xmm1, xmm1);		// all ones where a NaN is
+		movmskps(eax, xmm1);
+		test(eax, eax);
+		jz(ok);
+		mov(eax, 0x7fc00000);
+		movd(xmm2, eax);
+		shufps(xmm2, xmm2, 0);
+		andps(xmm2, xmm1);
+		andnps(xmm1, xmm0);
+		orps(xmm1, xmm2);
+		movaps(xmm0, xmm1);
+		L(ok);
 	}
 
 	void GenBinaryFOp(const shil_opcode &op, X64BinaryFOp natop)
