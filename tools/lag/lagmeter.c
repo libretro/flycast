@@ -40,7 +40,11 @@
  *   LAG_PRESS   "N:ID[:FRAMES]": the first pad's button ID (a
  *               RETRO_DEVICE_ID_JOYPAD_) held from frame N, for FRAMES
  *               frames or to the end
- *   LAG_PORT    the port the press goes to (default 0)
+ *   LAG_PORT    the port the press goes to (default 0), and LAG_SCRIPT's
+ *   LAG_SCRIPT  "F:ID[:FRAMES],...": more presses, in both runs (default 10
+ *               frames each), to bring a game to where the press is to be
+ *               measured from a state, or from the start
+ *   LAG_SAVE    "F:FILE": the state after frame F written to FILE
  *   LAG_POLL    early, normal or late (default): when the frontend reads
  *               the pad, as RetroArch's "Polling Behavior" (below)
  *   LAG_VIDEO   "gl": OpenGL through EGL with no display; "vulkan": a
@@ -56,8 +60,10 @@
  *               not worked out.
  *
  * Each line of a trace: frame, V (a new picture) or D (a duplicate), the
- * hash of the picture shown, of main memory, FB_R_SOF1, FB_W_SOF1 and the
- * render count.
+ * hash of the picture shown, of main memory, FB_R_SOF1, FB_W_SOF1, the
+ * render count, how many times the core called input_poll and input_state
+ * in the frame, and the sound frames it made (how long it ran). The first
+ * line has the sound's rate and the frame rate.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -94,8 +100,10 @@ struct line
    int frame;
    char kind;
    uint64_t picture, ram;
-   unsigned fb_r, fb_w, renders;
+   unsigned fb_r, fb_w, renders, polls, reads, samples;
 };
+
+static double trace_rate, trace_fps;	// the sound's sample rate, the frame rate the core says
 
 static int trace_read(const char *path, struct line **out)
 {
@@ -112,7 +120,11 @@ static int trace_read(const char *path, struct line **out)
    {
       struct line x;
       unsigned long long p, r;
-      if (sscanf(buf, "%d %c %llx %llx %x %x %u", &x.frame, &x.kind, &p, &r, &x.fb_r, &x.fb_w, &x.renders) != 7)
+      if (sscanf(buf, "# rate %lf fps %lf", &trace_rate, &trace_fps) == 2)
+         continue;
+      x.polls = x.reads = x.samples = 0;
+      if (sscanf(buf, "%d %c %llx %llx %x %x %u %u %u %u", &x.frame, &x.kind, &p, &r, &x.fb_r, &x.fb_w, &x.renders,
+            &x.polls, &x.reads, &x.samples) < 7)
          continue;
       x.picture = p;
       x.ram = r;
@@ -190,6 +202,21 @@ static int compare_main(int argc, char **argv)
       printf("  |  lag %d", present - press);
       if (shown >= 0)
          printf("  game %d  core %+d", shown - press, present - shown);
+      /* The lag in the machine's own frames: the time the retro_runs from
+       * the press to the picture ran, from the sound they made. (A core
+       * whose retro_run is not one frame of the machine's - one that
+       * returns when a picture is made, every other vblank for a game at
+       * 30 frames a second - has its lag in retro_runs mean another
+       * thing.) */
+      if (trace_rate > 0 && trace_fps > 0)
+      {
+         double sum = 0;
+         for (i = 0; i < n; i++)
+            if (b[i].frame >= press && b[i].frame <= present)
+               sum += b[i].samples;
+         if (sum > 0)
+            printf("  |  %.2f frames of the machine's", sum * trace_fps / trace_rate - 1.0);
+      }
    }
    printf("\n");
    return 0;
@@ -628,7 +655,7 @@ static int have_hw;
 static uint64_t shown_hash;
 static int frame_now, press_frame = -1, press_id, press_frames = 1 << 30, press_port;
 static int video_valid;
-static unsigned polls;
+static unsigned polls, reads;
 
 static void log_line(enum retro_log_level level, const char *fmt, ...)
 {
@@ -743,8 +770,9 @@ static void video_refresh(const void *data, unsigned width, unsigned height, siz
       shown_hash = hash_bytes((const unsigned char *)data + y * pitch, width * 2, shown_hash);
 }
 
-static void audio_sample(int16_t left, int16_t right) { (void)left; (void)right; }
-static size_t audio_sample_batch(const int16_t *data, size_t frames) { (void)data; return frames; }
+static unsigned samples;	// sound frames this retro_run made: how much time it ran
+static void audio_sample(int16_t left, int16_t right) { (void)left; (void)right; samples++; }
+static size_t audio_sample_batch(const int16_t *data, size_t frames) { (void)data; samples += (unsigned)frames; return frames; }
 /* When the frontend reads its pad, by LAG_POLL (RetroArch's "Polling
  * Behavior"): the press happens between the frames before N and N.
  *   early   before each retro_run (what the core asks then is the pad as
@@ -757,9 +785,21 @@ static size_t audio_sample_batch(const int16_t *data, size_t frames) { (void)dat
 static int poll_mode = 2;   /* 0 early, 1 normal, 2 late */
 static int pad_latched, poll_owed;
 
+/* LAG_SCRIPT's presses, the same in both runs: to bring the game to where
+ * the press is to be measured */
+#define SCRIPT_MAX 256
+static int script_frame[SCRIPT_MAX], script_id[SCRIPT_MAX], script_len[SCRIPT_MAX], script_count;
+
+/* the buttons held now, a bit each */
 static int pad_real(void)
 {
-   return press_frame >= 0 && frame_now >= press_frame && frame_now < press_frame + press_frames;
+   int held = 0, i;
+   if (press_frame >= 0 && frame_now >= press_frame && frame_now < press_frame + press_frames)
+      held |= 1 << press_id;
+   for (i = 0; i < script_count; i++)
+      if (frame_now >= script_frame[i] && frame_now < script_frame[i] + script_len[i])
+         held |= 1 << script_id[i];
+   return held;
 }
 
 static void input_poll(void)
@@ -774,18 +814,19 @@ static void input_poll(void)
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
    int held;
+   reads++;
    if (poll_mode == 2 && poll_owed)
    {
       pad_latched = pad_real();
       poll_owed = 0;
    }
-   held = pad_latched && port == (unsigned)press_port;
+   held = port == (unsigned)press_port ? pad_latched : 0;
    (void)index;
    if ((device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD || !held)
       return 0;
    if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
-      return (int16_t)(1 << press_id);
-   return id == (unsigned)press_id;
+      return (int16_t)held;
+   return id < 16 && (held >> id & 1);
 }
 
 static long file_read(const char *path, unsigned char **out)
@@ -895,6 +936,11 @@ int main(int argc, char **argv)
    size_t (*mem_size)(unsigned);
    const char *shots = getenv("LAG_SHOT");
    const char *shot_prefix = shots ? strchr(shots, ':') : NULL;
+   size_t (*core_size)(void);
+   bool (*core_save)(void *, size_t);
+   int save_frame = -1;
+   double av_rate = 0, av_fps = 0;
+   const char *save_path = NULL;
 
    if (argc >= 2 && !strcmp(argv[1], "--compare"))
       return compare_main(argc, argv);
@@ -915,6 +961,35 @@ int main(int argc, char **argv)
       const char *p = getenv("LAG_PRESS");
       if (sscanf(p, "%d:%d:%d", &press_frame, &press_id, &press_frames) < 2)
          return 2;
+   }
+   if (getenv("LAG_SAVE"))
+   {
+      save_frame = atoi(getenv("LAG_SAVE"));
+      save_path = strchr(getenv("LAG_SAVE"), ':');
+      if (!save_path)
+         return 2;
+      save_path++;
+   }
+   if (getenv("LAG_SCRIPT"))
+   {
+      const char *p = getenv("LAG_SCRIPT");
+      while (*p && script_count < SCRIPT_MAX)
+      {
+         int f, id, len = 10, n = 0;
+         if (sscanf(p, "%d:%d%n", &f, &id, &n) < 2)
+            break;
+         p += n;
+         if (*p == ':')
+         {
+            p++;
+            len = (int)strtol(p, (char **)&p, 10);
+         }
+         script_frame[script_count] = f;
+         script_id[script_count] = id;
+         script_len[script_count++] = len;
+         if (*p == ',')
+            p++;
+      }
    }
    if (getenv("LAG_POLL"))
       poll_mode = !strcmp(getenv("LAG_POLL"), "early") ? 0 : !strcmp(getenv("LAG_POLL"), "normal") ? 1 : 2;
@@ -968,6 +1043,8 @@ int main(int argc, char **argv)
       SYM(set_device, "retro_set_controller_port_device")
       SYM(core_run, "retro_run")
       SYM(core_load, "retro_unserialize")
+      SYM(core_size, "retro_serialize_size")
+      SYM(core_save, "retro_serialize")
       SYM(mem_data, "retro_get_memory_data")
       SYM(mem_size, "retro_get_memory_size")
       syms_read(core);
@@ -988,6 +1065,8 @@ int main(int argc, char **argv)
       }
       memset(&av, 0, sizeof(av));
       get_av_info(&av);
+      av_rate = av.timing.sample_rate;
+      av_fps = av.timing.fps;
       set_device(0, RETRO_DEVICE_JOYPAD);
       set_device(1, RETRO_DEVICE_JOYPAD);
       if (video_vk && !vk_start())
@@ -1014,6 +1093,8 @@ int main(int argc, char **argv)
    }
    if (getenv("LAG_TRACE"))
       trace = fopen(getenv("LAG_TRACE"), "w");
+   if (trace)
+      fprintf(trace, "# rate %f fps %f\n", av_rate, av_fps);
    for (i = 0; i < frames; i++)
    {
       unsigned char *ram = (unsigned char *)mem_data(RETRO_MEMORY_SYSTEM_RAM);
@@ -1021,15 +1102,28 @@ int main(int argc, char **argv)
       uint64_t ram_hash;
 
       frame_now = i;
+      samples = 0;
       if (poll_mode == 0)
          pad_latched = pad_real();
       video_valid = 0;
       core_run();
       ram_hash = ram ? hash_bytes(ram, ram_size, 0xcbf29ce484222325ull) : 0;
       if (trace)
-         fprintf(trace, "%d %c %016llx %016llx %08x %08x %u\n", i, video_valid ? 'V' : 'D',
+         fprintf(trace, "%d %c %016llx %016llx %08x %08x %u %u %u %u\n", i, video_valid ? 'V' : 'D',
                (unsigned long long)shown_hash, (unsigned long long)ram_hash,
-               reg(0x50), reg(0x60), core_count ? *core_count : 0);
+               reg(0x50), reg(0x60), core_count ? *core_count : 0, polls, reads, samples);
+      polls = reads = samples = 0;
+      if (save_frame == i)
+      {
+         size_t size = core_size();
+         void *buf = malloc(size);
+         FILE *f = fopen(save_path, "wb");
+         if (buf && f && core_save(buf, size))
+            fwrite(buf, 1, size, f);
+         if (f)
+            fclose(f);
+         free(buf);
+      }
       if (shot_prefix)
       {
          char want[16];
