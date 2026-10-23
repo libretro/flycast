@@ -16,6 +16,7 @@ DYNAFLAGS     :=
 NO_THREADS    := 0
 HAVE_NEON     := 0
 WITH_DYNAREC  :=
+NO_REC        := 0
 HAVE_CHD      := 1
 
 HAVE_GL       := 1
@@ -37,7 +38,10 @@ else ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
   WITH_DYNAREC := arm
   HAVE_NEON := 1
 else ifeq ($(TARGET_ARCH_ABI),x86)
-  WITH_DYNAREC := x86
+  # The 32-bit x86 recompiler's code is not position independent, and a
+  # library with text relocations is not loaded from Android 6 on: the
+  # interpreters
+  NO_REC := 1
 else ifeq ($(TARGET_ARCH_ABI),x86_64)
   WITH_DYNAREC := x86_64
 endif
@@ -46,7 +50,7 @@ CORE_DEFINES :=
 
 include $(ROOT_DIR)/Makefile.common
 
-COREFLAGS := -ffast-math -D__LIBRETRO__ -DINLINE="inline" -DANDROID -D_ANDROID -DHAVE_OPENGLES -DHAVE_OPENGLES2 $(GLFLAGS) $(INCFLAGS) $(DYNAFLAGS) $(CORE_DEFINES)
+COREFLAGS := -ffast-math -D__LIBRETRO__ -DHAVE_GLSYM_PRIVATE -DINLINE="inline" -DANDROID -D_ANDROID -DHAVE_OPENGLES -DHAVE_OPENGLES2 $(GLFLAGS) $(INCFLAGS) $(DYNAFLAGS) $(CORE_DEFINES)
 COREFLAGS += -DNDEBUG -DNO_VERIFY
 
 ifeq ($(NO_THREADS),1)
@@ -57,6 +61,10 @@ ifeq ($(HAVE_GENERIC_JIT),1)
 COREFLAGS += -DTARGET_NO_JIT -DFEAT_SHREC=0x40000003
 endif
 
+ifeq ($(NO_REC),1)
+COREFLAGS += -DTARGET_NO_REC
+endif
+
 ifeq ($(TARGET_ARCH_ABI),x86_64)
 	COREFLAGS += -fno-operator-names
 	COREFLAGS += -DHOST_CPU=$(HOST_CPU_X64)
@@ -64,11 +72,6 @@ endif
 
 ifeq ($(TARGET_ARCH_ABI), x86)
 	COREFLAGS += -DHOST_CPU=$(HOST_CPU_X86)
-endif
-ifeq ($(WITH_DYNAREC), x86)
-	# X86 dynarec isn't position independent, so it fails to build on newer ndks.
-	# No warn shared textrel allows it to build, but still won't allow it to run on api 23+.
-	CORELDLIBS := -Wl,-no-warn-shared-textrel
 endif
 
 ifeq ($(TARGET_ARCH_ABI), armeabi-v7a)
