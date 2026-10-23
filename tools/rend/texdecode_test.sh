@@ -17,7 +17,10 @@
 # header's by tools/rend/kernels_dxbc.sh): texdecode_d3d11.c, built with
 # mingw-w64 and run under wine (wined3d) and xvfb-run, fed what the test
 # writes with "dump". When x86_64-w64-mingw32-gcc or wine is not there it
-# is left out; TEXD_D3D11=0 leaves it out too.
+# is left out; TEXD_D3D11=0 leaves it out too. The programs are 64-bit:
+# WINE says what runs them, by default wine64 (on Debian and Ubuntu
+# /usr/lib/wine/wine64, where a plain wine can be the 32-bit loader, which
+# cannot), or wine.
 #
 # Then on a Direct3D 9 device, the same way: the Direct3D 9 renderer's
 # shader model 3 shaders (core/rend/texdecode_dx9.inc, checked by
@@ -73,22 +76,29 @@ if [ -z "$TEXD_VALIDATE" ] && [ -f /usr/share/vulkan/explicit_layer.d/VkLayer_kh
 fi
 "$WORK/texdecode_test" "$WORK"
 
-if [ "${TEXD_D3D11:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null && command -v wine > /dev/null; then
+if [ -z "$WINE" ]; then
+   if command -v wine64 > /dev/null; then WINE=wine64
+   elif [ -x /usr/lib/wine/wine64 ]; then WINE=/usr/lib/wine/wine64
+   else WINE=wine
+   fi
+fi
+
+if [ "${TEXD_D3D11:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null && command -v "$WINE" > /dev/null; then
    x86_64-w64-mingw32-gcc -std=c99 -O2 -Wall -Icore/rend -Icore/libretro-common/include -Itools/rend \
       -o "$WORK/texdecode_d3d11.exe" tools/rend/texdecode_d3d11.c -ld3d11
    # (wine wants the TMPDIR it was set up with)
    "$WORK/texdecode_test" "$WORK" dump 2> "$WORK/dump.log" \
-      | env -u TMPDIR WINEDEBUG=-all xvfb-run -a wine "$WORK/texdecode_d3d11.exe" | tr -d '\r' > "$WORK/d3d11.log" || true
+      | env -u TMPDIR WINEDEBUG=-all xvfb-run -a "$WINE" "$WORK/texdecode_d3d11.exe" | tr -d '\r' > "$WORK/d3d11.log" || true
    cat "$WORK/d3d11.log"
    grep -q "^texdecode: all the same" "$WORK/dump.log" || { cat "$WORK/dump.log"; exit 1; }
    grep -q "^texdecode_d3d11: all the same" "$WORK/d3d11.log" || exit 1
 fi
 
-if [ "${TEXD_D3D9:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null && command -v wine > /dev/null; then
+if [ "${TEXD_D3D9:-1}" != 0 ] && command -v x86_64-w64-mingw32-gcc > /dev/null && command -v "$WINE" > /dev/null; then
    x86_64-w64-mingw32-gcc -std=c99 -O2 -Wall -Icore/rend -Icore/libretro-common/include -Itools/rend \
       -o "$WORK/texdecode_d3d9.exe" tools/rend/texdecode_d3d9.c -ld3d9
    "$WORK/texdecode_test" "$WORK" dump 2> "$WORK/dump9.log" \
-      | env -u TMPDIR WINEDEBUG=-all xvfb-run -a wine "$WORK/texdecode_d3d9.exe" | tr -d '\r' > "$WORK/d3d9.log" || true
+      | env -u TMPDIR WINEDEBUG=-all xvfb-run -a "$WINE" "$WORK/texdecode_d3d9.exe" | tr -d '\r' > "$WORK/d3d9.log" || true
    cat "$WORK/d3d9.log"
    grep -q "^texdecode: all the same" "$WORK/dump9.log" || { cat "$WORK/dump9.log"; exit 1; }
    grep -q "^texdecode_d3d9: all the same" "$WORK/d3d9.log" || exit 1
