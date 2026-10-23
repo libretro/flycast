@@ -573,6 +573,56 @@ OITVertexOut main(in OITVertexIn vin)
 #else
 #define STENCIL_AT(c) shadow_stencil[c]
 #endif
+#if DX12_OIT_PASS == DX12_PASS_OIT && defined(DX12_SSAA)
+// ---- the lists' depth test under SSAA (tools/rend/oit_depth_test_d3d12.sh runs this text, to the next such line) ----
+/* The samples of @mask at which the fragment's depth - @z at the pixel's
+ * centre, @dz its differences to the next pixels in x and y (the depth is
+ * a plane across the screen, so they give it at any place) - is at or in
+ * front of the opaque polygons' depth (larger is nearer) at pixel @pix;
+ * in @osum and @on the sum of those samples' places and their number.
+ *
+ * Direct3D has no post-depth coverage: SV_Coverage is the polygon's,
+ * before the depth test, [earlydepthstencil] or not (the D3D11.3
+ * functional spec, 16.3.2, which Direct3D 12 keeps), so the test is done
+ * here, and is not quite exact: the device interpolates the depth at a
+ * sample its own way, and the plane taken from the centre's and its
+ * differences comes out a few units in the last place off it. Where the
+ * polygon is the opaque one's plane - a translucent decal on it, drawn
+ * again - a fifth of the samples would then fail at random. A depth within
+ * 16 units of 2^-23 of the opaque one counts as equal, as Vulkan's
+ * per-pixel renderer has it where its device has no
+ * VK_EXT_post_depth_coverage (vulkan/shaders/oit_sample_depth.glsl): far
+ * below anything a game puts between two polygons it means apart. */
+#define OIT_DEPTH_NEAR (1.0 - 16.0 / 8388608.0)
+uint oitSampleDepthTest(uint mask, int2 pix, float z, float2 dz, out float2 osum, out float on)
+{
+	uint seen = 0u;
+	osum = float2(0.0, 0.0);
+	on = 0.0;
+	for (uint s = 0u; s < (1u << ssaaLog2); s++)
+	{
+		const float2 o = GetRenderTargetSamplePosition(s);
+		if ((mask & (1u << s)) != 0u && z + dz.x * o.x + dz.y * o.y >= DepthTex.Load(pix, s) * OIT_DEPTH_NEAR)
+		{
+			seen |= 1u << s;
+			osum += o;
+			on += 1.0;
+		}
+	}
+	return seen;
+}
+
+/* The depth the fragment is kept and sorted with: at the centroid of the
+ * samples it is seen at (@seen, the sum of their places @osum and their
+ * number @on), which is in the triangle; where it is seen at all of them,
+ * the centre's, which that centroid is (the standard patterns are centred) */
+float oitKeptDepth(uint seen, float z, float2 dz, float2 osum, float on)
+{
+	return seen == ssaaMask ? z : z + dot(osum / on, dz);
+}
+// ----
+#endif
+
 uint getNextPixelIndex()
 {
 	uint index;
@@ -614,29 +664,18 @@ float4 main(in OITVertexOut inpix) : SV_Target
 
 #if DX12_OIT_PASS == DX12_PASS_OIT && defined(DX12_SSAA)
 	/* Manual depth testing, at each sample the fragment covers, with its
-	 * depth there (the depth is a plane across the screen: the centre's
-	 * and its differences to the next pixels give it at any place),
-	 * which leaves the samples it is seen at. It is kept, and sorted, with
-	 * its depth at the centroid of those: the centre's, extrapolated past
-	 * the triangle where the triangle only clips the pixel, would sort it
-	 * in front of or behind its neighbours wrongly - a dotted line of
-	 * wrong colours along the edges between a model's polygons. */
-	uint coverage = 0u;
-	float2 osum = float2(0.0, 0.0);
-	float on = 0.0;
-	for (uint s = 0u; s < (1u << ssaaLog2); s++)
-	{
-		const float2 o = GetRenderTargetSamplePosition(s);
-		if ((inpix.coverage & (1u << s)) != 0u && depth + dzdx * o.x + dzdy * o.y >= DepthTex.Load(int2(inpix.pos.xy), s))
-		{
-			coverage |= 1u << s;
-			osum += o;
-			on += 1.0;
-		}
-	}
+	 * depth there, which leaves the samples it is seen at. It is kept, and
+	 * sorted, with its depth at the centroid of those: the centre's,
+	 * extrapolated past the triangle where the triangle only clips the
+	 * pixel, would sort it in front of or behind its neighbours wrongly - a
+	 * dotted line of wrong colours along the edges between a model's
+	 * polygons. */
+	float2 osum;
+	float on;
+	const uint coverage = oitSampleDepthTest(inpix.coverage, int2(inpix.pos.xy), depth, float2(dzdx, dzdy), osum, on);
 	if (coverage == 0u)
 		discard;
-	const float fragDepth = coverage == ssaaMask ? depth : depth + dot(osum / on, float2(dzdx, dzdy));
+	const float fragDepth = oitKeptDepth(coverage, depth, float2(dzdx, dzdy), osum, on);
 #elif DX12_OIT_PASS == DX12_PASS_OIT
 	// Manual depth testing
 	float frontDepth = DepthTex[uint2(inpix.pos.xy)];
