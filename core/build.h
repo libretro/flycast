@@ -256,6 +256,20 @@
 #define HOST_64BIT_CPU
 #endif
 
+/* macOS on Apple's own processors: code that is written is run only from
+ * memory mapped with MAP_JIT, wherever the system puts it, and that memory
+ * is writable or executable for each thread at a time
+ * (vmem_jit_write_begin() in _vmem.h). iOS and tvOS give no such memory:
+ * they are built without recompilers. */
+#if defined(__APPLE__) && HOST_CPU == CPU_ARM64
+#include <TargetConditionals.h>
+/* (the compiler's own word as well as the SDK's: the macOS SDK's header
+ * says macOS whatever the target) */
+#if TARGET_OS_OSX && defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__)
+#define HOST_APPLE_JIT
+#endif
+#endif
+
 // Some restrictions on FEAT_NO_RWX_PAGES
 #if defined(FEAT_NO_RWX_PAGES) && FEAT_SHREC == DYNAREC_JIT
 #if HOST_CPU != CPU_X64 && HOST_CPU != CPU_ARM64

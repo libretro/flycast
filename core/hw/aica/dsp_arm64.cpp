@@ -24,7 +24,18 @@
 #include "dsp.h"
 #include "aica_if.h"
 #include "deps/vixl/aarch64/macro-assembler-aarch64.h"
+#include "hw/mem/_vmem.h"
 using namespace vixl::aarch64;
+
+/* Where the code goes: in the DSP's state, made executable - except on
+ * macOS on Apple's processors, where it is MAP_JIT memory, mapped the first
+ * time and kept (NULL without it: no DSP then). */
+#ifdef HOST_APPLE_JIT
+static u8 *dsp_code;
+#define DSP_CODE dsp_code
+#else
+#define DSP_CODE (&dsp.DynCode[0])
+#endif
 
 extern void vmem_platform_flush_cache(void *icache_start, void *icache_end, void *dcache_start, void *dcache_end);
 
@@ -359,6 +370,17 @@ private:
 	template <typename R, typename... P>
 	void GenCallRuntime(R (*function)(P...))
 	{
+		/* (out of a branch's reach, 128 MB, only where the code is not in
+		 * the core's own memory: see vmem_platform_alloc_jit()) */
+		ptrdiff_t reach = reinterpret_cast<uintptr_t>(function) - GetCursorAddress<uintptr_t>();
+		if (reach < -128 * 1024 * 1024 || reach >= 128 * 1024 * 1024)
+		{
+			UseScratchRegisterScope temps(this);
+			Register target = temps.AcquireX();
+			Mov(target, reinterpret_cast<uintptr_t>(function));
+			Blr(target);
+			return;
+		}
 		ptrdiff_t offset = reinterpret_cast<uintptr_t>(function) - GetBuffer()->GetStartAddress<uintptr_t>();
 		verify(offset >= -128 * 1024 * 1024 && offset <= 128 * 1024 * 1024);
 		verify((offset & 3) == 0);
@@ -469,8 +491,16 @@ void dsp_recompile()
 	compiled_mask = ARAM_MASK;
 	compiled_ram = &aica_ram[0];
 	compiled = true;
-	DSPAssembler assembler(&dsp.DynCode[0], sizeof(dsp.DynCode));
-	assembler.Compile(&dsp);
+#ifdef HOST_APPLE_JIT
+	if (DSP_CODE == NULL)
+		return;
+#endif
+	vmem_jit_write_begin();
+	{
+		DSPAssembler assembler(DSP_CODE, sizeof(dsp.DynCode));
+		assembler.Compile(&dsp);
+	}
+	vmem_jit_write_end();
 }
 
 void dsp_init()
@@ -482,11 +512,21 @@ void dsp_init()
 	dsp.regs.MDEC_CT = 1;
 	dsp.dyndirty = true;
 
+#ifdef HOST_APPLE_JIT
+	static bool asked;
+
+	if (!asked)
+	{
+		dsp_code = (u8 *)vmem_platform_alloc_jit(sizeof(dsp.DynCode));
+		asked = true;
+	}
+#else
 	if (!mem_region_set_exec(dsp.DynCode, sizeof(dsp.DynCode)))
 	{
 		perror("Couldn’t mprotect DSP code");
 		die("mprotect failed in arm64 dsp");
 	}
+#endif
 }
 
 void dsp_step()
@@ -498,7 +538,11 @@ void dsp_step()
 	}
    if (dsp.Stopped)
       return;
-	((void (*)())&dsp.DynCode)();
+#ifdef HOST_APPLE_JIT
+	if (DSP_CODE == NULL)
+		return;
+#endif
+	((void (*)())DSP_CODE)();
 }
 
 void dsp_writenmem(u32 addr)

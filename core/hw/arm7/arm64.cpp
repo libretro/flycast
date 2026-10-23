@@ -25,6 +25,7 @@
 #include "arm7.h"
 #include "rec-ARM/arm_coding.h"
 #include "deps/vixl/aarch64/macro-assembler-aarch64.h"
+#include "hw/mem/_vmem.h"
 using namespace vixl::aarch64;
 //#include "deps/vixl/aarch32/disasm-aarch32.h"
 
@@ -104,8 +105,34 @@ void armv_imm_to_reg(u32 regn, u32 imm)
 	assembler->Str(w0, arm_reg_operand(regn));
 }
 
+/* Whether @target, in the core's own code, is out of reach of a branch from
+ * here (128 MB). It never is where the code is in the core's .text; on macOS
+ * on Apple's processors it can be (see vmem_platform_alloc_jit()), and the
+ * call or branch is then made through a register. */
+static bool out_of_reach(void *target)
+{
+	ptrdiff_t offset = reinterpret_cast<uintptr_t>(target) - assembler->GetCursorAddress<uintptr_t>();
+	return offset < -128 * 1024 * 1024 || offset >= 128 * 1024 * 1024;
+}
+
+static void far_branch(void *target, bool call)
+{
+	UseScratchRegisterScope temps(assembler);
+	Register reg = temps.AcquireX();
+	assembler->Mov(reg, reinterpret_cast<uintptr_t>(target));
+	if (call)
+		assembler->Blr(reg);
+	else
+		assembler->Br(reg);
+}
+
 void armv_call(void* loc)
 {
+	if (out_of_reach(loc))
+	{
+		far_branch(loc, true);
+		return;
+	}
 	ptrdiff_t offset = reinterpret_cast<uintptr_t>(loc) - assembler->GetBuffer()->GetStartAddress<uintptr_t>();
 	Label function_label;
 	assembler->BindToOffset(&function_label, offset);
@@ -114,6 +141,8 @@ void armv_call(void* loc)
 
 void armv_setup()
 {
+	// (until armv_end(): the code of a block is written in between)
+	vmem_jit_write_begin();
 	assembler = new MacroAssembler(icPtr, ICache + ICacheSize - icPtr);
 }
 
@@ -132,18 +161,30 @@ void armv_end(void* codestart, u32 cycl)
 
 	//pop registers & return
 	assembler->Subs(w27, w27, cycl);
-	ptrdiff_t offset = reinterpret_cast<uintptr_t>(arm_exit) - assembler->GetBuffer()->GetStartAddress<uintptr_t>();
-	Label arm_exit_label;
-	assembler->BindToOffset(&arm_exit_label, offset);
-	assembler->B(&arm_exit_label, mi);	//statically predicted as not taken
+	if (out_of_reach((void *)&arm_exit) || out_of_reach((void *)&arm_dispatch))
+	{
+		Label go_on;
+		assembler->B(&go_on, pl);
+		far_branch((void *)&arm_exit, false);
+		assembler->Bind(&go_on);
+		far_branch((void *)&arm_dispatch, false);
+	}
+	else
+	{
+		ptrdiff_t offset = reinterpret_cast<uintptr_t>(arm_exit) - assembler->GetBuffer()->GetStartAddress<uintptr_t>();
+		Label arm_exit_label;
+		assembler->BindToOffset(&arm_exit_label, offset);
+		assembler->B(&arm_exit_label, mi);	//statically predicted as not taken
 
-	offset = reinterpret_cast<uintptr_t>(arm_dispatch) - assembler->GetBuffer()->GetStartAddress<uintptr_t>();
-	Label arm_dispatch_label;
-	assembler->BindToOffset(&arm_dispatch_label, offset);
-	assembler->B(&arm_dispatch_label);
+		offset = reinterpret_cast<uintptr_t>(arm_dispatch) - assembler->GetBuffer()->GetStartAddress<uintptr_t>();
+		Label arm_dispatch_label;
+		assembler->BindToOffset(&arm_dispatch_label, offset);
+		assembler->B(&arm_dispatch_label);
+	}
 
 	assembler->FinalizeCode();
 	verify(assembler->GetBuffer()->GetCursorOffset() <= assembler->GetBuffer()->GetCapacity());
+	vmem_jit_write_end();
 	vmem_platform_flush_cache(
 		codestart, assembler->GetBuffer()->GetEndAddress<void*>(),
 		codestart, assembler->GetBuffer()->GetEndAddress<void*>());
@@ -480,16 +521,32 @@ void armEmit32(u32 opcode)
 // x26 is the entry points table
 // w27 is the cycle counter
 // x28 points to the arm7 registers base
+/* The names as each assembler has them: Apple's puts an underscore before a
+ * C name, keeps a symbol to the library with .private_extern, and has a
+ * label that is no symbol begin with L. Its linker may also move the code
+ * after each symbol on its own, so a symbol that the code before it runs on
+ * into is marked as part of that code (.alt_entry). */
+#ifdef __APPLE__
+#define ARM_SYM(name) "_" #name
+#define ARM_HIDDEN(name) ".private_extern _" #name "\n"
+#define ARM_RUN_INTO(name) ".alt_entry _" #name "\n"
+#define ARM_LOCAL(name) "L" #name
+#else
+#define ARM_SYM(name) #name
+#define ARM_HIDDEN(name) ".hidden " #name "\n"
+#define ARM_RUN_INTO(name)
+#define ARM_LOCAL(name) #name
+#endif
 __asm__ (
-		".globl arm_compilecode				\n\t"
-		".hidden arm_compilecode			\n"
-	"arm_compilecode:							\n\t"
-		"bl CompileCode						\n\t"
-		"b arm_dispatch						\n\t"
+		".globl " ARM_SYM(arm_compilecode) "\n\t"
+		ARM_HIDDEN(arm_compilecode)
+	ARM_SYM(arm_compilecode) ":							\n\t"
+		"bl " ARM_SYM(CompileCode) "						\n\t"
+		"b " ARM_SYM(arm_dispatch) "						\n\t"
 
-		".globl arm_mainloop					\n\t"
-		".hidden arm_mainloop				\n"
-	"arm_mainloop:								\n\t"	//  arm_mainloop(cycles, regs, entry points)
+		".globl " ARM_SYM(arm_mainloop) "\n\t"
+		ARM_HIDDEN(arm_mainloop)
+	ARM_SYM(arm_mainloop) ":								\n\t"	//  arm_mainloop(cycles, regs, entry points)
 		"stp x25, x26, [sp, #-48]!			\n\t"
 		"stp x27, x28, [sp, #16]			\n\t"
 		"stp x29, x30, [sp, #32]			\n\t"
@@ -500,24 +557,25 @@ __asm__ (
 		"ldr w27, [x28, #192]				\n\t"	// cycle count
 		"add w27, w27, w0						\n\t"		// add cycles for this timeslice
 
-		".globl arm_dispatch					\n\t"
-		".hidden arm_dispatch				\n"
-	"arm_dispatch:								\n\t"
+		".globl " ARM_SYM(arm_dispatch) "\n\t"
+		ARM_HIDDEN(arm_dispatch)
+		ARM_RUN_INTO(arm_dispatch)
+	ARM_SYM(arm_dispatch) ":								\n\t"
 		"ldp w0, w1, [x28, #184]				\n\t"	// load Next PC, interrupt
 		"ubfx w2, w0, #2, #21					\n\t"	// w2 = pc >> 2. Note: assuming address space == 8 MB (23 bits)
-		"cbnz w1, arm_dofiq						\n\t"	// if interrupt pending, handle it
+		"cbnz w1, " ARM_LOCAL(arm_dofiq) "						\n\t"	// if interrupt pending, handle it
 
 		"add x2, x26, x2, lsl #3				\n\t"	// x2 = EntryPoints + pc << 1
 		"ldr x3, [x2]							\n\t"
 		"br x3									\n"
 
-	"arm_dofiq:									\n\t"
-		"bl CPUFiq								\n\t"
-		"b arm_dispatch						\n\t"
+	ARM_LOCAL(arm_dofiq) ":									\n\t"
+		"bl " ARM_SYM(CPUFiq) "								\n\t"
+		"b " ARM_SYM(arm_dispatch) "						\n\t"
 
-		".globl arm_exit						\n\t"
-		".hidden arm_exit						\n"
-	"arm_exit:									\n\t"
+		".globl " ARM_SYM(arm_exit) "\n\t"
+		ARM_HIDDEN(arm_exit)
+	ARM_SYM(arm_exit) ":									\n\t"
 		"str w27, [x28, #192]				\n\t"	// if timeslice is over, save remaining cycles
 		"ldp x29, x30, [sp, #32]			\n\t"
 		"ldp x27, x28, [sp, #16]			\n\t"

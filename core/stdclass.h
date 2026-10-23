@@ -16,9 +16,17 @@
 /* The core's page: what it protects memory by and divides it into. A
  * multiple of the system's, so it may be larger than the system's own.
  * Android's NDK r28 on no longer defines PAGE_SIZE on 64-bit processors,
- * whose devices may have 16 KB pages: 16 KB there, on 4 KB devices too. */
+ * whose devices may have 16 KB pages: 16 KB there, on 4 KB devices too.
+ * Apple's ARM systems have 16 KB pages, and mprotect() refuses an address
+ * that is not at the start of one; their headers may define PAGE_SIZE as
+ * a variable, which is not what is wanted here. */
+#if defined(__APPLE__) && defined(__aarch64__)
+#undef PAGE_SIZE
+#endif
 #ifndef PAGE_SIZE
 #if defined(_ANDROID) && (defined(__aarch64__) || defined(__x86_64__))
+#define PAGE_SIZE 16384
+#elif defined(__APPLE__) && defined(__aarch64__)
 #define PAGE_SIZE 16384
 #else
 #define PAGE_SIZE 4096

@@ -446,6 +446,65 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
 	return (ptr_rw != MAP_FAILED);
 }
 
+#ifdef HOST_APPLE_JIT
+#include <dlfcn.h>
+#include <mach-o/getsect.h>
+
+__thread int vmem_jit_write_depth;
+
+/* MAP_JIT memory cannot be put at an address of one's choosing (MAP_FIXED),
+ * only asked for near one. It is asked for after this core's code, then
+ * below it: where all of that code is within a branch's reach (128 MB) of
+ * all of this, the recompilers call it with one instruction. Where the
+ * system puts it elsewhere, it is taken anyway: the recompilers then call
+ * through a register. */
+void *vmem_platform_alloc_jit(size_t size)
+{
+	const uintptr_t reach = 128 * 1024 * 1024 - PAGE_SIZE;
+	Dl_info info;
+	unsigned long text_size = 0;
+	uintptr_t text = 0;
+
+	size = (size + PAGE_MASK) & ~(size_t)PAGE_MASK;
+	if (dladdr((void *)&vmem_platform_alloc_jit, &info) && info.dli_fbase != NULL)
+		text = (uintptr_t)getsegmentdata((const struct mach_header_64 *)info.dli_fbase, "__TEXT", &text_size);
+	if (text != 0 && text_size < reach)
+	{
+		const uintptr_t hints[] = {
+			text + text_size,
+			text > size + PAGE_SIZE ? (text - size - PAGE_SIZE) & ~(uintptr_t)PAGE_MASK : 0,
+			text > size + 32 * 1024 * 1024 ? (text - size - 32 * 1024 * 1024) & ~(uintptr_t)PAGE_MASK : 0,
+		};
+
+		for (unsigned i = 0; i < sizeof(hints) / sizeof(hints[0]); i++)
+		{
+			if (hints[i] == 0)
+				continue;
+			void *p = mmap((void *)hints[i], size, PROT_READ | PROT_WRITE | PROT_EXEC,
+					MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+			if (p == MAP_FAILED)
+				break;
+			const uintptr_t lo = (uintptr_t)p < text ? (uintptr_t)p : text;
+			const uintptr_t hi = (uintptr_t)p + size > text + text_size ? (uintptr_t)p + size : text + text_size;
+			if (hi - lo <= reach)
+			{
+				INFO_LOG(DYNAREC, "JIT memory at %p, %zu bytes, within reach of the core's code", p, size);
+				return p;
+			}
+			munmap(p, size);
+		}
+	}
+	void *p = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+	if (p == MAP_FAILED)
+	{
+		WARN_LOG(DYNAREC, "No JIT memory (MAP_JIT refused, errno %d): the interpreters", errno);
+		return NULL;
+	}
+	INFO_LOG(DYNAREC, "JIT memory at %p, %zu bytes, out of reach of the core's code", p, size);
+	return p;
+}
+#endif
+
 // Some OSes restrict cache flushing, cause why not right? :D
 
 #if HOST_CPU == CPU_ARM64

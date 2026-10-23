@@ -736,14 +736,13 @@ else ifneq (,$(findstring osx,$(platform)))
 	ifeq ($(ARCH), $(filter $(ARCH), ppc))
 		WITH_DYNAREC =
 	else ifeq ($(arch),arm)
-		# Apple silicon: the recompilers' code and assembly are for ELF
-		# systems, and Apple's W^X rules (MAP_JIT) are not followed yet, so
-		# no recompiler here: the interpreters, as on iOS
+		# Apple silicon: the ARM64 recompilers, with their code in MAP_JIT
+		# memory (HOST_APPLE_JIT in core/build.h). A frontend run with the
+		# hardened runtime needs the com.apple.security.cs.allow-jit
+		# entitlement for it; without it the interpreters are used.
 		ARCH = arm64
-		WITH_DYNAREC =
+		WITH_DYNAREC = arm64
 		HAVE_GENERIC_JIT = 0
-		NO_REC = 1
-		HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_ARM64)
 		OSX_ARCHFLAGS = -arch arm64
 	else
 		ARCH = x86_64

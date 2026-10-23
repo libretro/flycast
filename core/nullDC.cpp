@@ -174,6 +174,11 @@ void dc_apply_game_settings(void)
 static void LoadSpecialSettingsCPU(void)
 {
 #if FEAT_SHREC != DYNAREC_NONE
+#if defined(HOST_APPLE_JIT) && FEAT_SHREC == DYNAREC_JIT
+	// (no memory for code: a frontend without the JIT entitlement)
+	if (settings.dynarec.Enable && !recSh4_HaveCodeCache())
+		settings.dynarec.Enable = 0;
+#endif
 	if(settings.dynarec.Enable)
 	{
 		Get_Sh4Recompiler(&sh4_cpu);

@@ -50,6 +50,61 @@ extern "C" void ngen_LinkBlock_cond_Next_stub();
 extern "C" void ngen_FailedToFindBlock_mmu();
 extern "C" void ngen_FailedToFindBlock_nommu();
 extern void vmem_platform_flush_cache(void *icache_start, void *icache_end, void *dcache_start, void *dcache_end);
+
+#ifdef __APPLE__
+/* What ngen_arm64.S has elsewhere, for Apple's assembler: a C name has an
+ * underscore before it there, and a symbol is kept to the library with
+ * .private_extern, not .hidden. Its linker may also move the code after
+ * each symbol on its own: a symbol the code before it runs on into is
+ * marked as part of that code (.alt_entry). */
+__asm__(
+		".text\n"
+		".p2align 2\n"
+		".private_extern _ngen_LinkBlock_cond_Branch_stub\n"
+		".globl _ngen_LinkBlock_cond_Branch_stub\n"
+	"_ngen_LinkBlock_cond_Branch_stub:\n"
+		"mov w1, #1\n"
+		"b _ngen_LinkBlock_Shared_stub\n"
+
+		".private_extern _ngen_LinkBlock_cond_Next_stub\n"
+		".globl _ngen_LinkBlock_cond_Next_stub\n"
+	"_ngen_LinkBlock_cond_Next_stub:\n"
+		"mov w1, #0\n"
+		"b _ngen_LinkBlock_Shared_stub\n"
+
+		".private_extern _ngen_LinkBlock_Generic_stub\n"
+		".globl _ngen_LinkBlock_Generic_stub\n"
+	"_ngen_LinkBlock_Generic_stub:\n"
+		"mov w1, w29\n"						// djump/pc, in case it is needed
+
+		".private_extern _ngen_LinkBlock_Shared_stub\n"
+		".alt_entry _ngen_LinkBlock_Shared_stub\n"
+		".globl _ngen_LinkBlock_Shared_stub\n"
+	"_ngen_LinkBlock_Shared_stub:\n"
+		"sub x0, lr, #4\n"					// the call
+		"bl _rdv_LinkBlock\n"				// returns an RX address
+		"br x0\n"
+
+		".private_extern _ngen_FailedToFindBlock_nommu\n"
+		".globl _ngen_FailedToFindBlock_nommu\n"
+	"_ngen_FailedToFindBlock_nommu:\n"
+		"mov w0, w29\n"
+		"bl _rdv_FailedToFindBlock\n"
+		"br x0\n"
+
+		".private_extern _ngen_FailedToFindBlock_mmu\n"
+		".globl _ngen_FailedToFindBlock_mmu\n"
+	"_ngen_FailedToFindBlock_mmu:\n"
+		"bl _rdv_FailedToFindBlock_pc\n"
+		"br x0\n"
+
+		".private_extern _ngen_blockcheckfail\n"
+		".globl _ngen_blockcheckfail\n"
+	"_ngen_blockcheckfail:\n"
+		"bl _rdv_BlockCheckFail\n"
+		"br x0\n"
+);
+#endif
 static void generate_mainloop();
 
 struct DynaRBI : RuntimeBlockInfo
@@ -153,6 +208,10 @@ static int mem_freg_number(int reg)
 #define MEM_BASE_CODE 26
 
 static void (*mainloop)(void *context);
+/* For the routines that link blocks, where the code cannot reach them with
+ * a bl (Arm64Assembler::GenLinkTrampolines()): NULL where it can */
+static void (*link_stubs[3])() = { ngen_LinkBlock_Generic_stub, ngen_LinkBlock_cond_Branch_stub, ngen_LinkBlock_cond_Next_stub };
+static void (*link_trampolines[3])();
 static int (*arm64_intc_sched)();
 static void (*arm64_no_update)();
 
@@ -1420,7 +1479,15 @@ public:
 		if (linked != NULL)
 			GenBranch(linked->code);
 		else
+		{
+			for (int i = 0; i < 3; i++)
+				if (stub == link_stubs[i] && link_trampolines[i] != NULL)
+				{
+					GenCall(link_trampolines[i]);
+					return;
+				}
 			GenCallRuntime(stub);
+		}
 	}
 
 	u32 RelinkBlock(RuntimeBlockInfo *block)
@@ -1675,6 +1742,7 @@ public:
 		Ret();
 
 		GenMemStubs();
+		GenLinkTrampolines();
 
 		FinalizeCode();
 		emit_Skip(GetBuffer()->GetSizeInBytes());
@@ -1689,12 +1757,51 @@ public:
 
 
 private:
+	/* A routine that links blocks finds the block that called it by the
+	 * address after the call, and that has to be in the block's code as
+	 * it is when linked: where it cannot be reached with one bl (only on
+	 * macOS, see OutOfReach()), a block calls one of these, beside the main
+	 * loop, which goes on to the routine. */
+	void GenLinkTrampolines()
+	{
+		for (int i = 0; i < 3; i++)
+		{
+			link_trampolines[i] = NULL;
+			if (!OutOfReach(reinterpret_cast<uintptr_t>(link_stubs[i])))
+				continue;
+			link_trampolines[i] = GetCursorAddress<void (*)()>();
+			UseScratchRegisterScope temps(this);
+			Register target = temps.AcquireX();
+			Mov(target, reinterpret_cast<uintptr_t>(link_stubs[i]));
+			Br(target);
+		}
+	}
+
 	// Runtime branches/calls need to be adjusted if rx space is different to rw space.
 	// Therefore can't mix GenBranch with GenBranchRuntime!
+
+	/* Whether @target, in the core's own code, is out of reach of a branch
+	 * from here (128 MB). It never is where the code is in the core's
+	 * .text; on macOS on Apple's processors it can be (see
+	 * vmem_platform_alloc_jit()), and the call or branch is then made
+	 * through a register. */
+	bool OutOfReach(uintptr_t target)
+	{
+		ptrdiff_t offset = target - reinterpret_cast<uintptr_t>(CC_RW2RX(GetCursorAddress<void*>()));
+		return offset < -128 * 1024 * 1024 || offset >= 128 * 1024 * 1024;
+	}
 
 	template <typename R, typename... P>
 	void GenCallRuntime(R (*function)(P...))
 	{
+		if (OutOfReach(reinterpret_cast<uintptr_t>(function)))
+		{
+			UseScratchRegisterScope temps(this);
+			Register target = temps.AcquireX();
+			Mov(target, reinterpret_cast<uintptr_t>(function));
+			Blr(target);
+			return;
+		}
 		ptrdiff_t offset = reinterpret_cast<uintptr_t>(function) - reinterpret_cast<uintptr_t>(CC_RW2RX(GetBuffer()->GetStartAddress<void*>()));
 		verify(offset >= -128 * 1024 * 1024 && offset <= 128 * 1024 * 1024);
 		verify((offset & 3) == 0);
@@ -1717,6 +1824,14 @@ private:
    template <typename R, typename... P>
 	void GenBranchRuntime(R (*target)(P...))
 	{
+		if (OutOfReach(reinterpret_cast<uintptr_t>(target)))
+		{
+			UseScratchRegisterScope temps(this);
+			Register reg = temps.AcquireX();
+			Mov(reg, reinterpret_cast<uintptr_t>(target));
+			Br(reg);
+			return;
+		}
 		ptrdiff_t offset = reinterpret_cast<uintptr_t>(target) - reinterpret_cast<uintptr_t>(CC_RW2RX(GetBuffer()->GetStartAddress<void*>()));
 		verify(offset >= -128 * 1024 * 1024 && offset <= 128 * 1024 * 1024);
 		verify((offset & 3) == 0);
@@ -2505,12 +2620,14 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 {
 	verify(emit_FreeSpace() >= CODE_MARGIN);
 
+	vmem_jit_write_begin();
 	compiler = new Arm64Assembler();
 
 	compiler->ngen_Compile(block, force_checks, reset, staging, optimise);
 
 	delete compiler;
 	compiler = NULL;
+	vmem_jit_write_end();
 }
 
 void ngen_CC_Start(shil_opcode* op)
@@ -2601,7 +2718,9 @@ bool ngen_Rewrite(unat& host_pc, unat, unat)
 	// bl, to where the routine is from where this is run
 	const ptrdiff_t offset = mem_stubs[kind][addr][data] - (u8 *)site;
 	verify(offset >= -128 * 1024 * 1024 && offset < 128 * 1024 * 1024 && (offset & 3) == 0);
+	vmem_jit_write_begin();
 	*site = 0x94000000 | (u32)((offset >> 2) & 0x03FFFFFF);
+	vmem_jit_write_end();
 	vmem_platform_flush_cache((void *)host_pc, (void *)(host_pc + 4), site, site + 1);
 	return true;
 }
@@ -2610,12 +2729,14 @@ static void generate_mainloop()
 {
 	if (mainloop != nullptr)
 		return;
+	vmem_jit_write_begin();
 	compiler = new Arm64Assembler();
 
 	compiler->GenMainloop();
 
 	delete compiler;
 	compiler = nullptr;
+	vmem_jit_write_end();
 }
 
 RuntimeBlockInfo* ngen_AllocateBlock()
@@ -2632,11 +2753,13 @@ void ngen_HandleException()
 u32 DynaRBI::Relink()
 {
 	//printf("DynaRBI::Relink %08x\n", this->addr);
+	vmem_jit_write_begin();
 	Arm64Assembler *compiler = new Arm64Assembler((u8 *)this->code + this->relink_offset);
 
 	u32 code_size = compiler->RelinkBlock(this);
 	compiler->Finalize(true);
 	delete compiler;
+	vmem_jit_write_end();
 
 	return code_size;
 }

@@ -33,6 +33,39 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
 // This might not need an implementation (ie x86/64 cpus).
 void vmem_platform_flush_cache(void *icache_start, void *icache_end, void *dcache_start, void *dcache_end);
 
+/* Around anything that writes code a recompiler runs. On macOS on Apple's
+ * processors that code is in MAP_JIT memory (vmem_platform_alloc_jit()),
+ * which a thread can write or run but not both: this makes it writable for
+ * the calling thread, and the end of the outermost pair makes it executable
+ * again. Each thread has its own count, so another thread runs code all
+ * the while. Nothing anywhere else. */
+#ifdef HOST_APPLE_JIT
+#include <pthread.h>
+/* Memory for a recompiler's code, which the caller keeps until the program
+ * ends: NULL if the system gives none (no JIT entitlement) */
+void *vmem_platform_alloc_jit(size_t size);
+extern __thread int vmem_jit_write_depth;
+/* (macOS 11 on: every Mac with Apple's processor has it, whatever older
+ * version a build says it can run on) */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability"
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+static inline void vmem_jit_write_begin(void)
+{
+	if (vmem_jit_write_depth++ == 0)
+		pthread_jit_write_protect_np(0);
+}
+static inline void vmem_jit_write_end(void)
+{
+	if (--vmem_jit_write_depth == 0)
+		pthread_jit_write_protect_np(1);
+}
+#pragma clang diagnostic pop
+#else
+static inline void vmem_jit_write_begin(void) {}
+static inline void vmem_jit_write_end(void) {}
+#endif
+
 // Note: if you want to disable vmem magic in any given platform, implement the
 // above functions as empty functions and make vmem_platform_init return MemTypeError.
 

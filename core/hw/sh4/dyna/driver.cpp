@@ -24,6 +24,9 @@
 
 #if FEAT_SHREC != DYNAREC_NONE
 
+#ifdef HOST_APPLE_JIT
+/* (no array: the code goes in MAP_JIT memory, recSh4_HaveCodeCache()) */
+#else
 u8 SH4_TCB[CODE_SIZE + TEMP_CODE_SIZE + 4096]
 #if defined(_WIN32) || FEAT_SHREC != DYNAREC_JIT
 	;
@@ -35,6 +38,7 @@ u8 SH4_TCB[CODE_SIZE + TEMP_CODE_SIZE + 4096]
 	__attribute__((section("__TEXT,.text")));
 #else
 	#error SH4_TCB ALLOC
+#endif
 #endif
 
 u8* CodeCache;
@@ -543,6 +547,20 @@ static void recSh4_Reset(bool hard)
 	recSh4_ClearCache();
 }
 
+#ifdef HOST_APPLE_JIT
+static u8 *apple_code_cache;
+
+/* Whether there is memory for the code (see vmem_platform_alloc_jit()):
+ * mapped the first time, and kept for every game after that. Without it
+ * the interpreter is used (LoadSpecialSettingsCPU()). */
+bool recSh4_HaveCodeCache(void)
+{
+	if (apple_code_cache == NULL)
+		apple_code_cache = (u8 *)vmem_platform_alloc_jit(CODE_SIZE + TEMP_CODE_SIZE);
+	return apple_code_cache != NULL;
+}
+#endif
+
 static void recSh4_Init(void)
 {
 	INFO_LOG(DYNAREC, "recSh4 Init");
@@ -570,6 +588,10 @@ static void recSh4_Init(void)
 		}
 	}
 	
+#ifdef HOST_APPLE_JIT
+	recSh4_HaveCodeCache();
+	CodeCache = apple_code_cache;
+#else
 	// Prepare some pointer to the pre-allocated code cache:
 	void *candidate_ptr = (void*)(((unat)SH4_TCB + 4095) & ~4095);
 
@@ -580,10 +602,13 @@ static void recSh4_Init(void)
 	#else
 	verify(vmem_platform_prepare_jit_block(candidate_ptr, CODE_SIZE + TEMP_CODE_SIZE, (void**)&CodeCache));
 	#endif
+#endif
 	// Ensure the pointer returned is non-null
 	verify(CodeCache != NULL);
 
+	vmem_jit_write_begin();
 	memset(CodeCache, 0xFF, CODE_SIZE + TEMP_CODE_SIZE);
+	vmem_jit_write_end();
 	TempCodeCache = CodeCache + CODE_SIZE;
 	ngen_init();
 	bm_ResetCache();

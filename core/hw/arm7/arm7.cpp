@@ -4,6 +4,7 @@
 #include "arm7_rec.h"
 #endif
 #include "arm_mem.h"
+#include "hw/mem/_vmem.h"
 
 #define arm_printf(...) DEBUG_LOG(AICA_ARM, __VA_ARGS__)
 
@@ -58,7 +59,7 @@ void CPUSoftwareInterrupt(int comment);
 void CPUUndefinedException();
 void libAICA_TimeStep();
 
-#if FEAT_AREC == DYNAREC_NONE || defined(FEAT_AREC_SELECTABLE)
+#if FEAT_AREC == DYNAREC_NONE || defined(FEAT_AREC_SELECTABLE) || defined(HOST_APPLE_JIT)
 
 //
 // ARM7 interpreter
@@ -692,7 +693,9 @@ u8* icPtr;
 u8* ICache;
 
 extern const u32 ICacheSize=1024*1024;
-#ifdef _WIN32
+#if defined(HOST_APPLE_JIT)
+// (no array: the code goes in MAP_JIT memory, armt_init())
+#elif defined(_WIN32)
 u8 ARM7_TCB[ICacheSize+4096];
 #elif defined(__linux__) || defined(HAVE_LIBNX)
 
@@ -1649,6 +1652,18 @@ void armv_MOV32(eReg regn, u32 imm)
 //Run a timeslice for ARMREC
 void aicaarm::run(u32 samples)
 {
+#ifdef HOST_APPLE_JIT
+	// (no memory for code: the interpreter)
+	if (ICache == NULL)
+	{
+		for (u32 i = 0; i < samples; i++)
+		{
+			arm_Run_(ARM_CYCLES_PER_SAMPLE);
+			libAICA_TimeStep();
+		}
+		return;
+	}
+#endif
 	for (int i = 0; i < samples; i++)
 	{
 		if (Arm7Enabled)
@@ -2213,6 +2228,26 @@ void armt_init()
 {
 	InitHash();
 
+#ifdef HOST_APPLE_JIT
+	/* Mapped the first time and kept for every game after that: without
+	 * it the interpreter runs (aicaarm::run()) */
+	static u8 *jit_area;
+	static bool jit_asked;
+
+	if (!jit_asked)
+	{
+		jit_area = (u8 *)vmem_platform_alloc_jit(ICacheSize);
+		jit_asked = true;
+	}
+	ICache = jit_area;
+	if (ICache != NULL)
+	{
+		vmem_jit_write_begin();
+		memset(ICache, 0xFF, ICacheSize);
+		vmem_jit_write_end();
+	}
+	icPtr = ICache;
+#else
 	//align to next page ..
 	ICache = (u8*)(((unat)ARM7_TCB+4095)& ~4095);
 
@@ -2231,6 +2266,7 @@ void armt_init()
 #endif
 
 	icPtr=ICache;
+#endif
 }
 
 
