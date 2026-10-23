@@ -1,5 +1,5 @@
 #include "arm7.h"
-#if FEAT_AREC != DYNAREC_NONE && HOST_CPU == CPU_X64
+#if FEAT_AREC != DYNAREC_NONE && (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64)
 // before the interpreter's macros, which take some of its names
 #include "arm7_rec.h"
 #endif
@@ -368,9 +368,10 @@ void update_armintc()
 	reg[INTR_PEND].I=e68k_out && armFiqEnable;
 }
 
-#if FEAT_AREC != DYNAREC_NONE && HOST_CPU == CPU_X64
+#if FEAT_AREC != DYNAREC_NONE && (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64)
 //
-// For the recompiler in arm7_rec.cpp and arm7_rec_x64.cpp
+// For the recompiler in arm7_rec.cpp, with arm7_rec_x64.cpp or
+// arm7_rec_arm64.cpp
 //
 
 namespace aicaarm {
@@ -458,9 +459,9 @@ void armt_init()
 
 #elif FEAT_AREC != DYNAREC_NONE
 
-/* The recompiler below is for 32-bit and 64-bit ARM: there is none for
- * 32-bit x86, which runs the interpreter. */
-#if HOST_CPU != CPU_ARM && HOST_CPU != CPU_ARM64
+/* The recompiler below is for 32-bit ARM: there is none for 32-bit x86,
+ * which runs the interpreter. */
+#if HOST_CPU != CPU_ARM
 #error "no ARM7 recompiler for this processor: build it with FEAT_AREC=DYNAREC_NONE"
 #endif
 
@@ -699,9 +700,7 @@ u8* icPtr;
 u8* ICache;
 
 extern const u32 ICacheSize=1024*1024;
-#if defined(HOST_APPLE_JIT)
-// (no array: the code goes in MAP_JIT memory, armt_init())
-#elif defined(_WIN32)
+#if defined(_WIN32)
 u8 ARM7_TCB[ICacheSize+4096];
 #elif defined(__linux__) || defined(HAVE_LIBNX)
 
@@ -1113,20 +1112,6 @@ OpType DecodeOpcode(u32& opcd,u32& flags)
 }
 
 //helpers ...
-#if HOST_CPU == CPU_ARM64
-extern void LoadReg(eReg rd,u32 regn,ConditionCode cc=CC_AL);
-extern void StoreReg(eReg rd,u32 regn,ConditionCode cc=CC_AL);
-extern void armv_mov(ARM::eReg regd, ARM::eReg regn);
-extern void armv_add(ARM::eReg regd, ARM::eReg regn, ARM::eReg regm);
-extern void armv_sub(ARM::eReg regd, ARM::eReg regn, ARM::eReg regm);
-extern void armv_add(ARM::eReg regd, ARM::eReg regn, s32 imm);
-extern void armv_lsl(ARM::eReg regd, ARM::eReg regn, u32 imm);
-extern void armv_bic(ARM::eReg regd, ARM::eReg regn, u32 imm);
-extern void *armv_start_conditional(ARM::ConditionCode cc);
-extern void armv_end_conditional(void *ref);
-// Use w25 for temp mem save because w9 is not callee-saved
-#define r9 ((ARM::eReg)25)
-#else
 void LoadReg(eReg rd,u32 regn,ConditionCode cc=CC_AL)
 {
 	LDR(rd,r8,(u8*)&reg[regn].I-(u8*)&reg[0].I,Offset,cc);
@@ -1175,7 +1160,6 @@ void *armv_start_conditional(ARM::ConditionCode cc)
 void armv_end_conditional(void *ref)
 {
 }
-#endif
 
 //very quick-and-dirty register rename based virtualisation
 u32 renamed_regs[16];
@@ -1240,10 +1224,6 @@ void StoreAndRename(u32 opcd, u32 bitpos)
 	StoreReg((eReg)nreg,reg);
 }
 
-#if HOST_CPU == CPU_ARM64
-extern void LoadFlags();
-extern void StoreFlags();
-#else
 //For COND
 void LoadFlags()
 {
@@ -1260,7 +1240,6 @@ void StoreFlags()
 	//Store flags
 	StoreReg(r1,RN_PSR_FLAGS);
 }
-#endif
 
 //Virtualise Data Processing opcode
 void VirtualizeOpcode(u32 opcd,u32 flag,u32 pc)
@@ -1420,52 +1399,11 @@ void armv_MOV32(eReg regn, u32 imm)
 	No sanity checks on arm ..
 */
 
-#elif HOST_CPU == CPU_ARM64
-#include <sys/mman.h>
 #endif
 
 //Run a timeslice for ARMREC
 void aicaarm::run(u32 samples)
 {
-#ifdef FEAT_AREC_SELECTABLE
-	/* The interpreter instead, when the core option asks for it, as on
-	 * x86-64 (arm7_rec.cpp): the two keep the ARM's state in the same place
-	 * and can change over between any two samples. Coming back, everything
-	 * compiled is thrown away: the program in the ARM's memory may be
-	 * another by now. */
-	static bool interpreting;
-
-	if (settings.dynarec.Arm7Interpreter)
-	{
-		if (!interpreting)
-			NOTICE_LOG(AICA_ARM, "ARM7: interpreter");
-		interpreting = true;
-		for (u32 i = 0; i < samples; i++)
-		{
-			arm_Run_(ARM_CYCLES_PER_SAMPLE);
-			libAICA_TimeStep();
-		}
-		return;
-	}
-	if (interpreting)
-	{
-		NOTICE_LOG(AICA_ARM, "ARM7: recompiler");
-		interpreting = false;
-		FlushCache();
-	}
-#endif
-#ifdef HOST_APPLE_JIT
-	// (no memory for code: the interpreter)
-	if (ICache == NULL)
-	{
-		for (u32 i = 0; i < samples; i++)
-		{
-			arm_Run_(ARM_CYCLES_PER_SAMPLE);
-			libAICA_TimeStep();
-		}
-		return;
-	}
-#endif
 	for (int i = 0; i < samples; i++)
 	{
 		if (Arm7Enabled)
@@ -1953,26 +1891,6 @@ void armt_init()
 {
 	InitHash();
 
-#ifdef HOST_APPLE_JIT
-	/* Mapped the first time and kept for every game after that: without
-	 * it the interpreter runs (aicaarm::run()) */
-	static u8 *jit_area;
-	static bool jit_asked;
-
-	if (!jit_asked)
-	{
-		jit_area = (u8 *)vmem_platform_alloc_jit(ICacheSize);
-		jit_asked = true;
-	}
-	ICache = jit_area;
-	if (ICache != NULL)
-	{
-		vmem_jit_write_begin();
-		memset(ICache, 0xFF, ICacheSize);
-		vmem_jit_write_end();
-	}
-	icPtr = ICache;
-#else
 	//align to next page ..
 	ICache = (u8*)(((unat)ARM7_TCB+4095)& ~4095);
 
@@ -1991,7 +1909,6 @@ void armt_init()
 #endif
 
 	icPtr=ICache;
-#endif
 }
 
 

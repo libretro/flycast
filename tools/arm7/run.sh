@@ -3,10 +3,10 @@
 #
 #   sh tools/arm7/run.sh [programs]
 #
-# On x86-64 the ARM7 is run by a recompiler (core/hw/arm7/arm7_rec.cpp and
-# arm7_rec_x64.cpp); everywhere the recompilers do not reach, and for the
-# instructions this one hands back, by an interpreter (arm7.cpp with
-# arm-new.h). arm7_test.cpp is built around each, with nothing else of the
+# On x86-64 and ARM64 the ARM7 is run by a recompiler (core/hw/arm7/
+# arm7_rec.cpp, with arm7_rec_x64.cpp or arm7_rec_arm64.cpp); everywhere the
+# recompilers do not reach, and for the instructions this one hands back, by
+# an interpreter (arm7.cpp with arm-new.h). arm7_test.cpp is built around each, with nothing else of the
 # core, and both are given the same made-up programs, 10000 unless a number
 # is given. The registers, the flags and all of memory have to be the same
 # from both at the end of every program. arm7_test.cpp says what the
@@ -21,43 +21,54 @@
 # between the two from one sample to the next. Both have to come out as
 # the others.
 #
+# ARM7_TEST_MODES=1 has the programs change the processor's mode as well
+# (MSR CPSR_c), between the modes with banked registers: other programs.
+#
 # Needs a C++ compiler and the core's makefile for its flags, and only
-# does anything on x86-64: there is no recompiler to compare elsewhere.
+# does anything on x86-64 and ARM64: there is no recompiler to compare
+# elsewhere. For another processor's build, run under qemu:
+#
+#   ARCH=aarch64 MAKEARGS="platform=arm64 CC=aarch64-linux-gnu-gcc \
+#   CXX=aarch64-linux-gnu-g++" RUN="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
+#      sh tools/arm7/run.sh
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 PROGRAMS=${1:-10000}
-case $(uname -m) in
-   x86_64|amd64) ;;
-   *) echo "arm7: skipped (the recompiler under test is for x86-64)"; exit 0 ;;
+case ${ARCH:-$(uname -m)} in
+   x86_64|amd64) BACKEND=core/hw/arm7/arm7_rec_x64.cpp ;;
+   aarch64|arm64) BACKEND="core/hw/arm7/arm7_rec_arm64.cpp $(echo core/deps/vixl/*.cc core/deps/vixl/aarch64/*.cc)" ;;
+   *) echo "arm7: skipped (the recompilers under test are for x86-64 and ARM64)"; exit 0 ;;
 esac
 WORK=${TMPDIR:-/tmp}/arm7_test.$$
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 # the compiler and flags the core compiles this code with
-CMD=$(make -n -B core/hw/arm7/arm7.o 2>/dev/null | grep 'arm7\.cpp' | tail -n 1)
+CMD=$(make -n -B $MAKEARGS core/hw/arm7/arm7.o 2>/dev/null | grep 'arm7\.cpp' | tail -n 1)
 [ -n "$CMD" ] || { echo "cannot get the core's compile flags from make" >&2; exit 1; }
 CMD=${CMD% -o *}
 FLAGS=$(echo "$CMD" | sed 's| [^ ]*arm7\.cpp||; s/ -MMD -MP//')
 CXX=${FLAGS%% *}
 
 build() {
-   # $1: name, $2: extra define
+   # $1: name, $2: extra define, $3: more sources
    for SRC in core/hw/arm7/arm7.cpp core/hw/arm7/arm_mem.cpp core/hw/arm7/arm7_rec.cpp \
-              core/hw/arm7/arm7_rec_x64.cpp tools/arm7/arm7_test.cpp; do
+              tools/arm7/arm7_test.cpp $3; do
       # the flags come out of make quoted for a shell
-      eval "$FLAGS $2 \"$SRC\" -o \"$WORK/$1-$(basename "$SRC" .cpp).o\""
+      eval "$FLAGS $2 \"$SRC\" -o \"$WORK/$1-$(basename "$SRC" | sed 's/\.[a-z]*$//').o\""
    done
    "$CXX" -o "$WORK/arm7_test_$1" "$WORK/$1"-*.o
 }
 
-build rec ""
+build rec "" "$BACKEND"
 build interp -DFEAT_AREC=DYNAREC_NONE
-"$WORK/arm7_test_rec" "$PROGRAMS" > "$WORK/rec.txt"
-"$WORK/arm7_test_interp" "$PROGRAMS" > "$WORK/interp.txt"
-ARM7_TEST_INTERPRET=1 "$WORK/arm7_test_rec" "$PROGRAMS" > "$WORK/chosen.txt"
-ARM7_TEST_SWITCH=1 "$WORK/arm7_test_rec" "$PROGRAMS" > "$WORK/switched.txt"
+$RUN "$WORK/arm7_test_rec" "$PROGRAMS" > "$WORK/rec.txt"
+$RUN "$WORK/arm7_test_interp" "$PROGRAMS" > "$WORK/interp.txt"
+ARM7_TEST_INTERPRET=1 $RUN "$WORK/arm7_test_rec" "$PROGRAMS" > "$WORK/chosen.txt"
+ARM7_TEST_SWITCH=1 $RUN "$WORK/arm7_test_rec" "$PROGRAMS" > "$WORK/switched.txt"
+# what the recompiled programs leave, for comparing one machine's with another's
+cp "$WORK/rec.txt" "${ARM7_TEST_OUT:-/dev/null}"
 
 same() {
    # $1, $2: outputs to compare, $3 and $4: what each is

@@ -381,7 +381,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       CORE_OPTION_NAME "_arm7_recompiler",
       "Sound CPU Recompiler",
       NULL,
-      "Run the sound chip's ARM7 processor through the recompiler. Disable to run it through the slower interpreter instead, to find out whether a sound problem comes from the recompiler, or for netplay between an x86 and an ARM machine (the interpreter runs the same on both, the recompilers do not). Takes effect at once.",
+      "Run the sound chip's ARM7 processor through the recompiler. Disable to run it through the slower interpreter instead, to find out whether a sound problem comes from the recompiler. Either way it runs the same on x86-64 and ARM64. Takes effect at once.",
       NULL,
       NULL,
       {

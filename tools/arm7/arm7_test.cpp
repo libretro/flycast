@@ -13,8 +13,8 @@
  * forward only, so that every program gets to its end. It starts from
  * random registers that point into the middle of memory.
  *
- * Left out: anything that writes r15 other than a branch, changes of mode,
- * software interrupts and undefined instructions, and the block transfers
+ * Left out: anything that writes r15 other than a branch, changes of mode
+ * (but with $ARM7_TEST_MODES: see below), software interrupts and undefined instructions, and the block transfers
  * and writebacks the ARM manual calls unpredictable. A program that stores
  * over its own instructions is not compared: the recompiler does not look
  * for that, and the sound drivers do not do it.
@@ -23,6 +23,9 @@
  * $ARM7_TEST_INTERPRET has the build with the recompiler run them through
  * the interpreter it also has, and $ARM7_TEST_SWITCH has it change between
  * the two over its first samples; see run.sh.
+ * $ARM7_TEST_MODES has one instruction in ten change the processor's mode,
+ * to one of those with banked registers or system mode, with interrupts
+ * off: other programs than without it.
  * $ARM7_TEST_CASE runs one; $ARM7_TEST_PRINT also prints its instructions,
  * and $ARM7_TEST_PROGRAM names a file of hex words to run in their place. */
 #include <stdio.h>
@@ -66,6 +69,13 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
    return true;
 }
 
+void vmem_platform_flush_cache(void *icache_start, void *icache_end, void *dcache_start, void *dcache_end)
+{
+   __builtin___clear_cache((char *)icache_start, (char *)icache_end);
+}
+
+static bool modes;
+
 static u64 seed;
 static u32 rnd(void)
 {
@@ -99,6 +109,13 @@ static u32 operand2(void)
 
 static u32 instruction(unsigned at, unsigned count)
 {
+   if (modes && pick(10) == 0)
+   {
+      /* MSR CPSR_c, #imm: interrupts off, and FIQ, IRQ, supervisor, abort,
+       * undefined or system mode */
+      static const u32 mode[] = { 0x11, 0x12, 0x13, 0x17, 0x1b, 0x1f };
+      return cond() | 0x0321F0C0 | mode[pick(6)];
+   }
    switch (pick(16))
    {
       default:                                           /* arithmetic and logic */
@@ -262,6 +279,7 @@ int main(int argc, char **argv)
    const unsigned cases = argc > 1 ? (unsigned)atoi(argv[1]) : 1000;
    unsigned i;
 
+   modes = getenv("ARM7_TEST_MODES") != NULL;
    aica_ram.data = ram;
    aica_ram.size = sizeof(ram);
    aicaarm::init();

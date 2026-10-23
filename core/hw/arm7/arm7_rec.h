@@ -388,6 +388,15 @@ public:
 			flushAllRegs();
 		else
 		{
+			/* Writing the status register can change the mode, and with it
+			 * which of the banked registers r8 to r14 are: MSR_do() swaps
+			 * them in the register file. Every register is written back
+			 * before and read again after (block_ssa_pass() gives them all
+			 * a new version), as around the interpreter. Which values were
+			 * still in host registers used to depend on how many there are
+			 * on the host. */
+			if (op.op_type == ArmOp::MSR)
+				flushAllRegs();
 			bool conditional = op.condition != ArmOp::AL;
 			for (const auto& arg : op.arg)
 			{

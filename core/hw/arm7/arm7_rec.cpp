@@ -19,7 +19,7 @@
 
 #include "build.h"
 
-#if HOST_CPU == CPU_X64 && FEAT_AREC != DYNAREC_NONE
+#if (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64) && FEAT_AREC != DYNAREC_NONE
 
 #include "arm7_rec.h"
 #include "arm7.h"
@@ -55,8 +55,12 @@ static std::vector<CompiledBlock> compiled_blocks;
 static void (*entry_points_filled)();
 
 /* The code this makes: in with the program's own, so that it can reach the
- * emulator's data and functions with 32-bit offsets. */
-#if defined(_WIN32)
+ * emulator's data and functions with 32-bit offsets (on ARM64, its
+ * functions with a branch). On macOS on Apple's processors it is MAP_JIT
+ * memory instead, mapped in init(). */
+#if defined(HOST_APPLE_JIT)
+// (no array)
+#elif defined(_WIN32)
 DECL_ALIGN(4096) static u8 ARM7_TCB[ICacheSize];
 #elif defined(__linux__) || defined(HAVE_LIBNX)
 DECL_ALIGN(4096) static u8 ARM7_TCB[ICacheSize] __attribute__((section(".text")));
@@ -620,6 +624,10 @@ static void block_ssa_pass()
 			}
 			if (it->rd.isReg())
 				it->rd.getReg().version = ++versions[(size_t)it->rd.getReg().armreg];
+			// (see ArmRegAlloc::load())
+			if (it->op_type == ArmOp::MSR)
+				for (auto& v : versions)
+					v++;
 		}
 	}
 }
@@ -738,6 +746,10 @@ void compile()
 
 void flush()
 {
+#ifdef HOST_APPLE_JIT
+	if (ICache == nullptr)
+		return;
+#endif
 	icPtr = ICache;
 	arm7backend_flush();
 	verify(arm_compilecode != nullptr);
@@ -779,11 +791,25 @@ void init()
 	/* Once: this is called for every game that is loaded, and on Windows
 	 * the code does not go in ARM7_TCB but in memory allocated here, which
 	 * nothing gave back. The same block serves until the program ends. */
+#ifdef HOST_APPLE_JIT
+	/* Mapped the first time and kept: without it (no JIT entitlement) the
+	 * interpreter runs, run() */
+	static bool asked;
+
+	if (!asked)
+	{
+		ICache = (u8 *)vmem_platform_alloc_jit(ICacheSize);
+		asked = true;
+	}
+	if (ICache == nullptr)
+		return;
+#else
 	if (ICache == nullptr)
 	{
 		bool rc = vmem_platform_prepare_jit_block(ARM7_TCB, ICacheSize, (void**)&ICache);
 		verify(rc);
 	}
+#endif
 
 	flush();
 }
@@ -843,7 +869,11 @@ void run(u32 samples)
 	 * program in the ARM's memory may be another by now. */
 	static bool interpreting;
 
+#ifdef HOST_APPLE_JIT
+	if (settings.dynarec.Arm7Interpreter || recompiler::ICache == nullptr)
+#else
 	if (settings.dynarec.Arm7Interpreter)
+#endif
 	{
 		if (!interpreting)
 			NOTICE_LOG(AICA_ARM, "ARM7: interpreter");
