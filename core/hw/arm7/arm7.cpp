@@ -1652,6 +1652,33 @@ void armv_MOV32(eReg regn, u32 imm)
 //Run a timeslice for ARMREC
 void aicaarm::run(u32 samples)
 {
+#ifdef FEAT_AREC_SELECTABLE
+	/* The interpreter instead, when the core option asks for it, as on
+	 * x86-64 (arm7_rec.cpp): the two keep the ARM's state in the same place
+	 * and can change over between any two samples. Coming back, everything
+	 * compiled is thrown away: the program in the ARM's memory may be
+	 * another by now. */
+	static bool interpreting;
+
+	if (settings.dynarec.Arm7Interpreter)
+	{
+		if (!interpreting)
+			NOTICE_LOG(AICA_ARM, "ARM7: interpreter");
+		interpreting = true;
+		for (u32 i = 0; i < samples; i++)
+		{
+			arm_Run_(ARM_CYCLES_PER_SAMPLE);
+			libAICA_TimeStep();
+		}
+		return;
+	}
+	if (interpreting)
+	{
+		NOTICE_LOG(AICA_ARM, "ARM7: recompiler");
+		interpreting = false;
+		FlushCache();
+	}
+#endif
 #ifdef HOST_APPLE_JIT
 	// (no memory for code: the interpreter)
 	if (ICache == NULL)
