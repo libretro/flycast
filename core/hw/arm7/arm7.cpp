@@ -1,5 +1,5 @@
 #include "arm7.h"
-#if FEAT_AREC != DYNAREC_NONE && (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64)
+#if FEAT_AREC != DYNAREC_NONE && (HOST_CPU == CPU_X64 || HOST_CPU == CPU_X86 || HOST_CPU == CPU_ARM64)
 // before the interpreter's macros, which take some of its names
 #include "arm7_rec.h"
 #endif
@@ -368,10 +368,10 @@ void update_armintc()
 	reg[INTR_PEND].I=e68k_out && armFiqEnable;
 }
 
-#if FEAT_AREC != DYNAREC_NONE && (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64)
+#if FEAT_AREC != DYNAREC_NONE && (HOST_CPU == CPU_X64 || HOST_CPU == CPU_X86 || HOST_CPU == CPU_ARM64)
 //
-// For the recompiler in arm7_rec.cpp, with arm7_rec_x64.cpp or
-// arm7_rec_arm64.cpp
+// For the recompiler in arm7_rec.cpp, with arm7_rec_x64.cpp,
+// arm7_rec_x86.cpp or arm7_rec_arm64.cpp
 //
 
 namespace aicaarm {
@@ -459,8 +459,8 @@ void armt_init()
 
 #elif FEAT_AREC != DYNAREC_NONE
 
-/* The recompiler below is for 32-bit ARM: there is none for 32-bit x86,
- * which runs the interpreter. */
+/* The recompiler below is for 32-bit ARM only: the other processors have
+ * arm7_rec.cpp's. */
 #if HOST_CPU != CPU_ARM
 #error "no ARM7 recompiler for this processor: build it with FEAT_AREC=DYNAREC_NONE"
 #endif

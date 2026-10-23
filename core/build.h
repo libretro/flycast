@@ -231,7 +231,7 @@
 #endif
 
 #ifndef FEAT_AREC
-	#if HOST_CPU == CPU_ARM || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64
+	#if HOST_CPU == CPU_ARM || HOST_CPU == CPU_ARM64 || HOST_CPU == CPU_X64 || HOST_CPU == CPU_X86
 		#define FEAT_AREC DYNAREC_JIT
 	#else
 		#define FEAT_AREC DYNAREC_NONE
@@ -240,9 +240,10 @@
 
 // Where the ARM7's recompiler can be switched for the interpreter while
 // running, which the build then also has: a core option does it. (The
-// x86-64 and the ARM64 recompilers are one, arm7_rec.cpp, with a backend
-// for each, and run a sound program the same; so does the interpreter.)
-#if (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64) && FEAT_AREC != DYNAREC_NONE
+// x86-64, 32-bit x86 and ARM64 recompilers are one, arm7_rec.cpp, with a
+// backend for each, and run a sound program the same; so does the
+// interpreter.)
+#if (HOST_CPU == CPU_X64 || HOST_CPU == CPU_X86 || HOST_CPU == CPU_ARM64) && FEAT_AREC != DYNAREC_NONE
 #define FEAT_AREC_SELECTABLE 1
 #endif
 

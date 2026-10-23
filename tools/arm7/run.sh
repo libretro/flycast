@@ -3,8 +3,9 @@
 #
 #   sh tools/arm7/run.sh [programs]
 #
-# On x86-64 and ARM64 the ARM7 is run by a recompiler (core/hw/arm7/
-# arm7_rec.cpp, with arm7_rec_x64.cpp or arm7_rec_arm64.cpp); everywhere the
+# On x86-64, 32-bit x86 and ARM64 the ARM7 is run by a recompiler (core/hw/
+# arm7/arm7_rec.cpp, with arm7_rec_x64.cpp, arm7_rec_x86.cpp or
+# arm7_rec_arm64.cpp); everywhere the
 # recompilers do not reach, and for the instructions this one hands back, by
 # an interpreter (arm7.cpp with arm-new.h). arm7_test.cpp is built around each, with nothing else of the
 # core, and both are given the same made-up programs, 10000 unless a number
@@ -25,8 +26,13 @@
 # (MSR CPSR_c), between the modes with banked registers: other programs.
 #
 # Needs a C++ compiler and the core's makefile for its flags, and only
-# does anything on x86-64 and ARM64: there is no recompiler to compare
-# elsewhere. For another processor's build, run under qemu:
+# does anything on x86-64, 32-bit x86 and ARM64: there is no recompiler to
+# compare elsewhere. For a 32-bit x86 build on an x86-64 machine:
+#
+#   ARCH=i686 MAKEARGS="platform=unix ARCH=i686 CC=i686-linux-gnu-gcc \
+#   CXX=i686-linux-gnu-g++" sh tools/arm7/run.sh
+#
+# For another processor's build, run under qemu:
 #
 #   ARCH=aarch64 MAKEARGS="platform=arm64 CC=aarch64-linux-gnu-gcc \
 #   CXX=aarch64-linux-gnu-g++" RUN="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
@@ -37,8 +43,9 @@ cd "$ROOT"
 PROGRAMS=${1:-10000}
 case ${ARCH:-$(uname -m)} in
    x86_64|amd64) BACKEND=core/hw/arm7/arm7_rec_x64.cpp ;;
+   i386|i686) BACKEND=core/hw/arm7/arm7_rec_x86.cpp ;;
    aarch64|arm64) BACKEND="core/hw/arm7/arm7_rec_arm64.cpp $(echo core/deps/vixl/*.cc core/deps/vixl/aarch64/*.cc)" ;;
-   *) echo "arm7: skipped (the recompilers under test are for x86-64 and ARM64)"; exit 0 ;;
+   *) echo "arm7: skipped (the recompilers under test are for x86-64, 32-bit x86 and ARM64)"; exit 0 ;;
 esac
 WORK=${TMPDIR:-/tmp}/arm7_test.$$
 mkdir -p "$WORK"

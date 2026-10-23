@@ -19,7 +19,7 @@
 
 #include "build.h"
 
-#if (HOST_CPU == CPU_X64 || HOST_CPU == CPU_ARM64) && FEAT_AREC != DYNAREC_NONE
+#if (HOST_CPU == CPU_X64 || HOST_CPU == CPU_X86 || HOST_CPU == CPU_ARM64) && FEAT_AREC != DYNAREC_NONE
 
 #include "arm7_rec.h"
 #include "arm7.h"
