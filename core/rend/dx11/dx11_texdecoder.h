@@ -88,6 +88,7 @@ private:
 	bool ready = false;
 	bool takes[5] = {};
 	bool noOverwrite = false;	// the device maps a buffer it reads from as a view without discarding it
+	bool overlap = false;		// NVAPI's UAV overlap: a flush's kernels run without waits between them
 	DX11Context *context = nullptr;
 	ID3D11DeviceContext *deviceContext = nullptr;
 

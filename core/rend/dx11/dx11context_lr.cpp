@@ -74,7 +74,7 @@ bool DX11Context::Init(const struct retro_hw_render_interface_d3d11 *iface)
 	}
 
 	{
-		UINT vendor = 0;
+		vendor = 0;
 		IDXGIDevice *dxgiDevice = nullptr;
 		vramBudget = VramBudget();
 		if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), (void **)&dxgiDevice)))
@@ -151,6 +151,7 @@ void DX11Context::Term()
 	compilerModule = nullptr;
 	compile = nullptr;
 	immediate = false;
+	vendor = 0;
 	v2 = false;
 	handle = nullptr;
 	lock_context = nullptr;

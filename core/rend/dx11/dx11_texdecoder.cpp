@@ -1,6 +1,7 @@
 /* Textures made on the GPU from their bytes in video memory: see
  * dx11_texdecoder.h */
 #include "dx11_texdecoder.h"
+#include "dx11_nvapi.h"
 #include "dx11context_lr.h"
 
 #include <algorithm>
@@ -101,10 +102,15 @@ void DX11TexDecoder::Init(DX11Context *context)
 	head = 0;
 	jobCount = 0;
 	ready = true;
-	INFO_LOG(RENDERER, "DX11: textures are made on the GPU (a ring of %u KB%s; 32-bit %d, 8-bit %d, 16-bit drawn %d%d%d)",
+	/* An NVIDIA device whose driver has NVAPI's UAV overlap: a frame's
+	 * levels are made without the driver waiting for each kernel to be done
+	 * before the next starts (Flush()) */
+	overlap = context->GetVendor() == 0x10de && dx11_nvapi_uav_overlap_available();
+	INFO_LOG(RENDERER, "DX11: textures are made on the GPU (a ring of %u KB%s; 32-bit %d, 8-bit %d, 16-bit drawn %d%d%d; %s)",
 			ringSize / 1024, noOverwrite ? "" : ", discarded every frame",
 			takes[(int)TextureType::_8888], takes[(int)TextureType::_8],
-			takes[(int)TextureType::_565], takes[(int)TextureType::_5551], takes[(int)TextureType::_4444]);
+			takes[(int)TextureType::_565], takes[(int)TextureType::_5551], takes[(int)TextureType::_4444],
+			overlap ? "the kernels overlapped through NVAPI" : "each kernel after the one before");
 }
 
 void DX11TexDecoder::Term()
@@ -113,6 +119,7 @@ void DX11TexDecoder::Term()
 		deviceContext->Unmap(ring, 0);
 	mapped = nullptr;
 	ready = false;
+	overlap = false;
 	jobCount = 0;
 	depthStencil.reset();
 	rasterizer.reset();
@@ -197,6 +204,23 @@ void DX11TexDecoder::Flush()
 	bool drawn = false;
 	deviceContext->CSSetShaderResources(0, 1, ringView.addr());
 	deviceContext->CSSetConstantBuffers(0, 1, constants.addr());
+	/* The kernels of a flush do not depend on one another: each reads the
+	 * ring and its constants alone, which nothing here writes but the CPU
+	 * before it is unmapped, and writes one level of one texture through
+	 * its own view - no two of them the same level, since a texture made
+	 * again, given back to the pool or uploaded by the CPU takes back what
+	 * it asked for before (DX11Texture::CancelDecode(), which nulls those
+	 * jobs). With NVAPI's UAV overlap the driver does not wait for each to
+	 * be done before the next starts; the run ends before anything that
+	 * reads the levels (the views unbound below, then the draws). */
+	u32 dispatches = 0;
+	if (overlap)
+		for (u32 i = 0; i < jobCount; i++)
+			if (jobs[i].uav != nullptr)
+				dispatches++;
+	const bool overlapped = dispatches > 1;
+	if (overlapped)
+		dx11_nvapi_begin_uav_overlap(deviceContext);
 	for (u32 out = TEXD_OUT8; out <= TEXD_OUT32; out += TEXD_OUT32 - TEXD_OUT8)
 	{
 		bool bound = false;
@@ -217,6 +241,8 @@ void DX11TexDecoder::Flush()
 			deviceContext->Dispatch(((job.pc[3] & 0xFFFF) + 7) / 8, ((job.pc[3] >> 16) + 7) / 8, 1);
 		}
 	}
+	if (overlapped)
+		dx11_nvapi_end_uav_overlap(deviceContext);
 	// (unbound, to be sampled)
 	ID3D11UnorderedAccessView * const noUav = nullptr;
 	deviceContext->CSSetUnorderedAccessViews(0, 1, &noUav, nullptr);

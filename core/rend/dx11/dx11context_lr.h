@@ -59,6 +59,8 @@ public:
 	D3D_FEATURE_LEVEL GetFeatureLevel() const { return featureLevel; }
 	// what video memory there was to use when the context was set up
 	const VramBudget& GetVramBudget() const { return vramBudget; }
+	// the adapter's PCI vendor id (0x10de: NVIDIA's), 0 when it is not known
+	UINT GetVendor() const { return vendor; }
 	/* Unordered access views in pixel shaders, and a context that can be read back from */
 	bool HasPerPixel() const { return device && featureLevel >= D3D_FEATURE_LEVEL_11_0 && immediate; }
 	/* A deferred context (version 1, a frontend that draws on a thread of
@@ -333,6 +335,7 @@ private:
 	ComPtr<ID3D11DeviceContext> deviceContext;
 	D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_9_1;
 	VramBudget vramBudget;
+	UINT vendor = 0;
 	bool immediate = false;
 	pD3DCompile compile = nullptr;
 	HMODULE compilerModule = nullptr;
