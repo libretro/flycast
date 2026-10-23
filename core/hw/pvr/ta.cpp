@@ -330,6 +330,8 @@ void ta_vtx_ListCont(void)
 {
    SetCurrentTARC(TA_CURRENT_CTX);
    ta_tad.Continue();
+   // (where this pass's object lists go: see ta_select_passes())
+   ta_tad.ol_base[ta_tad.render_pass_count] = TA_OL_BASE & 0xFFFFE0u;
 
 	ta_cur_state=TAS_NS;
 	ta_fsm_cl = 7;
@@ -340,7 +342,10 @@ void ta_vtx_ListInit(void)
 	if ((retro_atomic_load_relaxed_int(&ta_walk_wanted) != 0) != ta_walk_on)
 		ta_walk_apply(!ta_walk_on);
 	SetCurrentTARC(TA_CURRENT_CTX);
+	if (ta_ctx && ta_ctx->drawn)
+		tactx_Restart(ta_ctx);
    ta_tad.ClearPartial();
+   ta_tad.ol_base[0] = TA_OL_BASE & 0xFFFFE0u;
 	/* (the data from here on is a new frame's: the table of the old one is
 	 * kept for as long as it is what a render draws) */
 	if (ta_ctx)

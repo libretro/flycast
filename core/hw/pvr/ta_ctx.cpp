@@ -92,7 +92,7 @@ bool QueueRender(TA_context* ctx)
 
    if (FrameSkipping && frameskip) {
  		frameskip=1-frameskip;
-		tactx_Recycle(ctx);
+		tactx_Drawn(ctx);
 		fskip++;
 		return false;
  	}
@@ -102,7 +102,7 @@ bool QueueRender(TA_context* ctx)
 	 * it to be finished (threaded). */
 	if (retro_atomic_load_acquire_ptr(&rqueue))
    {
-		tactx_Recycle(ctx);
+		tactx_Drawn(ctx);
 		return false;
 	}
 
@@ -128,7 +128,7 @@ void FinishRender(TA_context* ctx)
 		verify(retro_atomic_load_relaxed_ptr(&rqueue) == ctx);
 		retro_atomic_store_release_ptr(&rqueue, NULL);
 
-		tactx_Recycle(ctx);
+		tactx_Drawn(ctx);
 	}
 }
 
@@ -141,7 +141,7 @@ static cSlotCache<TA_context, 3> ctx_pool;
 #define TA_CONTEXT_ADDRESSES 16
 static TA_context *ctx_list[TA_CONTEXT_ADDRESSES];
 static unsigned ctx_count;
-/* Renders started (tactx_Pop()), for the age of a frame: one the game has
+/* Renders started (tactx_Get()), for the age of a frame: one the game has
  * not selected for more than TA_CONTEXT_MAX_AGE of them is given to the
  * next new address instead of a new one being made. A game that sends
  * frames to ever different addresses and never draws some of them would
@@ -418,26 +418,55 @@ void tactx_walk_forget(void)
 	}
 }
 
-TA_context* tactx_Pop(u32 addr)
+void tactx_Drawn(TA_context* ctx)
+{
+	// (one left in the list is still the list's)
+	if (!ctx->rend.keep)
+		tactx_Recycle(ctx);
+}
+
+TA_context* tactx_Get(u32 addr)
 {
 	// (called once for each render the game starts)
 	tactx_frames++;
-	for (unsigned i=0; i<ctx_count; i++)
-   {
-      if (ctx_list[i]->Address == addr)
-      {
-         TA_context *rv = ctx_list[i];
-
-         if (ta_ctx == rv)
-            SetCurrentTARC(TACTX_NONE);
-
-         ctx_count--;
-         memmove(&ctx_list[i], &ctx_list[i + 1], (ctx_count - i) * sizeof(*ctx_list));
-
-         return rv;
-      }
-   }
+	for (unsigned i = 0; i < ctx_count; i++)
+		if (ctx_list[i]->Address == addr)
+		{
+			TA_context *ctx = ctx_list[i];
+			// (the one being written has its pointers out, in ta_tad)
+			if (ctx == ta_ctx)
+				ctx->tad = ta_tad;
+			return ctx;
+		}
 	return 0;
+}
+
+void tactx_Remove(TA_context* ctx)
+{
+	for (unsigned i = 0; i < ctx_count; i++)
+		if (ctx_list[i] == ctx)
+		{
+			if (ta_ctx == ctx)
+				SetCurrentTARC(TACTX_NONE);
+			ctx_count--;
+			memmove(&ctx_list[i], &ctx_list[i + 1], (ctx_count - i) * sizeof(*ctx_list));
+			return;
+		}
+}
+
+void tactx_Restart(TA_context* ctx)
+{
+	for (unsigned i = 0; i < ctx_count; i++)
+		if (ctx_list[i] == ctx)
+		{
+			memmove(&ctx_list[i], &ctx_list[i + 1], (ctx_count - 1 - i) * sizeof(*ctx_list));
+			ctx_list[ctx_count - 1] = ctx;
+			break;
+		}
+	ta_tad.Clear();
+	ctx->walk_count = TA_WALK_INVALID;
+	ctx->walk_restart = false;
+	ctx->drawn = false;
 }
 
 /* The machine is reset: the frames it was writing are the last run's, and
@@ -605,7 +634,9 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
  *
  * Threads. The frames here are the ones the game is writing to: ctx_list,
  * the emulation side's alone. A frame handed over to be drawn has been
- * taken out of the list first (tactx_Pop()) and is never looked at. And
+ * taken out of the list first (tactx_Remove()) and is never looked at,
+ * but for one a render draws some render passes of (rend.keep), which
+ * stays: it is read, not written, while it is drawn. And
  * a state is saved or loaded only by whoever holds the machine
  * (EmuBaton::Hold()), which is to be had only between two frames: the
  * emulation thread is asleep, and every render it handed over has been
@@ -638,18 +669,22 @@ void pvr_serialize_v21(void **data, unsigned int *total_size)
 		return;
 	}
 
+	// (not a frame drawn and kept for another render: it is not being written)
+	const TA_context *saved[TA_STATE_CONTEXTS];
 	for (i = 0; i < ctx_count && count < TA_STATE_CONTEXTS; i++)
 	{
+		if (ctx_list[i]->drawn)
+			continue;
 		if (ctx_list[i] == ta_ctx)
 			current = count;
-		count++;
+		saved[count++] = ctx_list[i];
 	}
 	LIBRETRO_S(count);
 	LIBRETRO_S(current);
 
 	for (i = 0; i < count; i++)
 	{
-		const TA_context *ctx = ctx_list[i];
+		const TA_context *ctx = saved[i];
 		// (the one being written to has its pointers out, in ta_tad)
 		const tad_context& tad = ctx == ta_ctx ? ta_tad : ctx->tad;
 		const bool restarted = tad.thd_data == tad.thd_root;
@@ -760,7 +795,15 @@ bool pvr_unserialize_v21(void **data, unsigned int *total_size)
 	}
 
 	if (current_addr != TACTX_NONE)
+	{
+		/* The frame being written: its last render pass's lists go where
+		 * the register says (where the others' went is not in a state:
+		 * see ta_select_passes()) */
+		TA_context *ctx = tactx_Find(current_addr, false);
+		if (ctx != NULL)
+			ctx->tad.ol_base[ctx->tad.render_pass_count] = TA_OL_BASE & 0xFFFFE0u;
 		SetCurrentTARC(current_addr);
+	}
 	return true;
 }
 

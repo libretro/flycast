@@ -38,6 +38,12 @@ int ta_vtx_list(void);
 bool ta_vtx_half(void);
 
 bool ta_parse_vdrc(TA_context* ctx);
+/* The render passes of @ctx the render being started draws (rend.pass_first,
+ * pass_last, keep): those whose object lists its region array points to,
+ * by where each pass's lists were written. A frame of one pass, or whose
+ * passes cannot be told apart that way, is drawn whole, as it always was.
+ * (Emulation thread, as the render is started.) */
+void ta_select_passes(TA_context* ctx);
 /* Whether the frames parsed from here on mark their flat strips (every
  * vertex at the same depth) as drawn at a single rate, as sprites and the
  * background always are. Off, the decoder does no more than without it. */

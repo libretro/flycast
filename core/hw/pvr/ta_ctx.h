@@ -58,6 +58,9 @@ struct ModTriangle
 	f32 x0,y0,z0,x1,y1,z1,x2,y2,z2;
 };
 
+// (tad_context::ol_base: not known)
+#define TAD_OL_UNKNOWN 0xFFFFFFFFu
+
 struct  tad_context
 {
 	u8* thd_data;
@@ -65,11 +68,23 @@ struct  tad_context
 	u8* thd_old_data;
    u8 *render_passes[10];
    u32 render_pass_count;
+   /* Where each render pass's object lists were written (TA_OL_BASE when
+    * its lists were started, TAD_OL_UNKNOWN when that is not known: a frame
+    * from a save state). A render draws the passes whose lists its region
+    * array points to (ta_select_passes()). */
+   u32 ol_base[10];
+
+   void ForgetOlBases()
+   {
+      for (u32 i = 0; i < sizeof(ol_base) / sizeof(ol_base[0]); i++)
+         ol_base[i] = TAD_OL_UNKNOWN;
+   }
 
    void Clear()
    {
       thd_old_data = thd_data = thd_root;
       render_pass_count = 0;
+      ForgetOlBases();
    }
 
    void ClearPartial()
@@ -94,6 +109,7 @@ struct  tad_context
 	{
 		thd_data = thd_root = thd_old_data = ptr;
       render_pass_count = 0;
+      ForgetOlBases();
 	}
 };
 
@@ -153,6 +169,15 @@ struct rend_context
 	 * and gpu_modtrig modifier volume triangles are on the GPU only */
 	bool gpu;
 	u32 gpu_modtrig;
+	/* The render passes of the frame's data this render draws, the first
+	 * and the last (ta_select_passes()); and whether there are others, which
+	 * the game may start another render of the same frame for (a NAOMI 2
+	 * game drawing one list continuation to the screen and the next to a
+	 * texture: Virtua Fighter 4's reflections). Not cleared with the lists:
+	 * set for each render as it is started. */
+	u8 pass_first;
+	u8 pass_last;
+	bool keep;
 	/* ...and with TA_GPU_SHADOWS, what each render pass's opaque modifier
 	 * volumes cover (ModVolBounds()): min x, min y, max x, max y */
 	f32 gpu_shadow_area[10][4];
@@ -242,6 +267,11 @@ struct TA_context
 	 * 0 for none. A slice is written again only once that work is done. */
 	int pool;
 	u32 gpu_serial;
+	/* A render drew some of its render passes and left it in the list for
+	 * another (rend.keep), and the game has not begun a frame here since:
+	 * it is not a frame being written, and a save state does not have it
+	 * (nor anything it changes: tactx_Restart()) */
+	bool drawn;
 
 	
 	/*
@@ -259,6 +289,12 @@ struct TA_context
 			ct:     idx: 30920, vtx: 21468, op: 752, pt: 0, tr: 360, mvo: 101, modt: 732, ov: 0
 			sa2:    idx: 36094, vtx: 24520, op: 1330, pt: 10, tr: 177, mvo: 39, modt: 360, ov: 0
 	*/
+
+	// the render draws every render pass of the data
+	bool AllPasses() const
+	{
+		return rend.pass_first == 0 && rend.pass_last >= tad.render_pass_count;
+	}
 
 	void MarkRend(u32 render_pass)
 	{
@@ -327,6 +363,10 @@ struct TA_context
 	{
       tad.Clear();
 		rend.Clear();
+		rend.pass_first = 0;
+		rend.pass_last = 0xFF;
+		rend.keep = false;
+		drawn = false;
 		rend.proc_end = rend.proc_start = tad.thd_root;
 		walk_count = TA_WALK_INVALID;
 		walk_restart = false;
@@ -361,11 +401,23 @@ extern TA_context*  vd_ctx;
 extern rend_context vd_rc;
 
 TA_context* tactx_Find(u32 addr, bool allocnew);
-TA_context* tactx_Pop(u32 addr);
 void tactx_Reset(void);
 
 TA_context* tactx_Alloc();
 void tactx_Recycle(TA_context* poped_ctx);
+/* The frame at @addr, for a render the game starts (NULL if there is
+ * none), left where it is - as the frame being written, if it is - for
+ * a render of some of its render passes (rend.keep: ta_select_passes()),
+ * which the game may start another render of; otherwise tactx_Remove() it
+ * and it is the render's. (Emulation thread.) */
+TA_context* tactx_Get(u32 addr);
+void tactx_Remove(TA_context* ctx);
+/* The game begins a frame where one was drawn and kept (drawn): it is begun
+ * as in a frame made anew there, the last in the list. (Emulation thread,
+ * @ctx the current one.) */
+void tactx_Restart(TA_context* ctx);
+/* A render is done with @ctx: recycled, unless it was left where it was */
+void tactx_Drawn(TA_context* ctx);
 /* The frames being written: their tables of the control-word walk are not
  * to be trusted (from the emulation thread) */
 void tactx_walk_forget(void);

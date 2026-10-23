@@ -2103,7 +2103,14 @@ static bool ta_parse_vdrc_full(TA_context* ctx)
 			empty_context = false;
 		}
 
-		for (u32 pass = 0; pass <= ctx->tad.render_pass_count; pass++)
+		/* the render passes this render draws: all of them, or those its
+		 * region array points to (ta_select_passes()) */
+		u32 first = ctx->rend.pass_first, last = ctx->rend.pass_last;
+		if (last > ctx->tad.render_pass_count)
+			last = ctx->tad.render_pass_count;
+		if (first > last)
+			first = 0;
+		for (u32 pass = first; pass <= last; pass++)
 		{
 			ctx->MarkRend(pass);
 			vd_rc.proc_start = ctx->rend.proc_start;
@@ -2124,7 +2131,7 @@ static bool ta_parse_vdrc_full(TA_context* ctx)
 			 * follow, a list continuation, that an opaque polygon's
 			 * instructions are gone by. Upstream flycast sets them here in
 			 * the same way, and the renderers go by what they find. */
-			if (pass == 0)
+			if (pass == first)
 			{
 				PolyParam *pp = vd_rc.global_param_op.head();
 				for (int i = vd_rc.global_param_op.used(); i > 0; i--, pp++)
@@ -2134,12 +2141,12 @@ static bool ta_parse_vdrc_full(TA_context* ctx)
 				}
 			}
 
-			bool empty_pass = vd_rc.global_param_op.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->op_count)
-					&& vd_rc.global_param_pt.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->pt_count)
-					&& vd_rc.global_param_tr.used() == (pass == 0 ? 0 : (int)vd_rc.render_passes.LastPtr()->tr_count);
+			bool empty_pass = vd_rc.global_param_op.used() == (pass == first ? 0 : (int)vd_rc.render_passes.LastPtr()->op_count)
+					&& vd_rc.global_param_pt.used() == (pass == first ? 0 : (int)vd_rc.render_passes.LastPtr()->pt_count)
+					&& vd_rc.global_param_tr.used() == (pass == first ? 0 : (int)vd_rc.render_passes.LastPtr()->tr_count);
 			empty_context = empty_context && empty_pass;
 
-			if (pass == 0 || !empty_pass)
+			if (pass == first || !empty_pass)
 			{
 				RenderPass *render_pass = vd_rc.render_passes.Append();
 				render_pass->op_count = vd_rc.global_param_op.used();
@@ -2162,7 +2169,8 @@ static bool ta_parse_vdrc_full(TA_context* ctx)
 						render_pass->tr_count, false, &vd_rc);
 				tr_poly_count = render_pass->tr_count;
 				render_pass->mvo_tr_count = vd_rc.global_param_mvo_tr.used();
-				getRegionSettings(pass, render_pass);
+				// (the region array's entries are this render's passes, from its first)
+				getRegionSettings(pass - first, render_pass);
 			}
 		}
 		rv = !empty_context;
@@ -2590,6 +2598,96 @@ static void getRegionSettings(int pass_number, RenderPass *pass)
 	 * Taxi, Daytona USA). Two empty ones are not that. */
 	const u32 op_mv = vri(addr + 8);
 	pass->mv_op_tr_shared = op_mv == vri(addr + 16) && (op_mv & 0x80000000) == 0;
+}
+
+/* A game can start two renders of one frame's data: Virtua Fighter 4 (a
+ * NAOMI 2 game) sends the scene, continues the lists with the scene as the
+ * water reflects it at another object list address, and then draws the
+ * first to the screen and the second to a texture, with a region array for
+ * each that points at the lists of one. Each render draws the render
+ * passes its region array's entries point to: the pass of an entry is the
+ * one whose lists start nearest below where its lists are. The entries of
+ * a tile are the render's passes in order; a frame whose passes do not
+ * come out that way, one pass at a time from some first one, is drawn
+ * whole, as every frame was. */
+void ta_select_passes(TA_context* ctx)
+{
+	const tad_context &tad = ctx->tad;
+	rend_context &rc = ctx->rend;
+	const u32 passes = tad.render_pass_count + 1;
+
+	rc.pass_first = 0;
+	rc.pass_last = (u8)tad.render_pass_count;
+	rc.keep = false;
+	if (passes == 1 || rc.isRenderFramebuffer)
+		return;
+	/* (a frame from a save state was begun before it: where its first
+	 * pass's lists went is not known, and is below the others') */
+	for (u32 p = 1; p < passes; p++)
+		if (tad.ol_base[p] == TAD_OL_UNKNOWN)
+			return;
+
+	// the entries of the first tile: how many there are
+	const u32 base = getRegionTileAddr(0);
+	const u32 tile_size = getRegionTileAddr(1) - base;
+	RegionArrayTile tile, t;
+	tile.full = vri(base);
+	u32 entries = 0;
+	do {
+		t.full = vri(base + entries * tile_size);
+		if (t.X != tile.X || t.Y != tile.Y)
+			break;
+		entries++;
+	} while (!t.LastRegion && entries <= passes);
+	if (entries == 0 || entries >= passes)
+		return;
+
+	/* Each entry's lists, in the first tile that has one for it (a tile can
+	 * have nothing in some pass): opaque, its modifier volumes,
+	 * translucent, theirs, punch-through */
+	const u32 lists = tile_size / 4 - 1;
+	u32 first = 0;
+	for (u32 e = 0; e < entries; e++)
+	{
+		u32 ptr = 0x80000000u;
+		for (u32 n = 0; n < 64 && (ptr & 0x80000000u); n++)
+		{
+			const u32 at = base + n * entries * tile_size;
+			tile.full = vri(at);
+			t.full = vri(at + e * tile_size);
+			if (t.X != tile.X || t.Y != tile.Y)
+				break;
+			for (u32 l = 1; l <= lists && (ptr & 0x80000000u); l++)
+				ptr = vri(at + e * tile_size + l * 4);
+			// (the tile's last entry ends the array)
+			t.full = vri(at + (entries - 1) * tile_size);
+			if (t.LastRegion)
+				break;
+		}
+		if (ptr & 0x80000000u)
+			return;
+		ptr &= 0xFFFFFCu;
+		u32 pass = passes;
+		for (u32 p = 0; p < passes; p++)
+			if (tad.ol_base[p] != TAD_OL_UNKNOWN && tad.ol_base[p] <= ptr
+					&& (pass == passes || tad.ol_base[p] >= tad.ol_base[pass]))
+				pass = p;
+		if (pass == passes && tad.ol_base[0] == TAD_OL_UNKNOWN)
+			pass = 0;
+		if (pass == passes)
+			return;
+		// (two passes started at that address: which it is cannot be told)
+		for (u32 p = 0; p < passes; p++)
+			if (p != pass && tad.ol_base[p] == tad.ol_base[pass])
+				return;
+		if (e == 0)
+			first = pass;
+		else if (pass != first + e)
+			return;
+	}
+	rc.pass_first = (u8)first;
+	rc.pass_last = (u8)(first + entries - 1);
+	rc.keep = true;
 }
 
 /* ---- The header pass: a frame from its control words alone ----
@@ -4349,6 +4447,11 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 	memset(gsort.pass_pruns, 0, sizeof(gsort.pass_pruns));
 	if (!ta_gpu_on || !ta_walk_table(ctx, &count))
 		return false;
+	/* A render of some of the frame's render passes (ta_select_passes())
+	 * has the full parse, which makes those alone */
+	out->why = TA_GPU_WHY_PARSE;
+	if (!ctx->AllPasses())
+		return false;
 	if (draw)
 	{
 		/* What only the full parse makes: a frame it passes over (frame
@@ -5004,6 +5107,13 @@ static bool ta_walk_check_frame(TA_context *ctx)
 	if (!ta_walk_table(ctx, &count))
 	{
 		st.no_table++;
+		ta_walk_tick();
+		return ta_parse_vdrc_full(ctx);
+	}
+	// (a render of some of its render passes: ta_gpu_prepare() leaves it to the parse too)
+	if (!ctx->AllPasses())
+	{
+		st.skipped++;
 		ta_walk_tick();
 		return ta_parse_vdrc_full(ctx);
 	}

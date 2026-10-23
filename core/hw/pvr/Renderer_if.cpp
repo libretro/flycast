@@ -314,15 +314,35 @@ void rend_start_render(void)
 #endif
    render_called = true;
    pend_rend = false;
-   TA_context* ctx = tactx_Pop(CORE_CURRENT_CTX);
+   TA_context* ctx = tactx_Get(CORE_CURRENT_CTX);
 
-   // No end of render interrupt when rendering the framebuffer
+   /* No end of render interrupt when rendering the framebuffer. (A frame
+    * drawn and kept is drawn again, but the machine's timing is as for a
+    * frame that is not there - as it was before frames were kept, and as
+    * it is after a state is loaded, which does not have it.) */
 	if (!ctx || !ctx->rend.isRenderFramebuffer)
-		SetREP(ctx);
+		SetREP(ctx != NULL && ctx->drawn ? NULL : ctx);
 
    if (ctx)
    {
       bool is_rtt=(FB_W_SOF1& 0x1000000)!=0 && !ctx->rend.isRenderFramebuffer;
+
+      /* The render passes this render draws. A frame the game may start
+       * another render of, for others, stays in the list (rend.keep): the
+       * one after can find it there, as can a state saved in between.
+       * (What the last render of it overran is not this one's.) */
+      if (ctx->rend.keep)
+         ctx->rend.Overrun = false;
+      ta_select_passes(ctx);
+      if (!ctx->rend.keep)
+         tactx_Remove(ctx);
+      else
+      {
+         // (no longer the frame being written, as one taken out is not)
+         if (ta_ctx == ctx)
+            SetCurrentTARC(TACTX_NONE);
+         ctx->drawn = true;
+      }
 
       if (!ctx->rend.Overrun)
       {
@@ -345,7 +365,7 @@ void rend_start_render(void)
              * reports no new picture, and does not take the framebuffer
              * for one either. */
             screen_skipped = true;
-            tactx_Recycle(ctx);
+            tactx_Drawn(ctx);
             return;
          }
 
@@ -394,7 +414,7 @@ void rend_start_render(void)
       {
          ovrn++;
          INFO_LOG(PVR, "WARNING: Rendering context is overrun (%d), aborting frame", ovrn);
-         tactx_Recycle(ctx);
+         tactx_Drawn(ctx);
       }
    }
 }
