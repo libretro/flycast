@@ -18,6 +18,19 @@
 #                                 what the preprocessor cannot change
 #                                 changed here (ta_source_of())
 #
+#   core/rend/dx11/dx11_ta_dxbc.inc
+#                                 the same kernels for the Direct3D 11
+#                                 renderers (dx11/dx11_ta_decoder.cpp),
+#                                 shader model 5.0, which Direct3D 11 takes:
+#                                 the HLSL above with the buffers typed
+#                                 views of 32-bit words, Buffer<uint> and
+#                                 RWBuffer<uint>, in place of structured
+#                                 ones - Direct3D 11 can draw from a
+#                                 buffer, and take its indirect arguments
+#                                 from it, only if it is not a structured
+#                                 one - and no kernel past u7, as feature
+#                                 level 11.0 has it (ta11_source_of())
+#
 #   core/rend/dx12/dx12_compute_dxil.inc
 #                                 the compute renderer's kernels
 #                                 (rend/tile/pvr_compute.h, after the shared
@@ -89,6 +102,7 @@ SHADERS="$SHADERS 38:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=1,DX12_OIT_PASS=2,DX12_S
 SHADERS="$SHADERS 39:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=0,DX12_OIT_PASS=2,DX12_SAMPLE_RATE=2,DX12_POST_Z_COVERAGE"
 COUNT=39
 TA_INC=core/rend/dx12/dx12_ta_dxbc.inc
+TA11_INC=core/rend/dx11/dx11_ta_dxbc.inc
 COMPUTE_INC=core/rend/dx12/dx12_compute_dxil.inc
 PVRC_SRC=core/rend/tile/pvr_compute.h
 PVRC_KERNELS=$(awk '$1 == "#define" && $2 == "PVRC_KERNELS" { print $3 }' $PVRC_SRC)
@@ -134,6 +148,31 @@ ta_source_of() {
       -e 's/^layout(local_size_x = \(.*\)) in;$/#define TAG_WG \1/' \
       -e 's/^void main()$/[numthreads(TAG_WG, 1, 1)] void main(uint3 gl_GlobalInvocationID : SV_DispatchThreadID, uint3 gl_LocalInvocationID : SV_GroupThreadID, uint3 gl_WorkGroupID : SV_GroupID)/' \
       -e 's/uint\[3\](\(.*\));/{ \1 };/' $TA_SRC
+}
+
+# @1 a TA kernel: as ta_source_of() makes it, for Direct3D 11 (shader
+# model 5.0, no root descriptors): the buffers declared at the start of a
+# line as "StructuredBuffer<uint> " and "RWStructuredBuffer<uint> " are
+# "Buffer<uint> " and "RWBuffer<uint> ", typed views of the same words,
+# which read and write and take atomics as the structured ones do. And a
+# compute shader of feature level 11.0 has eight unordered access views,
+# u0 to u7: the two buffers past those, the per-pixel polygon words (u8)
+# and the sorted indices (u9), are each read by one kernel alone
+# (TAG_K_TRDRAW, TAG_K_PREPASS), which does not touch the modifier volume
+# triangles (u1, which TAG_K_UNPACK alone writes): in those two kernels
+# the two swap registers, so that the buffer is at u1, where the renderer
+# binds it for that kernel (dx11/dx11_ta_decoder.cpp)
+TA_K_TRDRAW=$(awk '$1 == "#define" && $2 == "TAG_K_TRDRAW" { print $3 }' $TA_SRC)
+TA_K_PREPASS=$(awk '$1 == "#define" && $2 == "TAG_K_PREPASS" { print $3 }' $TA_SRC)
+ta11_source_of() {
+   a=; b=
+   case $1 in
+   $TA_K_TRDRAW) a=trp; b=u8 ;;
+   $TA_K_PREPASS) a=srt; b=u9 ;;
+   esac
+   ta_source_of $1 | sed -e 's/^RWStructuredBuffer<uint> /RWBuffer<uint> /' -e 's/^StructuredBuffer<uint> /Buffer<uint> /' \
+      -e "${a:+s/^\\(RWBuffer<uint> mtr_w : register(\\)u1);/\\1$b);/}" \
+      -e "${a:+s/^\\(RWBuffer<uint> ${a}_w : register(\\)$b);/\\1u1);/}"
 }
 
 # @1 a compute kernel (PVRC_K_*), @2 the walk's samples a pixel, then
@@ -275,6 +314,41 @@ make_ta_inc() {
    echo "$z };"
 }
 
+ta11_sums() {
+   k=1
+   while [ $k -le $TA_KERNELS ]; do
+      ta11_source_of $k > "$WORK/s.hlsl"
+      echo " * kernel $k cs_5_0 $(sha1sum < "$WORK/s.hlsl" | cut -c1-40)"
+      k=$((k + 1))
+   done
+}
+
+make_ta11_inc() {
+   echo "/* DXBC of GPU-side TA processing's kernels for Direct3D 11 (rend/ta_gpu.h,"
+   echo " * each with TAG_SHADER_HLSL and its TAG_KERNEL, as tools/rend/kernels_dx12.sh"
+   echo " * makes HLSL of it for Direct3D 11, shader model 5.0): made by"
+   echo " * tools/rend/kernels_dx12.sh update from it. Not to be edited."
+   echo " * d3dcompiler_47 $(compiler_sum)"
+   ta11_sums
+   echo " */"
+   k=1
+   while [ $k -le $TA_KERNELS ]; do
+      ta11_source_of $k > "$WORK/u$k.hlsl"
+      compile "$WORK/u$k.hlsl" cs_5_0 "$WORK/u$k.dxbc"
+      echo "static const unsigned char dx11_ta_dxbc_$k[] = {"
+      od -An -v -tx1 -w16 "$WORK/u$k.dxbc" | awk '{ s = ""; for (i = 1; i <= NF; i++) s = s "0x" $i ","; print s }'
+      echo "};"
+      k=$((k + 1))
+   done
+   echo "// by TAG_K_*: the bytes, and how many"
+   l="static const unsigned char * const dx11_ta_dxbc[] = { 0"
+   z="static const size_t dx11_ta_dxbc_size[] = { 0"
+   i=1
+   while [ $i -le $TA_KERNELS ]; do l="$l, dx11_ta_dxbc_$i"; z="$z, sizeof(dx11_ta_dxbc_$i)"; i=$((i + 1)); done
+   echo "$l };"
+   echo "$z };"
+}
+
 # @1 the file, @2 what makes it, @3 what sums its sources, @4 the compiler
 # (d3dcompiler_47 or dxc): whether it is theirs
 check_inc() {
@@ -329,13 +403,16 @@ update)
    cp "$WORK/new.inc" $INC
    make_ta_inc > "$WORK/new.inc"
    cp "$WORK/new.inc" $TA_INC
+   make_ta11_inc > "$WORK/new.inc"
+   cp "$WORK/new.inc" $TA11_INC
    make_compute_inc > "$WORK/new.inc"
    cp "$WORK/new.inc" $COMPUTE_INC
-   echo "made $INC, $TA_INC and $COMPUTE_INC"
+   echo "made $INC, $TA_INC, $TA11_INC and $COMPUTE_INC"
    ;;
 check)
    check_inc $INC make_inc sums d3dcompiler_47
    check_inc $TA_INC make_ta_inc ta_sums d3dcompiler_47
+   check_inc $TA11_INC make_ta11_inc ta11_sums d3dcompiler_47
    check_inc $COMPUTE_INC make_compute_inc compute_sums dxc
    ;;
 compute-test)
