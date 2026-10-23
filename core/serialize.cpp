@@ -564,6 +564,37 @@ bool register_unserialize(Array<RegisterStruct>& regs,void **data, unsigned int 
 	return true ;
 }
 
+/* Where each part begins in the state dc_serialize() wrote or counted last,
+ * in the order written, with the part's name: a field written here by name,
+ * or the function that writes a part of its own. Nothing in the core reads
+ * it. It is for tools/determinism, which finds it by its symbol and names
+ * the part two states that should be the same differ in. Two stores a part,
+ * a few hundred parts. */
+#define STATE_PARTS_MAX 384
+extern "C" {
+u32 dc_state_parts;
+u32 dc_state_part_at[STATE_PARTS_MAX];
+const char *dc_state_part_name[STATE_PARTS_MAX];
+}
+
+static inline int state_part(const char *name, unsigned int at)
+{
+	if (dc_state_parts < STATE_PARTS_MAX)
+	{
+		dc_state_part_name[dc_state_parts] = name;
+		dc_state_part_at[dc_state_parts++] = at;
+	}
+	return 0;
+}
+#define STATE_PART(name) state_part(name, *total_size)
+/* (in dc_serialize() alone: the parts it writes itself, by name) */
+#undef LIBRETRO_S
+#undef LIBRETRO_SA
+#undef LIBRETRO_SKIP
+#define LIBRETRO_S(v) (STATE_PART(#v), ra_serialize(&(v), sizeof(v), data, total_size))
+#define LIBRETRO_SA(v_arr,num) (STATE_PART(#v_arr), ra_serialize((v_arr), sizeof((v_arr)[0]) * (num), data, total_size))
+#define LIBRETRO_SKIP(size) do { STATE_PART("(nothing)"); if (*data) *(u8**)data += (size); *total_size += (size); } while (false)
+
 bool dc_serialize(void **data, unsigned int *total_size)
 {
 	int i = 0;
@@ -571,6 +602,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	serialize_version_enum version = VCUR_LIBRETRO;
 
 	*total_size = 0 ;
+	dc_state_parts = 0;
 
 	//dc not initialized yet
 	if ( p_sh4rcb == NULL )
@@ -604,13 +636,13 @@ bool dc_serialize(void **data, unsigned int *total_size)
 
 	LIBRETRO_SA(aica_reg,0x8000);
 
-	channel_serialize(data, total_size) ;
+	STATE_PART("channel_serialize"), channel_serialize(data, total_size) ;
 
 	libCore_CDDA_Detach();
 	LIBRETRO_SA(cdda_sector,CDDA_SIZE);
 	LIBRETRO_S(cdda_index);
 
-	register_serialize(sb_regs, data, total_size) ;
+	STATE_PART("sb_regs"), register_serialize(sb_regs, data, total_size) ;
 	LIBRETRO_S(SB_ISTNRM);
 	LIBRETRO_S(SB_FFST_rc);
 	LIBRETRO_S(SB_FFST);
@@ -660,7 +692,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 
 	LIBRETRO_S(maple_ddt_pending_reset);
 
-	mcfg_SerializeDevices(data, total_size);
+	STATE_PART("mcfg_SerializeDevices"), mcfg_SerializeDevices(data, total_size);
 
 	LIBRETRO_SA(YUV_tempdata,512/4);
 	LIBRETRO_S(YUV_dest);
@@ -680,24 +712,24 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	LIBRETRO_S(ta_fsm[2048]);
 	LIBRETRO_S(ta_fsm_cl);
 
-	SerializeTAContext(data, total_size);
+	STATE_PART("SerializeTAContext"), SerializeTAContext(data, total_size);
 
 	LIBRETRO_SA(vram.data, vram.size);
 
 	LIBRETRO_SA(OnChipRAM.data,OnChipRAM_SIZE);
 
-	register_serialize(CCN, data, total_size) ;
-	register_serialize(UBC, data, total_size) ;
-	register_serialize(BSC, data, total_size) ;
-	register_serialize(DMAC, data, total_size) ;
-	register_serialize(CPG, data, total_size) ;
-	register_serialize(RTC, data, total_size) ;
-	register_serialize(INTC, data, total_size) ;
-	register_serialize(TMU, data, total_size) ;
-	register_serialize(SCI, data, total_size) ;
-	register_serialize(SCIF, data, total_size) ;
-	icache.Serialize(data, total_size);
-	ocache.Serialize(data, total_size);
+	STATE_PART("CCN"), register_serialize(CCN, data, total_size) ;
+	STATE_PART("UBC"), register_serialize(UBC, data, total_size) ;
+	STATE_PART("BSC"), register_serialize(BSC, data, total_size) ;
+	STATE_PART("DMAC"), register_serialize(DMAC, data, total_size) ;
+	STATE_PART("CPG"), register_serialize(CPG, data, total_size) ;
+	STATE_PART("RTC"), register_serialize(RTC, data, total_size) ;
+	STATE_PART("INTC"), register_serialize(INTC, data, total_size) ;
+	STATE_PART("TMU"), register_serialize(TMU, data, total_size) ;
+	STATE_PART("SCI"), register_serialize(SCI, data, total_size) ;
+	STATE_PART("SCIF"), register_serialize(SCIF, data, total_size) ;
+	STATE_PART("icache.Serialize"), icache.Serialize(data, total_size);
+	STATE_PART("ocache.Serialize"), ocache.Serialize(data, total_size);
 
 	LIBRETRO_SA(mem_b.data, mem_b.size);
 
@@ -771,7 +803,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 #ifdef ENABLE_MODEM
    if (settings.network.EmulateBBA)
    {
-      bba_Serialize(data, total_size);
+      STATE_PART("bba_Serialize"), bba_Serialize(data, total_size);
    }
    else
    {
@@ -847,8 +879,8 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	LIBRETRO_S(settings.dreamcast.region);
 
 	if (CurrentCartridge != NULL)
-	   CurrentCartridge->Serialize(data, total_size);
-	gd_hle_state.Serialize(data, total_size);
+	   STATE_PART("CurrentCartridge->Serialize"), CurrentCartridge->Serialize(data, total_size);
+	STATE_PART("gd_hle_state.Serialize"), gd_hle_state.Serialize(data, total_size);
    settings.network.EmulateBBA = false;
 
 	/* V14: the AICA RTC. Its per-second increment is already deterministic
@@ -890,12 +922,12 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	 * part is the same size each time for the machine that is running;
 	 * the tile accelerator's, which is not, is last and is counted at its
 	 * largest. */
-	aica_serialize_v21(data, total_size);
-	gdrom_serialize_v21(data, total_size);
-	maple_serialize_v21(data, total_size);
-	naomi_serialize_v21(data, total_size);
+	STATE_PART("aica_serialize_v21"), aica_serialize_v21(data, total_size);
+	STATE_PART("gdrom_serialize_v21"), gdrom_serialize_v21(data, total_size);
+	STATE_PART("maple_serialize_v21"), maple_serialize_v21(data, total_size);
+	STATE_PART("naomi_serialize_v21"), naomi_serialize_v21(data, total_size);
 #ifdef ENABLE_MODEM
-	modem_serialize_v21(data, total_size);
+	STATE_PART("modem_serialize_v21"), modem_serialize_v21(data, total_size);
 #else
 	if (settings.System == DC_PLATFORM_DREAMCAST)
 	{
@@ -903,41 +935,48 @@ bool dc_serialize(void **data, unsigned int *total_size)
 		LIBRETRO_SA(no_modem, MODEM_V21_SIZE);
 	}
 #endif
-	reios_serialize_v21(data, total_size);
-	gdhle_serialize_v21(data, total_size);
-	nbios_serialize_v21(data, total_size);
-	pvr_serialize_v21(data, total_size);
+	STATE_PART("reios_serialize_v21"), reios_serialize_v21(data, total_size);
+	STATE_PART("gdhle_serialize_v21"), gdhle_serialize_v21(data, total_size);
+	STATE_PART("nbios_serialize_v21"), nbios_serialize_v21(data, total_size);
+	STATE_PART("pvr_serialize_v21"), pvr_serialize_v21(data, total_size);
 	// V22
-	pvr_serialize_v22(data, total_size);
-	mmu_serialize_v22(data, total_size);
+	STATE_PART("pvr_serialize_v22"), pvr_serialize_v22(data, total_size);
+	STATE_PART("mmu_serialize_v22"), mmu_serialize_v22(data, total_size);
 	// V23
-	pvr_serialize_v23(data, total_size);
-	naomi_serialize_v23(data, total_size);
-	lr_serialize_v23(data, total_size);
+	STATE_PART("pvr_serialize_v23"), pvr_serialize_v23(data, total_size);
+	STATE_PART("naomi_serialize_v23"), naomi_serialize_v23(data, total_size);
+	STATE_PART("lr_serialize_v23"), lr_serialize_v23(data, total_size);
 	// V24
-	net_serialize_v24(data, total_size);
-	vmu_beep_serialize_v24(data, total_size);
-	naomi_periph_serialize_v24(data, total_size);
-	systemsp_serialize_v24(data, total_size);
+	STATE_PART("net_serialize_v24"), net_serialize_v24(data, total_size);
+	STATE_PART("vmu_beep_serialize_v24"), vmu_beep_serialize_v24(data, total_size);
+	STATE_PART("naomi_periph_serialize_v24"), naomi_periph_serialize_v24(data, total_size);
+	STATE_PART("systemsp_serialize_v24"), systemsp_serialize_v24(data, total_size);
 	// V25
-	systemsp_serialize_v25(data, total_size);
-	maple_jvs_serialize_v25(data, total_size);
-	naomi_gd_serialize_v25(data, total_size);
+	STATE_PART("systemsp_serialize_v25"), systemsp_serialize_v25(data, total_size);
+	STATE_PART("maple_jvs_serialize_v25"), maple_jvs_serialize_v25(data, total_size);
+	STATE_PART("naomi_gd_serialize_v25"), naomi_gd_serialize_v25(data, total_size);
 	// V26
-	naomi_serial_serialize_v26(data, total_size);
+	STATE_PART("naomi_serial_serialize_v26"), naomi_serial_serialize_v26(data, total_size);
 	// V27
-	maple_jvs_serialize_v27(data, total_size);
-	midiffb_serialize_v27(data, total_size);
-	naomi_printer_serialize_v27(data, total_size);
+	STATE_PART("maple_jvs_serialize_v27"), maple_jvs_serialize_v27(data, total_size);
+	STATE_PART("midiffb_serialize_v27"), midiffb_serialize_v27(data, total_size);
+	STATE_PART("naomi_printer_serialize_v27"), naomi_printer_serialize_v27(data, total_size);
 	// V28
-	pvr_serialize_v28(data, total_size);
+	STATE_PART("pvr_serialize_v28"), pvr_serialize_v28(data, total_size);
 	// V29
-	aica_sb_serialize_v29(data, total_size);
+	STATE_PART("aica_sb_serialize_v29"), aica_sb_serialize_v29(data, total_size);
 	// V30
-	naomi_cards_serialize_v30(data, total_size);
+	STATE_PART("naomi_cards_serialize_v30"), naomi_cards_serialize_v30(data, total_size);
 
 	return true ;
 }
+
+#undef LIBRETRO_S
+#undef LIBRETRO_SA
+#undef LIBRETRO_SKIP
+#define LIBRETRO_S(v) ra_serialize(&(v), sizeof(v), data, total_size)
+#define LIBRETRO_SA(v_arr,num) ra_serialize((v_arr), sizeof((v_arr)[0]) * (num), data, total_size)
+#define LIBRETRO_SKIP(size) do { if (*data) *(u8**)data += (size); *total_size += (size); } while (false)
 
 /* The scheduler's events from a state. One that is waiting was asked for
  * at most a second ahead (sh4_sched_request()), and is called once its time
