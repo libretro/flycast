@@ -736,11 +736,53 @@ static void volumes(unsigned lo, unsigned hi, int opaque, unsigned *stencil, flo
    }
 }
 
-static unsigned walk_sample(unsigned start)
+/* A translucent polygon's triangle @r in the sorted lists: the samples of
+ * the pixel it covers and is seen at, each tested with its depth there
+ * against the depth @pz has for it (the depth subpass's), and in @zk the
+ * depth it is kept and sorted with, at the centroid of those samples (the
+ * kernels' sum of their edges), or the centre's where it is seen at all */
+static unsigned tr_seen(const Rec *r, const float *pz, float *zk)
 {
-   unsigned col = start, pass, passes = F[PVRC_F_PASSES], prim;
-   float depth = 0.0f;
-   for (pass = 0; pass < passes; pass++)
+   ref_s64 e[3], es[3];
+   unsigned s, seen = 0;
+   Bary b;
+   es[0] = es[1] = es[2] = 0;
+   for (s = 0; s < g_samples; s++)
+   {
+      int sx = g_px * 256 + (int)SSAA_SAMPLE_X16(g_samples, s) * 16;
+      int sy = g_py * 256 + (int)SSAA_SAMPLE_Y16(g_samples, s) * 16;
+      rec_edges(r, sx, sy, e);
+      if (!rec_inside(r, e))
+         continue;
+      b = rec_bary(r, e);
+      if (!(depth_of(b.w) >= pz[s]))
+         continue;
+      seen |= 1u << s;
+      es[0] += e[0];
+      es[1] += e[1];
+      es[2] += e[2];
+   }
+   if (seen == (1u << g_samples) - 1u)
+      rec_edges(r, g_cx, g_cy, es);
+   b = rec_bary(r, es);
+   *zk = depth_of(b.w);
+   return seen;
+}
+
+static void set_sample(unsigned s)
+{
+   g_sx = g_px * 256 + (int)SSAA_SAMPLE_X16(g_samples, s) * 16;
+   g_sy = g_py * 256 + (int)SSAA_SAMPLE_Y16(g_samples, s) * 16;
+}
+
+/* Render pass @pass at this sample, in three parts, each run for all the
+ * pixel's samples before the next (the sorted translucent's depth test
+ * needs every sample's depth, @pz): 0 everything before the sorted
+ * translucent polygons, 1 those, 2 the translucent polygons' depth */
+static void walk_part(unsigned pass, int part, unsigned smp, unsigned *colp, float *depthp, const float *pz)
+{
+   unsigned col = *colp, passes = F[PVRC_F_PASSES], prim;
+   float depth = *depthp;
    {
       unsigned pw = PVRC_F_PASS + pass * PVRC_PASS_WORDS;
       unsigned opLo = F[pw + PVRC_P_OP], mvoLo = F[pw + PVRC_P_MVO], ptLo = F[pw + PVRC_P_PT];
@@ -753,79 +795,82 @@ static unsigned walk_sample(unsigned start)
       Frag f;
       float c[4];
 
-      for (prim = opLo; prim < mvoLo; prim++)
+      if (part == 0)
       {
-         const Rec *r = &recs[prim];
-         unsigned pp, isp;
-         float z;
-         if (!rec_near(r))
-            continue;
-         pp = rec_poly(r);
-         if (!lane_frag(r, pp, 0, &f))
-            continue;
-         isp = F[pp + PVRC_Q_ISP];
-         z = depth_of(f.w);
-         if (!pvrc_depth_pass(isp >> 29, z, depth))
-            continue;
-         if ((F[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) && shade(pp, &f, SHADE_DEPTH, 0, c))
-            continue;
-         if (!(isp & (1u << 26)))
+         for (prim = opLo; prim < mvoLo; prim++)
+         {
+            const Rec *r = &recs[prim];
+            unsigned pp, isp;
+            float z;
+            if (!rec_near(r))
+               continue;
+            pp = rec_poly(r);
+            if (!lane_frag(r, pp, 0, &f))
+               continue;
+            isp = F[pp + PVRC_Q_ISP];
+            z = depth_of(f.w);
+            if (!pvrc_depth_pass(isp >> 29, z, depth))
+               continue;
+            if ((F[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) && shade(pp, &f, SHADE_DEPTH, 0, c))
+               continue;
+            if (!(isp & (1u << 26)))
+               depth = z;
+            stencil = (stencil & 0x7f) | ((F[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) ? 0x80 : 0);
+         }
+         for (prim = ptLo; prim < trLo; prim++)
+         {
+            const Rec *r = &recs[prim];
+            unsigned pp;
+            float z;
+            if (!rec_near(r))
+               continue;
+            pp = rec_poly(r);
+            if (!lane_frag(r, pp, 0, &f))
+               continue;
+            z = depth_of(f.w);
+            if (!pvrc_depth_pass(6, z, depth))
+               continue;
+            if (shade(pp, &f, SHADE_DEPTH, 0, c))
+               continue;
             depth = z;
-         stencil = (stencil & 0x7f) | ((F[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) ? 0x80 : 0);
-      }
-      for (prim = ptLo; prim < trLo; prim++)
-      {
-         const Rec *r = &recs[prim];
-         unsigned pp;
-         float z;
-         if (!rec_near(r))
-            continue;
-         pp = rec_poly(r);
-         if (!lane_frag(r, pp, 0, &f))
-            continue;
-         z = depth_of(f.w);
-         if (!pvrc_depth_pass(6, z, depth))
-            continue;
-         if (shade(pp, &f, SHADE_DEPTH, 0, c))
-            continue;
-         depth = z;
-         stencil = (stencil & 0x7f) | ((F[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) ? 0x80 : 0);
-      }
-      volumes(mvoLo, ptLo, 1, &stencil, depth, NULL, 0);
-      shadowed = stencil == 0x81;
+            stencil = (stencil & 0x7f) | ((F[pp + PVRC_Q_FLAGS] & PVRC_QF_SHADOW) ? 0x80 : 0);
+         }
+         volumes(mvoLo, ptLo, 1, &stencil, depth, NULL, 0);
+         shadowed = stencil == 0x81;
 
-      for (prim = opLo; prim < mvoLo; prim++)
-      {
-         const Rec *r = &recs[prim];
-         unsigned pp, isp;
-         if (!rec_near(r))
-            continue;
-         pp = rec_poly(r);
-         if (!lane_frag(r, pp, 0, &f))
-            continue;
-         isp = F[pp + PVRC_Q_ISP];
-         if (!pvrc_depth_pass(!(isp & (1u << 26)) ? 2 : isp >> 29, depth_of(f.w), depth))
-            continue;
-         if (!shade(pp, &f, SHADE_COLOR, shadowed, c))
-            col = blend8(F[pp + PVRC_Q_TSP], c, col);
-      }
-      for (prim = ptLo; prim < trLo; prim++)
-      {
-         const Rec *r = &recs[prim];
-         unsigned pp, isp;
-         if (!rec_near(r))
-            continue;
-         pp = rec_poly(r);
-         if (!lane_frag(r, pp, 0, &f))
-            continue;
-         isp = F[pp + PVRC_Q_ISP];
-         if (!pvrc_depth_pass(!(isp & (1u << 26)) ? 2 : 6, depth_of(f.w), depth))
-            continue;
-         if (!shade(pp, &f, SHADE_COLOR, shadowed, c))
-            col = blend8(F[pp + PVRC_Q_TSP], c, col);
+         for (prim = opLo; prim < mvoLo; prim++)
+         {
+            const Rec *r = &recs[prim];
+            unsigned pp, isp;
+            if (!rec_near(r))
+               continue;
+            pp = rec_poly(r);
+            if (!lane_frag(r, pp, 0, &f))
+               continue;
+            isp = F[pp + PVRC_Q_ISP];
+            if (!pvrc_depth_pass(!(isp & (1u << 26)) ? 2 : isp >> 29, depth_of(f.w), depth))
+               continue;
+            if (!shade(pp, &f, SHADE_COLOR, shadowed, c))
+               col = blend8(F[pp + PVRC_Q_TSP], c, col);
+         }
+         for (prim = ptLo; prim < trLo; prim++)
+         {
+            const Rec *r = &recs[prim];
+            unsigned pp, isp;
+            if (!rec_near(r))
+               continue;
+            pp = rec_poly(r);
+            if (!lane_frag(r, pp, 0, &f))
+               continue;
+            isp = F[pp + PVRC_Q_ISP];
+            if (!pvrc_depth_pass(!(isp & (1u << 26)) ? 2 : 6, depth_of(f.w), depth))
+               continue;
+            if (!shade(pp, &f, SHADE_COLOR, shadowed, c))
+               col = blend8(F[pp + PVRC_Q_TSP], c, col);
+         }
       }
 
-      if (!autosort)
+      if (part == 0 && !autosort)
       {
          for (prim = trLo; prim < trHi; prim++)
          {
@@ -848,7 +893,7 @@ static unsigned walk_sample(unsigned start)
             col = blend8(F[pp + PVRC_Q_TSP], c, col);
          }
       }
-      else if (trHi > trLo)
+      else if (part == 1 && autosort && trHi > trLo)
       {
          unsigned n = 0, j, ch;
          float fc[4], sec[4];
@@ -858,17 +903,13 @@ static unsigned walk_sample(unsigned start)
          {
             const Rec *r = &recs[prim];
             unsigned pp;
-            float w, z;
+            float z;
             if (!rec_near(r))
                continue;
             pp = rec_poly(r);
             if (!in_rect(F[pp + PVRC_Q_RECT], F[pp + PVRC_Q_RECT + 1]))
                continue;
-            if (!rec_covers(r, g_sx, g_sy))
-               continue;
-            w = vol_w(r);
-            z = depth_of(w);
-            if (!(z >= depth))
+            if (!(tr_seen(r, pz, &z) & (1u << smp)))
                continue;
             if (F[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE)
             {
@@ -919,7 +960,7 @@ static unsigned walk_sample(unsigned start)
          col = col_pack(fc);
       }
 
-      if (!lastPass)
+      if (part == 2 && !lastPass)
          for (prim = trLo; prim < trHi; prim++)
          {
             const Rec *r = &recs[prim];
@@ -940,12 +981,33 @@ static unsigned walk_sample(unsigned start)
                depth = z;
          }
    }
-   return col;
+   *colp = col;
+   *depthp = depth;
+}
+
+/* The pixel's samples: each render pass's parts in turn for all of them */
+static void walk_pixel(unsigned start, unsigned *sc)
+{
+   unsigned pass, passes = F[PVRC_F_PASSES], s;
+   float depth[8];
+   int part;
+   for (s = 0; s < g_samples; s++)
+   {
+      sc[s] = start;
+      depth[s] = 0.0f;
+   }
+   for (pass = 0; pass < passes; pass++)
+      for (part = 0; part < 3; part++)
+         for (s = 0; s < g_samples; s++)
+         {
+            set_sample(s);
+            walk_part(pass, part, s, &sc[s], &depth[s], depth);
+         }
 }
 
 int tile_ref(const unsigned *frame, unsigned samples, const unsigned *last, unsigned *out, struct tile_ref_stats *st)
 {
-   unsigned prims, i, w, h, x, y, s, log2n;
+   unsigned prims, i, w, h, x, y, log2n;
    unsigned sc[8];
    F = frame;
    g_samples = samples;
@@ -979,12 +1041,7 @@ int tile_ref(const unsigned *frame, unsigned samples, const unsigned *last, unsi
          g_cy = g_py * 256 + 128;
          g_s0x = g_px * 256 + (int)SSAA_SAMPLE_X16(samples, 0u) * 16;
          g_s0y = g_py * 256 + (int)SSAA_SAMPLE_Y16(samples, 0u) * 16;
-         for (s = 0; s < samples; s++)
-         {
-            g_sx = g_px * 256 + (int)SSAA_SAMPLE_X16(samples, s) * 16;
-            g_sy = g_py * 256 + (int)SSAA_SAMPLE_Y16(samples, s) * 16;
-            sc[s] = walk_sample(start);
-         }
+         walk_pixel(start, sc);
          out[y * w + x] = pvr_resolve_samples(sc, log2n);
       }
    if (st)

@@ -91,8 +91,10 @@
  * translucent fragments are shaded with their first parameters, put in the
  * lists as 8-bit colours, sorted farthest first and by polygon (here: by
  * triangle, which is the same order) and blended in floats; under SSAA a
- * translucent fragment is shaded and its depth taken once a pixel, at its
- * centre, as are a modifier volume's depths. Texture filtering is the
+ * translucent fragment is shaded once a pixel, depth tested at each sample
+ * it covers with its depth there, and kept and sorted with its depth at
+ * the centroid of the samples it is seen at (the centre's where it is seen
+ * at all of them); a modifier volume's depths are the centre's. Texture filtering is the
  * device's sampler, given the derivatives a fragment shader has: the
  * differences across a 2x2 block of pixels, from the setup's planes
  * (frag_grads()).
@@ -2383,23 +2385,45 @@ void main()
                {
                   const uint r = mine * PVRC_REC_WORDS;
                   const uint pp = rec_poly(r);
-                  if (in_rect(frm.w[pp + PVRC_Q_RECT], frm.w[pp + PVRC_Q_RECT + 1u]))
+                  if (in_rect(frm.w[pp + PVRC_Q_RECT], frm.w[pp + PVRC_Q_RECT + 1u]) && rec_near(r))
                   {
+                     /* each sample it covers tested with its depth at
+                      * that sample, as the depth subpass took the depth
+                      * there; the edges of those it is seen at summed:
+                      * the edges are linear in the place, so the sum is
+                      * the edges at their centroid times their number,
+                      * which gives the same 1/w (rec_bary()) */
                      uint cov = 0u;
+                     i64vec3 es = i64vec3(0);
                      for (uint j = 0u; j < PVRC_SAMPLES; j++)
                      {
                         const int sx = g_px * 256 + int(SSAA_SAMPLE_X16(PVRC_SAMPLES, j)) * 16;
                         const int sy = g_py * 256 + int(SSAA_SAMPLE_Y16(PVRC_SAMPLES, j)) * 16;
-                        if (rec_covers(r, sx, sy))
+                        const i64vec3 e = rec_edges(r, sx, sy);
+                        if (rec_inside(r, e))
+                        {
                            cov |= 1u << j;
-                     }
-                     if (cov != 0u)
-                     {
-                        const i64vec3 ec = rec_edges(r, g_cx, g_cy);
-                        const float z = pvrc_depth(rec_bary(r, ec).w);
-                        for (uint j = 0u; j < PVRC_SAMPLES; j++)
-                           if ((cov & (1u << j)) != 0u && z >= pz[j])
+                           if (pvrc_depth(rec_bary(r, e).w) >= pz[j])
+                           {
                               cand |= 1u << j;
+                              es += e;
+                           }
+                        }
+                     }
+                     if (cand != 0u)
+                     {
+                        /* kept and sorted with its depth at the centroid
+                         * of the samples it is seen at, which is in the
+                         * triangle; the centre's, which that centroid is,
+                         * where it is seen at all of them. The centre's for
+                         * all of it was the plane extrapolated past the
+                         * triangle where the triangle only clips the
+                         * pixel, and sorted the fragments of a model's
+                         * neighbouring polygons wrongly along its edges. */
+                        const i64vec3 ec = rec_edges(r, g_cx, g_cy);
+                        if (cand == (1u << PVRC_SAMPLES) - 1u)
+                           es = ec;
+                        const float z = pvrc_depth(rec_bary(r, es).w);
                         if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
                         {
                            const uint c0 = frm.w[pp + PVRC_Q_CLIP], c1 = frm.w[pp + PVRC_Q_CLIP + 1u];
