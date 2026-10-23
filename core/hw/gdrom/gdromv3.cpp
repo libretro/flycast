@@ -62,7 +62,7 @@ u32 data_write_mode=0;
 	GD_StatusT GDStatus;
 
 	
-ByteCount_t ByteCount ;
+ByteCount_t GDByteCount ;
 //end
 GD_HardwareInfo_t GD_HardwareInfo;
 
@@ -190,7 +190,7 @@ void gd_set_state(gd_states state)
 		case gds_pio_send_data:
 			//  When preparations are complete, the following steps are carried out at the device.
 			//(1)   Number of bytes to be read is set in "Byte Count" register. 
-			ByteCount.full =(u16)(pio_buff.size<<1);
+			GDByteCount.full =(u16)(pio_buff.size<<1);
 			//(2)   IO bit is set and CoD bit is cleared. 
 			IntReason.IO=1;
 			IntReason.CoD=0;
@@ -519,8 +519,8 @@ void gd_process_ata_cmd()
 			SecNumber.Status = GD_PAUSE;
 			IntReason.full = 1;
 			// DC Checker expects these values
-			ByteCount.low = 0x14;
-			ByteCount.hi = 0xEB;
+			GDByteCount.low = 0x14;
+			GDByteCount.hi = 0xEB;
 		}
 		break;
 
@@ -570,8 +570,8 @@ void gd_process_ata_cmd()
 
 		SecCount.full = 1;
 		SecNumber.full = 1;
-		ByteCount.low = 0x14;
-		ByteCount.hi = 0xeb;
+		GDByteCount.low = 0x14;
+		GDByteCount.hi = 0xeb;
 
 		// ABORT command
 		Error.full = 0x4;
@@ -1135,11 +1135,11 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 
 	case GD_BYCTLLO	:
 		printf_rm("GDROM: Read From GD_BYCTLLO");
-		return ByteCount.low;
+		return GDByteCount.low;
 
 	case GD_BYCTLHI	:
 		printf_rm("GDROM: Read From GD_BYCTLHI");
-		return ByteCount.hi;
+		return GDByteCount.hi;
 
 	case GD_DATA:
 		if(2!=sz)
@@ -1155,7 +1155,7 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 			{
 				u32 rv= pio_buff.data[pio_buff.index];
 				pio_buff.index+=1;
-				ByteCount.full-=2;
+				GDByteCount.full-=2;
 
             //end of pio transfer !
 				if (pio_buff.index==pio_buff.size)
@@ -1199,12 +1199,12 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 	{
 	case GD_BYCTLLO:
 		printf_rm("GDROM: Write to GD_BYCTLLO = %X, Size:%X",data,sz);
-		ByteCount.low =(u8) data;
+		GDByteCount.low =(u8) data;
 		break;
 
 	case GD_BYCTLHI: 
 		printf_rm("GDROM: Write to GD_BYCTLHI = %X, Size:%X",data,sz);
-		ByteCount.hi =(u8) data;
+		GDByteCount.hi =(u8) data;
 		break;
 
 	case GD_DATA: 
@@ -1663,7 +1663,7 @@ void gdrom_reg_Reset(bool hard)
 	SecCount = {};
 	SecNumber = {};
 	GDStatus = {};
-	ByteCount = {};
+	GDByteCount = {};
 	// and looks at what disc is in it
 	gd_swap_cancel();
 	gd_setdisc();

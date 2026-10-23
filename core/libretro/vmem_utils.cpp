@@ -9,6 +9,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#endif
 
 #include "hw/mem/_vmem.h"
 #include "stdclass.h"
@@ -458,8 +461,7 @@ static void Arm64_CacheFlush(void* start, void* end) {
 		return;
 
 #if defined(__APPLE__)
-	// Header file says this is equivalent to: sys_icache_invalidate(start, end - start);
-	sys_cache_control(kCacheFunctionPrepareForExecution, start, end - start);
+	sys_icache_invalidate(start, (char*)end - (char*)start);
 #else
 	// Don't rely on GCC's __clear_cache implementation, as it caches
 	// icache/dcache cache line sizes, that can vary between cores on

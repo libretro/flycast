@@ -25,7 +25,9 @@
 #define RASTER_SPV_WORDS
 #include "raster_spv.inc"
 
-static_assert(PREPASS_ALPHA_MIN == (float)PREPASS_ALPHA_MIN_GLSL, "the prepass's alpha, in shaders/prepass.frag (pso_key.h)");
+// (both cast: on 32-bit x86, whose x87 keeps floats wider, the literal is
+// otherwise compared at the wider precision)
+static_assert((float)PREPASS_ALPHA_MIN == (float)PREPASS_ALPHA_MIN_GLSL, "the prepass's alpha, in shaders/prepass.frag (pso_key.h)");
 
 vk::UniqueShaderModule MakeRasterModule(RasterSpv id)
 {

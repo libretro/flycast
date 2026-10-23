@@ -233,8 +233,13 @@ static void context_segfault(host_context_t* reictx, void* segfault_ctx, bool to
       bicopy(reictx->r[i], MCTX(->__ss.__r[i]), to_segfault);
 #endif
 #elif HOST_CPU == CPU_ARM64
+#if defined(__MACH__)
+	bicopy(reictx->pc, MCTX(->__ss.__pc), to_segfault);
+	bicopy(reictx->x2, MCTX(->__ss.__x[2]), to_segfault);
+#else
 	bicopy(reictx->pc, MCTX(.pc), to_segfault);
 	bicopy(reictx->x2, MCTX(.regs[2]), to_segfault);
+#endif
 #elif HOST_CPU == CPU_X86
 #ifdef __linux__
    bicopy(reictx->pc, MCTX(.gregs[REG_EIP]), to_segfault);
@@ -329,8 +334,10 @@ static void signal_handler(int sn, siginfo_t * si, void *segfault_ctx)
 
 	DEBUG_LOG(COMMON, "mprot hit @ ptr %p @@ pc: %zx, %d", si->si_addr, ctx.pc, dyna_cde);
 
+#if FEAT_SHREC != DYNAREC_NONE
 	if (bm_RamWriteAccess(si->si_addr))
 		return;
+#endif
 	if (rtt_watch_fault(si->si_addr) || VramLockedWrite((u8*)si->si_addr))
       return;
 #if !defined(TARGET_NO_NVMEM) && FEAT_SHREC != DYNAREC_NONE

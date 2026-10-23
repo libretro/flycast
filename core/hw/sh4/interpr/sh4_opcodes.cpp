@@ -1243,7 +1243,8 @@ INLINE void DYNACALL do_sqw(u32 Dest)
 }
 
 void DYNACALL do_sqw_mmu(u32 dst) { do_sqw<true>(dst); }
-#if HOST_CPU != CPU_ARM && HOST_CPU != CPU_ARM64
+// (the ARM recompilers have their own; a build without them needs this one)
+#if (HOST_CPU != CPU_ARM && HOST_CPU != CPU_ARM64) || FEAT_SHREC == DYNAREC_NONE
 //yes, this micro optimization makes a difference
 extern "C" void DYNACALL do_sqw_nommu_area_3(u32 dst,u8* sqb)
 {

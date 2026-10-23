@@ -326,13 +326,13 @@ struct AicaTimerData
 		{
 #ifdef MSB_FIRST
 			u32 pad:16;
-			u32 nil:5;
+			u32 :5;
 			u32 md:3;
 			u32 count:8;
 #else
 			u32 count:8;
 			u32 md:3;
-			u32 nil:5;
+			u32 :5;
 			u32 pad:16;
 #endif
 		};

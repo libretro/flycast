@@ -121,7 +121,7 @@ extern GD_FeaturesT Features;
 extern GD_SecCountT SecCount;
 extern GD_SecNumbT SecNumber;
 extern GD_StatusT GDStatus;
-extern ByteCount_t ByteCount ;
+extern ByteCount_t GDByteCount ;
 extern int GDROM_TICK;
 
 //./core/hw/maple/maple_devs.o
@@ -650,7 +650,7 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	LIBRETRO_S(SecCount);
 	LIBRETRO_S(SecNumber);
 	LIBRETRO_S(GDStatus);
-	LIBRETRO_S(ByteCount);
+	LIBRETRO_S(GDByteCount);
 	LIBRETRO_S(GDROM_TICK);
 
 
@@ -1150,7 +1150,7 @@ bool dc_unserialize(void **data, unsigned int *total_size, size_t actual_data_si
 	LIBRETRO_US(SecCount);
 	LIBRETRO_US(SecNumber);
 	LIBRETRO_US(GDStatus);
-	LIBRETRO_US(ByteCount);
+	LIBRETRO_US(GDByteCount);
 	LIBRETRO_US(GDROM_TICK);
 	gdrom_state_loaded();
 
