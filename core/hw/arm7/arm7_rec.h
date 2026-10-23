@@ -236,7 +236,23 @@ class ArmRegAlloc
 	void allocReg(const ArmOp::Register& reg, bool write, bool temporary, u32 opidx)
 	{
 		RegAlloc& alloc = allocs[(int)reg.armreg];
-		if (alloc.host_reg == -1 || (alloc.version != reg.version && !write))
+		/* Another value of a register that is in a host register: the
+		 * register file has the new one (written there by the interpreter or
+		 * swapped in by a change of mode, which come after everything has
+		 * been written back). It is read into the same host register. This
+		 * used to take another host register and leave the first one with
+		 * nothing, gone for the rest of the block: on 32-bit x86, which has
+		 * four, a block could run out of them in the middle of an
+		 * instruction. */
+		if (alloc.host_reg != -1 && alloc.version != reg.version && !write)
+		{
+			alloc.version = reg.version;
+			alloc.dirty = false;
+			alloc.temporary = temporary;
+			static_cast<T*>(this)->LoadReg(alloc.host_reg, reg.armreg);
+			return;
+		}
+		if (alloc.host_reg == -1)
 		{
 			if (host_regs.empty())
 			{
