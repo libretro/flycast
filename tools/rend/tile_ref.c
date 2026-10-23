@@ -44,11 +44,12 @@ typedef char ref_s64_is_64_bits[sizeof(ref_s64) >= 8 ? 1 : -1];
 
 typedef struct
 {
-   int x[3], y[3];
+   int x[3], y[3];	/* each vertex's divided by 2^ its own shift */
+   unsigned vs[3];	/* (the shifts: pvrc_xy_shift()) */
    float q[3];
    unsigned vi[3];
    unsigned src, extra;
-   unsigned shift;	/* x and y divided by 2^shift (pvrc_xy_shift()) */
+   unsigned shift;	/* the edges': the vertices' most */
    unsigned neg;	/* a bit for each vertex behind the eye (PVRC_RX_NEG_AT) */
    int bx0, by0, bx1, by1;
    int live;
@@ -71,8 +72,9 @@ static void setup(unsigned prim, Rec *r)
    int modvol, culledOwn, front, empty, bad = 0, behind;
    float vx[3], vy[3], vz[3];
    ref_s64 cross;
-   float px[3], py[3], most = 0.0f, down;
-   unsigned shift;
+   float px[3], py[3], down;
+   int sx[3], sy[3];
+   unsigned shift = 0;
    while (hi - lo > 1)
    {
       unsigned mid = (lo + hi) >> 1;
@@ -121,25 +123,31 @@ static void setup(unsigned prim, Rec *r)
    }
    for (k = 0; k < 3; k++)
    {
+      float most = 0.0f;
       px[k] = ff(PVRC_F_XFORM) * vx[k] + ff(PVRC_F_XFORM + 2);
       py[k] = ff(PVRC_F_XFORM + 1) * vy[k] + ff(PVRC_F_XFORM + 3);
       if (!(fabs(px[k]) <= most))
          most = (float)fabs(px[k]);
       if (!(fabs(py[k]) <= most))
          most = (float)fabs(py[k]);
+      r->vs[k] = pvrc_xy_shift(most);
+      if (r->vs[k] > shift)
+         shift = r->vs[k];
    }
-   shift = pvrc_xy_shift(most);
+   /* (at the most shift, for its facing alone) */
    down = 1.0f / (float)(1u << shift);
    for (k = 0; k < 3; k++)
    {
-      r->x[k] = pvrc_fixed(px[k] * down);
-      r->y[k] = pvrc_fixed(py[k] * down);
+      sx[k] = pvrc_fixed(px[k] * down);
+      sy[k] = pvrc_fixed(py[k] * down);
+      r->x[k] = pvrc_fixed(px[k] * (1.0f / (float)(1u << r->vs[k])));
+      r->y[k] = pvrc_fixed(py[k] * (1.0f / (float)(1u << r->vs[k])));
       r->q[k] = ff(PVRC_F_XFORM + 4) * vz[k];
       if (!(fabs(r->q[k]) > 0.0f) || fabs(r->q[k]) > 3.4e37f || px[k] != px[k] || py[k] != py[k])
          bad = 1;
    }
    r->shift = shift;
-   cross = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(r->y[2] - r->y[0]) - (ref_s64)(r->x[2] - r->x[0]) * (ref_s64)(r->y[1] - r->y[0]);
+   cross = (ref_s64)(sx[1] - sx[0]) * (ref_s64)(sy[2] - sy[0]) - (ref_s64)(sx[2] - sx[0]) * (ref_s64)(sy[1] - sy[0]);
    behind = (r->q[0] < 0.0f) + (r->q[1] < 0.0f) + (r->q[2] < 0.0f);
    front = (cross < 0) != ((behind & 1) != 0);
    cull = (isp >> 27) & 3;
@@ -164,23 +172,27 @@ static void setup(unsigned prim, Rec *r)
       t = r->y[1]; r->y[1] = r->y[2]; r->y[2] = t;
       f = r->q[1]; r->q[1] = r->q[2]; r->q[2] = f;
       u = r->vi[1]; r->vi[1] = r->vi[2]; r->vi[2] = u;
+      u = r->vs[1]; r->vs[1] = r->vs[2]; r->vs[2] = u;
    }
    r->neg = (r->q[0] < 0.0f ? 1u : 0u) | (r->q[1] < 0.0f ? 2u : 0u) | (r->q[2] < 0.0f ? 4u : 0u);
    if (r->neg != 0 && !empty)
       ref_clipped++;
    r->src = src;
    {
-      int mnx = r->x[0] < r->x[1] ? r->x[0] : r->x[1], mny = r->y[0] < r->y[1] ? r->y[0] : r->y[1];
-      int mxx = r->x[0] > r->x[1] ? r->x[0] : r->x[1], mxy = r->y[0] > r->y[1] ? r->y[0] : r->y[1];
+      ref_s64 mnx = 0, mny = 0, mxx = 0, mxy = 0;
       int bx0, by0, bx1, by1;
-      if (r->x[2] < mnx) mnx = r->x[2];
-      if (r->y[2] < mny) mny = r->y[2];
-      if (r->x[2] > mxx) mxx = r->x[2];
-      if (r->y[2] > mxy) mxy = r->y[2];
-      /* (an arithmetic shift, as the kernel's, of x and y at full size) */
+      for (k = 0; k < 3; k++)
       {
-         const ref_s64 m = (ref_s64)1 << shift;
-         const ref_s64 ax0 = (ref_s64)mnx * m - 255, ay0 = (ref_s64)mny * m - 255, ax1 = (ref_s64)mxx * m, ay1 = (ref_s64)mxy * m;
+         /* (x and y at full size) */
+         const ref_s64 fx = (ref_s64)r->x[k] * ((ref_s64)1 << r->vs[k]), fy = (ref_s64)r->y[k] * ((ref_s64)1 << r->vs[k]);
+         if (k == 0 || fx < mnx) mnx = fx;
+         if (k == 0 || fy < mny) mny = fy;
+         if (k == 0 || fx > mxx) mxx = fx;
+         if (k == 0 || fy > mxy) mxy = fy;
+      }
+      /* (an arithmetic shift, as the kernel's) */
+      {
+         const ref_s64 ax0 = mnx - 255, ay0 = mny - 255, ax1 = mxx, ay1 = mxy;
          bx0 = ref_int(ax0 >= 0 ? ax0 / 256 : -((-ax0 + 255) / 256));
          by0 = ref_int(ay0 >= 0 ? ay0 / 256 : -((-ay0 + 255) / 256));
          bx1 = ref_int(ax1 >= 0 ? ax1 / 256 : -((-ax1 + 255) / 256));
@@ -223,13 +235,71 @@ static int edge_in(ref_s64 e, int dx, int dy)
    return e > 0 || (e == 0 && (dy < 0 || (dy == 0 && dx > 0)));
 }
 
+/* (an arithmetic shift right of a 64-bit integer, as the kernels') */
+static ref_s64 ref_asr(ref_s64 v, unsigned k)
+{
+   return v >= 0 ? v >> k : -((-(v + 1)) >> k) - 1;
+}
+
+/* (the kernels' pvrc_round_shift()) */
+static int ref_round_shift(int v, unsigned k)
+{
+   const int h = (1 << k) >> 1;
+   return v >= 0 ? (v + h) >> k : -((-v + h) >> k);
+}
+
+/* The edge from vertex a to vertex b of a primitive with a shift, as the
+ * kernels' rec_far_edge(): its direction d at shift *t, and m and *sa,
+ * its value at (px, py) being m 2^sa + d[0] py - d[1] px over 2^t */
+static void rec_far_edge(const Rec *r, unsigned a, unsigned b, int *d, ref_s64 *m, unsigned *sa, unsigned *t)
+{
+   unsigned sb = r->vs[b];
+   int ax = r->x[a], ay = r->y[a], bx = r->x[b], by = r->y[b];
+   *sa = r->vs[a];
+   if (*sa <= sb)
+   {
+      d[0] = bx - ref_round_shift(ax, sb - *sa);
+      d[1] = by - ref_round_shift(ay, sb - *sa);
+      *t = sb;
+   }
+   else
+   {
+      d[0] = ref_round_shift(bx, *sa - sb) - ax;
+      d[1] = ref_round_shift(by, *sa - sb) - ay;
+      *t = *sa;
+      *sa = sb;
+      ax = bx;
+      ay = by;
+   }
+   *m = (ref_s64)d[1] * (ref_s64)ax - (ref_s64)d[0] * (ref_s64)ay;
+}
+
+/* (the kernels' rec_far_at()) */
+static ref_s64 rec_far_at(const Rec *r, unsigned a, unsigned b, int px, int py)
+{
+   int d[2];
+   ref_s64 m, l, x, e;
+   unsigned sa, t;
+   int rest;
+   rec_far_edge(r, a, b, d, &m, &sa, &t);
+   l = (ref_s64)d[0] * (ref_s64)py - (ref_s64)d[1] * (ref_s64)px;
+   x = m + ref_asr(l, sa);
+   rest = l - ref_asr(l, sa) * ((ref_s64)1 << sa) != 0;
+   e = ref_asr(x, 2 * r->shift - t - sa);
+   if (e == 0 && (x > 0 || (x == 0 && rest)))
+      e = 1;
+   return e;
+}
+
 static void rec_edges(const Rec *r, int px, int py, ref_s64 *e)
 {
-   /* (at its shift, the place divided to the nearest as the kernels' is: a
-    * place is not negative) */
-   const int half = (1 << r->shift) >> 1;
-   px = (px + half) >> r->shift;
-   py = (py + half) >> r->shift;
+   if (r->shift != 0)
+   {
+      e[0] = rec_far_at(r, 1, 2, px, py);
+      e[1] = rec_far_at(r, 2, 0, px, py);
+      e[2] = rec_far_at(r, 0, 1, px, py);
+      return;
+   }
    e[0] = (ref_s64)(r->x[2] - r->x[1]) * (ref_s64)(py - r->y[1]) - (ref_s64)(r->y[2] - r->y[1]) * (ref_s64)(px - r->x[1]);
    e[1] = (ref_s64)(r->x[0] - r->x[2]) * (ref_s64)(py - r->y[2]) - (ref_s64)(r->y[0] - r->y[2]) * (ref_s64)(px - r->x[2]);
    e[2] = (ref_s64)(r->x[1] - r->x[0]) * (ref_s64)(py - r->y[0]) - (ref_s64)(r->y[1] - r->y[0]) * (ref_s64)(px - r->x[0]);
@@ -258,15 +328,26 @@ static float rec_clip_at(const Rec *r, const ref_s64 *e)
 static int rec_inside(const Rec *r, const ref_s64 *e)
 {
    int s0, s1, s2;
+   int d[3][2];
+   d[0][0] = r->x[2] - r->x[1]; d[0][1] = r->y[2] - r->y[1];
+   d[1][0] = r->x[0] - r->x[2]; d[1][1] = r->y[0] - r->y[2];
+   d[2][0] = r->x[1] - r->x[0]; d[2][1] = r->y[1] - r->y[0];
+   if (r->shift != 0)
+   {
+      ref_s64 m;
+      unsigned sa, t;
+      rec_far_edge(r, 1, 2, d[0], &m, &sa, &t);
+      rec_far_edge(r, 2, 0, d[1], &m, &sa, &t);
+      rec_far_edge(r, 0, 1, d[2], &m, &sa, &t);
+   }
    if (r->neg == 0)
-      return edge_in(e[0], r->x[2] - r->x[1], r->y[2] - r->y[1]) && edge_in(e[1], r->x[0] - r->x[2], r->y[0] - r->y[2])
-            && edge_in(e[2], r->x[1] - r->x[0], r->y[1] - r->y[0]);
+      return edge_in(e[0], d[0][0], d[0][1]) && edge_in(e[1], d[1][0], d[1][1]) && edge_in(e[2], d[2][0], d[2][1]);
    s0 = (r->neg & 1) ? -1 : 1;
    s1 = (r->neg & 2) ? -1 : 1;
    s2 = (r->neg & 4) ? -1 : 1;
-   return edge_in(s0 * e[0], s0 * (r->x[2] - r->x[1]), s0 * (r->y[2] - r->y[1]))
-         && edge_in(s1 * e[1], s1 * (r->x[0] - r->x[2]), s1 * (r->y[0] - r->y[2]))
-         && edge_in(s2 * e[2], s2 * (r->x[1] - r->x[0]), s2 * (r->y[1] - r->y[0]))
+   return edge_in(s0 * e[0], s0 * d[0][0], s0 * d[0][1])
+         && edge_in(s1 * e[1], s1 * d[1][0], s1 * d[1][1])
+         && edge_in(s2 * e[2], s2 * d[2][0], s2 * d[2][1])
          && rec_clip_at(r, e) >= 0.0f;
 }
 

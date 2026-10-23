@@ -275,9 +275,10 @@
 /* ---- What the kernels keep ---- */
 
 /* A primitive's setup: the vertices' x and y on the screen in 24.8 fixed
- * point (divided by 2^shift, PVRC_RX_SHIFT: pvrc_xy_shift()), in the order
- * that makes its edges positive inside; their 1/w
- * (scaled); for a polygon's triangle, its vertices' numbers in that order;
+ * point (each divided by 2^ its own shift, PVRC_RV_SHIFT_AT:
+ * pvrc_xy_shift()), in the order that makes its edges positive inside;
+ * their 1/w (scaled); for a polygon's triangle, its vertices' numbers in
+ * that order;
  * its parameter (PVRC_SRC_MODVOL for a volume's); the pixels around it,
  * first x | y << 16 and last (a primitive with none has the first after
  * the last); and for a polygon's triangle its first vertex in the draw's
@@ -298,7 +299,9 @@
 #define PVRC_RX_VTX   0x003fffffu  /* (a polygon's) its first vertex */
 #define PVRC_RX_NEG_AT 22u   /* (either's) a bit for each vertex behind the eye, in the order kept: see pvrc_rec_hits() */
 #define PVRC_RX_NEG   (7u << PVRC_RX_NEG_AT)
-#define PVRC_RX_SHIFT_AT 26u  /* the shift its x and y are kept at, 4 bits (either's) */
+#define PVRC_RX_SHIFT_AT 26u  /* the shift its edges are kept at, 4 bits (either's): its vertices' most */
+#define PVRC_RV_SHIFT_AT 28u  /* (a PVRC_R_VTX word) the shift that vertex's x and y are kept at, 4 bits */
+#define PVRC_RV_INDEX 0x0fffffffu  /* ...and the vertex's number (a polygon's) */
 
 /* The bin buffer: counts of each run (chunk x tiles of them), starts
  * (PVRC_RUN_SKIP: walked over the whole chunk), the scatter's cursors,
@@ -503,18 +506,19 @@ PVR_FN pvr_s32 pvrc_fixed(pvr_f32 v)
    return PVR_S32(floor(f));
 }
 
-/* A triangle whose vertices go farther out than that (2097152 pixels: a
- * game's near the eye can be far more, the raster renderers clipping them
- * at the edges of their guard band) has its x and y kept divided by 2^the
- * shift, the least that brings its farthest, @most pixels out, inside:
- * with the places it is tested at divided the same way, to the nearest
- * (rec_edges()), its edges are the same lines to 2^shift / 512 pixel at
- * the vertices that are near (a vertex out there has no bits that fine
- * anyway: a float that far). Up to 4 a sample's place (1/16 pixels)
- * divides exactly, up to 7 a pixel's centre. Games put vertices near the
- * eye that far out: Virtua Fighter 3tb's floor has them 8.6 million
- * pixels out at 1x, 69 million at 8x (a shift of 6). Up to 15, 2^36
- * pixels; past that a vertex is taken at the edge. */
+/* A vertex farther out than that (2097152 pixels: a game's near the eye
+ * can be far more, the raster renderers clipping them at the edges of
+ * their guard band) has its x and y kept divided by 2^its shift, the least
+ * that brings it, @most pixels out, inside (a vertex out there has no
+ * bits that fine anyway: a float that far). Each vertex has its own, so a
+ * vertex two triangles share is the same in both, and the vertices near
+ * the screen stay as they are: an edge is the line through its vertex
+ * nearer the screen, exactly, going to the other (rec_edges()), and the
+ * places it is tested at are not moved. Games put vertices near the eye
+ * that far out: Virtua Fighter 3tb's floor has them 8.6 million pixels
+ * out at 1x, 69 million at 8x (a shift of 6), Jet Grind Radio's shadow
+ * volumes billions (11 and 12). Up to 15, 2^36 pixels; past that a vertex
+ * is taken at the edge. */
 #define PVRC_SHIFT_MOST 15u
 PVR_FN pvr_u32 pvrc_xy_shift(pvr_f32 most)
 {
@@ -656,29 +660,34 @@ uint pvrc_runs() { return frm.w[PVRC_F_RUNS]; }
 uint pvrc_tiles() { return frm.w[PVRC_F_TILES_X] * frm.w[PVRC_F_TILES_Y]; }
 
 #if PVRC_KERNEL == PVRC_K_SETUP || PVRC_KERNEL == PVRC_K_SCATTER || PVRC_KERNEL == PVRC_K_WALK
-/* The shift a primitive's x and y are kept at (pvrc_xy_shift()) */
+/* The shift a primitive's edges are kept at, its vertices' most
+ * (pvrc_xy_shift()), and a vertex's own */
 uint rec_shift(uint r)
 {
    return (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_SHIFT_AT) & 15u;
 }
 
+uint rec_vshift(uint r, uint k)
+{
+   return rec.w[r + PVRC_R_VTX + k] >> PVRC_RV_SHIFT_AT;
+}
+
 /* The most the edge from (@ax, @ay) to (@bx, @by) has over the pixels
- * @x0 to @x1, @y0 to @y1 (all in them), at shift @sh: at one of their
- * corners, for it is linear (a sample's place, shifted, is inside them;
- * the corners rounded outwards where they do not divide exactly); with
- * @neg, the most the edge turned the other way has */
-int64_t pvrc_edge_max(int ax, int ay, int bx, int by, int x0, int y0, int x1, int y1, uint sh, bool neg)
+ * @x0 to @x1, @y0 to @y1 (all in them), of a primitive with no shift: at
+ * one of their corners, for it is linear (a sample's place is inside
+ * them); with @neg, the most the edge turned the other way has */
+int64_t pvrc_edge_max(int ax, int ay, int bx, int by, int x0, int y0, int x1, int y1, bool neg)
 {
    const int64_t dx = int64_t(bx - ax), dy = int64_t(by - ay);
-   const int64_t px0 = int64_t((x0 * 256 >> sh) - ax), px1 = int64_t(-(-(x1 + 1) * 256 >> sh) - ax);
-   const int64_t py0 = int64_t((y0 * 256 >> sh) - ay), py1 = int64_t(-(-(y1 + 1) * 256 >> sh) - ay);
+   const int64_t px0 = int64_t(x0 * 256 - ax), px1 = int64_t((x1 + 1) * 256 - ax);
+   const int64_t py0 = int64_t(y0 * 256 - ay), py1 = int64_t((y1 + 1) * 256 - ay);
    if (neg)
       return max(dy * px0, dy * px1) - min(dx * py0, dx * py1);
    return max(dx * py0, dx * py1) - min(dy * px0, dy * px1);
 }
 
-/* The edges at (@px, @py), a place already at the primitive's shift: the
- * one facing each vertex */
+/* The edges at (@px, @py) in 24.8 of a primitive with no shift: the one
+ * facing each vertex */
 i64vec3 rec_edges_at(uint r, int px, int py)
 {
    const int x0 = int(rec.w[r]), y0 = int(rec.w[r + 1u]);
@@ -689,18 +698,85 @@ i64vec3 rec_edges_at(uint r, int px, int py)
          int64_t(x1 - x0) * int64_t(py - y0) - int64_t(y1 - y0) * int64_t(px - x0));
 }
 
-/* The edges at (@px, @py) in 24.8 (not negative), at the primitive's
- * shift: the place divided down to the nearest, as the vertices are. Up to
- * a shift of 4 a sample's place, a multiple of 16, divides exactly, and up
- * to 7 a pixel's centre; past that a place moves by less than half a unit
- * at the shift, as the triangle's near vertices do, and every triangle at
- * that shift is tested at the same places, so two that share an edge
- * still share its samples. */
+/* @v over 2^@k, to the nearest, a half away from 0 (so that -v gives -it) */
+int pvrc_round_shift(int v, uint k)
+{
+   const int h = (1 << k) >> 1;
+   return v >= 0 ? (v + h) >> k : -((-v + h) >> k);
+}
+
+/* The edge from vertex @a to vertex @b of a primitive with a shift, whose
+ * value at (px, py) in 24.8 is, exactly,
+ *    m * 2^@sa + d.x * py - d.y * px
+ * over 2^@t, the larger of the two vertices' shifts: @d its direction at
+ * that shift (the vertex with the lesser one taken to it, to the nearest),
+ * the line through the vertex with the lesser shift (@sa its shift: the
+ * one nearer the screen, as it is, or either when the two are the same),
+ * @m from that vertex's x and y as kept. The edge from @b to @a is this
+ * one turned, exactly. The products fit in 64 bits: x and y as kept and a
+ * direction are under 2^30 in size, a place under 2^24. */
+ivec2 rec_far_edge(uint r, uint a, uint b, out int64_t m, out uint sa, out uint t)
+{
+   uint sb = rec_vshift(r, b);
+   int ax = int(rec.w[r + 2u * a]), ay = int(rec.w[r + 2u * a + 1u]);
+   int bx = int(rec.w[r + 2u * b]), by = int(rec.w[r + 2u * b + 1u]);
+   sa = rec_vshift(r, a);
+   ivec2 d;
+   if (sa <= sb)
+   {
+      d = ivec2(bx - pvrc_round_shift(ax, sb - sa), by - pvrc_round_shift(ay, sb - sa));
+      t = sb;
+   }
+   else
+   {
+      d = ivec2(pvrc_round_shift(bx, sa - sb) - ax, pvrc_round_shift(by, sa - sb) - ay);
+      t = sa;
+      sa = sb;
+      ax = bx;
+      ay = by;
+   }
+   m = int64_t(d.y) * int64_t(ax) - int64_t(d.x) * int64_t(ay);
+   return d;
+}
+
+/* That edge's direction alone (for the top left rule, and the steps a
+ * pixel makes): at shift @t */
+ivec2 rec_far_dir(uint r, uint a, uint b, out uint t)
+{
+   int64_t m;
+   uint sa;
+   return rec_far_edge(r, a, b, m, sa, t);
+}
+
+/* Such an edge at (@px, @py) in 24.8 over 2^(2 @sh), @sh the primitive's
+ * shift, as rec_edges() has it: rounded down, but never to 0 from a value
+ * that is not 0, so that its sign is the exact edge's. (The value is
+ * (m + floor(l / 2^sa)) 2^sa + the rest of l, the rest under 2^sa.) */
+int64_t rec_far_at(uint r, uint a, uint b, uint sh, int px, int py)
+{
+   int64_t m;
+   uint sa, t;
+   const ivec2 d = rec_far_edge(r, a, b, m, sa, t);
+   const int64_t l = int64_t(d.x) * int64_t(py) - int64_t(d.y) * int64_t(px);
+   const int64_t x = m + (l >> sa);
+   const bool rest = (l & ((int64_t(1) << sa) - int64_t(1))) != int64_t(0);
+   int64_t e = x >> (2u * sh - t - sa);
+   if (e == int64_t(0) && (x > int64_t(0) || (x == int64_t(0) && rest)))
+      e = int64_t(1);
+   return e;
+}
+
+/* The edges at (@px, @py) in 24.8 (not negative), the one facing each
+ * vertex, over 2^(2 shift): exactly where the primitive has no shift; with
+ * one, from the lines rec_far_edge() makes, at the place as it is, each
+ * with its exact sign, so that two triangles that share an edge share its
+ * samples. */
 i64vec3 rec_edges(uint r, int px, int py)
 {
    const uint sh = rec_shift(r);
-   const int hf = (1 << sh) >> 1;
-   return rec_edges_at(r, (px + hf) >> sh, (py + hf) >> sh);
+   if (sh == 0u)
+      return rec_edges_at(r, px, py);
+   return i64vec3(rec_far_at(r, 1u, 2u, sh, px, py), rec_far_at(r, 2u, 0u, sh, px, py), rec_far_at(r, 0u, 1u, sh, px, py));
 }
 
 /* A triangle with a vertex behind the eye (its 1/w below 0), as the raster
@@ -758,19 +834,41 @@ bool pvrc_rec_hits(uint r, int x0, int y0, int x1, int y1)
    const int cx = int(rec.w[r + 4u]), cy = int(rec.w[r + 5u]);
    const uint sh = rec_shift(r);
    const uint neg = (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_NEG_AT) & 7u;
-   if (!(pvrc_edge_max(bx, by, cx, cy, x0, y0, x1, y1, sh, (neg & 1u) != 0u) >= 0
-         && pvrc_edge_max(cx, cy, ax, ay, x0, y0, x1, y1, sh, (neg & 2u) != 0u) >= 0
-         && pvrc_edge_max(ax, ay, bx, by, x0, y0, x1, y1, sh, (neg & 4u) != 0u) >= 0))
-      return false;
+   if (sh == 0u)
+   {
+      if (!(pvrc_edge_max(bx, by, cx, cy, x0, y0, x1, y1, (neg & 1u) != 0u) >= 0
+            && pvrc_edge_max(cx, cy, ax, ay, x0, y0, x1, y1, (neg & 2u) != 0u) >= 0
+            && pvrc_edge_max(ax, ay, bx, by, x0, y0, x1, y1, (neg & 4u) != 0u) >= 0))
+         return false;
+   }
+   else
+   {
+      /* each edge's most over the pixels' corners, exactly: the sign of
+       * m 2^sa + l is that of m + floor(l / 2^sa) (rec_far_at()) */
+      const int64_t px0 = int64_t(x0 * 256), px1 = int64_t((x1 + 1) * 256);
+      const int64_t py0 = int64_t(y0 * 256), py1 = int64_t((y1 + 1) * 256);
+      for (uint k = 0u; k < 3u; k++)
+      {
+         int64_t m;
+         uint sa, t;
+         ivec2 d = rec_far_edge(r, k == 2u ? 0u : k + 1u, k == 0u ? 2u : k - 1u, m, sa, t);
+         if ((neg & (1u << k)) != 0u)
+         {
+            m = -m;
+            d = -d;
+         }
+         const int64_t l = max(int64_t(d.x) * py0, int64_t(d.x) * py1) - min(int64_t(d.y) * px0, int64_t(d.y) * px1);
+         if (m + (l >> sa) < int64_t(0))
+            return false;
+      }
+   }
    if (neg == 0u)
       return true;
    const vec3 g = rec_clip_plane(r);
    float most = -3.4e38, room = 0.0;
    for (uint c = 0u; c < 4u; c++)
    {
-      /* (the corners rounded outwards, as pvrc_edge_max() has them) */
-      const i64vec3 e = rec_edges_at(r, (c & 1u) != 0u ? -(-(x1 + 1) * 256 >> sh) : x0 * 256 >> sh,
-            (c & 2u) != 0u ? -(-(y1 + 1) * 256 >> sh) : y0 * 256 >> sh);
+      const i64vec3 e = rec_edges(r, (c & 1u) != 0u ? (x1 + 1) * 256 : x0 * 256, (c & 2u) != 0u ? (y1 + 1) * 256 : y0 * 256);
       most = max(most, rec_clip_at(g, e));
       room = max(room, dot(abs(vec3(float(e.x), float(e.y), float(e.z))), abs(g)));
    }
@@ -908,27 +1006,35 @@ void main()
    const float tx = FRMF(PVRC_F_XFORM + 2u), ty = FRMF(PVRC_F_XFORM + 3u);
    const float sz = FRMF(PVRC_F_XFORM + 4u);
    int x[3], y[3];
+   int kx[3], ky[3];	/* (as kept: at each vertex's own shift) */
+   uint ks[3];
    float q[3];
    float px[3], py[3];
    bool bad = false;
-   float most = 0.0;
+   uint shift = 0u;
    for (uint k = 0u; k < 3u; k++)
    {
       PVRC_PRECISE float fx = sx * vx[k] + tx;
       PVRC_PRECISE float fy = sy * vy[k] + ty;
       px[k] = fx;
       py[k] = fy;
+      float most = 0.0;
       if (!(abs(fx) <= most))
          most = abs(fx);
       if (!(abs(fy) <= most))
          most = abs(fy);
+      ks[k] = pvrc_xy_shift(most);
+      shift = max(shift, ks[k]);
    }
-   const uint shift = pvrc_xy_shift(most);
+   /* (x and y at the most shift, for its facing alone) */
    const float down = 1.0 / float(1u << shift);	/* (a power of two: exact) */
    for (uint k = 0u; k < 3u; k++)
    {
       x[k] = pvrc_fixed(px[k] * down);
       y[k] = pvrc_fixed(py[k] * down);
+      const float own = 1.0 / float(1u << ks[k]);
+      kx[k] = pvrc_fixed(px[k] * own);
+      ky[k] = pvrc_fixed(py[k] * own);
       q[k] = sz * vz[k];
       /* at no depth, or one past what a float takes: such a triangle is
        * left out (and counted); behind the eye, it is clipped
@@ -961,21 +1067,27 @@ void main()
       atomicAdd(bin.w[PVRC_B_STATS(pvrc_runs()) + PVRC_ST_CLIPPED], 1u);
    if (cross < 0)
    {
-      int t = x[1]; x[1] = x[2]; x[2] = t;
-      t = y[1]; y[1] = y[2]; y[2] = t;
+      int t = kx[1]; kx[1] = kx[2]; kx[2] = t;
+      t = ky[1]; ky[1] = ky[2]; ky[2] = t;
       float f = q[1]; q[1] = q[2]; q[2] = f;
       uint u = vi[1]; vi[1] = vi[2]; vi[2] = u;
+      u = ks[1]; ks[1] = ks[2]; ks[2] = u;
    }
    extra |= shift << PVRC_RX_SHIFT_AT;
    const uint neg = (q[0] < 0.0 ? 1u : 0u) | (q[1] < 0.0 ? 2u : 0u) | (q[2] < 0.0 ? 4u : 0u);
    extra |= neg << PVRC_RX_NEG_AT;
    const uint r = prim * PVRC_REC_WORDS;
+   int64_t lx = int64_t(1) << 62u, ly = lx, hx = -lx, hy = -lx;	/* (past any x or y at its shift) */
    for (uint k = 0u; k < 3u; k++)
    {
-      rec.w[r + PVRC_R_XY + 2u * k] = uint(x[k]);
-      rec.w[r + PVRC_R_XY + 2u * k + 1u] = uint(y[k]);
+      rec.w[r + PVRC_R_XY + 2u * k] = uint(kx[k]);
+      rec.w[r + PVRC_R_XY + 2u * k + 1u] = uint(ky[k]);
       rec.w[r + PVRC_R_Q + k] = floatBitsToUint(q[k]);
-      rec.w[r + PVRC_R_VTX + k] = vi[k];
+      rec.w[r + PVRC_R_VTX + k] = vi[k] | (ks[k] << PVRC_RV_SHIFT_AT);
+      lx = min(lx, int64_t(kx[k]) << ks[k]);
+      ly = min(ly, int64_t(ky[k]) << ks[k]);
+      hx = max(hx, int64_t(kx[k]) << ks[k]);
+      hy = max(hy, int64_t(ky[k]) << ks[k]);
    }
    rec.w[r + PVRC_R_SRC] = src;
    rec.w[r + PVRC_R_EXTRA] = extra;
@@ -984,10 +1096,10 @@ void main()
     * its vertices: all of them; a vertex far out, at a large shift, is
     * past what an int has, and taken at its end) */
    const int64_t bmin = -0x7fffffffl, bmax = 0x7fffffffl;
-   int bx0 = int(clamp(((int64_t(min(min(x[0], x[1]), x[2])) << shift) - 255) >> 8, bmin, bmax));
-   int by0 = int(clamp(((int64_t(min(min(y[0], y[1]), y[2])) << shift) - 255) >> 8, bmin, bmax));
-   int bx1 = int(clamp((int64_t(max(max(x[0], x[1]), x[2])) << shift) >> 8, bmin, bmax));
-   int by1 = int(clamp((int64_t(max(max(y[0], y[1]), y[2])) << shift) >> 8, bmin, bmax));
+   int bx0 = int(clamp((lx - 255) >> 8, bmin, bmax));
+   int by0 = int(clamp((ly - 255) >> 8, bmin, bmax));
+   int bx1 = int(clamp(hx >> 8, bmin, bmax));
+   int by1 = int(clamp(hy >> 8, bmin, bmax));
    if (neg != 0u)
    {
       bx0 = by0 = 0;
@@ -1537,11 +1649,21 @@ bool rec_inside(uint r, i64vec3 e)
    const int x1 = int(rec.w[r + 2u]), y1 = int(rec.w[r + 3u]);
    const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
    const uint neg = (rec.w[r + PVRC_R_EXTRA] >> PVRC_RX_NEG_AT) & 7u;
+   /* (the edges' directions, for a place on one: with a shift, the lines'
+    * of rec_far_edge()) */
+   ivec2 d0 = ivec2(x2 - x1, y2 - y1), d1 = ivec2(x0 - x2, y0 - y2), d2 = ivec2(x1 - x0, y1 - y0);
+   if (rec_shift(r) != 0u)
+   {
+      uint t;
+      d0 = rec_far_dir(r, 1u, 2u, t);
+      d1 = rec_far_dir(r, 2u, 0u, t);
+      d2 = rec_far_dir(r, 0u, 1u, t);
+   }
    if (neg == 0u)
-      return edge_in(e.x, x2 - x1, y2 - y1) && edge_in(e.y, x0 - x2, y0 - y2) && edge_in(e.z, x1 - x0, y1 - y0);
+      return edge_in(e.x, d0.x, d0.y) && edge_in(e.y, d1.x, d1.y) && edge_in(e.z, d2.x, d2.y);
    const int64_t s0 = (neg & 1u) != 0u ? -1 : 1, s1 = (neg & 2u) != 0u ? -1 : 1, s2 = (neg & 4u) != 0u ? -1 : 1;
-   return edge_in(s0 * e.x, int(s0) * (x2 - x1), int(s0) * (y2 - y1)) && edge_in(s1 * e.y, int(s1) * (x0 - x2), int(s1) * (y0 - y2))
-         && edge_in(s2 * e.z, int(s2) * (x1 - x0), int(s2) * (y1 - y0)) && rec_clip_at(rec_clip_plane(r), e) >= 0.0;
+   return edge_in(s0 * e.x, int(s0) * d0.x, int(s0) * d0.y) && edge_in(s1 * e.y, int(s1) * d1.x, int(s1) * d1.y)
+         && edge_in(s2 * e.z, int(s2) * d2.x, int(s2) * d2.y) && rec_clip_at(rec_clip_plane(r), e) >= 0.0;
 }
 
 /* Whether the lane's pixel is in a primitive's pixels: a few compares
@@ -1610,20 +1732,26 @@ struct Frag
    vec2 pos;	/* gl_FragCoord.xy */
 };
 
+/* a polygon triangle's vertex @k's number */
+uint rec_vtx(uint r, uint k)
+{
+   return rec.w[r + PVRC_R_VTX + k] & PVRC_RV_INDEX;
+}
+
 vec4 frag_mix4(uint r, Bary b, uint k)
 {
-   const vec4 c0 = vtx_color(rec.w[r + PVRC_R_VTX], k);
-   const vec4 c1 = vtx_color(rec.w[r + PVRC_R_VTX + 1u], k);
-   const vec4 c2 = vtx_color(rec.w[r + PVRC_R_VTX + 2u], k);
+   const vec4 c0 = vtx_color(rec_vtx(r, 0u), k);
+   const vec4 c1 = vtx_color(rec_vtx(r, 1u), k);
+   const vec4 c2 = vtx_color(rec_vtx(r, 2u), k);
    return vec4(bary_mix(b, c0.x, c1.x, c2.x), bary_mix(b, c0.y, c1.y, c2.y),
          bary_mix(b, c0.z, c1.z, c2.z), bary_mix(b, c0.w, c1.w, c2.w));
 }
 
 float frag_mix1(uint r, Bary b, uint k)
 {
-   return bary_mix(b, uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX], k)),
-         uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX + 1u], k)),
-         uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX + 2u], k)));
+   return bary_mix(b, uintBitsToFloat(vtxw(rec_vtx(r, 0u), k)),
+         uintBitsToFloat(vtxw(rec_vtx(r, 1u), k)),
+         uintBitsToFloat(vtxw(rec_vtx(r, 2u), k)));
 }
 
 /* A perspective-correct coordinate's change from the place whose edges are
@@ -1639,9 +1767,9 @@ vec2 frag_duv(uint r, vec3 e, vec3 d, uint ku)
    vec2 res;
    for (uint c = 0u; c < 2u; c++)
    {
-      const vec3 a = vec3(uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX], ku + c)),
-            uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX + 1u], ku + c)),
-            uintBitsToFloat(vtxw(rec.w[r + PVRC_R_VTX + 2u], ku + c)));
+      const vec3 a = vec3(uintBitsToFloat(vtxw(rec_vtx(r, 0u), ku + c)),
+            uintBitsToFloat(vtxw(rec_vtx(r, 1u), ku + c)),
+            uintBitsToFloat(vtxw(rec_vtx(r, 2u), ku + c)));
       const float num = dot(eq, a);
       const float dnum = dot(dq, a);
       res[c] = (dnum * den - num * dden) / (den * (den + dden));
@@ -1660,9 +1788,9 @@ vec2 frag_duv(uint r, vec3 e, vec3 d, uint ku)
  * angle the two differ enough to move the level of detail the device
  * picks, and so its mipmap level and its anisotropic filtering's taps.
  * The edges' steps in 64 bits: a vertex far off the screen (one behind
- * the eye) has differences that times 256 do not fit in 32. Past a shift
- * of 8 a pixel is less than a unit at the shift, and the steps and the
- * top left pixel's edges are floats. */
+ * the eye) has differences that times 256 do not fit in 32. With a shift
+ * (rec_edges() over 2^(2 shift)) the steps and the top left pixel's edges
+ * are floats. */
 void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
 {
    if (PVRC_TEST == 0u && (flags & PVRC_QF_TEXTURE) != 0u)
@@ -1670,14 +1798,13 @@ void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
       const int x0 = int(rec.w[r]), y0 = int(rec.w[r + 1u]);
       const int x1 = int(rec.w[r + 2u]), y1 = int(rec.w[r + 3u]);
       const int x2 = int(rec.w[r + 4u]), y2 = int(rec.w[r + 5u]);
-      /* a pixel across: each edge changes by -dy * 256, down by dx * 256
-       * (256 at the primitive's shift) */
-      const int sh = 8 - int(rec_shift(r));
+      /* a pixel across: each edge changes by -dy * 256, down by dx * 256 */
+      const uint sh = rec_shift(r);
       vec3 tl, dx, dy;
-      if (sh >= 0)
+      if (sh == 0u)
       {
-         const i64vec3 ix = i64vec3(-(y2 - y1), -(y0 - y2), -(y1 - y0)) << sh;
-         const i64vec3 iy = i64vec3(x2 - x1, x0 - x2, x1 - x0) << sh;
+         const i64vec3 ix = i64vec3(-(y2 - y1), -(y0 - y2), -(y1 - y0)) << 8;
+         const i64vec3 iy = i64vec3(x2 - x1, x0 - x2, x1 - x0) << 8;
          /* (the block's top left pixel, exactly) */
          i64vec3 itl = e;
          if ((g_px & 1) != 0)
@@ -1690,9 +1817,12 @@ void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
       }
       else
       {
-         const float s = exp2(float(sh));
-         dx = vec3(float(-(y2 - y1)), float(-(y0 - y2)), float(-(y1 - y0))) * s;
-         dy = vec3(float(x2 - x1), float(x0 - x2), float(x1 - x0)) * s;
+         /* (each edge's direction at its own shift t, 256 over 2^(2 sh - t)) */
+         uint t0, t1, t2;
+         const ivec2 d0 = rec_far_dir(r, 1u, 2u, t0), d1 = rec_far_dir(r, 2u, 0u, t1), d2 = rec_far_dir(r, 0u, 1u, t2);
+         const vec3 s = vec3(exp2(float(int(t0) + 8 - 2 * int(sh))), exp2(float(int(t1) + 8 - 2 * int(sh))), exp2(float(int(t2) + 8 - 2 * int(sh))));
+         dx = vec3(float(-d0.y), float(-d1.y), float(-d2.y)) * s;
+         dy = vec3(float(d0.x), float(d1.x), float(d2.x)) * s;
          tl = vec3(e);
          if ((g_px & 1) != 0)
             tl -= dx;
