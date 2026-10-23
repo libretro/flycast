@@ -84,7 +84,10 @@ SHADERS="$SHADERS 32:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=1,DX12_OIT_PASS=2,DX12_S
 # the lists put together and resolved, or put together at each sample; the translucent volumes; the resolve
 SHADERS="$SHADERS 34:ps_5_1:DX12_OIT_FINAL_PS,$S,DX12_MS_TABLE 35:ps_5_1:DX12_OIT_FINAL_PS,$S,DX12_MS_TABLE,DX12_OIT_PER_SAMPLE"
 SHADERS="$SHADERS 36:ps_5_1:DX12_OIT_MODVOL_PS,$S 37:ps_5_1:DX12_SSAA_RESOLVE_PS,$S,DX12_MS_TABLE"
-COUNT=37
+# the lists' again, for NVIDIA's post-depth coverage (DX12_POST_Z_COVERAGE: pipelines made through NVAPI)
+SHADERS="$SHADERS 38:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=1,DX12_OIT_PASS=2,DX12_SAMPLE_RATE=2,DX12_POST_Z_COVERAGE"
+SHADERS="$SHADERS 39:ps_5_1:DX12_OIT_PS,$S,DX12_GOURAUD=0,DX12_OIT_PASS=2,DX12_SAMPLE_RATE=2,DX12_POST_Z_COVERAGE"
+COUNT=39
 TA_INC=core/rend/dx12/dx12_ta_dxbc.inc
 COMPUTE_INC=core/rend/dx12/dx12_compute_dxil.inc
 PVRC_SRC=core/rend/tile/pvr_compute.h

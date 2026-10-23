@@ -200,9 +200,9 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 	}
 
 	// the adapter's budget (rend/dxgi_budget.h), found by its LUID
+	UINT vendor = 0;
 	{
 		vramBudget = VramBudget();
-		UINT vendor = 0;
 		HMODULE dxgi = LoadLibraryA("dxgi.dll");
 		CreateDXGIFactory1_t createFactory = dxgi != nullptr ? (CreateDXGIFactory1_t)(void *)GetProcAddress(dxgi, "CreateDXGIFactory1") : nullptr;
 		IDXGIFactory4 *factory = nullptr;
@@ -305,7 +305,7 @@ bool DX12Context::Init(const struct retro_hw_render_interface_d3d12 *iface)
 		Term();
 		return false;
 	}
-	pipelines.Init(device, rasterRoot);
+	pipelines.Init(device, rasterRoot, vendor);
 	pipelines.MakeAtStart();
 	frameResource.reset();
 	handedOver = false;

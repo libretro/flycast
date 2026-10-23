@@ -17,6 +17,7 @@
 #include "dx12_pso.h"
 #include "dx12context_lr.h"
 #include "dx12_shaders.h"
+#include "dx12_nvapi.h"
 #include "hw/pvr/ta_ctx.h"
 #include <streams/file_stream.h>
 #include <algorithm>
@@ -173,6 +174,7 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 	desc.pRootSignature = root;
 	DX12Shader vs, ps;
+	bool postZ = false;
 	/* SSAA's shaders: by rate, then smooth or flat (dx12_shaders.h) */
 	const int rateShader = (key.gouraud ? 0 : 1) + (key.rate == DX12_RATE_PIXEL ? 2 : 0);
 	switch (key.kind)
@@ -193,9 +195,20 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 		vs = key.gouraud ? DX12Shader::OITVS : DX12Shader::OITFlatVS;
 		ps = (DX12Shader)((int)(key.gouraud ? DX12Shader::OITDepthPS : DX12Shader::OITDepthFlatPS) + 2 * (int)std::min<u32>(key.pass, DX12_PASS_OIT));
 		if (key.rate != DX12_RATE_NONE)
+		{
 			// (the lists' are once a pixel only)
 			ps = key.pass >= DX12_PASS_OIT ? (DX12Shader)((int)DX12Shader::SsaaOITListPS + (key.gouraud ? 0 : 1))
 					: (DX12Shader)((int)DX12Shader::SsaaOITDepthPS + 4 * (int)key.pass + rateShader);
+			/* The lists' with the device's own depth test at each sample,
+			 * where NVAPI makes the pipeline with post-depth coverage: the
+			 * pass tests greater or equal against the opaque depth,
+			 * read-only, and the shader takes the samples that passed
+			 * instead of testing them itself, a few ulp off */
+			postZ = postZCoverage && key.pass >= DX12_PASS_OIT && key.samples != 0 && key.depthBound && key.depthTest
+					&& !key.depthWrite && key.depthFunc == 6;
+			if (postZ)
+				ps = (DX12Shader)((int)DX12Shader::SsaaOITListPostZPS + (key.gouraud ? 0 : 1));
+		}
 		desc.InputLayout = { OITLayout, (UINT)ARRAY_SIZE(OITLayout) };
 		break;
 	case DX12_PSO_OIT_FINAL:
@@ -273,6 +286,21 @@ bool DX12Pipelines::Build(u64 packed, ID3D12PipelineState **out)
 	// (SSAA's samples where rend/ssaa_pattern.h has them)
 	desc.SampleDesc.Quality = key.samples != 0 ? DX12StandardPattern : 0;
 
+	if (postZ)
+	{
+		// (not through the library: NVAPI's pipelines have no cached blob)
+		if (dx12_nvapi_create_post_z_pipeline(device, &desc, out))
+		{
+			statPostZ++;
+			return true;
+		}
+		WARN_LOG(RENDERER, "DX12: NVAPI made no pipeline with post-depth coverage: SSAA's lists test their samples themselves");
+		postZCoverage = false;
+		desc.PS = dx12_shader((DX12Shader)((int)DX12Shader::SsaaOITListPS + (key.gouraud ? 0 : 1)));
+	}
+	if (key.kind == DX12_PSO_OIT && key.pass >= DX12_PASS_OIT && key.rate != DX12_RATE_NONE)
+		statOwnTest++;
+
 	wchar_t name[24];
 	swprintf(name, 24, L"fc%016llx", (unsigned long long)packed);
 	if (library != nullptr && SUCCEEDED(library->LoadGraphicsPipeline(name, &desc, __uuidof(ID3D12PipelineState), (void **)out)))
@@ -329,7 +357,7 @@ void DX12Pipelines::Add(u64 key)
 	}
 }
 
-bool DX12Pipelines::Init(ID3D12Device *device, ID3D12RootSignature *root)
+bool DX12Pipelines::Init(ID3D12Device *device, ID3D12RootSignature *root, UINT vendor)
 {
 	Term();
 	this->device = device;
@@ -337,6 +365,9 @@ bool DX12Pipelines::Init(ID3D12Device *device, ID3D12RootSignature *root)
 	slots = new Slot[SLOTS]();
 	used = 0;
 	statMade = statMadeInFrame = statFromLibrary = 0;
+	statPostZ = statOwnTest = 0;
+	// (NVIDIA's PCI vendor id)
+	postZCoverage = vendor == 0x10de && dx12_nvapi_post_z_available();
 	storedSinceLoad = 0;
 	fileKeys = 0;
 	keys.clear();
@@ -491,6 +522,7 @@ void DX12Pipelines::MakeForSamples(u32 log2n)
 	// (what is made already is found in the table: only what is not gets made)
 	started = false;
 	const u32 before = statMade;
+	const u32 listsBefore = statPostZ + statOwnTest;
 	// (the table's keys of one sample now: what is made below goes into it too)
 	std::vector<u64> single;
 	single.reserve(used);
@@ -551,6 +583,9 @@ void DX12Pipelines::MakeForSamples(u32 log2n)
 			Add(keys[i]);
 	started = true;
 	NOTICE_LOG(RENDERER, "DX12: %u pipelines made for SSAA %u (%u from library)", statMade - before, 1u << log2n, statFromLibrary);
+	if (statPostZ + statOwnTest != listsBefore)
+		NOTICE_LOG(RENDERER, "DX12 per-pixel renderer: with SSAA, a translucent fragment takes the samples %s",
+				statPostZ != 0 && postZCoverage ? "the depth test passed (NVAPI post-depth coverage)" : "its own depth test passes, at each sample");
 }
 
 void DX12Pipelines::LoadFile()

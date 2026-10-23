@@ -621,6 +621,27 @@ float oitKeptDepth(uint seen, float z, float2 dz, float2 osum, float on)
 	return seen == ssaaMask ? z : z + dot(osum / on, dz);
 }
 // ----
+#ifdef DX12_POST_Z_COVERAGE
+/* NVIDIA's post-depth coverage, where the driver makes the lists' pipelines
+ * with it (DX12Pipelines, through NVAPI): the pass's depth test, greater or
+ * equal against the opaque polygons' depth, read-only, is done before the
+ * shader at each sample ([earlydepthstencil] on main()), and SV_Coverage
+ * has only the samples it passed - the test oitSampleDepthTest() does by
+ * hand, done exactly, by the device that wrote the depth. What is left is
+ * the sum of those samples' places and their number, for oitKeptDepth(). */
+uint oitPostZCoverage(uint seen, out float2 osum, out float on)
+{
+	osum = float2(0.0, 0.0);
+	on = 0.0;
+	for (uint s = 0u; s < (1u << ssaaLog2); s++)
+		if ((seen & (1u << s)) != 0u)
+		{
+			osum += GetRenderTargetSamplePosition(s);
+			on += 1.0;
+		}
+	return seen;
+}
+#endif
 #endif
 
 uint getNextPixelIndex()
@@ -635,6 +656,9 @@ uint getNextPixelIndex()
 
 // (the colour is not written in the depth pass or into the lists: the
 // pipeline's write mask is off then)
+#if DX12_OIT_PASS == DX12_PASS_OIT && defined(DX12_SSAA) && defined(DX12_POST_Z_COVERAGE)
+[earlydepthstencil]
+#endif
 float4 main(in OITVertexOut inpix) : SV_Target
 {
 	// (the guest's 1/w at this pixel, and the depth the rasterizer made of it)
@@ -672,7 +696,11 @@ float4 main(in OITVertexOut inpix) : SV_Target
 	 * polygons. */
 	float2 osum;
 	float on;
+#ifdef DX12_POST_Z_COVERAGE
+	const uint coverage = oitPostZCoverage(inpix.coverage, osum, on);
+#else
 	const uint coverage = oitSampleDepthTest(inpix.coverage, int2(inpix.pos.xy), depth, float2(dzdx, dzdy), osum, on);
+#endif
 	if (coverage == 0u)
 		discard;
 	const float fragDepth = oitKeptDepth(coverage, depth, float2(dzdx, dzdy), osum, on);

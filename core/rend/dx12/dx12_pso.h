@@ -167,8 +167,9 @@ struct DX12PsoKey
 class DX12Pipelines
 {
 public:
-	/* The table, the shaders, the library from the file */
-	bool Init(ID3D12Device *device, ID3D12RootSignature *root);
+	/* The table, the shaders, the library from the file; @vendor the
+	 * adapter's PCI vendor id */
+	bool Init(ID3D12Device *device, ID3D12RootSignature *root, UINT vendor);
 	/* The library and the keys written to the file, if pipelines were made */
 	void Term();
 	/* Everything a frame can need, and the keys kept from earlier runs */
@@ -200,6 +201,8 @@ public:
 	u32 statMade = 0;			// all of them
 	u32 statMadeInFrame = 0;	// of them, while a game ran
 	u32 statFromLibrary = 0;	// handed back by the library, not compiled
+	u32 statPostZ = 0;			// SSAA's lists' made with post-depth coverage (NVAPI)
+	u32 statOwnTest = 0;		// ...made to test their samples themselves
 
 private:
 	enum { SLOTS = 8192 };	// (SSAA makes each pipeline of a polygon again at two rates)
@@ -226,4 +229,8 @@ private:
 	size_t fileKeys = 0;				// how many of them are the file's
 	u32 storedSinceLoad = 0;
 	bool started = false;
+	/* SSAA's lists' pipelines made with NVIDIA's post-depth coverage
+	 * (dx12_nvapi.h): on an NVIDIA GPU whose driver has NVAPI, until it
+	 * would not make one */
+	bool postZCoverage = false;
 };

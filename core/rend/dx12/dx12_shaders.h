@@ -57,6 +57,10 @@ enum class DX12Shader
 	SsaaOITFinalSamplePS = 35,	// ...put together into each sample
 	SsaaOITModVolPS = 36,
 	SsaaResolvePS = 37,
+	/* the lists' once a pixel, smooth and flat, taking SV_Coverage for the
+	 * samples the depth test passed: for pipelines made with NVIDIA's
+	 * post-depth coverage (dx12_nvapi.h) */
+	SsaaOITListPostZPS = 38,
 };
 
 D3D12_SHADER_BYTECODE dx12_shader(DX12Shader shader);
