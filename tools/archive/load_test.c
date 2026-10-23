@@ -1,6 +1,6 @@
 /* Loads content into the built core from archives.
  *
- *    load_test <flycast_libretro.so> <workdir>
+ *    load_test <parallel_dc_libretro.so> <workdir>
  *
  * <workdir> is what tools/archive/make_fixture.py wrote. The core is
  * loaded as a libretro frontend would, with the HLE BIOS and a render

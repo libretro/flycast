@@ -130,7 +130,7 @@ make -j$(nproc)
 
 Use `platform=<name>` for other targets (for example `platform=win`,
 `platform=libnx`, `platform=emscripten`; see the Makefile). The core is
-built as `flycast_libretro`, and its options keep the `reicast_` prefix so
+built as `parallel_dc_libretro`, and its options keep the `reicast_` prefix so
 existing configurations still apply.
 
 Tests

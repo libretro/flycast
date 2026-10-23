@@ -21,7 +21,7 @@ HAVE_CLANG    ?= 0
 HAVE_CDROM    := 0
 ENABLE_MODEM  := 1
 
-TARGET_NAME   := flycast
+TARGET_NAME   := parallel_dc
 
 ifeq ($(HAVE_CLANG),1)
 	CXX      = ${CC_PREFIX}clang++

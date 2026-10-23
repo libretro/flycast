@@ -1,7 +1,7 @@
 #!/bin/sh
 # Threaded rendering, run for real.
 #
-#   sh tools/threads/live.sh [path/to/flycast_libretro.so]
+#   sh tools/threads/live.sh [path/to/parallel_dc_libretro.so]
 #
 # Boots a small test disc (live_disc.py, live_prog.c) in RetroArch with
 # Threaded Rendering on, on an Xvfb display, and checks the three things
@@ -96,7 +96,7 @@ set -e
 PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-CORE=${1:-$ROOT/flycast_libretro.so}
+CORE=${1:-$ROOT/parallel_dc_libretro.so}
 RETROARCH=${RETROARCH:-retroarch}
 DRIVERS=${DRIVERS:-gl vulkan}
 RING_DRIVERS=${RING_DRIVERS:-gl glcore vulkan}

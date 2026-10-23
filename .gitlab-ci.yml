@@ -8,7 +8,7 @@
 .core-defs:
   variables:
     JNI_PATH: .
-    CORENAME: flycast
+    CORENAME: parallel_dc
     
 # Inclusion templates, required for the build to work
 include:

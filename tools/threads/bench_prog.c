@@ -20,7 +20,7 @@
  * headless.sh builds (in its work directory):
  *
  *   HEADLESS_DIR=dir HEADLESS_STAGE=0x8c00f800 LD_PRELOAD=libGLESv2.so.2 \
- *      ./headless flycast_libretro.so bench.elf 30000 \
+ *      ./headless parallel_dc_libretro.so bench.elf 30000 \
  *      reicast_use_real_bios=disabled reicast_threaded_rendering=disabled \
  *      reicast_sh4_timing=accurate
  *

@@ -17,7 +17,7 @@
 #        AS=aarch64-linux-gnu-gcc
 #   CC=aarch64-linux-gnu-gcc NM=aarch64-linux-gnu-nm GLES=1 \
 #   RUN="qemu-aarch64 -cpu cortex-a72 -L /usr/aarch64-linux-gnu" \
-#      tools/threads/headless.sh flycast_libretro.so
+#      tools/threads/headless.sh parallel_dc_libretro.so
 #
 # (-cpu cortex-a72: the processor qemu emulates by default has the newest
 # instructions for copying memory, the C library uses them, and qemu 8.2
@@ -39,7 +39,7 @@
 #   make platform=win CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
 #   WINDOWS=1 CC=x86_64-w64-mingw32-gcc \
 #   OBJDUMP=x86_64-w64-mingw32-objdump \
-#   RUN=wine tools/threads/headless.sh flycast_libretro.dll
+#   RUN=wine tools/threads/headless.sh parallel_dc_libretro.dll
 #
 # And a core for 32-bit ARM, whose recompiler is another one again:
 #
@@ -48,7 +48,7 @@
 #        LDFLAGS_END=-Wl,--unresolved-symbols=ignore-all
 #   CC=arm-linux-gnueabihf-gcc NM=arm-linux-gnueabihf-nm \
 #   RUN="qemu-arm -cpu cortex-a15 -L /usr/arm-linux-gnueabihf" \
-#      tools/threads/headless.sh flycast_libretro.so
+#      tools/threads/headless.sh parallel_dc_libretro.so
 #
 # (that one links against the desktop's libGL: an empty libGL.so in the
 # cross compiler's library directory, which is also where qemu's -L finds

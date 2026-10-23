@@ -12,7 +12,7 @@
 # whether the boot then succeeds or not.
 set -e
 cd "$(dirname "$0")/../.."
-CORE=$(readlink -f "${1:-flycast_libretro.so}")
+CORE=$(readlink -f "${1:-parallel_dc_libretro.so}")
 WORK=${TMPDIR:-/tmp}/vk_negotiate.$$
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT

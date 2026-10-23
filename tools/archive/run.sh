@@ -12,7 +12,7 @@
 # of the mapping, and without, so they are read in place and deflated
 # members are inflated from chunked reads.
 #
-# Then load_test loads the built core (default: flycast_libretro.so, or the
+# Then load_test loads the built core (default: parallel_dc_libretro.so, or the
 # path given as the first argument) and runs retro_load_game() on the same
 # fixture as a plain .gdi and inside each archive, and on an archive with
 # no disc image in it, which has to be refused.
@@ -23,7 +23,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
-CORE=${1:-$ROOT/flycast_libretro.so}
+CORE=${1:-$ROOT/parallel_dc_libretro.so}
 [ -f "$CORE" ] || { echo "$CORE not found: build the core first" >&2; exit 1; }
 
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
