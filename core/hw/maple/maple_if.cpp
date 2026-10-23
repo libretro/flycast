@@ -153,9 +153,23 @@ static void maple_SB_MDST_Write(u32 addr, u32 data)
 		if (SB_MDEN &1)
 		{
 			SB_MDST=1;
+			/* A transfer the game starts where a run ends is made at the
+			 * start of the next run, with its pad (hw/pvr/spg.cpp). Only
+			 * one with no other under way: a transfer started with nothing
+			 * scheduled to end it is how a state says one is waiting. */
+			if (!sh4_sched_is_scheduled(maple_sched) && !spg_gun_pending() && spg_maple_defer())
+				return;
 			maple_DoDma();
 		}
 	}
+}
+
+/* dc_run(): a run starts. A transfer the last one left for it is made now,
+ * where the machine stands, before it runs on. */
+void maple_start_deferred()
+{
+	if ((SB_MDEN & 1) && (SB_MDST & 1) && !sh4_sched_is_scheduled(maple_sched) && !spg_gun_pending())
+		maple_DoDma();
 }
 
 static void maple_SB_MDEN_Write(u32 addr, u32 data)

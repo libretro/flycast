@@ -342,7 +342,7 @@ static bool disc_tray_open = false;
 
 #if !defined(TARGET_NO_THREADS)
 /* Threaded rendering: the machine runs here, one frame for each retro_run.
- * dc_run() comes back at vblank (os_DoEvents) exactly as it does in
+ * dc_run() comes back at the end of a frame (os_DoEvents) exactly as it does in
  * retro_run when rendering is not threaded. */
 static void *emu_thread_func(void *)
 {
@@ -3459,7 +3459,9 @@ unsigned retro_api_version(void)
 }
 
 //Reicast stuff
-/* Vblank: the frame boundary, on whichever thread runs the machine. */
+/* The end of a frame - of a run, a retro_run's worth: at line 0, or where
+ * the game renders or reads its pads after its vertical blank in
+ * interrupt (hw/pvr/spg.cpp) - on whichever thread runs the machine. */
 void os_DoEvents(void)
 {
 	/* Mark this frame a duplicate unless the guest actually produced new
@@ -3498,12 +3500,12 @@ void os_DoEvents(void)
 		poll_cb();
 	}
 
-	/* Always return control to retro_run here, at the vblank frame
-	 * boundary. Previously this was gated on the Framerate option: in
-	 * 'Normal' mode control returned only when a frame was presented, so a
-	 * static screen with no rendering (e.g. disc loading) never yielded and
-	 * dc_run() blocked, freezing retro_run and wrecking the frontend's A/V
-	 * sync. The frame boundary must not depend on whether the game rendered. */
+	/* Always return control to retro_run here, once a frame. Previously
+	 * this was gated on the Framerate option: in 'Normal' mode control
+	 * returned only when a frame was presented, so a static screen with no
+	 * rendering (e.g. disc loading) never yielded and dc_run() blocked,
+	 * freezing retro_run and wrecking the frontend's A/V sync. There is a
+	 * frame boundary whether or not the game rendered. */
 	rend_end_render();
 	dc_stop();
 }

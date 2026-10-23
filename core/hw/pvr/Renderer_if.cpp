@@ -88,10 +88,9 @@ bool rend_compute_wanted = false;	// rend/rend_method.h
 int max_idx,max_mvo,max_op,max_pt,max_tr,max_vtx,max_modt, ovrn;
 bool pend_rend = false;
 
-static bool render_called = false;
-static bool frame_produced = false;	/* new frame produced this vblank (for is_dupe) */
+static bool render_called = false;	/* a render started since the last vblank (rend_vblank) */
+static bool frame_produced = false;	/* a picture to show made in this run (for is_dupe) */
 static bool skip_screen = false;	/* rend_skip_screen */
-static bool screen_skipped = false;	/* a render to the screen was not drawn this vblank */
 u32 fb_watch_addr_start;
 u32 fb_watch_addr_end;
 bool fb_dirty;
@@ -327,6 +326,12 @@ void rend_start_render(void)
    {
       bool is_rtt=(FB_W_SOF1& 0x1000000)!=0 && !ctx->rend.isRenderFramebuffer;
 
+      /* A render to the screen may be where this run ends (hw/pvr/spg.cpp):
+       * the picture is shown once it is drawn, below. Whether or not it is
+       * drawn - the frontend may not show this frame - or the frame is
+       * there to draw: where a run ends is the machine's to say alone. */
+      const bool screen = !is_rtt && !ctx->rend.isRenderFramebuffer;
+
       /* The render passes this render draws. A frame the game may start
        * another render of, for others, stays in the list (rend.keep): the
        * one after can find it there, as can a state saved in between.
@@ -361,11 +366,11 @@ void rend_start_render(void)
          }
          if (skip_screen && !is_rtt && !ctx->rend.isRenderFramebuffer)
          {
-            /* Not shown, so not drawn. The game did render: the vblank
-             * reports no new picture, and does not take the framebuffer
-             * for one either. */
-            screen_skipped = true;
+            /* Not shown, so not drawn. The game did render: the run
+             * reports no new picture, and the vblank does not take the
+             * framebuffer for one either. */
             tactx_Drawn(ctx);
+            spg_screen_render();
             return;
          }
 
@@ -408,6 +413,8 @@ void rend_start_render(void)
                RestoreHostRoundingMode();
             }
             pend_rend = true;
+            if (!is_rtt)
+               frame_produced = true;
          }
       }
       else
@@ -416,6 +423,8 @@ void rend_start_render(void)
          INFO_LOG(PVR, "WARNING: Rendering context is overrun (%d), aborting frame", ovrn);
          tactx_Drawn(ctx);
       }
+      if (screen)
+         spg_screen_render();
    }
 }
 
@@ -438,13 +447,8 @@ void rend_term(void)
 
 void rend_vblank()
 {
-   /* Did the guest produce a new frame during this vblank interval? A 3D frame
-    * sets render_called via STARTRENDER; a direct framebuffer write is turned
-    * into a render just below. If neither happened the displayed image is
-    * unchanged, so the frontend must be told this frame is a duplicate --
-    * otherwise stale content (a 480i off-field, a 30fps title's repeat field,
-    * a static loading screen) is delivered as a fresh frame and pacing breaks. */
-   bool produced = render_called;
+   /* A framebuffer the game wrote itself, with no render since the last
+    * vblank, is shown: it is made a render here. */
    if (!render_called && fb_dirty && FB_R_CTRL.fb_enable)
 	{
 		DEBUG_LOG(PVR, "Direct framebuffer write detected");
@@ -465,24 +469,24 @@ void rend_vblank()
 			ta_ctx->rend.isRenderFramebuffer = true;
 			ta_ctx->rend.isRTT = false;
 			rend_start_render();
-			produced = true;
 		}
 		PARAM_BASE = saved_ctx_addr;
 		if (current_ctx != TACTX_NONE)
 			SetCurrentTARC(current_ctx);
 		fb_dirty = false;
 	}
-	frame_produced = produced && !screen_skipped;
 	render_called = false;
-	screen_skipped = false;
 	check_framebuffer_write();
 	cheatManager.Apply();
-
-   os_DoEvents();
 }
 
-/* Consume the "new frame produced this vblank" flag. Used by os_DoEvents to set
- * is_dupe for the frontend. One-shot: cleared on read. */
+/* Whether this run made a picture to show: a render to the screen (or of
+ * the framebuffer the game wrote), drawn. If not, the picture shown is the
+ * one before, and the frontend is told the frame is a duplicate - otherwise
+ * stale content (a 30fps title's repeated frame, a static loading screen)
+ * is delivered as a fresh frame and pacing breaks. (A render to a texture
+ * alone is no new picture.) Used by os_DoEvents to set is_dupe for the
+ * frontend. One-shot: cleared on read. */
 bool rend_frame_produced(void)
 {
 	bool r = frame_produced;
@@ -494,10 +498,19 @@ bool rend_frame_produced(void)
  * framebuffer itself since that was last shown, and where the framebuffer
  * was taken to be. A machine loaded from a state had these as the machine
  * before the load left them, and showed the framebuffer at the next
- * vblank, or did not, by that. */
+ * vblank, or did not, by that.
+ *
+ * Bit 1 of the first byte: a render has been started since the last
+ * vblank (render_called), which the vblank goes by as well. A frame used
+ * to end at the vblank, where that is never so; now it may end after the
+ * game's render, before the next vblank (hw/pvr/spg.cpp), and a machine
+ * loaded there showed the framebuffer the game wrote over the render, or
+ * not, as the machine before the load had it - run ahead, the frame after
+ * was not the one run straight through. A state from before has the bit
+ * clear, as it was where it was saved. */
 void pvr_serialize_v22(void **data, unsigned int *total_size)
 {
-	u8 dirty = fb_dirty;
+	u8 dirty = (fb_dirty ? 1 : 0) | (render_called ? 2 : 0);
 
 	LIBRETRO_S(dirty);
 	LIBRETRO_S(fb_watch_addr_start);
@@ -511,7 +524,8 @@ void pvr_unserialize_v22(void **data, unsigned int *total_size)
 	LIBRETRO_US(dirty);
 	LIBRETRO_US(fb_watch_addr_start);
 	LIBRETRO_US(fb_watch_addr_end);
-	fb_dirty = dirty != 0;
+	fb_dirty = (dirty & 1) != 0;
+	render_called = (dirty & 2) != 0;
 }
 
 /* A state of before V22 does not say: nothing written, and the framebuffer
@@ -519,6 +533,7 @@ void pvr_unserialize_v22(void **data, unsigned int *total_size)
 void pvr_state_before_v22(void)
 {
 	fb_dirty = false;
+	render_called = false;
 	check_framebuffer_write();
 }
 

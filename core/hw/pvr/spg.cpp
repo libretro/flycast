@@ -6,6 +6,7 @@
 #include "hw/holly/sb.h"
 #include "hw/maple/maple_if.h"
 #include "hw/sh4/sh4_sched.h"
+#include "oslib/oslib.h"
 
 u32 in_vblank;
 u32 clc_pvr_scanline;
@@ -51,6 +52,166 @@ static u8 lightgun_flip;
 static bool gun_dma_owed;
 
 static u32 spg_next_line();
+
+/* Where a retro_run ends: where the frontend reads its pad and shows what
+ * was drawn, once a frame.
+ *
+ * At line 0 it was, always. Most games read their pads (a maple bus
+ * transfer) and start the render of the frame they have made in their
+ * vertical blank in interrupt: Jet Grind Radio and Virtua Fighter 3tb at
+ * line 260, rendering and then reading; Sega Rally 2 (under Windows CE)
+ * at line 0, rendering a line after the interrupt; Virtua Fighter 4 and
+ * Dead or Alive 2 render before theirs at line 520 of 530 and read after
+ * line 0. Where the render came just after the end of a run, its picture
+ * waited for the end of the next one (Sega Rally 2); where the pads were
+ * read in the middle of a run after the render, what the game made of
+ * them waited a run more (Virtua Fighter 3tb).
+ *
+ * So a run may end in the lines after the vertical blank in interrupt,
+ * the window (FRAME_WINDOW_LINES of them, and never on or past the
+ * vertical blank out line, where the hardware's own maple transfer reads
+ * the pads): at a render to the screen the game starts in it - its
+ * picture is shown at once - or, before one, at a maple transfer the game
+ * starts in it, which is then made at the start of the next run, with
+ * that run's pad (the machine has not moved on between the two: no time
+ * goes by between runs). A run that ended in a window ends in the next
+ * window, at whichever of the two comes, or at its end in a frame with
+ * neither (a game at 30 frames a second, a loading screen) - unless it
+ * rendered to the screen elsewhere in that frame: then the game draws at
+ * another time and it goes on to line 0, if line 0 is still to come (not
+ * where it came while the window was open: there it ends at the window's
+ * end, or it would take in the next window too). A run that started at line 0
+ * ends at line 0 (at the window's end, if line 0 comes while it is open),
+ * or in the window if a render or a transfer comes in it. A transfer
+ * started once a run's end has come - the processor runs on to the end of
+ * its time slice - waits for the next run too.
+ * A game that does nothing in the window (renders in the middle of the
+ * frame, and has the hardware read its pads) has its runs end at line 0,
+ * where nothing it does is put off.
+ *
+ * Which of the two a run is, is seen from where the beam is when it
+ * starts: in a window, or not. Nothing else about it is kept from one run
+ * to the next, and a transfer waiting for the next run is one that has
+ * been started with nothing scheduled to end it (maple_if.cpp); whether
+ * the game has started a render since the last vertical blank, which a
+ * run ending at line 0 never had, is in the state too (Renderer_if.cpp's
+ * pvr_serialize_v22()), and no run ends with the window open (the
+ * backstop closes it: spg_frame_cut()). So a state - saved between two
+ * runs - says it all, and the same frames come out of it however it was
+ * reached. Each run has one vertical blank in interrupt in it: a game
+ * that renders once a frame has one picture in each. */
+#define FRAME_WINDOW_LINES 32
+static bool frame_window;	// the window is open: a render to the screen or a maple transfer ends the run
+static u32 frame_window_end;	// the line it closes on
+static bool frame_window_line0;	// line 0 came while it was open
+static bool frame_at_window;	// this run started in a window: it ends in the next one
+static bool frame_render_late;	// a render to the screen in this run, outside the window
+static bool frame_ended;	// this run's end has come
+
+// How many lines after the vertical blank in interrupt the window has (0: none)
+static u32 frame_window_lines()
+{
+	const u32 vin = SPG_VBLANK_INT.vblank_in_interrupt_line_number;
+	const u32 vout = SPG_VBLANK_INT.vblank_out_interrupt_line_number;
+	if (vin >= pvr_numscanlines)
+		return 0;
+	u32 lines = FRAME_WINDOW_LINES;
+	if (vout < pvr_numscanlines && vout != vin)
+	{
+		const u32 to_out = (vout + pvr_numscanlines - vin) % pvr_numscanlines;
+		lines = std::min(lines, to_out - 1);
+	}
+	return lines;
+}
+
+static u64 spg_beam();
+
+/* The window closes before its end: the pending event was aimed with it
+ * open, at its end perhaps, and is aimed again without it - as for a write
+ * to a timing register - or the event, coming at its end, would be taken
+ * for the line after it that there is something to do on, and the lines in
+ * between lost. */
+static void frame_window_close()
+{
+	if (!frame_window)
+		return;
+	if (sh4_sched_remaining(vblank_schid) == (u32)-1)
+	{
+		frame_window = false;
+		return;
+	}
+	const u64 beam = spg_beam();
+	frame_window = false;
+	sh4_sched_request(vblank_schid, (int)(line_start(spg_next_line()) - beam));
+}
+
+static void frame_end()
+{
+	frame_ended = true;
+	os_DoEvents();
+}
+
+/* dc_run()'s backstop stops a run that has gone on too long, wherever it
+ * is. A window still open is closed, as at every other end: the next run
+ * begins with none open, whether it follows this one or a state saved
+ * here (which has the line event as closing it aims it). */
+void spg_frame_cut()
+{
+	frame_window_close();
+	frame_ended = true;
+}
+
+/* dc_run(): a run starts. Where the last one ended says which kind this is. */
+void spg_frame_begin()
+{
+	const u32 lines = frame_window_lines();
+	frame_at_window = false;
+	if (lines != 0 && pvr_cur_scanline < pvr_numscanlines)
+	{
+		const u32 since_in = (pvr_cur_scanline + pvr_numscanlines - SPG_VBLANK_INT.vblank_in_interrupt_line_number)
+				% pvr_numscanlines;
+		frame_at_window = since_in <= lines;
+	}
+	frame_window_close();
+	frame_window_line0 = false;
+	frame_render_late = false;
+	frame_ended = false;
+}
+
+/* A render to the screen has been started (rend_start_render(): not one to a
+ * texture, nor the framebuffer the game wrote itself, shown) */
+void spg_screen_render()
+{
+	if (frame_ended)
+		return;
+	if (frame_window)
+	{
+		frame_window_close();
+		frame_end();
+	}
+	else
+		frame_render_late = true;
+}
+
+/* The game starts a maple transfer: true if it is to be made at the start
+ * of the next run instead - the run ends here, in the window, or has
+ * already ended (the processor runs on to the end of its time slice) */
+bool spg_maple_defer()
+{
+	if (frame_ended)
+		return true;
+	if (!frame_window)
+		return false;
+	frame_window_close();
+	frame_end();
+	return true;
+}
+
+// a transfer that asked a light gun where it points is under way
+bool spg_gun_pending()
+{
+	return maple_int_pending;
+}
 
 void CalculateSync(bool reschedule)
 {
@@ -143,6 +304,8 @@ static u32 spg_next_line()
 		line = std::min(line, (u32)SPG_VBLANK.vbend);
 	if (lightgun_line != 0xffff && next <= lightgun_line)
 		line = std::min(line, lightgun_line);
+	if (frame_window && next <= frame_window_end)
+		line = std::min(line, frame_window_end);
 	// the line the horizontal blank interrupt is asked for on
 	if (SPG_HBLANK_INT.hblank_int_mode == 0 && next <= SPG_HBLANK_INT.line_comp_val)
 		line = std::min(line, (u32)SPG_HBLANK_INT.line_comp_val);
@@ -158,10 +321,40 @@ static void spg_run_lines(u32 lines)
 		//now , we must check for raster beam interrupts and vblank
 		pvr_cur_scanline = (pvr_cur_scanline + 1) % pvr_numscanlines;
 		//Check for scanline interrupts -- really need to test the scanline values
-		
+
+		/* The window closes with nothing in it. A run that started in the
+		 * last one ends here, unless it rendered to the screen elsewhere:
+		 * then it goes on to line 0. One that started at line 0 ends here
+		 * if line 0 came while the window was open, and at line 0
+		 * otherwise. Either ends here if line 0 came while the window was
+		 * open (an interrupt at line 0, as Sega Rally 2 has, or a window
+		 * that runs over it): the line 0 to go on to would be the next
+		 * frame's, past the next window, and the run two frames long - a
+		 * frame the game rendered in it never shown. Each run has one
+		 * vertical blank in interrupt in it, the window it ends in or
+		 * after. */
+		if (frame_window && pvr_cur_scanline == frame_window_end)
+		{
+			frame_window = false;
+			if (!frame_ended)
+			{
+				if (frame_window_line0 || (frame_at_window && !frame_render_late))
+					frame_end();
+				else
+					frame_at_window = false;
+			}
+		}
+
       /* Vblank in */
 		if (SPG_VBLANK_INT.vblank_in_interrupt_line_number == pvr_cur_scanline)
       {
+			const u32 lines = frame_window_lines();
+			if (lines != 0 && !frame_ended)
+			{
+				frame_window = true;
+				frame_window_end = (pvr_cur_scanline + lines) % pvr_numscanlines;
+				frame_window_line0 = false;
+			}
          if (maple_int_pending)
          {
             maple_int_pending = false;
@@ -218,6 +411,11 @@ static void spg_run_lines(u32 lines)
 			vblk_cnt++;
 
 			rend_vblank(); // notify for vblank
+			// the end of a run that did not start in a window, unless one is open
+			if (frame_window)
+				frame_window_line0 = true;
+			else if (!frame_ended && !frame_at_window)
+				frame_end();
 		}
 		if (lightgun_line != 0xffff && lightgun_line == pvr_cur_scanline)
 		{

@@ -9,6 +9,8 @@ void maple_Term();
 void maple_ReconnectDevices();
 
 void maple_vblank();
+// A transfer the last run left for the start of this one (hw/pvr/spg.cpp)
+void maple_start_deferred();
 
 // The answers of the transfer under way, kept until it is over: see maple_if.cpp
 #define MAPLE_OUT_WORDS 4096

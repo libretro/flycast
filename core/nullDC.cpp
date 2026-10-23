@@ -12,6 +12,8 @@
 #include "hw/maple/maple_cfg.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_sched.h"
+#include "hw/pvr/spg.h"
+#include "hw/maple/maple_if.h"
 #include "hw/arm7/arm7.h"
 
 #include "hw/naomi/naomi_cart.h"
@@ -674,7 +676,7 @@ void dc_stop();
  * Hard backstop guaranteeing dc_run() returns within a bounded emulated-cycle
  * budget so retro_run() can never be starved of control.
  *
- * Control normally returns at vblank (os_DoEvents), on whichever thread runs
+ * Control normally returns once a frame (os_DoEvents), on whichever thread runs
  * the machine. That
  * relies on the SPG raising vblank, which needs valid video timing; before the
  * BIOS programs it, or if a title misprograms vstart, vblank may not fire and
@@ -689,6 +691,7 @@ static int frame_deadline_schid = -1;
 
 static int frame_deadline_sched(int tag, int c, int j)
 {
+	spg_frame_cut();
 	dc_stop();
 	return 0;	/* one-shot; re-armed by dc_run() */
 }
@@ -698,6 +701,9 @@ void dc_run()
 	if (frame_deadline_schid == -1)
 		frame_deadline_schid = sh4_sched_register(0, &frame_deadline_sched);
 	sh4_sched_request(frame_deadline_schid, FRAME_DEADLINE_CYCLES);
+	// (where it ends: hw/pvr/spg.cpp)
+	spg_frame_begin();
+	maple_start_deferred();
 
 	sh4_cpu.Run();
 }
