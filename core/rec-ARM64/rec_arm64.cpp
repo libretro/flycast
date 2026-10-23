@@ -461,17 +461,27 @@ public:
 		// run register allocator
 		regalloc.DoAlloc(block);
 
-		/* scheduler: what is left of the time slice is w27. With the MMU
-		 * on a block can be left by an exception, which comes back to the
-		 * main loop by longjmp() with w27 as it was at the setjmp(): so
+		/* scheduler: what is left of the time slice is w27. The slice ends
+		 * after the block that uses it up - that leaves the counter at 0 or
+		 * below - which is here, at the start of the next one; and a block
+		 * pays for itself where it ends, so that a timer read in the middle
+		 * of it counts the time up to the block and not the block's own.
+		 * The x86-64 recompiler has it so, and the interpreter as near as an
+		 * instruction at a time can: the same game runs the same on both.
+		 * (A block used to pay at its start, and the slice to end before
+		 * the block that would take the counter below 0: a slice of
+		 * another length, timers read a block later, and an ARM machine
+		 * soon parted from an x86 one in netplay.)
+		 *
+		 * With the MMU on a block can be left by an exception, which comes
+		 * back to the main loop by longjmp() with w27 as it was at the
+		 * setjmp(): there the block pays at its start, as on x86-64, and
 		 * there is a copy in the main loop's stack frame, written here,
 		 * for it to start again from. (With the MMU on it used to be a
 		 * word in memory only: seven instructions here, for these two.) */
-		Subs(w27, w27, block->guest_cycles);
-		if (mmu_enabled())
-			Str(w27, MemOperand(sp, 8));
+		Cmp(w27, 0);
 		Label cycles_remaining;
-		B(&cycles_remaining, pl);
+		B(&cycles_remaining, gt);
 		GenCall(*arm64_intc_sched);
 		Label cpu_running;
 		Cbnz(w0, &cpu_running);
@@ -480,6 +490,11 @@ public:
 		GenBranch(*arm64_no_update);
 		Bind(&cpu_running);
 		Bind(&cycles_remaining);
+		if (mmu_enabled())
+		{
+			Sub(w27, w27, block->guest_cycles);
+			Str(w27, MemOperand(sp, 8));
+		}
 
 		const bool accurate = settings.dynarec.AccurateTiming && !mmu_enabled();
 		if (accurate && sh4_block_writes(block))
@@ -1232,6 +1247,10 @@ public:
 			regalloc.OpEnd(&op);
 		}
 		regalloc.Cleanup();
+
+		// what the block costs, where it ends (see above)
+		if (!mmu_enabled())
+			Sub(w27, w27, block->guest_cycles);
 
 		if (accurate && block->BranchBlock <= block->vaddr
 				&& (block->BlockType == BET_StaticJump || block->BlockType == BET_StaticCall
