@@ -458,6 +458,12 @@ void armt_init()
 
 #elif FEAT_AREC != DYNAREC_NONE
 
+/* The recompiler below is for 32-bit and 64-bit ARM: there is none for
+ * 32-bit x86, which runs the interpreter. */
+#if HOST_CPU != CPU_ARM && HOST_CPU != CPU_ARM64
+#error "no ARM7 recompiler for this processor: build it with FEAT_AREC=DYNAREC_NONE"
+#endif
+
 extern "C" void CompileCode();
 
 //Emulate a single arm op, passed in opcode
@@ -747,11 +753,8 @@ void armv_call(void* target);
 void armv_setup();
 void armv_intpr(u32 opcd);
 void armv_end(void* codestart, u32 cycles);
-void armv_check_pc(u32 pc);
-void armv_check_cache(u32 opcd, u32 pc);
 void armv_imm_to_reg(u32 regn, u32 imm);
 void armv_MOV32(eReg regn, u32 imm);
-void armv_prof(OpType opt,u32 op,u32 flg);
 
 extern "C" void arm_dispatch();
 extern "C" void arm_exit();
@@ -763,10 +766,6 @@ u32 DYNACALL DoMemOp(u32 addr,u32 data)
 {
 	u32 rv=0;
 
-#if HOST_CPU==CPU_X86
-	addr=virt_arm_reg(0);
-	data=virt_arm_reg(1);
-#endif
 
 	if (Load)
 	{
@@ -783,26 +782,12 @@ u32 DYNACALL DoMemOp(u32 addr,u32 data)
 			arm_WriteMem32(addr,data);
 	}
 
-	#if HOST_CPU==CPU_X86
-		virt_arm_reg(0)=rv;
-	#endif
 
 	return rv;
 }
 
 //findfirstset -- used in LDM/STM handling
-#if HOST_CPU==CPU_X86 && !defined(__GNUC__)
-#include <intrin.h>
-
-u32 findfirstset(u32 v)
-{
-	unsigned long rv;
-	_BitScanForward(&rv,v);
-	return rv+1;
-}
-#else
 #define findfirstset __builtin_ffs
-#endif
 
 #if 0
 //LDM isn't perf. citrical, and as a result, not implemented fully. 
@@ -812,10 +797,6 @@ template<u32 I>
 void DYNACALL DoLDM(u32 addr, u32 mask)
 {
 
-#if HOST_CPU==CPU_X86
-	addr=virt_arm_reg(0);
-	mask=virt_arm_reg(1);
-#endif
 	//addr=(addr); //force align ?
 
 	u32 idx=-1;
@@ -1334,7 +1315,6 @@ void VirtualizeOpcode(u32 opcd,u32 flag,u32 pc)
 		StoreFlags();
 }
 
-u32 nfb,ffb,bfb,mfb;
 
 void *armGetEmitPtr()
 {
@@ -1344,212 +1324,7 @@ void *armGetEmitPtr()
 	return NULL;
 }
 
-#if HOST_CPU == CPU_X86
-
-/* X86 backend
- * Uses a mix of
- * x86 code
- * Virtualised arm code (using the varm interpreter)
- * Emulated arm fallbacks (using the aica arm interpreter)
- *
- * The goal is to run as much code possible under the varm interpreter
- * so it will run on arm w/o changes. A few opcodes are missing from varm 
- * (MOV32 is a notable case) and as such i've added a few varm_* hooks
- *
- * This code also performs a LOT of compiletime and runtime state/value sanity checks.
- * We don't care for speed here ...
-*/
-
-#include "../../rec-x86/x86_emitter.h"
-#include "virt_arm.h"
-
-static x86_block* x86e;
-
-void DumpRegs(const char* output)
-{
-	static FILE* f=fopen(output, "w");
-	static int id=0;
-#if 0
-	if (490710==id)
-	{
-		__asm int 3;
-	}
-#endif
-	verify(id!=137250);
-#if 1
-	fprintf(f,"%d\n",id);
-	//for(int i=0;i<14;i++)
-	{
-		int i=R15_ARM_NEXT;
-		fprintf(f,"r%d=%08X\n",i,reg[i].I);
-	}
-#endif
-	id++;
-}
-
-void DYNACALL PrintOp(u32 opcd)
-{
-	DEBUG_LOG(AICA_ARM, "%08X", opcd);
-}
-
-void armv_imm_to_reg(u32 regn, u32 imm)
-{
-	x86e->Emit(op_mov32,&reg[regn].I,imm);
-}
-
-void armv_MOV32(eReg regn, u32 imm)
-{
-	x86e->Emit(op_mov32,&virt_arm_reg(regn),imm);
-}
-
-void armv_call(void* loc)
-{
-	x86e->Emit(op_call,x86_ptr_imm(loc));
-}
-
-x86_Label* end_lbl;
-
-void armv_setup()
-{
-	//Setup emitter
-	x86e = new x86_block();
-	x86e->Init(0,0);
-	x86e->x86_buff=(u8*)EMIT_GET_PTR();
-	x86e->x86_size=1024*64;
-	x86e->do_realloc=false;
-
-	
-	//load base reg ..
-	x86e->Emit(op_mov32,&virt_arm_reg(8),(u32)&arm_Reg[0]);
-	
-	//the "end" label is used to exit from the block, if a code modification (expected opcode // actual opcode in ram) is detected
-	end_lbl=x86e->CreateLabel(false,0);
-}
-
-void armv_intpr(u32 opcd)
-{
-	//Call interpreter
-	x86e->Emit(op_mov32,ECX,opcd);
-	x86e->Emit(op_call,x86_ptr_imm(&arm_single_op));
-}
-
-void armv_end(void* codestart, u32 cycles)
-{
-	//Normal block end
-	//Move counter to EAX for return, pop ESI, ret
-	x86e->Emit(op_sub32,ESI,cycles);
-	x86e->Emit(op_jns,x86_ptr_imm(arm_dispatch));
-	x86e->Emit(op_jmp,x86_ptr_imm(arm_exit));
-
-	//Fluch cache, move counter to EAX, pop, ret
-	//this should never happen (triggers a breakpoint on x86)
-	x86e->MarkLabel(end_lbl);
-	x86e->Emit(op_int3);
-	x86e->Emit(op_call,x86_ptr_imm(FlushCache));
-	x86e->Emit(op_sub32,ESI,cycles);
-	x86e->Emit(op_jmp,x86_ptr_imm(arm_dispatch));
-
-	//Generate the code & apply fixups/relocations as needed
-	x86e->Generate();
-
-	//Use space from the dynarec buffer
-	icPtr+=x86e->x86_indx;
-
-	//Delete the x86 emitter ...
-	delete x86e;
-}
-
-//sanity check: non branch doesn't set pc
-void armv_check_pc(u32 pc)
-{
-	x86e->Emit(op_cmp32,&armNextPC,pc);
-	x86_Label* nof=x86e->CreateLabel(false,0);
-	x86e->Emit(op_je,nof);
-	x86e->Emit(op_int3);
-	x86e->MarkLabel(nof);
-}
-
-//sanity check: stale cache
-void armv_check_cache(u32 opcd, u32 pc)
-{
-	x86e->Emit(op_cmp32,&CPUReadMemoryQuick(pc),opcd);
-	x86_Label* nof=x86e->CreateLabel(false,0);
-	x86e->Emit(op_je,nof);
-	x86e->Emit(op_int3);
-	x86e->MarkLabel(nof);
-}
-
-//profiler hook
-void armv_prof(OpType opt,u32 op,u32 flags)
-{
-	if (VOT_Fallback!=opt)
-		x86e->Emit(op_add32,&nfb,1);
-	else
-	{
-		if (flags & OP_SETS_PC)
-			x86e->Emit(op_add32,&bfb,1);
-		else if (flags & OP_MFB)
-			x86e->Emit(op_add32,&mfb,1);
-		else
-			x86e->Emit(op_add32,&ffb,1);
-	}
-}
-
-#ifndef _WIN32
-naked void DYNACALL arm_compilecode()
-{
-	__asm
-	{
-		call CompileCode;
-		mov eax,0;
-		jmp arm_dispatch;
-	}
-}
-
-naked void DYNACALL arm_mainloop(u32 cycl, void* regs, void* entrypoints)
-{
-	__asm
-	{
-		push esi
-
-		mov esi,ecx
-		add esi,reg[CYCL_CNT*4].I
-
-		mov eax,0;
-		jmp arm_dispatch
-	}
-}
-
-naked void arm_dispatch()
-{
-	__asm
-	{
-arm_disp:
-		mov eax,reg[R15_ARM_NEXT*4].I
-		and eax,0x7FFFFC
-		cmp reg[INTR_PEND*4].I,0
-		jne arm_dofiq
-		jmp [EntryPoints+eax]
-
-arm_dofiq:
-		call CPUFiq
-		jmp arm_disp
-	}
-}
-
-naked void arm_exit()
-{
-	__asm
-	{
-	arm_exit:
-		mov reg[CYCL_CNT*4].I,esi
-		pop esi
-		ret
-	}
-}
-#endif
-
-#elif	(HOST_CPU == CPU_ARM)
+#if HOST_CPU == CPU_ARM
 
 /*
  *
@@ -1735,9 +1510,6 @@ void MemOperand2(eReg dst,bool I, bool U,u32 offs, u32 opcd)
 template<u32 Pd>
 void DYNACALL MSR_do(u32 v)
 {
-#if HOST_CPU==CPU_X86
-	v=virt_arm_reg(r0);
-#endif
 	if (Pd)
 	{
 		if(armMode > 0x10 && armMode < 0x1f) /* !=0x10 ?*/
@@ -1803,10 +1575,6 @@ extern "C" void CompileCode()
 		//Read opcode ...
 		u32 opcd=CPUReadMemoryQuick(pc);
 
-#if HOST_CPU==CPU_X86
-		//Sanity check: Stale cache
-		armv_check_cache(opcd,pc);
-#endif
 
 		u32 op_flags;
 
@@ -1826,16 +1594,9 @@ extern "C" void CompileCode()
 					armv_imm_to_reg(15,pc+8);
 
 				else*/
-#if HOST_CPU==CPU_X86
-					armv_imm_to_reg(15,0xF87641FF);
-#endif
 
 				VirtualizeOpcode(opcd,op_flags,pc);
 
-#if HOST_CPU==CPU_X86
-				// (a marker, not a value: the op reads the pc as a constant)
-				armv_imm_to_reg(15,0xF87641FF);
-#endif
 			}
 			break;
 		
@@ -1853,11 +1614,7 @@ extern "C" void CompileCode()
 				}
 
 				LoadReg(r0,opcd&0xF);
-#if HOST_CPU==CPU_X86
-				x86e->Emit(op_and32, &virt_arm_reg(0), 0xfffffffc);
-#else
 				armv_bic(r0, r0, 3);
-#endif
 				void *ref = armv_start_conditional(cc);
 				StoreReg(r0,R15_ARM_NEXT,cc);
 				armv_end_conditional(ref);
@@ -1991,11 +1748,7 @@ extern "C" void CompileCode()
 					{
 						verify(op_flags & OP_SETS_PC);
 						// the program counter has no low two bits
-#if HOST_CPU==CPU_X86
-						x86e->Emit(op_and32, &virt_arm_reg(0), 0xfffffffc);
-#else
 						armv_bic(r0, r0, 3);
-#endif
 						StoreReg(r0,R15_ARM_NEXT);
 					}
 					else
@@ -2111,24 +1864,9 @@ extern "C" void CompileCode()
 				if (op_flags & OP_SETS_PC)
 					armv_imm_to_reg(R15_ARM_NEXT,pc+4);
 
-#if HOST_CPU==CPU_X86
-					if ( !(op_flags & OP_SETS_PC) )
-						armv_imm_to_reg(R15_ARM_NEXT,pc+4);
-				#endif
 
 				armv_intpr(opcd);
 
-#if HOST_CPU==CPU_X86
-				if ( !(op_flags & OP_SETS_PC) )
-				{
-					//Sanity check: next pc
-					armv_check_pc(pc+4);
-#if 0
-					x86e->Emit(op_mov32,ECX,opcd);
-					x86e->Emit(op_call,x86_ptr_imm(PrintOp));
-#endif
-				}
-#endif
 			}
 			break;
 
@@ -2136,11 +1874,6 @@ extern "C" void CompileCode()
 			die("can't happen\n");
 		}
 
-#if HOST_CPU==CPU_X86
-		armv_imm_to_reg(15,0xF87641FF);
-
-		armv_prof(opt,opcd,op_flags);
-#endif
 
 		//Branch ?
 		if (op_flags & OP_SETS_PC)
@@ -2148,14 +1881,6 @@ extern "C" void CompileCode()
 			//x86e->Emit(op_call,x86_ptr_imm(DumpRegs)); // great debugging tool
 			arm_printf("ARM: %06X: Block End %d\n",pc,ops);
 
-#if HOST_CPU==CPU_X86 && 0
-			//Great fallback finder, also spams console
-			if (opt==VOT_Fallback)
-			{
-				x86e->Emit(op_mov32,ECX,opcd);
-				x86e->Emit(op_call,x86_ptr_imm(PrintOp));
-			}
-#endif
 			break;
 		}
 
@@ -2222,33 +1947,6 @@ bool arm7_rec_same_code(const u8 *aram)
 
 
 
-#if HOST_CPU==CPU_X86 && defined(_WIN32)
-
-#include <windows.h>
-
-// These have to be declared somewhere or linker dies
-u8* ARM::emit_opt=0;
-eReg ARM::reg_addr;
-eReg ARM::reg_dst;
-s32 ARM::imma;
-
-void armEmit32(u32 emit32)
-{
-	if (icPtr >= (ICache + ICacheSize - 64*1024)) {
-		die("ICache is full, invalidate old entries ...");	//ifdebug
-	}
-
-	x86e->Emit(op_mov32,ECX,emit32);
-	x86e->Emit(op_call,x86_ptr_imm(virt_arm_op));
-}
-
-
-void *armGetEmitPtr()
-{
-	return icPtr;
-}
-
-#endif
 
 
 void armt_init()
