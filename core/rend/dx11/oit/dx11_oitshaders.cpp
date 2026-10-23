@@ -131,7 +131,17 @@ struct PolyParam
 	int tsp_isp_pcw;
 	int tsp1;
 };
-StructuredBuffer<PolyParam> TrPolyParam : register(t5);
+/* (a pair of words a polygon, in a typed view: GPU-side TA processing's
+ * kernels write them so, and the CPU the same way) */
+Buffer<uint2> TrPolyParamWords : register(t5);
+PolyParam getPolyParam(uint n)
+{
+	const uint2 w = TrPolyParamWords[n];
+	PolyParam pp;
+	pp.tsp_isp_pcw = int(w.x);
+	pp.tsp1 = int(w.y);
+	return pp;
+}
 
 int getTsp(PolyParam pp, bool area1)
 {
@@ -563,7 +573,7 @@ float4 resolveAlphaBlend(uint2 coords)
 	for (int i = 0; i < num_frag; i++)
 	{
 		const Pixel pixel = PixelBuffer[pixel_list[i]];
-		const PolyParam pp = TrPolyParam[getPolyNumber(pixel)];
+		const PolyParam pp = getPolyParam(getPolyNumber(pixel));
 		bool area1 = false;
 		bool shadowed = false;
 		if (isShadowed(pixel))
@@ -697,7 +707,7 @@ void main(in ModVolPixel inpix)
 	while (idx != EOL && list_len < MAX_PIXELS_PER_FRAGMENT)
 	{
 		const Pixel pixel = PixelBuffer[idx];
-		const PolyParam pp = TrPolyParam[getPolyNumber(pixel)];
+		const PolyParam pp = getPolyParam(getPolyNumber(pixel));
 		if (getShadowEnable(pp))
 		{
 			uint prev_val;

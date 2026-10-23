@@ -107,17 +107,27 @@ public:
 	/* The same buffer at vertex slots 0 and 1, with those strides, and as the index buffer (or none) */
 	void SetGeometry(ID3D11Buffer *buffer, UINT stride0, UINT stride1, ID3D11Buffer *indexBuffer)
 	{
-		if (buffer != bound.vertexBuffer[0] || buffer != bound.vertexBuffer[1]
+		SetGeometry(buffer, stride0, buffer, stride1, indexBuffer);
+	}
+	/* ...or a buffer each (GPU-side TA processing's) */
+	void SetGeometry(ID3D11Buffer *buffer0, UINT stride0, ID3D11Buffer *buffer1, UINT stride1, ID3D11Buffer *indexBuffer)
+	{
+		if (buffer0 != bound.vertexBuffer[0] || buffer1 != bound.vertexBuffer[1]
 				|| stride0 != bound.stride[0] || stride1 != bound.stride[1])
 		{
-			ID3D11Buffer * const buffers[2] = { buffer, buffer };
+			ID3D11Buffer * const buffers[2] = { buffer0, buffer1 };
 			const UINT strides[2] = { stride0, stride1 };
 			const UINT offsets[2] = { 0, 0 };
 			deviceContext->IASetVertexBuffers(0, 2, buffers, strides, offsets);
-			bound.vertexBuffer[0] = bound.vertexBuffer[1] = buffer;
+			bound.vertexBuffer[0] = buffer0;
+			bound.vertexBuffer[1] = buffer1;
 			bound.stride[0] = stride0;
 			bound.stride[1] = stride1;
 		}
+		SetIndexBuffer(indexBuffer);
+	}
+	void SetIndexBuffer(ID3D11Buffer *indexBuffer)
+	{
 		if (indexBuffer != bound.indexBuffer)
 		{
 			deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);

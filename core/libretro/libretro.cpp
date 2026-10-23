@@ -643,9 +643,11 @@ static void set_variable_visibility(void)
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
 #if defined(HAVE_VULKAN) || defined(HAVE_GL4)
-   /* GPU-side TA processing: with the Vulkan renderers, and the OpenGL ones
-    * where the context can have it (shown until it is known) */
+   /* GPU-side TA processing: with the Vulkan and Direct3D 12 renderers,
+    * the Direct3D 11 ones (on NVIDIA GPUs, which the option says), and the
+    * OpenGL ones where the context can have it (shown until it is known) */
    option_display.visible = settings.pvr.rend == 4 || settings.pvr.rend == 5
+         || settings.pvr.rend == 6 || settings.pvr.rend == 7 || settings.pvr.rend == 9 || settings.pvr.rend == 10
          || ((settings.pvr.rend == 0 || settings.pvr.rend == 3) && gl_ta_possible != 0);
    option_display.key = CORE_OPTION_NAME "_ta_processing";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
@@ -1575,9 +1577,9 @@ void retro_run (void)
          renderer->OptionsChanged();
       }
 #endif
-#ifdef HAVE_D3D12
-      /* ...and so with Direct3D 12 */
-      if (renderer != NULL && (settings.pvr.rend == 9 || settings.pvr.rend == 10))
+#if defined(HAVE_D3D11) || defined(HAVE_D3D12)
+      /* ...and so with Direct3D 12 and 11 */
+      if (renderer != NULL && (settings.pvr.rend == 9 || settings.pvr.rend == 10 || settings.pvr.rend == 6 || settings.pvr.rend == 7))
       {
          rend_prepare_renderer();
          renderer->OptionsChanged();

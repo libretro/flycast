@@ -34,6 +34,7 @@
 #include "dx11context_lr.h"
 #include "dx11_overlay.h"
 #include "dx11_texdecoder.h"
+#include "dx11_ta_decoder.h"
 #include <vector>
 
 /* The Direct3D 11 renderers. This one sorts translucent polygons by
@@ -55,6 +56,8 @@ public:
 	bool Render() override;
 	void KeepPicture() override;
 	u64 GetTexture(TSP tsp, TCW tcw, int area = 0) override;
+	// (TA processing switched on or off)
+	void OptionsChanged() override;
 
 protected:
 	struct VertexConstants
@@ -111,6 +114,27 @@ protected:
 	DX11TextureCache texCache;
 	DX11Overlay overlay;
 	TransformMatrix<false> matrices;
+	/* GPU-side TA processing (dx11_ta_decoder.h): a frame it decodes is
+	 * drawn from its buffers, its draws' arguments the GPU's */
+	DX11TaDecoder taDecoder;
+	/* How a frame decoded on the GPU is drawn (ta_gpu_prepare()'s
+	 * TA_GPU_*); 0: none is - every frame is parsed */
+	virtual u32 TaFlags() const
+	{
+		/* sorted translucent triangles sorted from the frame's depths, as
+		 * GenSorted() sorts them (TA_GPU_SORT); sorted by strip, the polygons
+		 * are sorted from their vertices, which a frame decoded on the GPU
+		 * has there alone: such a frame is parsed */
+		return TA_GPU_DRAW | TA_GPU_PROVOKE | TA_GPU_SHADOWS
+				| (!settings.pvr.Emulation.AlphaSortMode && taDecoder.CanSort() ? TA_GPU_SORT : TA_GPU_NO_SORT);
+	}
+	/* Whether the decoder is to have room for sorted translucent triangles (TA_GPU_SORT) */
+	virtual bool TaSorts() const { return true; }
+	/* A draw group of a frame decoded on the GPU (pvrrc.gpu), drawn by its
+	 * arguments there: an opaque or punch-through one by its command (or,
+	 * @shadow, its second one, for shadows), a translucent one by its
+	 * records, @count of them at most */
+	void DrawGpu(u32 listType, bool shadow, u32 first, u32 count);
 
 	ComPtr<ID3D11InputLayout> mainInputLayout;
 	ComPtr<ID3D11InputLayout> positionInputLayout;	// the main vertices' positions alone
@@ -229,8 +253,17 @@ protected:
 	bool UploadGeometry();
 	/* What every polygon of the frame is drawn with */
 	void SetupFrame();
-	/* The geometry buffer, bound */
-	void BindGeometry() { context->SetGeometry(geometry, sizeof(Vertex), sizeof(float) * 3, geometry); }
+	/* The geometry buffer, bound; or a frame decoded on the GPU's buffers */
+	void BindGeometry()
+	{
+		if (pvrrc.gpu)
+		{
+			const DX11TaDraw& gpu = taDecoder.Draw();
+			context->SetGeometry(gpu.vertices, sizeof(Vertex), gpu.modtrig, sizeof(float) * 3, gpu.indices);
+		}
+		else
+			context->SetGeometry(geometry, sizeof(Vertex), sizeof(float) * 3, geometry);
+	}
 
 	/* (the context's, which sets only what differs from what is bound) */
 	void SetVS(ID3D11VertexShader *vs) { context->SetVS(vs); }
@@ -276,11 +309,14 @@ private:
 			ShadowPass shadowPass = ShadowPass::None, const D3D11_RECT *within = nullptr);
 	void DrawShadowed(u32 listType, const List<PolyParam>& polys, u32 first, u32 last,
 			const ScreenBounds& area, const D3D11_RECT& scissor);
-	void DrawSorted(const std::vector<SortTrigDrawParam>& polys, bool multipass);
-	void DrawPrepass(const std::vector<SortTrigDrawParam>& polys);
+	void DrawSorted(const SortTrigDrawParam *polys, u32 count, bool multipass);
+	void DrawPrepass(const SortTrigDrawParam *polys, u32 count);
+	/* (a frame decoded on the GPU) the draws are of the sorted indices,
+	 * whose counts are the CPU's */
+	bool gpuSorted = false;
 	bool prepassDraw = false;	// DrawPoly() draws for the depth prepass
 	void DrawList(u32 listType, bool sortTriangles, const List<PolyParam>& polys, u32 first, u32 last);
-	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass);
+	void DrawModVols(int first, int count, const RenderPass& previous_pass, const RenderPass& current_pass, int render_pass);
 
 	/* The framebuffer the game wrote itself, for a frame that is that */
 	ComPtr<ID3D11Texture2D> fbTexture;

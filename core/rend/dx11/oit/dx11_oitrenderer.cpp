@@ -119,6 +119,11 @@ public:
 protected:
 	bool BindsScreen() const override { return false; }
 	bool DrawsSorted() const override { return false; }
+	/* GPU-side TA processing: the translucent draw records number each
+	 * strip (TA_GPU_INSTANCE), which picks its number from the decoder's
+	 * numbers as a polygon's own does from polyNumbers; no sorting here */
+	u32 TaFlags() const override { return TA_GPU_DRAW | TA_GPU_PROVOKE | TA_GPU_INSTANCE; }
+	bool TaSorts() const override { return false; }
 	ID3D11InputLayout *PolyInputLayout() const override { return oitInputLayout; }
 	ID3D11Buffer *PolyConstantsBuffer() const override { return oitConstants; }
 	void DrawFrame() override;
@@ -318,6 +323,15 @@ bool DX11OITRenderer::MakePictures(u32 width, u32 height)
  * shadows, and its second volume's TSP */
 bool DX11OITRenderer::UploadTrPolyParams()
 {
+	/* (a frame decoded on the GPU: its words are the decode's, and its
+	 * strips' numbers the decoder's) */
+	if (pvrrc.gpu)
+	{
+		const DX11TaDraw& gpu = taDecoder.Draw();
+		context->SetPSResource(5, gpu.trParams);
+		context->SetVertexBuffer(gpu.instances, sizeof(u32), 2);
+		return true;
+	}
 	const int count = pvrrc.global_param_tr.used();
 	trPolyParamsData.resize(std::max(count, 1) * 2);
 	trPolyParamsData[0] = trPolyParamsData[1] = 0;
@@ -340,13 +354,12 @@ bool DX11OITRenderer::UploadTrPolyParams()
 		desc.ByteWidth = newSize;
 		desc.Usage = D3D11_USAGE_DYNAMIC;
 		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-		desc.StructureByteStride = sizeof(u32) * 2;	// sizeof(struct PolyParam)
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		// (a pair of words a polygon, as the shaders read them: TrPolyParamWords)
 		D3D11_SHADER_RESOURCE_VIEW_DESC view{};
-		view.Format = DXGI_FORMAT_UNKNOWN;
+		view.Format = DXGI_FORMAT_R32G32_UINT;
 		view.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		view.Buffer.NumElements = newSize / desc.StructureByteStride;
+		view.Buffer.NumElements = newSize / (sizeof(u32) * 2);
 		if (FAILED(device->CreateBuffer(&desc, nullptr, trPolyParams.put()))
 				|| FAILED(device->CreateShaderResourceView(trPolyParams, &view, trPolyParamsView.put())))
 		{
@@ -534,6 +547,12 @@ void DX11OITRenderer::DrawPoly(u32 listType, bool autosort, DX11OITShaders::Pass
 	SetCullMode(poly.isp.CullMode);
 	SetTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
+	// (a frame decoded on the GPU: a draw group by its arguments there, a translucent strip's number its record's instance)
+	if (pvrrc.gpu)
+	{
+		DrawGpu(listType, false, first, count);
+		return;
+	}
 	const UINT polyNumber = listType == ListType_Translucent ? (UINT)(&poly - pvrrc.global_param_tr.head()) : 0;
 	deviceContext->DrawIndexedInstanced(count, 1, indexBase + first, vertexBase, polyNumber);
 }
