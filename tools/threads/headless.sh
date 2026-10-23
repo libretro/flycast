@@ -87,10 +87,22 @@ if [ -n "$WINDOWS" ]; then
    # what the core imports from opengl32.dll, into one of our own beside the program
    "${OBJDUMP:-objdump}" -p "$CORE" \
       | awk '/DLL Name: /{dll=tolower($3)} dll=="opengl32.dll" && NF>=3 && $1 ~ /^[0-9a-f]+$/ {print $3}' \
-      | python3 "$T/headless_gl.py" > "$WORK/nogl.c"
-   "$CC" -O1 -shared -o "$WORK/opengl32.dll" "$WORK/nogl.c"
+      > "$WORK/gl_names"
+   if "${OBJDUMP:-objdump}" -f "$CORE" | grep -q 'pei-i386'; then
+      # 32-bit: OpenGL is stdcall there, and so has to be every function
+      # the core may ask for by name as well, each taking as many bytes
+      # off the stack as the real one (see headless_gl.py)
+      strings -a "$CORE" | grep -E '^gl[A-Z][A-Za-z0-9]*$' >> "$WORK/gl_names"
+      printf '#include <GL/gl.h>\n#include <GL/glext.h>\n' \
+         | "$CC" -E -P -DGL_GLEXT_PROTOTYPES -x c - > "$WORK/gl_prototypes"
+      python3 "$T/headless_gl.py" --stdcall "$WORK/gl_prototypes" < "$WORK/gl_names" > "$WORK/nogl.c"
+      "$CC" -O1 -shared -Wl,--kill-at -o "$WORK/opengl32.dll" "$WORK/nogl.c"
+   else
+      python3 "$T/headless_gl.py" < "$WORK/gl_names" > "$WORK/nogl.c"
+      "$CC" -O1 -shared -o "$WORK/opengl32.dll" "$WORK/nogl.c"
+   fi
    # and the compiler's runtime libraries, if the core wants them
-   for DLL in libgomp-1.dll libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll; do
+   for DLL in libgomp-1.dll libwinpthread-1.dll libgcc_s_seh-1.dll libgcc_s_dw2-1.dll libstdc++-6.dll; do
       F=$("$CC" -print-file-name=$DLL)
       [ -f "$F" ] && cp "$F" "$WORK/"
    done
