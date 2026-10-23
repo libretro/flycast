@@ -301,6 +301,11 @@ ifeq ($(HAVE_D3D12), 1)
 					$(CORE_DIR)/core/rend/dx12/oit/dx12_oitrenderer.cpp
 endif
 
+# NVIDIA's NVAPI, loaded when it is run, for either Direct3D renderer (rend/d3d_nvapi.h)
+ifneq (,$(filter 1,$(HAVE_D3D11) $(HAVE_D3D12)))
+	SOURCES_CXX += $(CORE_DIR)/core/rend/d3d_nvapi.cpp
+endif
+
 # Direct3D 9, on Windows: the frontend's device, every shader compiled when
 # the renderer is first set up
 ifeq ($(HAVE_D3D9), 1)

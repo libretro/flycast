@@ -20,14 +20,11 @@
  * test passed (post-depth coverage), which Direct3D 12 itself has no way
  * to ask for. SSAA's per-pixel lists use it (DX12Pipelines::Build()).
  *
- * NVAPI is the driver's own nvapi64.dll (nvapi.dll for a 32-bit build),
- * loaded when it is first asked for and kept, never linked: a machine
- * without it, or with another vendor's GPU, loses nothing and the build
- * needs no SDK. Its functions are found by their published interface ids
- * through nvapi_QueryInterface, as RetroArch's Direct3D drivers find
- * theirs; the structures are the NVAPI SDK's (nvapi.h, MIT licence), only
- * what is used, declared in dx12_nvapi.cpp. Only the thread that renders
- * calls these. */
+ * NVAPI is loaded at run time by the loader both Direct3D renderers share
+ * (rend/d3d_nvapi.h), never linked: a machine without it, or with another
+ * vendor's GPU, loses nothing and the build needs no SDK. The structures
+ * are the NVAPI SDK's (nvapi.h, MIT licence), only what is used, declared
+ * in dx12_nvapi.cpp. Only the thread that renders calls these. */
 #include "rend/d3d_system.h"
 #include <windows.h>
 #include <d3d12.h>

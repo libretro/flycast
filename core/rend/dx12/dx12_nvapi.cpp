@@ -15,6 +15,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include "dx12_nvapi.h"
+#include "rend/d3d_nvapi.h"
 #include "types.h"
 #include <cstddef>
 #include <cstring>
@@ -28,9 +29,7 @@
  * NVAPI_D3D12_PSO_RASTERIZER_STATE_DESC_V1, packed to 8 bytes as the
  * header packs them). A structure's version word is its size with the
  * revision in the high half, as MAKE_NVAPI_VERSION makes it. */
-static const unsigned NvId_Initialize = 0x0150e828;
 static const unsigned NvId_D3D12_CreateGraphicsPipelineState = 0x2fc28856;
-static const int NvStatus_OK = 0;
 static const int NvPsoRasterExtension = 0;		// NV_PSO_RASTER_EXTENSION
 
 #pragma pack(push, 8)
@@ -71,8 +70,6 @@ static_assert(sizeof(NvPsoRasterizerStateDesc) == 120, "NVAPI_D3D12_PSO_RASTERIZ
 static const u32 NvPsoExtensionDescVer = (u32)sizeof(NvPsoExtensionDesc) | (1u << 16);
 static const u32 NvRasterizerDescVer1 = (u32)sizeof(NvPsoRasterizerStateDesc) | (1u << 16);
 
-typedef void *(__cdecl *NvQueryInterface)(unsigned id);
-typedef int (__cdecl *NvInitialize)();
 typedef int (__cdecl *NvCreateGraphicsPipelineState)(ID3D12Device *device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc,
 		u32 extensionCount, const NvPsoExtensionDesc **extensions, ID3D12PipelineState **pso);
 
@@ -81,25 +78,12 @@ static bool probed;
 
 bool dx12_nvapi_post_z_available()
 {
-	if (probed)
-		return nvCreateGraphicsPipelineState != nullptr;
-	probed = true;
-#ifdef _WIN64
-	HMODULE dll = LoadLibraryA("nvapi64.dll");
-#else
-	HMODULE dll = LoadLibraryA("nvapi.dll");
-#endif
-	if (dll == nullptr)
-		return false;
-	NvQueryInterface query = (NvQueryInterface)(void *)GetProcAddress(dll, "nvapi_QueryInterface");
-	NvInitialize initialize = query != nullptr ? (NvInitialize)query(NvId_Initialize) : nullptr;
-	if (initialize == nullptr || initialize() != NvStatus_OK)
+	if (!probed)
 	{
-		FreeLibrary(dll);
-		return false;
+		probed = true;
+		// (rend/d3d_nvapi.h: the library loaded and initialized, once for both renderers)
+		nvCreateGraphicsPipelineState = (NvCreateGraphicsPipelineState)d3d_nvapi_query(NvId_D3D12_CreateGraphicsPipelineState);
 	}
-	// (the library is kept from here on: NVAPI is not to be unloaded once initialized)
-	nvCreateGraphicsPipelineState = (NvCreateGraphicsPipelineState)query(NvId_D3D12_CreateGraphicsPipelineState);
 	return nvCreateGraphicsPipelineState != nullptr;
 }
 
@@ -118,7 +102,7 @@ bool dx12_nvapi_create_post_z_pipeline(ID3D12Device *device, const D3D12_GRAPHIC
 	raster.SampleCount = (u8)desc->SampleDesc.Count;
 	raster.PostZCoverageEnable = true;
 	const NvPsoExtensionDesc *extensions[] = { &raster.base };
-	if (nvCreateGraphicsPipelineState(device, desc, 1, extensions, out) != NvStatus_OK || *out == nullptr)
+	if (nvCreateGraphicsPipelineState(device, desc, 1, extensions, out) != D3D_NVAPI_OK || *out == nullptr)
 	{
 		*out = nullptr;
 		return false;
