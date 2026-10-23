@@ -617,7 +617,10 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
  *     u32  how many bytes of data it has (a multiple of 32); bit 0 says
  *          that the game has opened a new list in it since and sent
  *          nothing yet, so that they are still what a render draws but
- *          the next block starts over
+ *          the next block starts over; bit 1 that it is not being written
+ *          but was drawn and kept (drawn: a render drew some of its render
+ *          passes, and the game may start another render of it - Virtua
+ *          Fighter 4 draws each frame again, into a texture, in the next)
  *     u8   how many times a list was continued, 0 to 9
  *     u32  for each of those, where in the data
  *     the data
@@ -630,7 +633,13 @@ void UnserializeTAContext(void **data, unsigned int *total_size, serialize_versi
  * told this much, every time; what a state does not use of it is not
  * written. A frame whose data no longer fits is saved without it and
  * comes back empty, as every frame did before. (Its buffer holds 8
- * megabytes, and there can be sixteen of them.)
+ * megabytes, and there can be sixteen of them.) The frames drawn and kept
+ * come after the ones being written, and one that does not fit is not in
+ * the state. They were in none before: a render the game started of one
+ * after a state was loaded found nothing, and drew nothing - run ahead or
+ * rolled back, Virtua Fighter 4 drew none of its frames into the texture
+ * it fades with, and video memory and the picture were not those of the
+ * frames run straight through.
  *
  * Threads. The frames here are the ones the game is writing to: ctx_list,
  * the emulation side's alone. A frame handed over to be drawn has been
@@ -669,7 +678,8 @@ void pvr_serialize_v21(void **data, unsigned int *total_size)
 		return;
 	}
 
-	// (not a frame drawn and kept for another render: it is not being written)
+	/* The frames being written, then the ones drawn and kept, which come
+	 * back as they were if they fit */
 	const TA_context *saved[TA_STATE_CONTEXTS];
 	for (i = 0; i < ctx_count && count < TA_STATE_CONTEXTS; i++)
 	{
@@ -679,15 +689,49 @@ void pvr_serialize_v21(void **data, unsigned int *total_size)
 			current = count;
 		saved[count++] = ctx_list[i];
 	}
+	const u8 writing = count;
+	for (i = 0; i < ctx_count && count < TA_STATE_CONTEXTS; i++)
+	{
+		const TA_context *ctx = ctx_list[i];
+		if (!ctx->drawn)
+			continue;
+		const u32 size = (u32)(ctx->tad.thd_data - ctx->tad.thd_root) & ~31u;
+		if (size > ctx->data_size)
+			continue;
+		saved[count++] = ctx;
+	}
+	/* (as many of the drawn ones as there is room for, after the others) */
+	{
+		u32 left = room;
+		u8 n;
+		for (n = 0; n < writing; n++)
+		{
+			const TA_context *ctx = saved[n];
+			const tad_context& tad = ctx == ta_ctx ? ta_tad : ctx->tad;
+			const bool restarted = tad.thd_data == tad.thd_root;
+			const u32 size = (u32)((restarted ? tad.thd_old_data : tad.thd_data) - tad.thd_root) & ~31u;
+			if (size <= left && size <= ctx->data_size)
+				left -= size;
+		}
+		for (; n < count; n++)
+		{
+			const u32 size = (u32)(saved[n]->tad.thd_data - saved[n]->tad.thd_root) & ~31u;
+			if (size > left)
+				break;
+			left -= size;
+		}
+		count = n;
+	}
 	LIBRETRO_S(count);
 	LIBRETRO_S(current);
 
 	for (i = 0; i < count; i++)
 	{
 		const TA_context *ctx = saved[i];
+		const bool drawn = i >= writing;
 		// (the one being written to has its pointers out, in ta_tad)
 		const tad_context& tad = ctx == ta_ctx ? ta_tad : ctx->tad;
-		const bool restarted = tad.thd_data == tad.thd_root;
+		const bool restarted = !drawn && tad.thd_data == tad.thd_root;
 		u8 key = (u8)(ctx->Address >> 20);
 		u32 size = (u32)((restarted ? tad.thd_old_data : tad.thd_data) - tad.thd_root) & ~31u;
 		u8 passes = tad.render_pass_count > TA_STATE_PASSES ? TA_STATE_PASSES : (u8)tad.render_pass_count;
@@ -699,7 +743,7 @@ void pvr_serialize_v21(void **data, unsigned int *total_size)
 			passes = 0;
 		}
 		room -= size;
-		word = size | (restarted && size != 0 ? 1 : 0);
+		word = size | (restarted && size != 0 ? 1 : 0) | (drawn ? 2 : 0);
 
 		LIBRETRO_S(key);
 		LIBRETRO_S(word);
@@ -751,7 +795,7 @@ bool pvr_unserialize_v21(void **data, unsigned int *total_size)
 
 		ctx = tactx_Find((u32)(key & 15) << 20, true);
 		size = word & ~31u;
-		if ((word & 30) != 0 || size > ta_data_size())
+		if ((word & 28) != 0 || size > ta_data_size())
 			return false;
 		if (ctx == NULL)
 		{
@@ -789,6 +833,14 @@ bool pvr_unserialize_v21(void **data, unsigned int *total_size)
 
 		// the control-word walk's table of the data, which the state does not have
 		ta_walk_rebuild(ctx);
+
+		if (word & 2)
+		{
+			// drawn and kept: there for another render, not written to
+			ctx->drawn = true;
+			ctx->rend.keep = true;
+			continue;
+		}
 
 		if (i == current)
 			current_addr = ctx->Address;

@@ -317,8 +317,8 @@ void rend_start_render(void)
 
    /* No end of render interrupt when rendering the framebuffer. (A frame
     * drawn and kept is drawn again, but the machine's timing is as for a
-    * frame that is not there - as it was before frames were kept, and as
-    * it is after a state is loaded, which does not have it.) */
+    * frame that is not there - as it was before frames were kept; a
+    * state has it, and loading one changes nothing here.) */
 	if (!ctx || !ctx->rend.isRenderFramebuffer)
 		SetREP(ctx != NULL && ctx->drawn ? NULL : ctx);
 

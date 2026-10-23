@@ -269,8 +269,9 @@ struct TA_context
 	u32 gpu_serial;
 	/* A render drew some of its render passes and left it in the list for
 	 * another (rend.keep), and the game has not begun a frame here since:
-	 * it is not a frame being written, and a save state does not have it
-	 * (nor anything it changes: tactx_Restart()) */
+	 * it is not a frame being written (nor is anything it changes:
+	 * tactx_Restart()), and a save state has it after those, if there is
+	 * room (pvr_serialize_v21()) */
 	bool drawn;
 
 	
