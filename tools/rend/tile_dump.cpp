@@ -28,6 +28,7 @@
 #include "hw/pvr/pvr_mem.h"
 #include "hw/pvr/pvr_regs.h"
 #include "hw/pvr/Renderer_if.h"
+#include "rend/rtt_watch.h"
 #include "rend/vulkan/compute_drawer.h"
 #include "rend/vulkan/oit/oit_drawer.h"
 #include "refsw/refsw_dump.h"
@@ -113,6 +114,10 @@ static void refsw_dump(TA_context *ctx, const char *dir, u32 n, u32 width, u32 h
 	h.fog_clamp_min = r.fog_clamp_min;
 	h.fog_clamp_max = r.fog_clamp_max;
 	h.frame = n;
+	/* What a render to a texture left waiting goes into video memory first:
+	 * its pages are closed till then, and the write below, a system call,
+	 * fails on them rather than fault (Virtua Fighter 4's reflections) */
+	rtt_watch_touch(0, VRAM_SIZE);
 	char path[1024];
 	snprintf(path, sizeof(path), "%s/refsw_%05u.bin", dir, n);
 	FILE *f = fopen(path, "wb");
