@@ -593,7 +593,9 @@ static inline int state_part(const char *name, unsigned int at)
 #undef LIBRETRO_SKIP
 #define LIBRETRO_S(v) (STATE_PART(#v), ra_serialize(&(v), sizeof(v), data, total_size))
 #define LIBRETRO_SA(v_arr,num) (STATE_PART(#v_arr), ra_serialize((v_arr), sizeof((v_arr)[0]) * (num), data, total_size))
-#define LIBRETRO_SKIP(size) do { STATE_PART("(nothing)"); if (*data) *(u8**)data += (size); *total_size += (size); } while (false)
+/* (what is left out is written as zeros: the same state is the same bytes,
+ * whatever the frontend's memory had in it before) */
+#define LIBRETRO_SKIP(size) do { STATE_PART("(nothing)"); if (*data) { memset(*data, 0, (size)); *(u8**)data += (size); } *total_size += (size); } while (false)
 
 bool dc_serialize(void **data, unsigned int *total_size)
 {
@@ -621,7 +623,11 @@ bool dc_serialize(void **data, unsigned int *total_size)
 	LIBRETRO_S(armMode);
 	LIBRETRO_S(Arm7Enabled);
 
-	LIBRETRO_S(dsp);
+	/* The DSP's code as this machine's recompiler made it is no part of the
+	 * machine, and is not the same on another (nor where the core was loaded
+	 * at another address): zeros in its place. A load skips it. */
+	LIBRETRO_SKIP(sizeof(dsp.DynCode));
+	STATE_PART("dsp"), ra_serialize((u8 *)&dsp + sizeof(dsp.DynCode), sizeof(dsp) - sizeof(dsp.DynCode), data, total_size);
 
 	for ( i = 0 ; i < 3 ; i++)
 	{
