@@ -3005,7 +3005,7 @@ bool retro_load_game(const struct retro_game_info *game)
    retro_atomic_store_release_int(&naomi_ffb_request, 0);
    if (dc_init())
    {
-   	ERROR_LOG(BOOT, "Flycast emulator initialization failed");
+   	ERROR_LOG(BOOT, "Initialization failed");
    	return false;
    }
    naomi_bios_detect_multiregion();
