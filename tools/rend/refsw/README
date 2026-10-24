@@ -86,6 +86,13 @@ refsw_pixel.cpp
     (PCW bit 7), which the object list entry carries. Without this the
     character on Jet Grind Radio's select screen, whose polygons do not
     take shadows, is drawn half dark inside its own shadow volume.
+  - AlphaTest_tsp() (a punch-through polygon's TSP run from the ISP, for
+    the alpha test) takes the entry of tag (tag >> 1) - 1, as
+    PixelFlush_tsp() in refsw.cpp does. libswirl took tag - 1, but
+    AddFpuEntry() makes a tag the entry's number times two (bit 0 is
+    TAG_INVALID): every punch-through pixel was shaded with another
+    entry's parameters, or with what lay past the end of the list - on Jet
+    Grind Radio's street (its trees) a null tsp function, and a crash.
 Everything else - the rasterizer, the depth tests, the peeling, the texture
 fetch, the colour combiner, fog, blending - is libswirl's text unchanged
 (diff the files against libswirl/rend/soft to see).

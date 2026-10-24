@@ -446,7 +446,7 @@ struct RefPixelPipeline : PixelPipeline {
     // Lookup/create cached TSP parameters, and call PixelFlush_tsp
     static bool AlphaTest_tsp(refsw* backend, float x, float y, u8 *rb, float invW, parameter_tag_t tag)
     {
-        auto entry = &backend->fpu_entires[tag-1];
+        auto entry = &backend->fpu_entires[(tag>>1) - 1];
         
         return entry->tsp(entry, x, y, 1/invW, rb);
     }
