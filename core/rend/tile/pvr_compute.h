@@ -468,6 +468,7 @@ RWTexture2D<unorm float4> outImage : register(u0, space2);
 #define vec3 float3
 #define vec4 float4
 #define ivec2 int2
+#define ivec3 int3
 #define uvec2 uint2
 #define uvec4 uint4
 #define i64vec3 int64_t3
@@ -775,6 +776,21 @@ i64vec3 rec_edges(uint r, int px, int py)
 {
    const uint sh = rec_shift(r);
    return i64vec3(rec_edge(r, 0u, sh, px, py), rec_edge(r, 1u, sh, px, py), rec_edge(r, 2u, sh, px, py));
+}
+
+/* The edges at (@px, @py) of a primitive without a shift whose edges are
+ * known to be under 2^31 in size there (rec_in_tile()): the same integers
+ * as rec_edges(), from the low word of each m and 32-bit products that
+ * wrap */
+ivec3 rec_edges32(uint r, int px, int py)
+{
+   ivec3 e;
+   for (uint k = 0u; k < 3u; k++)
+   {
+      const ivec2 d = rec_d(r, k);
+      e[k] = int(rec.w[r + PVRC_R_M + 2u * k] + uint(d.x) * uint(py) - uint(d.y) * uint(px));
+   }
+   return e;
 }
 
 /* A triangle with a vertex behind the eye (its 1/w below 0), as the raster
@@ -1351,6 +1367,7 @@ uint it_base = 0u;	/* where the batch being walked is in s_prim */
 uint it_hiz;
 float it_zlo, it_zhi;	/* the depth the primitive it_next() gave has over the tile */
 bool it_skip, it_started;
+bool it_fast;	/* the primitive it_next() gave has its edges in 32 bits over the tile (rec_in_tile()) */
 /* A range whose run was read in one batch is walked again from that
  * batch, while it is still there: the walk over the same list by
  * another test (the colour subpass after the depth subpass's, the next
@@ -1397,17 +1414,40 @@ float pvrc_zfrom(uint k)
 }
 
 /* Whether a primitive can cover a sample of the fine tile: its pixels
- * meet the tile's, and no edge has the whole tile outside it. Asked of
- * each entry of a run once, by one lane, when it_next() takes the run's
- * entries in, so that the walk's every lane looks only at the primitives
- * that pass */
-bool rec_in_tile(uint r)
+ * meet the tile's, and no edge has the whole tile outside it (1); and
+ * then whether each of its edges is under 2^31 in size at every place of
+ * the tile and its direction under 2^23 (3): the edges the walk takes at a
+ * place in the tile are then the same integers in 32 bits, made with
+ * 32-bit products that wrap (rec_edges32()) - not for a primitive with a
+ * shift, nor one with a vertex behind the eye. Asked of each entry of a
+ * run once, by one lane, when it_next() takes the run's entries in, so
+ * that the walk's every lane looks only at the primitives that pass */
+uint rec_in_tile(uint r)
 {
    const uint b0 = rec.w[r + PVRC_R_BBOX0], b1 = rec.w[r + PVRC_R_BBOX1];
    if (!((b0 & 0xffffu) <= g_fine.z && (b1 & 0xffffu) >= g_fine.x
          && (b0 >> 16) <= g_fine.w && (b1 >> 16) >= g_fine.y))
-      return false;
-   return pvrc_rec_hits(r, int(g_fine.x), int(g_fine.y), int(g_fine.z), int(g_fine.w));
+      return 0u;
+   if (rec_shift(r) != 0u || (rec.w[r + PVRC_R_EXTRA] & PVRC_RX_NEG) != 0u)
+      return pvrc_rec_hits(r, int(g_fine.x), int(g_fine.y), int(g_fine.z), int(g_fine.w)) ? 1u : 0u;
+   /* (pvrc_rec_hits() without a shift: each edge's most over the corners) */
+   const int64_t px0 = int64_t(g_fine.x) * int64_t(256), px1 = int64_t(g_fine.z + 1u) * int64_t(256);
+   const int64_t py0 = int64_t(g_fine.y) * int64_t(256), py1 = int64_t(g_fine.w + 1u) * int64_t(256);
+   const int64_t lim = int64_t(0x7fffffff);
+   uint res = 3u;
+   for (uint k = 0u; k < 3u; k++)
+   {
+      const ivec2 d = rec_d(r, k);
+      const int64_t m = rec_m(r, k);
+      const int64_t ax = int64_t(d.x) * py0, bx = int64_t(d.x) * py1;
+      const int64_t ay = int64_t(d.y) * px0, by = int64_t(d.y) * px1;
+      const int64_t hi = m + max(ax, bx) - min(ay, by);
+      if (hi < int64_t(0))
+         return 0u;
+      if (abs(d.x) >= (1 << 23) || abs(d.y) >= (1 << 23) || hi > lim || m + min(ax, bx) - max(ay, by) < -lim - int64_t(1))
+         res = 1u;
+   }
+   return res;
 }
 
 float pvrc_depth(float w);
@@ -1419,7 +1459,7 @@ uint rec_poly(uint r);
  * corners of the pixels of the tile it can cover, taken with room for
  * every rounding of the lanes' own 1/w and depth (pvrc_depth() keeps the
  * order of 1/w) */
-vec2 rec_zrange(uint r)
+vec2 rec_zrange(uint r, bool fast)
 {
    const uint b0 = rec.w[r + PVRC_R_BBOX0], b1 = rec.w[r + PVRC_R_BBOX1];
    const int x0 = int(max(b0 & 0xffffu, g_fine.x)) * 256, y0 = int(max(b0 >> 16, g_fine.y)) * 256;
@@ -1430,9 +1470,19 @@ vec2 rec_zrange(uint r)
    float area = 0.0;
    for (uint c = 0u; c < 4u; c++)
    {
-      const i64vec3 e = rec_edges(r, (c & 1u) != 0u ? x1 : x0, (c & 2u) != 0u ? y1 : y0);
-      const vec3 ef = vec3(float(e.x), float(e.y), float(e.z));
-      area = float(e.x + e.y + e.z);
+      vec3 ef;
+      if (fast)
+      {
+         /* (the corners are in the tile; the sum of the edges is the same everywhere) */
+         ef = vec3(rec_edges32(r, (c & 1u) != 0u ? x1 : x0, (c & 2u) != 0u ? y1 : y0));
+         area = uintBitsToFloat(rec.w[r + PVRC_R_AREA]);
+      }
+      else
+      {
+         const i64vec3 e = rec_edges(r, (c & 1u) != 0u ? x1 : x0, (c & 2u) != 0u ? y1 : y0);
+         ef = vec3(float(e.x), float(e.y), float(e.z));
+         area = float(e.x + e.y + e.z);
+      }
       most = max(most, abs(ef));
       const float w = dot(ef, q);
       lo = min(lo, w);
@@ -1509,6 +1559,8 @@ uint it_next()
       if (it_k < it_n)
       {
          uint p = s_prim[it_base + it_k];
+         it_fast = p >= 0x80000000u;
+         p &= 0x7fffffffu;
          it_zlo = uintBitsToFloat(s_zlo[it_base + it_k]);
          it_zhi = uintBitsToFloat(s_zhi[it_base + it_k]);
          it_k++;
@@ -1581,11 +1633,12 @@ uint it_next()
       uint v = PVRC_NONE;
       if (at < it_end)
          v = it_skip ? it_cbase + at : it_cbase | pvrc_pool_entry(it_run + at);
-      bool keep = v != PVRC_NONE && rec_in_tile(v * PVRC_REC_WORDS);
+      const uint test = v != PVRC_NONE ? rec_in_tile(v * PVRC_REC_WORDS) : 0u;
+      bool keep = test != 0u;
       vec2 zr = vec2(0.0);
       if (keep && it_hiz != HIZ_NONE)
       {
-         zr = rec_zrange(v * PVRC_REC_WORDS);
+         zr = rec_zrange(v * PVRC_REC_WORDS, test == 3u);
          if (it_hiz != HIZ_RUN)
          {
             uint mode = 6u;
@@ -1617,7 +1670,7 @@ uint it_next()
       if (keep)
       {
          const uint slot = side * 256u + before + uint(bitCount(s_mask[mb + word] & (bit - 1u)));
-         s_prim[slot] = v;
+         s_prim[slot] = v | (test == 3u ? 0x80000000u : 0u);
          s_zlo[slot] = floatBitsToUint(zr.x);
          s_zhi[slot] = floatBitsToUint(zr.y);
       }
@@ -1674,6 +1727,11 @@ bool edge_in(int64_t e, int dx, int dy)
    return e > 0 || (e == 0 && (dy < 0 || (dy == 0 && dx > 0)));
 }
 
+bool edge_in32(int e, int dx, int dy)
+{
+   return e > 0 || (e == 0 && (dy < 0 || (dy == 0 && dx > 0)));
+}
+
 /* Whether the place whose edges are @e is inside: each edge (turned for a
  * vertex behind the eye), and the clip for such a triangle
  * (rec_clip_plane()) */
@@ -1700,6 +1758,14 @@ bool rec_near(uint r)
 bool rec_covers(uint r, int px, int py)
 {
    return rec_near(r) && rec_inside(r, rec_edges(r, px, py));
+}
+
+/* rec_inside() for a primitive that rec_in_tile() the tile */
+
+bool rec_inside32(uint r, ivec3 e)
+{
+   const ivec2 d0 = rec_d(r, 0u), d1 = rec_d(r, 1u), d2 = rec_d(r, 2u);
+   return edge_in32(e.x, d0.x, d0.y) && edge_in32(e.y, d1.x, d1.y) && edge_in32(e.z, d2.x, d2.y);
 }
 
 /* The passes a fragment is shaded for (shade()) */
@@ -1736,6 +1802,26 @@ Bary rec_bary_at(uint r, i64vec3 e, bool sum)
 Bary rec_bary(uint r, i64vec3 e)
 {
    return rec_bary_at(r, e, false);
+}
+
+/* (the same, of rec_edges32(): the same integers, so the same floats) */
+Bary rec_bary32(uint r, ivec3 e)
+{
+   Bary b;
+   PVRC_INVARIANT float f0, f1, f2;
+   PVRC_INVARIANT float b0 = float(e.x), b1 = float(e.y), b2 = float(e.z);
+   PVRC_INVARIANT float area = uintBitsToFloat(rec.w[r + PVRC_R_AREA]);
+   f0 = b0 * uintBitsToFloat(rec.w[r + PVRC_R_Q]);
+   f1 = b1 * uintBitsToFloat(rec.w[r + PVRC_R_Q + 1u]);
+   f2 = b2 * uintBitsToFloat(rec.w[r + PVRC_R_Q + 2u]);
+   b.f0 = f0;
+   b.f1 = f1;
+   b.f2 = f2;
+   PVRC_INVARIANT float s = (f0 + f1) + f2;
+   b.s = s;
+   PVRC_INVARIANT float w = s / area;
+   b.w = w;
+   return b;
 }
 
 float bary_mix(Bary b, float a0, float a1, float a2)
@@ -1875,12 +1961,32 @@ void frag_grads(uint r, uint flags, i64vec3 e, bool vol1, inout Frag f)
    }
 }
 
+/* (frag_grads() of rec_edges32(), a primitive without a shift: the block's
+ * top left pixel is in the tile, so its edges fit as well, and the steps,
+ * a direction under 2^23 times 256, are the same integers) */
+void frag_grads32(uint r, uint flags, ivec3 e, bool vol1, inout Frag f)
+{
+   if (PVRC_TEST == 0u && (flags & PVRC_QF_TEXTURE) != 0u)
+   {
+      const ivec2 d0 = rec_d(r, 0u), d1 = rec_d(r, 1u), d2 = rec_d(r, 2u);
+      const ivec3 ix = ivec3(-d0.y, -d1.y, -d2.y) * 256;
+      const ivec3 iy = ivec3(d0.x, d1.x, d2.x) * 256;
+      ivec3 itl = e;
+      if ((g_px & 1) != 0)
+         itl -= ix;
+      if ((g_py & 1) != 0)
+         itl -= iy;
+      const vec3 tl = vec3(itl);
+      f.duvx = frag_duv(r, tl, vec3(ix), vol1 ? 9u : 5u);
+      f.duvy = frag_duv(r, tl, vec3(iy), vol1 ? 9u : 5u);
+   }
+}
+
 /* The fragment of polygon triangle @r at a place in 24.8, whose edges are
  * @e, for its first volume or (@vol1) its second: frag_vol1() */
-Frag rec_frag(uint r, uint pp, i64vec3 e, int px, int py, bool vol1)
+Frag rec_frag_b(uint r, uint pp, Bary b, int px, int py, bool vol1)
 {
    Frag f;
-   const Bary b = rec_bary(r, e);
    const uint flags = frm.w[pp + PVRC_Q_FLAGS];
    /* (a vertex's words: the colours 3 and 4, the coordinates 5 and 6; the
     * second volume's 7, 8, 9 and 10) */
@@ -1902,7 +2008,20 @@ Frag rec_frag(uint r, uint pp, i64vec3 e, int px, int py, bool vol1)
    f.duvx = f.duvy = vec2(0.0);
    f.w = b.w;
    f.pos = vec2(float(px), float(py)) / 256.0;
-   frag_grads(r, flags, e, vol1, f);
+   return f;
+}
+
+Frag rec_frag(uint r, uint pp, i64vec3 e, int px, int py, bool vol1)
+{
+   Frag f = rec_frag_b(r, pp, rec_bary(r, e), px, py, vol1);
+   frag_grads(r, frm.w[pp + PVRC_Q_FLAGS], e, vol1, f);
+   return f;
+}
+
+Frag rec_frag32(uint r, uint pp, ivec3 e, int px, int py, bool vol1)
+{
+   Frag f = rec_frag_b(r, pp, rec_bary32(r, e), px, py, vol1);
+   frag_grads32(r, frm.w[pp + PVRC_Q_FLAGS], e, vol1, f);
    return f;
 }
 
@@ -2157,6 +2276,18 @@ Frag rate_frag_at(uint r, uint pp, i64vec3 ec, ivec2 at, bool vol1)
    return f;
 }
 
+/* (rate_frag_at() of a primitive that rec_in_tile() the tile) */
+Frag rate_frag_at32(uint r, uint pp, ivec3 ec, ivec2 at, bool vol1)
+{
+   if (at.x == g_cx && at.y == g_cy)
+      return rec_frag32(r, pp, ec, g_cx, g_cy, vol1);
+   Frag f = rec_frag_b(r, pp, rec_bary32(r, rec_edges32(r, at.x, at.y)), at.x, at.y, vol1);
+   f.w = rec_bary32(r, ec).w;
+   f.pos = vec2(float(g_cx), float(g_cy)) / 256.0;
+   frag_grads32(r, frm.w[pp + PVRC_Q_FLAGS], ec, vol1, f);
+   return f;
+}
+
 Frag rate_frag(uint r, uint pp, i64vec3 ec, bool vol1)
 {
    return rate_frag_at(r, pp, ec, rate_pos(r), vol1);
@@ -2304,6 +2435,7 @@ void main()
                for (;;)
                {
                   prim = it_next();
+                  const bool fast = it_fast;
                   if (pending != PVRC_NONE && (prim == PVRC_NONE || prim > pending))
                   {
                      /* the volume ends: in the closing parameter's clip, at the
@@ -2326,13 +2458,13 @@ void main()
                   }
                   if (!g_in)
                      continue;
-                  if (!rec_covers(r, g_sx, g_sy))
+                  if (!(fast ? rec_near(r) && rec_inside32(r, rec_edges32(r, g_sx, g_sy)) : rec_covers(r, g_sx, g_sy)))
                      continue;
                   const uint extra = rec.w[r + PVRC_R_EXTRA];
                   cov |= extra & (PVRC_RX_FRONT | PVRC_RX_BACK);
                   if ((extra & PVRC_RX_CULLED) != 0u || !in_rect(mvp_word(r, PVRC_M_RECT), mvp_word(r, PVRC_M_RECT + 1u)))
                      continue;
-                  if (pvrc_depth(vol_w(r)) > g_depth)
+                  if (pvrc_depth(fast ? rec_bary32(r, rec_edges32(r, g_cx, g_cy)).w : vol_w(r)) > g_depth)
                      g_stencil = (g_stencil & 0x80u) | pvr_modvol_triangle(g_stencil & 3u, 1u, (extra & PVRC_RX_OR) != 0u ? 1u : 0u);
                }
             }
@@ -2386,6 +2518,7 @@ void main()
                   {
                      /* the step's primitives: the lane of sample j takes the j-th */
                      uint mine = PVRC_NONE;
+                     bool mineFast = false;
                      bool any = false;
                      for (uint j = 0u; j < PVRC_SAMPLES; j++)
                      {
@@ -2395,7 +2528,10 @@ void main()
                         else if (j == 0u)
                            break;
                         if (j == smp)
+                        {
                            mine = p;
+                           mineFast = it_fast;
+                        }
                      }
                      if (!any)
                         break;
@@ -2422,11 +2558,26 @@ void main()
                            {
                               const int sx = g_px * 256 + int(SSAA_SAMPLE_X16(PVRC_SAMPLES, j)) * 16;
                               const int sy = g_py * 256 + int(SSAA_SAMPLE_Y16(PVRC_SAMPLES, j)) * 16;
-                              const i64vec3 e = rec_edges(r, sx, sy);
-                              if (rec_inside(r, e))
+                              i64vec3 e;
+                              bool inside;
+                              Bary b;
+                              if (mineFast)
+                              {
+                                 const ivec3 e32 = rec_edges32(r, sx, sy);
+                                 e = i64vec3(e32);
+                                 inside = rec_inside32(r, e32);
+                                 b = rec_bary32(r, e32);
+                              }
+                              else
+                              {
+                                 e = rec_edges(r, sx, sy);
+                                 inside = rec_inside(r, e);
+                                 b = rec_bary(r, e);
+                              }
+                              if (inside)
                               {
                                  cov |= 1u << j;
-                                 if (pvrc_depth(rec_bary(r, e).w) >= pz[j])
+                                 if (pvrc_depth(b.w) >= pz[j])
                                  {
                                     cand |= 1u << j;
                                     es += e;
@@ -2443,10 +2594,19 @@ void main()
                                * triangle where the triangle only clips the
                                * pixel, and sorted the fragments of a model's
                                * neighbouring polygons wrongly along its edges. */
-                              const i64vec3 ec = rec_edges(r, g_cx, g_cy);
+                              const ivec3 ec32 = mineFast ? rec_edges32(r, g_cx, g_cy) : ivec3(0, 0, 0);
+                              const i64vec3 ec = mineFast ? i64vec3(ec32) : rec_edges(r, g_cx, g_cy);
+                              Bary bz;
                               if (cand == (1u << PVRC_SAMPLES) - 1u)
-                                 es = ec;
-                              const float z = pvrc_depth(rec_bary_at(r, es, cand != (1u << PVRC_SAMPLES) - 1u).w);
+                              {
+                                 if (mineFast)
+                                    bz = rec_bary32(r, ec32);
+                                 else
+                                    bz = rec_bary(r, ec);
+                              }
+                              else
+                                 bz = rec_bary_at(r, es, true);
+                              const float z = pvrc_depth(bz.w);
                               if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
                               {
                                  const uint c0 = frm.w[pp + PVRC_Q_CLIP], c1 = frm.w[pp + PVRC_Q_CLIP + 1u];
@@ -2492,7 +2652,12 @@ void main()
                                  /* shaded now, as the per-pixel renderer shades a
                                   * fragment it puts in its lists */
                                  bool killed;
-                                 xc = col_pack(clamp(shade(pp, rate_frag_at(r, pp, ec, rate_pos_cov(cov), false), PVRC_SHADE_OIT, false, killed), 0.0, 1.0));
+                                 Frag f;
+                                 if (mineFast)
+                                    f = rate_frag_at32(r, pp, ec32, rate_pos_cov(cov), false);
+                                 else
+                                    f = rate_frag_at(r, pp, ec, rate_pos_cov(cov), false);
+                                 xc = col_pack(clamp(shade(pp, f, PVRC_SHADE_OIT, false, killed), 0.0, 1.0));
                               }
                            }
                         }
@@ -2565,6 +2730,7 @@ void main()
                      for (;;)
                      {
                         prim = it_next();
+                        const bool fast = it_fast;
                         if (pending != PVRC_NONE && (prim == PVRC_NONE || prim > pending))
                         {
                            const uint mp = frm.w[PVRC_F_O_MVP] + mvp_word(closer, PVRC_M_CLOSE_BY) * PVRC_MVP_WORDS;
@@ -2591,13 +2757,13 @@ void main()
                         }
                         if (!g_in || n == 0u)
                            continue;
-                        if (!rec_covers(r, g_s0x, g_s0y))
+                        if (!(fast ? rec_near(r) && rec_inside32(r, rec_edges32(r, g_s0x, g_s0y)) : rec_covers(r, g_s0x, g_s0y)))
                            continue;
                         const uint extra = rec.w[r + PVRC_R_EXTRA];
                         cov |= extra & (PVRC_RX_FRONT | PVRC_RX_BACK);
                         if ((extra & PVRC_RX_CULLED) != 0u || !in_rect(mvp_word(r, PVRC_M_RECT), mvp_word(r, PVRC_M_RECT + 1u)))
                            continue;
-                        const float vz = pvrc_depth(vol_w(r));
+                        const float vz = pvrc_depth(fast ? rec_bary32(r, rec_edges32(r, g_cx, g_cy)).w : vol_w(r));
                         for (uint j = 0u; j < n; j++)
                         {
                            const uint li = j * 256u + g_tid;
