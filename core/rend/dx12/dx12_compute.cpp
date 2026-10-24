@@ -127,6 +127,7 @@ struct DX12ComputeDrawer::Resources
 	ComPtr<ID3D12Resource> bins;
 	ComPtr<ID3D12Resource> zero;		// zeros, for the bins' counts and starts each frame
 	ComPtr<ID3D12Resource> args;		// the dispatches' arguments: the bins' counts, copied
+	ComPtr<ID3D12Resource> across;		// the walk's dispatches across, pvrc_walk_x() for each tile size and count of samples, copied to them
 	ComPtr<ID3D12Resource> stats;		// the counts for the log, a piece a slot, read when it comes round
 	/* the picture a frame starts from when the one before cannot be read
 	 * where it is (CopyStart()): the screen's size, a place in the table */
@@ -306,8 +307,22 @@ bool DX12ComputeDrawer::Init(u32 width, u32 height, u32 samples)
 			// (made zero: a committed resource's memory is)
 			&& makeBuffer(device, D3D12_HEAP_TYPE_DEFAULT, (u64)r->binWords * 4, uav, ua, r->bins)
 			&& makeBuffer(device, D3D12_HEAP_TYPE_DEFAULT, (u64)PVRC_B_POOL(r->runs) * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_SOURCE, r->zero)
-			&& makeBuffer(device, D3D12_HEAP_TYPE_DEFAULT, 16 * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, r->args)
+			&& makeBuffer(device, D3D12_HEAP_TYPE_DEFAULT, PVRC_ST_ARGS * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, r->args)
+			&& makeBuffer(device, D3D12_HEAP_TYPE_UPLOAD, 8 * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, r->across)
 			&& makeBuffer(device, D3D12_HEAP_TYPE_READBACK, (u64)PVRC_STATS * 4 * Slots, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, r->stats);
+	if (ok)
+	{
+		/* (tiles of 2^5 or 2^6 pixels, ComputeFrame::TileLog2(); 1, 2, 4 or 8 samples) */
+		u32 *across = nullptr;
+		const D3D12_RANGE none{};
+		ok = SUCCEEDED(r->across->Map(0, &none, (void **)&across));
+		if (ok)
+		{
+			for (u32 i = 0; i < 8; i++)
+				across[i] = pvrc_walk_x(5 + i / 4, 1u << (i % 4));
+			r->across->Unmap(0, nullptr);
+		}
+	}
 	if (ok)
 	{
 		ok = dx12_make_texture(device, width, height, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_NONE, r->startState, r->start);
@@ -390,6 +405,7 @@ void DX12ComputeDrawer::Term()
 		release(res->bins);
 		release(res->zero);
 		release(res->args);
+		release(res->across);
 		release(res->stats);
 		release(res->start);
 		if (res->startSrv != ~0u)
@@ -601,7 +617,10 @@ void DX12ComputeDrawer::Record(ID3D12Resource *picture)
 	auto arguments = [&]() {
 		context->Transition(r.bins, binState, D3D12_RESOURCE_STATE_COPY_SOURCE);
 		context->Transition(r.args, argState, D3D12_RESOURCE_STATE_COPY_DEST);
-		cmd->CopyBufferRegion(r.args, 0, r.bins, (u64)PVRC_B_STATS(r.runs) * 4, 16 * 4);
+		cmd->CopyBufferRegion(r.args, 0, r.bins, (u64)PVRC_B_STATS(r.runs) * 4, PVRC_ST_ARGS * 4);
+		const u64 across = ((words[PVRC_F_TILE_LOG2] - 5) * 4 + SSAA_LOG2(r.rtt ? 1u : samples)) * 4;
+		cmd->CopyBufferRegion(r.args, PVRC_ST_WALK_U_X * 4, r.across, across, 4);
+		cmd->CopyBufferRegion(r.args, PVRC_ST_WALK_S_X * 4, r.across, across, 4);
 		context->Transition(r.args, argState, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
 		context->Transition(r.bins, binState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	};
@@ -638,13 +657,14 @@ void DX12ComputeDrawer::Record(ID3D12Resource *picture)
 		step(PVRC_K_SCATTER, groups, 1);
 		step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
 	}
-	const u32 fw = PVRC_FINE_W(n), fh = PVRC_FINE_H(n);
-	/* (the walk's two variants over the same tiles, each drawing its own:
-	 * nothing between them) */
-	cmd->SetPipelineState(n != samples ? r.walk1Unsorted : r.walkUnsorted);
-	cmd->Dispatch((words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh, 1);
-	step(PVRC_K_WALK, (words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh);
+	/* (the walk's two variants, each over the coarse tiles of its list,
+	 * the sort's: nothing between them; the clear's size is the scan's) */
 	arguments();
+	cmd->SetPipelineState(n != samples ? r.walk1Unsorted : r.walkUnsorted);
+	cmd->ExecuteIndirect(r.dispatch, 1, r.args, (u64)PVRC_ST_WALK_U_X * 4, nullptr, 0);
+	cmd->SetPipelineState(n != samples ? r.walk1 : r.pipelines[PVRC_K_WALK]);
+	cmd->ExecuteIndirect(r.dispatch, 1, r.args, (u64)PVRC_ST_WALK_S_X * 4, nullptr, 0);
+	barrier();
 	indirect(PVRC_K_CLEAR, PVRC_ST_CLEAR_X);
 	// the counts, for when this piece comes round
 	context->Transition(r.bins, binState, D3D12_RESOURCE_STATE_COPY_SOURCE);

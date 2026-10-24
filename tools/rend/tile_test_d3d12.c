@@ -364,7 +364,7 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    ID3D12Resource *sb = make_buffer(D3D12_HEAP_TYPE_CUSTOM, PVRC_TEX_SLOTS * 4, UAVF, UAV);
    ID3D12Resource *rb = make_buffer(D3D12_HEAP_TYPE_DEFAULT, rbBytes, UAVF, UAV);
    ID3D12Resource *bb = make_buffer(D3D12_HEAP_TYPE_DEFAULT, bbBytes, UAVF, UAV);
-   ID3D12Resource *ab = make_buffer(D3D12_HEAP_TYPE_DEFAULT, 16 * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+   ID3D12Resource *ab = make_buffer(D3D12_HEAP_TYPE_DEFAULT, PVRC_ST_ARGS * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
    const UINT64 pitch = ((UINT64)w * 4 + 255) & ~(UINT64)255;
    ID3D12Resource *ob = make_buffer(D3D12_HEAP_TYPE_READBACK, pitch * h, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
    ID3D12Resource *bins_back = make_buffer(D3D12_HEAP_TYPE_READBACK, (UINT64)binWords * 4, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -374,7 +374,6 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    ID3D12Resource *dummy = make_image(1, 1, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
    ID3D12Resource *dummy_up = make_buffer(D3D12_HEAP_TYPE_UPLOAD, 256, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ);
    ID3D12PipelineState **k = pipelines_for(samples, keep);
-   const unsigned fw = PVRC_FINE_W(samples), fh = PVRC_FINE_H(samples);
    ID3D12DescriptorHeap *heaps[2];
    D3D12_CPU_DESCRIPTOR_HANDLE vc;
    D3D12_GPU_DESCRIPTOR_HANDLE vg, sg;
@@ -390,6 +389,8 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    /* the one texel: 0, or green and transparent for TILE_PROD, as tile_test.c has it */
    m = (unsigned *)map(dummy_up);
    m[0] = getenv("TILE_PROD") ? 0x0000ff00u : 0u;
+   /* (and the walk's variants' dispatches across, as the renderer copies them to theirs) */
+   m[4] = pvrc_walk_x(frame0[PVRC_F_TILE_LOG2], samples);
    views->lpVtbl->GetCPUDescriptorHandleForHeapStart(views, &vc);
    views->lpVtbl->GetGPUDescriptorHandleForHeapStart(views, &vg);
    samplers->lpVtbl->GetGPUDescriptorHandleForHeapStart(samplers, &sg);
@@ -457,7 +458,9 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    /* the bins' counts to the dispatches' arguments */
 #define ARGS() do { transition(bb, UAV, D3D12_RESOURCE_STATE_COPY_SOURCE); \
       transition(ab, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COPY_DEST); \
-      ID3D12GraphicsCommandList_CopyBufferRegion(cl, ab, 0, bb, (UINT64)PVRC_B_STATS(runs) * 4, 16 * 4); \
+      ID3D12GraphicsCommandList_CopyBufferRegion(cl, ab, 0, bb, (UINT64)PVRC_B_STATS(runs) * 4, PVRC_ST_ARGS * 4); \
+      ID3D12GraphicsCommandList_CopyBufferRegion(cl, ab, PVRC_ST_WALK_U_X * 4, dummy_up, 16, 4); \
+      ID3D12GraphicsCommandList_CopyBufferRegion(cl, ab, PVRC_ST_WALK_S_X * 4, dummy_up, 16, 4); \
       transition(ab, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT); \
       transition(bb, D3D12_RESOURCE_STATE_COPY_SOURCE, UAV); } while (0)
 #define STEP(kernel, x, y) do { ID3D12GraphicsCommandList_SetPipelineState(cl, k[kernel]); \
@@ -484,12 +487,14 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
       STEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
       STEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS]);
    }
-   /* (the walk's two variants over the same tiles, as the renderer
-    * dispatches them) */
-   ID3D12GraphicsCommandList_SetPipelineState(cl, k[PVRC_KERNELS + 1]);
-   ID3D12GraphicsCommandList_Dispatch(cl, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
-   STEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh);
+   /* (the walk's two variants, each over the coarse tiles of its list,
+    * the sort's, as the renderer dispatches them) */
    ARGS();
+   ID3D12GraphicsCommandList_SetPipelineState(cl, k[PVRC_KERNELS + 1]);
+   ID3D12GraphicsCommandList_ExecuteIndirect(cl, dispatch_sig, 1, ab, (UINT64)PVRC_ST_WALK_U_X * 4, NULL, 0);
+   ID3D12GraphicsCommandList_SetPipelineState(cl, k[PVRC_K_WALK]);
+   ID3D12GraphicsCommandList_ExecuteIndirect(cl, dispatch_sig, 1, ab, (UINT64)PVRC_ST_WALK_S_X * 4, NULL, 0);
+   STEP(PVRC_K_WALK, 0, 0);
    ID3D12GraphicsCommandList_SetPipelineState(cl, k[PVRC_K_CLEAR]);
    ID3D12GraphicsCommandList_ExecuteIndirect(cl, dispatch_sig, 1, ab, (UINT64)PVRC_ST_CLEAR_X * 4, NULL, 0);
    uav_barrier();

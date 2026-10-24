@@ -40,8 +40,9 @@ for src in $(echo "$1" | tr ',' ' '); do
       glslangValidator -V -g0 --target-env vulkan1.0 -S comp -o "$d/k$k.spv" "$d/k$k.comp" > "$d/log" || { cat "$d/log"; exit 1; }
       k=$((k + 1))
    done
-   rm -f "$d/variants"
+   rm -f "$d/variants" "$d/lists"
    grep -q PVRC_V_UNSORTED "$d/core/rend/tile/pvr_compute.h" && : > "$d/variants"
+   grep -q PVRC_B_TILES "$d/core/rend/tile/pvr_compute.h" && : > "$d/lists"
    echo "tile_bench: set $i is $src"
    SETS="$SETS${SETS:+,}$d"
    i=$((i + 1))

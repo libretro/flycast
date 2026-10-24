@@ -24,6 +24,7 @@
 
 static unsigned char *set_spv[BENCH_SETS][PVRC_KERNELS + 1];
 static int set_variants[BENCH_SETS];	/* (the set's walk has its variants: a file "variants" in its directory) */
+static int set_lists[BENCH_SETS];	/* (...dispatched over the sort's lists of tiles: a file "lists") */
 static size_t set_spv_size[BENCH_SETS][PVRC_KERNELS + 1];
 
 static double cpu_ms(void)
@@ -160,7 +161,15 @@ int main(int argc, char **argv)
             if (v)
                fclose(v);
          }
-         printf("bench: set %u: %s%s\n", nsets, tok, set_variants[nsets] ? " (the walk's two variants)" : "");
+         snprintf(path, sizeof(path), "%s/lists", tok);
+         {
+            FILE *v = fopen(path, "rb");
+            set_lists[nsets] = v != NULL;
+            if (v)
+               fclose(v);
+         }
+         printf("bench: set %u: %s%s\n", nsets, tok, set_lists[nsets] ? " (the walk's two variants, over the sort's lists)"
+               : set_variants[nsets] ? " (the walk's two variants)" : "");
          nsets++;
       }
    }
@@ -290,6 +299,16 @@ int main(int argc, char **argv)
                vkCmdResetQueryPool(cmd, queries, 0, BENCH_STAMPS);
                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queries, 0);
                vkCmdFillBuffer(cmd, bb.buffer, 0, (VkDeviceSize)PVRC_B_POOL(runs) * 4, 0);
+               if (set_lists[ss] && !walk_whole())
+               {
+                  /* (the walk's variants' dispatches across, as the renderers give them) */
+                  VkMemoryBarrier b = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+                  b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                  b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &b, 0, NULL, 0, NULL);
+                  vkCmdFillBuffer(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_WALK_U_X) * 4, 4, pvrc_walk_x(frame[PVRC_F_TILE_LOG2], n ? n : 1u));
+                  vkCmdFillBuffer(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_WALK_S_X) * 4, 4, pvrc_walk_x(frame[PVRC_F_TILE_LOG2], n ? n : 1u));
+               }
                mem_barrier(cmd);
                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queries, 1);
 #define BSTEP(kernel, x, y, q) do { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][kernel]); \
@@ -299,12 +318,23 @@ int main(int argc, char **argv)
                BSTEP(PVRC_K_SCAN, 1, 1, 3);
                BSTEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1, 4);
                BSTEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS], 5);
-               if (pipes[ss][PVRC_KERNELS + 1] != VK_NULL_HANDLE)
+               if (pipes[ss][PVRC_KERNELS + 1] != VK_NULL_HANDLE && set_lists[ss])
                {
                   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][PVRC_KERNELS + 1]);
-                  vkCmdDispatch(cmd, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
+                  vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_WALK_U_X) * 4);
+                  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][PVRC_K_WALK]);
+                  vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_WALK_S_X) * 4);
+                  BSTEP(PVRC_K_WALK, 0, 0, 6);
                }
-               BSTEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh, 6);
+               else
+               {
+                  if (pipes[ss][PVRC_KERNELS + 1] != VK_NULL_HANDLE)
+                  {
+                     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][PVRC_KERNELS + 1]);
+                     vkCmdDispatch(cmd, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
+                  }
+                  BSTEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh, 6);
+               }
                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][PVRC_K_CLEAR]);
                vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_CLEAR_X) * 4);
                mem_barrier(cmd);

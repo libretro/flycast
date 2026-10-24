@@ -489,16 +489,22 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 			cmd.fillBuffer(bins, (vk::DeviceSize)PVRC_B_STATS(r.runs) * 4, (vk::DeviceSize)(PVRC_B_POOL(r.runs) - PVRC_B_STATS(r.runs)) * 4, 0);
 		}
 		r.binsZero = true;
+		/* (the walk's variants' dispatches across: the CPU's; the sort counts the tiles of each) */
+		const u32 across = pvrc_walk_x(words[PVRC_F_TILE_LOG2], r.rtt ? 1 : samples);
+		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(),
+				vk::MemoryBarrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferWrite), nullptr, nullptr);
+		cmd.fillBuffer(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_WALK_U_X) * 4, 4, across);
+		cmd.fillBuffer(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_WALK_S_X) * 4, 4, across);
 	}
 	/* (and what the frame's textures were made with before: the texture
 	 * decoder's and the uploads' barriers, and a render to texture's
 	 * render pass, make them ready for fragment shaders, not these) */
 	const vk::MemoryBarrier toCompute(vk::AccessFlagBits::eMemoryWrite,
-			vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+			vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eIndirectCommandRead);
 	const vk::ImageMemoryBarrier toGeneral(vk::AccessFlags(), vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
 			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
 	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-			vk::PipelineStageFlagBits::eComputeShader, vk::DependencyFlags(), toCompute, nullptr, toGeneral);
+			vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect, vk::DependencyFlags(), toCompute, nullptr, toGeneral);
 	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *r.pipelineLayout, 0, 1, &set, 0, nullptr);
 	// (a render to a texture is drawn at one sample a pixel)
 	const vk::UniquePipeline *pipelines = r.rtt && samples > 1 ? r.rttPipelines : r.pipelines;
@@ -537,12 +543,13 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 		step(PVRC_K_SCATTER, groups, 1);
 		step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
 	}
-	const u32 fw = PVRC_FINE_W(n), fh = PVRC_FINE_H(n);
-	/* (the walk's two variants over the same tiles, each drawing its own:
-	 * nothing between them) */
+	/* (the walk's two variants, each over the coarse tiles of its list,
+	 * the sort's: nothing between them) */
 	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[WalkUnsorted]);
-	cmd.dispatch((words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh, 1);
-	step(PVRC_K_WALK, (words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh);
+	cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_WALK_U_X) * 4);
+	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[PVRC_K_WALK]);
+	cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_WALK_S_X) * 4);
+	step(PVRC_K_WALK, 0, 0);
 	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[PVRC_K_CLEAR]);
 	cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_CLEAR_X) * 4);
 	// the counts, for when this slot comes round

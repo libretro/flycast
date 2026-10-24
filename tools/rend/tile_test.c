@@ -371,6 +371,9 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
 
    memcpy(fb.mapped, frame, (size_t)words * 4);
    memset(bb.mapped, 0, (size_t)binWords * 4);
+   /* (the walk's variants' dispatches across, as the renderers give them) */
+   ((unsigned *)bb.mapped)[PVRC_B_STATS(runs) + PVRC_ST_WALK_U_X] = pvrc_walk_x(frame0[PVRC_F_TILE_LOG2], samples);
+   ((unsigned *)bb.mapped)[PVRC_B_STATS(runs) + PVRC_ST_WALK_S_X] = pvrc_walk_x(frame0[PVRC_F_TILE_LOG2], samples);
    for (k = 1; k <= PVRC_KERNELS; k++)
       pipelines[k] = make_pipeline_variant(k, samples, keep, k == PVRC_K_WALK && !walk_whole() ? PVRC_V_SORTED : PVRC_V_ALL);
    if (!walk_whole())
@@ -450,10 +453,15 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    }
    if (walkUnsorted != VK_NULL_HANDLE)
    {
+      /* (each over the coarse tiles of its list, the sort's) */
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, walkUnsorted);
-      vkCmdDispatch(cmd, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
+      vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_WALK_U_X) * 4);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[PVRC_K_WALK]);
+      vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_WALK_S_X) * 4);
+      STEP(PVRC_K_WALK, 0, 0);
    }
-   STEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh);
+   else
+      STEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[PVRC_K_CLEAR]);
    vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_CLEAR_X) * 4);
    mem_barrier(cmd);
