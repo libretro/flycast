@@ -56,6 +56,31 @@ public:
 		texPool.Term();
 	}
 
+	/* The frontend let go of the old renderer's picture before it went
+	 * (VulkanContext::ReleasePicture()) and would show none until this one
+	 * draws: the picture kept from it (rend/last_picture.h) is handed over,
+	 * as a framebuffer read from the game's memory is. Once, after the
+	 * change of renderer. */
+	bool PresentKeptPicture() override
+	{
+		int width, height;
+		const u8 *pixels = last_picture(&width, &height);
+		if (pixels == nullptr)
+			return false;
+		// (as Process() begins a frame)
+		texCommandPool.BeginFrame();
+		textureCache.SetCurrentIndex(texCommandPool.GetIndex());
+		texDecoder.BeginFrame(texCommandPool.GetIndex());
+		taDecoder.BeginFrame(texCommandPool);
+		std::unique_ptr<Texture>& curTexture = FramebufferTexture();
+		curTexture->SetCommandBuffer(texCommandPool.Allocate());
+		curTexture->UploadToGPU(width, height, (u8 *)pixels, false);
+		curTexture->SetCommandBuffer(nullptr);
+		texCommandPool.EndFrame();
+		GetContext()->PresentFrame(curTexture->GetImage(), curTexture->GetImageView(), { width, height });
+		return true;
+	}
+
 	// (TA processing switched on or off)
 	virtual void OptionsChanged() override
 	{
@@ -215,6 +240,20 @@ protected:
 		int height;
 		ReadFramebuffer(pb, width, height);
 
+		std::unique_ptr<Texture>& curTexture = FramebufferTexture();
+		curTexture->SetCommandBuffer(texCommandPool.Allocate());
+		curTexture->UploadToGPU(width, height, (u8*)pb.data(), false);
+		curTexture->SetCommandBuffer(nullptr);
+		texCommandPool.EndFrame();
+
+		GetContext()->PresentFrame(curTexture->GetImage(), curTexture->GetImageView(), { 640, 480 });
+
+		return true;
+	}
+
+	// the texture a picture of the CPU's is handed to the frontend in, for the frontend's frame index
+	std::unique_ptr<Texture>& FramebufferTexture()
+	{
 		const size_t imageIndex = GetContext()->GetCurrentImageIndex();
 		if (framebufferTextures.size() <= imageIndex)
 			framebufferTextures.resize(std::max((size_t)GetContext()->GetSwapChainSize(), imageIndex + 1));
@@ -228,14 +267,7 @@ protected:
 			curTexture->SetPhysicalDevice(GetContext()->GetPhysicalDevice());
 			curTexture->SetDevice(GetContext()->GetDevice());
 		}
-		curTexture->SetCommandBuffer(texCommandPool.Allocate());
-		curTexture->UploadToGPU(width, height, (u8*)pb.data(), false);
-		curTexture->SetCommandBuffer(nullptr);
-		texCommandPool.EndFrame();
-
-		GetContext()->PresentFrame(curTexture->GetImage(), curTexture->GetImageView(), { 640, 480 });
-
-		return true;
+		return curTexture;
 	}
 
 	void CheckFogTexture()

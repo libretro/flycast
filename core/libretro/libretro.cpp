@@ -1745,6 +1745,11 @@ void retro_run (void)
    if (!is_dupe && (settings.pvr.rend == 9 || settings.pvr.rend == 10))
       DX12Context::Instance()->Present();
 #endif
+#ifdef HAVE_VULKAN
+   /* (a run just after a change of renderer that drew nothing new) */
+   if (is_dupe && rend_present_kept_picture())
+      is_dupe = false;
+#endif
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D9) || defined(HAVE_D3D12)
    video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, screen_width, screen_height, 0);
 #endif

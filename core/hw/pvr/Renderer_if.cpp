@@ -91,6 +91,8 @@ bool pend_rend = false;
 static bool render_called = false;	/* a render started since the last vblank (rend_vblank) */
 static bool frame_produced = false;	/* a picture to show made in this run (for is_dupe) */
 static bool skip_screen = false;	/* rend_skip_screen */
+/* a renderer was made again in place of another (rend_present_kept_picture()) */
+static bool kept_picture_due = false;
 u32 fb_watch_addr_start;
 u32 fb_watch_addr_end;
 bool fb_dirty;
@@ -190,6 +192,14 @@ void rend_keep_picture()
 		NOTICE_LOG(RENDERER, "%d x %d picture kept for the next context", w, h);
 }
 
+bool rend_present_kept_picture()
+{
+	if (!kept_picture_due)
+		return false;
+	kept_picture_due = false;
+	return renderer != NULL && renderer->PresentKeptPicture();
+}
+
 void rend_resize(int width, int height)
 {
 	if (renderer != NULL)
@@ -224,7 +234,10 @@ void rend_prepare_renderer()
    {
 	  renderer_changed = false;
 	  if (renderer != NULL)
+	  {
 		 rend_term_renderer();
+		 kept_picture_due = true;
+	  }
 	  rend_create_renderer();
 	  rend_init_renderer();
    }

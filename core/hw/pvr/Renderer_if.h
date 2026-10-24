@@ -62,6 +62,11 @@ struct Renderer
 	 * in rend/last_picture.h. The renderer's first render to the screen
 	 * after that starts from what is there. */
 	virtual void KeepPicture() { }
+	/* A renderer made again in place of another, a run that drew nothing
+	 * to the screen: the picture kept from the other one handed to the
+	 * frontend as the frame, where the frontend had to let go of the old
+	 * renderer's own. False where there is none to hand over. */
+	virtual bool PresentKeptPicture() { return false; }
 
 	// @area: 1 for the texture of a polygon's second volume
 	virtual u64 GetTexture(TSP tsp, TCW tcw, int area = 0) { return 0; }
@@ -102,5 +107,9 @@ void rend_init_renderer();
 void rend_prepare_renderer();
 void rend_term_renderer();
 void rend_keep_picture();
+/* After a run that drew nothing to the screen: true if the frame handed to
+ * the frontend is the picture kept across a change of renderer
+ * (Renderer::PresentKeptPicture()), once after the change */
+bool rend_present_kept_picture();
 /* The size rendered at has changed and the context is the one there was. */
 void rend_resize(int width, int height);
