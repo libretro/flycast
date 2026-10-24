@@ -86,6 +86,8 @@ bool InitDrive(u32 fileflags=0);
 void TermDrive();
 bool DiscSwap(u32 fileflags=0);
 void DiscOpenLid();
+void DiscCloseEmpty();
+bool DiscPutBack(const char* fn);
 extern signed int sns_asc;
 extern signed int sns_ascq;
 extern signed int sns_key;

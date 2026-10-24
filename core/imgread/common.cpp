@@ -186,6 +186,24 @@ void DiscOpenLid()
 	gd_setdisc();
 }
 
+// The lid shut on an empty drive: there is nothing to spin up
+void DiscCloseEmpty()
+{
+	gd_swap_cancel();
+	TermDrive();
+	NullDriveDiscType = NoDisk;
+	gd_setdisc();
+}
+
+// A save state made with this image in the drive: the image is opened and
+// nothing else is done, since what the drive was doing comes with the state.
+bool DiscPutBack(const char* fn)
+{
+	TermDrive();
+	disc = OpenDisc(fn);
+	return disc != NULL;
+}
+
 bool DiscSwap(u32 fileflags)
 {
 	// What the game is told, and when: see gd_disc_inserted()

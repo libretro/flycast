@@ -308,6 +308,7 @@ bool rend_single_frame();
 static void refresh_devices(bool first_startup);
 static void init_disk_control_interface(void);
 static bool read_m3u(const char *file);
+static bool disk_select_image(void);
 
 char *game_data;
 char g_base_name[128];
@@ -2778,6 +2779,9 @@ bool retro_load_game(const struct retro_game_info *game)
    disk_labels.clear();
    disk_index     = 0;
    disc_tray_open = false;
+   /* (the drive starts on this content's disc, not on the last one an
+    * earlier content's disc control put in) */
+   settings.imgread.LoadDefaultImage = false;
    if (game_data)
       free(game_data);
    game_data = NULL;
@@ -3172,6 +3176,62 @@ size_t retro_get_memory_size(unsigned type)
  * before that, and is left. */
 #define STATE_HEADROOM 4096
 
+/* Which of the content's discs was in the drive, and whether its lid was
+ * open, follows the machine's state in the room above: without it a state
+ * made with the second disc in was loaded with the first in the drive and
+ * read from it. Words of 0 (an older state) leave the drive as it is, and
+ * an older core does not read past the machine's state. */
+#define DISC_TRAILER_MAGIC 0x43534944   /* "DISC" */
+#define DISC_TRAILER_SIZE  16
+#define DISC_TRAILER_OPEN  1
+#define DISC_TRAILER_IN    2
+
+static void disc_trailer_write(u8 *at)
+{
+   u32 words[4] = { 0, 0, 0, 0 };
+
+   if (settings.System == DC_PLATFORM_DREAMCAST && !disk_paths.empty())
+   {
+      words[0] = DISC_TRAILER_MAGIC;
+      words[1] = 1;
+      words[2] = disk_index;
+      words[3] = (disc_tray_open ? DISC_TRAILER_OPEN : 0)
+         | (libGDR_DiscPresent() ? DISC_TRAILER_IN : 0);
+   }
+   memcpy(at, words, sizeof(words));
+}
+
+static void disc_trailer_read(const u8 *at)
+{
+   u32 words[4];
+   bool in, open;
+
+   memcpy(words, at, sizeof(words));
+   if (words[0] != DISC_TRAILER_MAGIC || words[1] != 1
+         || settings.System != DC_PLATFORM_DREAMCAST)
+      return;
+   open = (words[3] & DISC_TRAILER_OPEN) != 0;
+   in   = (words[3] & DISC_TRAILER_IN) != 0;
+   if (words[2] > disk_paths.size() || (in && (words[2] == disk_paths.size()
+               || disk_paths[words[2]].empty())))
+      return;
+   /* Nothing to do when the same disc is in, which with run-ahead and
+    * rewind is every load but those across a disc change. */
+   if (in == libGDR_DiscPresent() && words[2] == disk_index && open == disc_tray_open)
+      return;
+   disk_index     = words[2];
+   disc_tray_open = open;
+   if (in)
+      in = disk_select_image() && DiscPutBack(settings.imgread.DefaultImage);
+   else
+   {
+      disk_select_image();
+      TermDrive();
+   }
+   if (!in && (words[3] & DISC_TRAILER_IN))
+      WARN_LOG(GDROM, "The state's disc \"%s\" could not be opened", settings.imgread.DefaultImage);
+}
+
 size_t retro_serialize_size (void)
 {
    unsigned int total_size = 0 ;
@@ -3201,7 +3261,7 @@ bool retro_serialize(void *data, size_t size)
       void *nowhere = NULL;
 
       dc_serialize(&nowhere, &needed);
-      if (needed > size)
+      if (needed + DISC_TRAILER_SIZE > size)
       {
 #if !defined(TARGET_NO_THREADS)
          emu_release();
@@ -3214,6 +3274,7 @@ bool retro_serialize(void *data, size_t size)
    // (the same bytes for the same state, whatever was in the frontend's buffer)
    if (total_size < size)
       memset((u8 *)data + total_size, 0, size - total_size);
+   disc_trailer_write((u8 *)data + total_size);
 
 #if !defined(TARGET_NO_THREADS)
    emu_release();
@@ -3256,6 +3317,13 @@ bool retro_unserialize(const void * data, size_t size)
 #endif
 
     result = dc_unserialize(&data_ptr, &total_size, size) ;
+    if (result)
+    {
+       /* (where the machine's state ends in this state, of whichever version) */
+       const size_t end = (size_t)((const u8 *)data_ptr - (const u8 *)data);
+       if (end + DISC_TRAILER_SIZE <= size)
+          disc_trailer_read((const u8 *)data + end);
+    }
 
     mmu_set_state();
     if (!result || mmu_enabled() != mmu_was || mmu_strict != strict_was)
@@ -4707,17 +4775,61 @@ void os_DebugBreak(void)
 #endif
 }
 
+/* The disc the drive is to read when its lid shuts: the one at disk_index,
+ * or none past the end of the list (or at an index added and not filled). */
+static bool disk_select_image(void)
+{
+   settings.imgread.LoadDefaultImage = true;
+   if (disk_index >= disk_paths.size() || disk_paths[disk_index].empty())
+   {
+      settings.imgread.DefaultImage[0] = '\0';
+      return false;
+   }
+   strncpy(settings.imgread.DefaultImage, disk_paths[disk_index].c_str(), sizeof(settings.imgread.DefaultImage));
+   settings.imgread.DefaultImage[sizeof(settings.imgread.DefaultImage) - 1] = '\0';
+   return true;
+}
+
+/* The lid shut on the disc at disk_index. Only a Dreamcast has a drive. */
+static bool disk_close_lid(void)
+{
+   bool ok = true;
+
+#if !defined(TARGET_NO_THREADS)
+   /* (a state may be being saved on the frontend's other thread) */
+   emu_hold();
+#endif
+   if (disk_select_image())
+      ok = DiscSwap();
+   else
+      DiscCloseEmpty();
+#if !defined(TARGET_NO_THREADS)
+   emu_release();
+#endif
+   return ok;
+}
+
 static bool retro_set_eject_state(bool ejected)
 {
+   if (!game_loaded || settings.System != DC_PLATFORM_DREAMCAST)
+      return false;
+   if (ejected == disc_tray_open)
+      return true;
    disc_tray_open = ejected;
    if (ejected)
    {
+#if !defined(TARGET_NO_THREADS)
+      emu_hold();
+#endif
       DiscOpenLid();
+#if !defined(TARGET_NO_THREADS)
+      emu_release();
+#endif
       return true;
    }
    else
    {
-      return DiscSwap();
+      return disk_close_lid();
    }
 }
 
@@ -4733,21 +4845,19 @@ static unsigned retro_get_image_index()
 
 static bool retro_set_image_index(unsigned index)
 {
-   settings.imgread.LoadDefaultImage = true;
+   if (index > disk_paths.size())
+      return false;
+   if (game_loaded && settings.System != DC_PLATFORM_DREAMCAST)
+      return false;
    disk_index = index;
-   if (disk_index >= disk_paths.size())
-   {
-	  // No disk in drive
-	  settings.imgread.DefaultImage[0] = '\0';
-	  return true;
-   }
-   strncpy(settings.imgread.DefaultImage, disk_paths[index].c_str(), sizeof(settings.imgread.DefaultImage));
-   settings.imgread.DefaultImage[sizeof(settings.imgread.DefaultImage) - 1] = '\0';
-
-   if (disc_tray_open)
+   if (!game_loaded)
       return true;
-   else
-      return DiscSwap();
+   if (disc_tray_open)
+   {
+      disk_select_image();
+      return true;
+   }
+   return disk_close_lid();
 }
 
 static unsigned retro_get_num_images()
@@ -4868,10 +4978,30 @@ static void init_disk_control_interface(void)
       environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE, &retro_disk_control_cb);
 }
 
+/* (a line's leading and trailing blanks, and its end of line, taken off) */
+static char *m3u_trim(char *s)
+{
+   size_t len;
+
+   while (*s == ' ' || *s == '\t')
+      s++;
+   len = strlen(s);
+   while (len > 0 && (s[len - 1] == '\r' || s[len - 1] == '\n'
+            || s[len - 1] == ' ' || s[len - 1] == '\t'))
+      s[--len] = '\0';
+   return s;
+}
+
+/* An m3u as RetroArch writes and reads one: a disc's path on each line,
+ * relative to the playlist or absolute, quoted or not, with its label
+ * after a '|' or on an "#EXTINF:<runtime>,<label>" or "#LABEL:<label>"
+ * line before it; other lines starting with '#' and blank lines are
+ * skipped, and so is a UTF-8 byte order mark. */
 static bool read_m3u(const char *file)
 {
    char line[PATH_MAX];
    char name[PATH_MAX];
+   char next_label[PATH_MAX];
    RFILE *f = filestream_open(file, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 
    if (!f)
@@ -4883,42 +5013,67 @@ static bool read_m3u(const char *file)
    /* The discs read from this file: the disc in the drive (disk_index) is
     * chosen once they are all read. */
    unsigned count = 0;
+   bool first = true;
 
+   next_label[0] = '\0';
    while (filestream_gets(f, line, sizeof(line)))
    {
-      if (line[0] == '#')
+      char *entry = line;
+
+      if (first && (u8)entry[0] == 0xEF && (u8)entry[1] == 0xBB && (u8)entry[2] == 0xBF)
+         entry += 3;
+      first = false;
+      entry = m3u_trim(entry);
+
+      if (entry[0] == '#')
+      {
+         const char *label = NULL;
+
+         if (!strncmp(entry, "#EXTINF:", 8))
+         {
+            label = strchr(entry + 8, ',');
+            if (label)
+               label++;
+         }
+         else if (!strncmp(entry, "#LABEL:", 7))
+            label = entry + 7;
+         if (label)
+            snprintf(next_label, sizeof(next_label), "%s", m3u_trim((char *)label));
          continue;
+      }
 
-      char *carriage_return = strchr(line, '\r');
-      if (carriage_return)
-         *carriage_return = '\0';
-
-      char *newline = strchr(line, '\n');
-      if (newline)
-         *newline = '\0';
+      char *bar = strchr(entry, '|');
+      if (bar)
+      {
+         *bar = '\0';
+         snprintf(next_label, sizeof(next_label), "%s", m3u_trim(bar + 1));
+         entry = m3u_trim(entry);
+      }
 
       // Remove any beginning and ending quotes as these can cause issues when feeding the paths into command line later
-      if (line[0] == '"')
-         memmove(line, line + 1, strlen(line));
+      size_t len = strlen(entry);
+      if (len >= 2 && entry[0] == '"' && entry[len - 1] == '"')
+      {
+         entry[len - 1] = '\0';
+         entry = m3u_trim(entry + 1);
+      }
 
-      /* (an empty line has no last character) */
-      size_t len = strlen(line);
-      if (len > 0 && line[len - 1] == '"')
-         line[len - 1]  = '\0';
-
-      if (line[0] != '\0')
+      if (entry[0] != '\0')
       {
          char disk_label[PATH_MAX];
-         disk_label[0] = '\0';
 
-         if (path_is_absolute(line))
-         	snprintf(name, sizeof(name), "%s", line);
+         if (path_is_absolute(entry))
+         	snprintf(name, sizeof(name), "%s", entry);
          else
-         	snprintf(name, sizeof(name), "%s%s", g_roms_dir, line);
+         	snprintf(name, sizeof(name), "%s%s", g_roms_dir, entry);
          disk_paths.push_back(name);
 
-         short_pathname_representation(disk_label, name, sizeof(disk_label));
+         if (next_label[0] != '\0')
+            snprintf(disk_label, sizeof(disk_label), "%s", next_label);
+         else
+            short_pathname_representation(disk_label, name, sizeof(disk_label));
          disk_labels.push_back(disk_label);
+         next_label[0] = '\0';
 
          count++;
       }
