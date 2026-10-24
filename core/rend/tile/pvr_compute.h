@@ -298,6 +298,7 @@
 #define PVRC_R_EXTRA 15u
 #define PVRC_R_M     16u
 #define PVRC_R_ESH   22u   /* edge k's byte: sa | t << 4 (both 0 without a shift) */
+#define PVRC_R_AREA  23u   /* (float) without a shift, the sum of its edges, which is the same at every place: the sum of their m */
 #define PVRC_RX_FRONT 1u   /* (a volume's) facing the front, the device's way */
 #define PVRC_RX_BACK  2u
 #define PVRC_RX_CULLED 4u  /* culled by its own parameter */
@@ -754,6 +755,8 @@ int64_t rec_edge(uint r, uint k, uint sh, int px, int py)
    const int64_t l = int64_t(d.x) * int64_t(py) - int64_t(d.y) * int64_t(px);
    /* (one formula for both: without a shift sa, t and sh are 0, and it is
     * m + l, which is never rounded to 0) */
+   if (sh == 0u)
+      return m + l;
    const uint es = rec.w[r + PVRC_R_ESH] >> (8u * k);
    const uint sa = es & 15u, t = (es >> 4) & 15u;
    const int64_t x = m + (l >> sa);
@@ -1075,6 +1078,7 @@ void main()
       esh |= (sa | (t << 4)) << (8u * k);
    }
    rec.w[r + PVRC_R_ESH] = esh;
+   rec.w[r + PVRC_R_AREA] = floatBitsToUint(shift == 0u ? float(rec_m(r, 0u) + rec_m(r, 1u) + rec_m(r, 2u)) : 0.0);
    for (uint k = 0u; k < 3u; k++)
    {
       rec.w[r + PVRC_R_Q + k] = floatBitsToUint(q[k]);
@@ -1710,12 +1714,12 @@ struct Bary
    float w;	/* 1/w (gl_FragCoord.w) */
 };
 
-Bary rec_bary(uint r, i64vec3 e)
+Bary rec_bary_at(uint r, i64vec3 e, bool sum)
 {
    Bary b;
    PVRC_INVARIANT float f0, f1, f2;
    PVRC_INVARIANT float b0 = float(e.x), b1 = float(e.y), b2 = float(e.z);
-   PVRC_INVARIANT float area = float(e.x + e.y + e.z);
+   PVRC_INVARIANT float area = !sum && rec_shift(r) == 0u ? uintBitsToFloat(rec.w[r + PVRC_R_AREA]) : float(e.x + e.y + e.z);
    f0 = b0 * uintBitsToFloat(rec.w[r + PVRC_R_Q]);
    f1 = b1 * uintBitsToFloat(rec.w[r + PVRC_R_Q + 1u]);
    f2 = b2 * uintBitsToFloat(rec.w[r + PVRC_R_Q + 2u]);
@@ -1727,6 +1731,11 @@ Bary rec_bary(uint r, i64vec3 e)
    PVRC_INVARIANT float w = s / area;
    b.w = w;
    return b;
+}
+
+Bary rec_bary(uint r, i64vec3 e)
+{
+   return rec_bary_at(r, e, false);
 }
 
 float bary_mix(Bary b, float a0, float a1, float a2)
@@ -2437,7 +2446,7 @@ void main()
                               const i64vec3 ec = rec_edges(r, g_cx, g_cy);
                               if (cand == (1u << PVRC_SAMPLES) - 1u)
                                  es = ec;
-                              const float z = pvrc_depth(rec_bary(r, es).w);
+                              const float z = pvrc_depth(rec_bary_at(r, es, cand != (1u << PVRC_SAMPLES) - 1u).w);
                               if ((frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
                               {
                                  const uint c0 = frm.w[pp + PVRC_Q_CLIP], c1 = frm.w[pp + PVRC_Q_CLIP + 1u];
