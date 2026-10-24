@@ -634,6 +634,30 @@ void VulkanContext::PresentFrame(vk::Image image, vk::ImageView imageView, vk::O
 	heap.Frame();
 }
 
+/* The frontend keeps the last picture it was handed and draws it again
+ * for as long as no other comes: on a frame the game draws nothing new
+ * in, behind its menu, and - with threaded video - from its video thread
+ * while this thread has gone on, so that a picture handed over can still
+ * be in a frame not yet drawn. wait_sync_index does not cover that (it is
+ * for the index the core draws into next, and RetroArch's own driver
+ * waits for nothing). A picture destroyed is a picture the frontend then
+ * reads freed memory from. So the frontend is told to let go of it first,
+ * by an image of none: RetroArch's threaded video draws what it has
+ * queued and waits for its own submissions then. The queue the frontend
+ * and the core share is then waited out, for a frontend that only forgets
+ * the image and whatever it submitted with it. A change of renderer is
+ * rare and the machine stands still for it; no frame waits here. The next
+ * picture the new renderer draws is handed over as ever. */
+void VulkanContext::ReleasePicture()
+{
+	if (retro_render_if == nullptr || !device)
+		return;
+	retro_render_if->set_image(retro_render_if->handle, nullptr, 0, nullptr, VK_QUEUE_FAMILY_IGNORED);
+	retro_render_if->lock_queue(retro_render_if->handle);
+	(void)queue.waitIdle();
+	retro_render_if->unlock_queue(retro_render_if->handle);
+}
+
 void VulkanContext::Term()
 {
 	if (device)

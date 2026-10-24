@@ -63,6 +63,9 @@ public:
 	int GetCurrentImageIndex() const { return retro_render_if->get_sync_index(retro_render_if->handle); }
 	// FIXME that's not quite correct
 	void WaitIdle() const { retro_render_if->wait_sync_index(retro_render_if->handle); }
+	/* Before the pictures handed to the frontend are destroyed: when the
+	 * renderer is taken down (another one, or the context going) */
+	void ReleasePicture();
 	void SubmitCommandBuffers(u32 bufferCount, vk::CommandBuffer *buffers, vk::Fence fence) {
 		retro_render_if->lock_queue(retro_render_if->handle);
 		queue.submit(vk::SubmitInfo(0, nullptr, nullptr, bufferCount, buffers, 0, nullptr), fence);

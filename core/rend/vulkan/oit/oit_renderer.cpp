@@ -105,7 +105,8 @@ public:
 	{
 		DEBUG_LOG(RENDERER, "VulkanRenderer::Term");
 		GetContext()->LogVramUsage();
-		GetContext()->WaitIdle();
+		// (the frontend lets go of the pictures before they go)
+		GetContext()->ReleasePicture();
 		texCommandPool.WaitAll();
 		computeDrawer.Term();
 		oitShaderManager.Term();
