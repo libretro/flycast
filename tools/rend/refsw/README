@@ -93,6 +93,16 @@ refsw_pixel.cpp
     TAG_INVALID): every punch-through pixel was shaded with another
     entry's parameters, or with what lay past the end of the list - on Jet
     Grind Radio's street (its trees) a null tsp function, and a crash.
+  - An alpha of 255 stays 255, as the chip's must: a game sets
+    PT_ALPHA_REF to 255 and its punch-through texels pass where they are
+    opaque (Jet Grind Radio's trees). libswirl lost the lowest bit in
+    three places, so that nothing passed: the interpolated base colour is
+    taken to the nearest of 0..255 (InterpolateBase(), Unorm8(); libswirl
+    cut a float of 254.99 to 254), the bilinear filter's weights are 256
+    - f and f (libswirl's 255 - f and f, summed in four parts each cut
+    down, made 255 at most 253), and the modulating shading instructions
+    multiply by base + 1 over 256 (libswirl's base over 256 made 255 x 255
+    254).
 Everything else - the rasterizer, the depth tests, the peeling, the texture
 fetch, the colour combiner, fog, blending - is libswirl's text unchanged
 (diff the files against libswirl/rend/soft to see).

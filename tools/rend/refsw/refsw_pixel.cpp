@@ -132,16 +132,16 @@ struct RefPixelPipeline : PixelPipeline {
             // Bilinear filtering
             int ublend = ui & 255;
             int vblend = vi & 255;
-            int nublend = 255 - ublend;
-            int nvblend = 255 - vblend;
+            int nublend = 256 - ublend;
+            int nvblend = 256 - vblend;
 
             for (int i = 0; i < 4; i++)
             {
                 textel.bgra[i] =
-                    (px.m128i_u8[0 + i] * ublend * vblend) / 65536 +
-                    (px.m128i_u8[4 + i] * nublend * vblend) / 65536 +
-                    (px.m128i_u8[8 + i] * ublend * nvblend) / 65536 +
-                    (px.m128i_u8[12 + i] * nublend * nvblend) / 65536;
+                    (px.m128i_u8[0 + i] * ublend * vblend +
+                    px.m128i_u8[4 + i] * nublend * vblend +
+                    px.m128i_u8[8 + i] * ublend * nvblend +
+                    px.m128i_u8[12 + i] * nublend * nvblend) / 65536;
             };
         } else {
             // trilinear filtering A and B
@@ -177,7 +177,7 @@ struct RefPixelPipeline : PixelPipeline {
                 //color.a = texcol.a;
                 for (int i = 0; i < 3; i++)
                 {
-                    rv.bgra[i] = textel.bgra[i] * base.bgra[i] / 256;
+                    rv.bgra[i] = textel.bgra[i] * (base.bgra[i] + 1) / 256;
                 }
 
                 rv.a = textel.a;
@@ -200,7 +200,7 @@ struct RefPixelPipeline : PixelPipeline {
                 //color*=texcol
                 for (int i = 0; i < 4; i++)
                 {
-                    rv.bgra[i] = textel.bgra[i] * base.bgra[i] / 256;
+                    rv.bgra[i] = textel.bgra[i] * (base.bgra[i] + 1) / 256;
                 }
             }
 
@@ -216,6 +216,12 @@ struct RefPixelPipeline : PixelPipeline {
         return rv;
     }
 
+    // An interpolated colour channel to the nearest of 0..255
+    INLINE static u32 Unorm8(float f) {
+        f += 0.5f;
+        return f >= 255.0f ? 255 : f > 0.0f ? (u32)f : 0;
+    }
+
     // Interpolate the base color, also cheap shadows modifier
     template<bool pp_UseAlpha, bool pp_CheapShadows>
     INLINE static Color InterpolateBase(const PlaneStepper3* Col, float x, float y, float W, u32 stencil) {
@@ -228,10 +234,10 @@ struct RefPixelPipeline : PixelPipeline {
             }
         }
 
-        rv.bgra[0] = Col[2].Ip(x, y, W) * mult / 256;   // FIXME: why is input in RGBA instead of BGRA here?
-        rv.bgra[1] = Col[1].Ip(x, y, W) * mult / 256;
-        rv.bgra[2] = Col[0].Ip(x, y, W) * mult / 256;
-        rv.bgra[3] = Col[3].Ip(x, y, W) * mult / 256;    
+        rv.bgra[0] = Unorm8(Col[2].Ip(x, y, W)) * mult / 256;   // FIXME: why is input in RGBA instead of BGRA here?
+        rv.bgra[1] = Unorm8(Col[1].Ip(x, y, W)) * mult / 256;
+        rv.bgra[2] = Unorm8(Col[0].Ip(x, y, W)) * mult / 256;
+        rv.bgra[3] = Unorm8(Col[3].Ip(x, y, W)) * mult / 256;
 
         if (!pp_UseAlpha)
         {
