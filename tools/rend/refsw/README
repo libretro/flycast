@@ -107,6 +107,12 @@ refsw_pixel.cpp
     TAG_INVALID): every punch-through pixel was shaded with another
     entry's parameters, or with what lay past the end of the list - on Jet
     Grind Radio's street (its trees) a null tsp function, and a crash.
+    The TSP is run there only for the test: the pixel's tag and colours
+    are put back as they were after it. PixelFlush_tsp() marks the tag it
+    finds shaded and blends into the accumulation buffers, so a texel that
+    failed the test left the opaque polygon behind it marked shaded and
+    never shaded: on the jgr13 frame the building and the pole behind the
+    trees' edges kept whatever the tile's colour buffer held before.
   - An alpha of 255 stays 255, as the chip's must: a game sets
     PT_ALPHA_REF to 255 and its punch-through texels pass where they are
     opaque (Jet Grind Radio's trees). libswirl lost the lowest bit in

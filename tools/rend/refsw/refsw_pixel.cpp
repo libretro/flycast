@@ -453,8 +453,23 @@ struct RefPixelPipeline : PixelPipeline {
     static bool AlphaTest_tsp(refsw* backend, float x, float y, u8 *rb, float invW, parameter_tag_t tag)
     {
         auto entry = &backend->fpu_entires[(tag>>1) - 1];
-        
-        return entry->tsp(entry, x, y, 1/invW, rb);
+
+        // (this core) the TSP is run here only for the alpha test: the
+        // pixel's tag and colour are left as they were (PixelFlush_tsp()
+        // marks the tag shaded and blends into the colour), so that the
+        // pixel is shaded with the list's other tags afterwards - a
+        // polygon behind a texel that fails the test included
+        auto pb = (parameter_tag_t*)&rb[PARAM_BUFFER_PIXEL_OFFSET * 4];
+        auto cb = (Color*)&rb[ACCUM1_BUFFER_PIXEL_OFFSET * 4];
+        const parameter_tag_t tag_was = *pb;
+        const Color colour_was = cb[0], colour2_was = cb[MAX_RENDER_PIXELS];
+
+        bool rv = entry->tsp(entry, x, y, 1/invW, rb);
+
+        *pb = tag_was;
+        cb[0] = colour_was;
+        cb[MAX_RENDER_PIXELS] = colour2_was;
+        return rv;
     }
 
     // Depth processing for a pixel -- render_mode 0: OPAQ, 1: PT, 2: TRANS
