@@ -23,6 +23,17 @@
 # with KEEP=1 or when $WORK is given. TILE_WATERFALL=1: the walk that takes
 # its textures in turns, for a device without non-uniform indexing.
 #
+# Each frame is then held against the geometry by tile_geo.c: what the
+# reference covers (the kernels' arithmetic) against the triangles' exact
+# coverage from their float vertices in double precision, at the sample
+# counts of TILE_GEO_SAMPLES (default "1 4"), with the options of
+# TILE_GEO_ARGS (-a: every sample, not the bands about the edges);
+# TILE_GEO=0 not. A fault of the kernels' arithmetic is in the reference
+# too, so only this sees it.
+#   sh tools/rend/tile_test.sh -g FRAME...
+#        frames written before, held against the geometry only (no device,
+#        no glslangValidator: a few seconds a frame)
+#
 # TILE_DEVICE=d3d12: the frames drawn by the Direct3D 12 renderers' kernels
 # instead (tile_test_d3d12.c), as HLSL made DXIL by kernels_dx12.sh
 # compute-test, which needs DXC=/path/to/dxc; the program built with
@@ -36,6 +47,24 @@ if [ -z "$WORK" ]; then
    [ -n "$KEEP" ] || trap 'rm -rf "$WORK"' EXIT
 fi
 mkdir -p "$WORK"
+
+# the geometry's check (no device)
+[ "$TILE_GEO" = 0 ] || ${CC:-cc} -std=c99 -O2 -ffp-contract=off -fopenmp -Wall -Wno-unused-function -Icore/rend/tile -Icore/libretro-common/include \
+   -o "$WORK/tile_geo" tools/rend/tile_geo.c -lm
+# @1... the frames
+geo() {
+   [ "$TILE_GEO" = 0 ] && return 0
+   TILE_SAMPLES="${TILE_GEO_SAMPLES:-1 4}" "$WORK/tile_geo" $TILE_GEO_ARGS "$@" > "$WORK/geo.out" || true
+   grep -v '^  ' "$WORK/geo.out" || true
+   grep '^  ' "$WORK/geo.out" | head -16
+   [ "$(tail -1 "$WORK/geo.out")" = "tile_geo: PASS" ]
+}
+if [ "$1" = -g ]; then
+   shift
+   geo "$@"
+   exit $?
+fi
+
 sh tools/rend/kernels_spv.sh check
 DEVICE=${TILE_DEVICE:-vulkan}
 [ "$DEVICE" = vulkan ] || [ "$DEVICE" = d3d12 ] || { echo "TILE_DEVICE is vulkan or d3d12" >&2; exit 2; }
@@ -109,11 +138,13 @@ compare() {
 if [ "$1" = -f ]; then
    shift
    compare "$@" | tee "$WORK/out"
-   [ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ]
-   exit $?
+   rc=0
+   [ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ] || rc=1
+   geo "$@" || rc=1
+   exit $rc
 fi
 if [ $# -lt 2 ]; then
-   echo "usage: $0 CONTENT FRAMES [key=value ...] | -f FRAME..." >&2
+   echo "usage: $0 CONTENT FRAMES [key=value ...] | -f FRAME... | -g FRAME..." >&2
    exit 2
 fi
 [ -f core/hw/pvr/ta_vtx.o ] || { echo "build the core first: core/hw/pvr/ta_vtx.o is not there" >&2; exit 1; }
@@ -141,4 +172,7 @@ grep '^tile_dump' "$WORK/dump.out" || true
 DUMPED=$(ls "$WORK/frames"/frame_*.bin "$WORK/frames"/rtt_*.bin 2>/dev/null || true)
 [ -n "$DUMPED" ] || { echo "tile_test: no frames written" >&2; exit 1; }
 compare $DUMPED | tee "$WORK/out"
-[ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ]
+rc=0
+[ "$(tail -1 "$WORK/out")" = "tile_test: PASS" ] || rc=1
+geo $DUMPED || rc=1
+exit $rc

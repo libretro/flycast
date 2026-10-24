@@ -141,6 +141,15 @@ What the walk takes from the parse, and the known departures
   flag), nor a translucent polygon's own depth compare mode (it forces
   less-or-equal for peeling and greater-or-equal for punch-through and
   modifier volumes, as the comments in PixelFlush_isp say).
+- refsw's rasterizer takes a triangle's edges in 32-bit float from its
+  vertices on the screen, so a triangle with vertices hundreds of millions
+  of pixels out (a game's shadow volumes, near the eye: Jet Grind Radio's
+  are 1e9 pixels out) can be wrong by many pixels: on the jgr13 frame a
+  volume triangle with two vertices that far out covers pixels of the
+  street it does not (the exact geometry says), and the shadow has light
+  stripes there. The compute renderer's coverage is held to the exact geometry
+  by tools/rend/tile_geo.c; where the two pictures differ in a shadow
+  with vertices that far out, refsw is the one that is wrong.
 - Render passes (several region array entries for a tile): walked in
   order; the first clears the buffers, a later one when its RenderPass
   says z_clear.
