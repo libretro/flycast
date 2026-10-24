@@ -367,7 +367,7 @@ void initABuffer()
 		for (int mode = 0; mode < ModeCount; mode++)
 		{
 			sprintf(source, tr_modvol_shader_source, mode);
-			gl4CompilePipelineShader(&g_abuffer_tr_modvol_shaders[mode], source, VertexShaderSource);
+			gl4CompilePipelineShader(&g_abuffer_tr_modvol_shaders[mode], source);
 		}
 	}
 
