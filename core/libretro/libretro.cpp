@@ -340,6 +340,8 @@ static unsigned disk_index = 0;
 static std::vector<std::string> disk_paths;
 static std::vector<std::string> disk_labels;
 static bool disc_tray_open = false;
+/* retro_load_game() went through, and retro_unload_game() has a machine to stop */
+static bool game_loaded = false;
 
 #if !defined(TARGET_NO_THREADS)
 /* Threaded rendering: the machine runs here, one frame for each retro_run.
@@ -3051,6 +3053,7 @@ bool retro_load_game(const struct retro_game_info *game)
    if (devices_need_refresh)
       refresh_devices(true);
 
+   game_loaded = true;
    return true;
 }
 
@@ -3061,6 +3064,21 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 void retro_unload_game(void)
 {
+   /* A load that did not go through (no renderer the frontend would give:
+    * RetroArch's second instance for run-ahead asks a core it has loaded a
+    * second time for a game, refuses it a context, and unloads it) has no
+    * machine to stop: the processor's functions are not there to call. */
+   if (!game_loaded)
+   {
+      if (game_data)
+         free(game_data);
+      game_data = NULL;
+      disk_paths.clear();
+      disk_labels.clear();
+      disk_index = 0;
+      return;
+   }
+   game_loaded = false;
    /* The machine is going, video memory with it: nothing is to be written
     * there after this (the context is destroyed later than this). */
    rtt_watch_forget();
