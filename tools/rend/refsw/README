@@ -129,6 +129,13 @@ refsw_pixel.cpp
     down, made 255 at most 253), and the modulating shading instructions
     multiply by base + 1 over 256 (libswirl's base over 256 made 255 x 255
     254).
+  - The bilinear filter takes its four texels each clamped, flipped or
+    wrapped on its own (FULL_FILTERING, libswirl's other way, now set at
+    the top of the file). libswirl's default took the 2x2 block stored
+    with the top left texel after clamping or flipping it, and the
+    block's other texels wrap, so within half a texel of a clamped edge
+    the filter mixed a texture's first column with its second (or its
+    last with its first), and at a flipped edge with the opposite edge's.
 Everything else - the rasterizer (but for a triangle far out: refsw.h), the
 depth tests, the peeling, the texture fetch, the colour combiner, fog, blending - is libswirl's text unchanged
 (diff the files against libswirl/rend/soft to see).
@@ -154,7 +161,8 @@ What the walk takes from the parse, and the known departures
 - Textures are made by this core's texture cache (TexCache.o linked in),
   so the texels are the ones the renderers get, laid out as libswirl's
   software renderers want them (16 bytes a texel: the 2x2 block at
-  (u+1,v+1), (u,v+1), (u+1,v), (u,v) in BGRA, wrapping at the edges).
+  (u+1,v+1), (u,v+1), (u+1,v), (u,v) in BGRA, wrapping at the edges; the
+  filter takes the (u,v) texel of each of four blocks).
   Largest level only: refsw has no mipmapping (nor trilinear, which it
   refuses). Palettes come from the dumped registers (palette_update()).
 - Sprites are the two triangles the parse makes of them, not the chip's

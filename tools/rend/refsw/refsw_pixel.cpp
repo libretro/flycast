@@ -13,6 +13,14 @@
 #include <cmath>
 #include <cfloat>
 
+// (this core) the bilinear filter's four texels each clamped, flipped or
+// wrapped on its own, as the chip's are: libswirl's default took the 2x2
+// block of the clamped top left texel, whose other texels wrap, so that
+// within half a texel of a clamped edge the filter mixed the wrong texels
+// (a clamped texture's first column with its second, its last with its
+// first)
+#define FULL_FILTERING 1
+
 #include <mmintrin.h>
 #include <xmmintrin.h>
 #include <emmintrin.h>
