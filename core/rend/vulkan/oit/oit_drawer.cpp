@@ -262,6 +262,10 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 				listDraws.Barrier();
 				pipeline = pipelineManager->GetTrModifierVolumePipeline(mv_mode == 1 ? ModVolMode::Inclusion : ModVolMode::Exclusion, param.isp.CullMode);
 				listDraws.Draw(pipeline, scissor, (param.first + param.count - mod_base) * 3, mod_base * 3);
+				/* ...and done before the next volume's draws start: this
+				 * draw clears the stencil bit the next volume's toggle, and
+				 * sets the fragments it finds inside from what it read */
+				listDraws.Barrier();
 			}
 			else
 			{

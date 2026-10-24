@@ -570,7 +570,8 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 
 	ModifierVolumeParam* params = useOpaqueGeom ? &pvrrc.global_param_mvo.head()[first] : &pvrrc.global_param_mvo_tr.head()[first];
 
-	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+	// (the lists the translucent polygons' shaders wrote, done before the volumes read them)
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
 	int mod_base = -1;
 	ListDraws listDraws;
@@ -594,15 +595,15 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 			shader = &g_abuffer_tr_modvol_shaders[Or];	// OR'ing (open volume or quad)
 		else
 			shader = &g_abuffer_tr_modvol_shaders[Xor];	// XOR'ing (closed volume)
-		glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 		listDraws.Draw(shader, param.isp.CullMode, param.first * 3, param.count * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
-			//Sum the area
+			//Sum the area: once the volume's toggles are done, and done before the next volume's start
+			listDraws.Barrier();
 			shader = &g_abuffer_tr_modvol_shaders[mv_mode == 1 ? Inclusion : Exclusion];
-			glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 			listDraws.Draw(shader, param.isp.CullMode, mod_base * 3, (param.first + param.count - mod_base) * 3);
+			listDraws.Barrier();
 			mod_base = -1;
 		}
 	}
@@ -716,7 +717,8 @@ void renderABuffer()
 	gl4ScissorOff();
 	// what the last polygon blended with is no business of the lists being put on the picture
 	glcache.Disable(GL_BLEND);
-	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+	// (and what the polygons' and the volumes' shaders wrote to the lists, done)
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
 	abufferDrawQuad();
 
