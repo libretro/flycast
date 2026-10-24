@@ -366,8 +366,10 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, pvrrc.global_param_mvo.head(), param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -382,21 +384,21 @@ void Drawer::DrawModVols(const vk::CommandBuffer& cmdBuffer, int first, int coun
 		}
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		if (!param.isp.VolumeLast && mv_mode > 0)
 			pipeline = pipelineManager->GetModifierVolumePipeline(ModVolMode::Or, param.isp.CullMode);	// OR'ing (open volume or quad)
 		else
 			pipeline = pipelineManager->GetModifierVolumePipeline(ModVolMode::Xor, param.isp.CullMode);	// XOR'ing (closed volume)
 		cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-		cmdBuffer.draw(param.count * 3, 1, param.first * 3, 0);
+		cmdBuffer.draw(mvCount * 3, 1, mvFirst * 3, 0);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			// Sum the area
 			pipeline = pipelineManager->GetModifierVolumePipeline(mv_mode == 1 ? ModVolMode::Inclusion : ModVolMode::Exclusion, param.isp.CullMode);
 			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-			cmdBuffer.draw((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
+			cmdBuffer.draw((mvFirst + mvCount - mod_base) * 3, 1, mod_base * 3, 0);
 			mod_base = -1;
 		}
 	}
@@ -437,7 +439,7 @@ void Drawer::UploadMainBuffer(const FragmentShaderUniforms& fragmentUniforms)
 
 	// (a frame decoded on the GPU has its geometry there)
 	const u32 vertexBytes = pvrrc.gpu ? 0 : pvrrc.verts.bytes();
-	const u32 modVolBytes = pvrrc.gpu ? 0 : pvrrc.modtrig.bytes();
+	const u32 modVolBytes = ModVolsOnCpu() ? ModVolList().bytes() : 0;
 	const u32 indexBytes = pvrrc.gpu ? 0 : pvrrc.idx.bytes();
 
 	// Vertex
@@ -450,7 +452,7 @@ void Drawer::UploadMainBuffer(const FragmentShaderUniforms& fragmentUniforms)
 	chunkSizes.push_back(padding);
 
 	// Modifier Volumes
-	chunks.push_back(pvrrc.modtrig.head());
+	chunks.push_back(ModVolList().head());
 	chunkSizes.push_back(modVolBytes);
 	padding = align(offsets.modVolOffset + modVolBytes, 4);
 	offsets.indexOffset = offsets.modVolOffset + modVolBytes + padding;

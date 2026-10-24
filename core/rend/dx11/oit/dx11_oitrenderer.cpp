@@ -588,8 +588,10 @@ void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		const ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, modVolParams, param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -604,7 +606,7 @@ void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 		}
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		SetCullMode(param.isp.CullMode);
 		if (!param.isp.VolumeLast && mv_mode > 0)
@@ -623,7 +625,7 @@ void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			else
 				SetDepthStencil(depthStencilStates.Get(true, false, 4, DX11Stencil::Xor), 2);
 		}
-		deviceContext->Draw(param.count * 3, modVolBase + param.first * 3);
+		deviceContext->Draw(mvCount * 3, modVolBase + mvFirst * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
@@ -632,7 +634,7 @@ void DX11OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 				SetPS(oitShaders.GetTrModVolPixelShader(mv_mode == 1 ? DX11OITShaders::Inclusion : DX11OITShaders::Exclusion));
 			else
 				SetDepthStencil(depthStencilStates.Get(false, false, 7, mv_mode == 1 ? DX11Stencil::Inclusion : DX11Stencil::Exclusion), 1);
-			deviceContext->Draw((param.first + param.count - mod_base) * 3, modVolBase + mod_base * 3);
+			deviceContext->Draw((mvFirst + mvCount - mod_base) * 3, modVolBase + mod_base * 3);
 			mod_base = -1;
 		}
 	}

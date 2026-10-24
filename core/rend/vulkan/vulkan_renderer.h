@@ -37,6 +37,7 @@ public:
 	virtual void Term() override
 	{
 		ta_set_flat_strips(false);
+		ta_set_modvol_clip(false);
 		shaderManager.Term();
 		vmus.reset();
 		quadPipeline.Term();
@@ -122,6 +123,9 @@ public:
 		/* SSAA draws flat strips at a single rate: the parse and the GPU's
 		 * decode's header pass look for them then, and only then */
 		ta_set_flat_strips(samples > 1);
+		/* the modifier volumes' triangles far off the screen cut before the
+		 * GPU clips them (rend/modvol_clip.h) */
+		ta_set_modvol_clip(true);
 		/* GPU-side TA processing: the header pass makes the frame ready to
 		 * be drawn from the GPU's decode, in the full parse's place; or it
 		 * is parsed as ever */

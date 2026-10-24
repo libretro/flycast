@@ -24,6 +24,7 @@
 #include "rend/last_picture.h"
 #include <algorithm>
 #include <cmath>
+#include "rend/modvol_clip.h"
 
 extern int screen_width, screen_height;
 
@@ -135,6 +136,7 @@ void DX9Renderer::Term()
 	if (device != nullptr)
 		context->SetFrame(nullptr);
 	dx9_rtt_term();
+	ta_set_modvol_clip(false);
 	texCache.Clear();
 	// (what the cache's textures had is back in the pool by now)
 	DX9Texture::SetPool(nullptr);
@@ -270,6 +272,8 @@ bool DX9Renderer::ProcessLocked(TA_context* ctx)
 		texCache.Clear();
 	}
 
+	// the modifier volumes' triangles far off the screen cut before the GPU clips them (rend/modvol_clip.h)
+	ta_set_modvol_clip(true);
 	bool result = ta_parse_vdrc(ctx);
 	// the textures the frame's polygons asked for that are drawn on the GPU, before its scene
 	texDecoder.Flush();
@@ -419,7 +423,9 @@ bool DX9Renderer::UploadGeometry()
 {
 	const u32 vertexBytes = pvrrc.verts.bytes();
 	const u32 indexBytes = pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
-	const u32 modVolBytes = pvrrc.modtrig.bytes();
+	// (the volumes' triangles with those far off the screen cut, when the frame has them: rend/modvol_clip.h)
+	const List<ModTriangle>& modVolList = pvrrc.mv_clip.used() != 0 ? pvrrc.mv_clip : pvrrc.modtrig;
+	const u32 modVolBytes = modVolList.bytes();
 	const u32 modVolSize = sizeof(float) * 3;
 	/* Each at a multiple of its size, as the draws count them; after what
 	 * the renders before this one have put there, and not over any of it -
@@ -463,7 +469,7 @@ bool DX9Renderer::UploadGeometry()
 			return false;
 		memcpy(data, pvrrc.verts.head(), vertexBytes);
 		if (modVolBytes != 0)
-			memcpy((u8 *)data + (modVols - vertices), pvrrc.modtrig.head(), modVolBytes);
+			memcpy((u8 *)data + (modVols - vertices), modVolList.head(), modVolBytes);
 		vertexBuffer->Unlock();
 	}
 	if (indexBytes != 0)
@@ -1160,8 +1166,10 @@ void DX9Renderer::DrawModVols(int first, int count, const RenderPass& previous_p
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, pvrrc.global_param_mvo.head(), param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -1172,7 +1180,7 @@ void DX9Renderer::DrawModVols(int first, int count, const RenderPass& previous_p
 		const bool visible = context->SetScissor(SetTileClip(param.tileclip, clipRect) == TileClipping::Outside ? clipRect : baseScissor);
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		SetCullMode(param.isp.CullMode);
 		if (!param.isp.VolumeLast && mv_mode > 0)
@@ -1180,14 +1188,14 @@ void DX9Renderer::DrawModVols(int first, int count, const RenderPass& previous_p
 		else
 			context->SetDepthStencil(true, false, 4, DX9Stencil_Xor, 2);	// XOR'ing (closed volume)
 		if (visible)
-			device->DrawPrimitive(D3DPT_TRIANGLELIST, modVolBase + param.first * 3, param.count);
+			device->DrawPrimitive(D3DPT_TRIANGLELIST, modVolBase + mvFirst * 3, mvCount);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			// Sum the area
 			context->SetDepthStencil(false, false, 7, mv_mode == 1 ? DX9Stencil_Inclusion : DX9Stencil_Exclusion, 1);
 			if (visible)
-				device->DrawPrimitive(D3DPT_TRIANGLELIST, modVolBase + mod_base * 3, param.first + param.count - mod_base);
+				device->DrawPrimitive(D3DPT_TRIANGLELIST, modVolBase + mod_base * 3, mvFirst + mvCount - mod_base);
 			mod_base = -1;
 		}
 	}

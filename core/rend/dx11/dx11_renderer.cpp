@@ -176,6 +176,7 @@ void DX11Renderer::Term()
 	}
 	DX11Context::Instance()->SetFrame(nullptr, nullptr);
 	taDecoder.Term();
+	ta_set_modvol_clip(false);
 	dx11_rtt_term();
 	texCache.Clear();
 	// (what the cache's textures had is back in the pool by now)
@@ -310,6 +311,8 @@ bool DX11Renderer::ProcessLocked(TA_context* ctx)
 		texCache.Clear();
 	}
 
+	// the modifier volumes' triangles far off the screen cut before the GPU clips them (rend/modvol_clip.h)
+	ta_set_modvol_clip(true);
 	/* GPU-side TA processing: the header pass makes the frame ready to be
 	 * drawn from the GPU's decode, in the full parse's place, which is run
 	 * now; or it is parsed as ever */
@@ -475,7 +478,8 @@ static u32 layGeometry(u32 start, u32 vertexBytes, u32 indexBytes, u32 modVolByt
 
 bool DX11Renderer::UploadGeometry()
 {
-	if (pvrrc.gpu)
+	const bool gpu = pvrrc.gpu;
+	if (gpu && pvrrc.mv_clip.used() == 0)
 	{
 		// (the decode's, on the GPU, each from its start)
 		vertexBase = 0;
@@ -484,9 +488,12 @@ bool DX11Renderer::UploadGeometry()
 		haveModVols = pvrrc.gpu_modtrig != 0;
 		return true;
 	}
-	const u32 vertexBytes = pvrrc.verts.bytes();
-	const u32 indexBytes = pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
-	const u32 modVolBytes = pvrrc.modtrig.bytes();
+	/* (decoded on the GPU but with volume triangles cut: rend/modvol_clip.h)
+	 * the cut ones, here, and the rest the decode's */
+	const List<ModTriangle>& modVolList = pvrrc.mv_clip.used() != 0 ? pvrrc.mv_clip : pvrrc.modtrig;
+	const u32 vertexBytes = gpu ? 0 : pvrrc.verts.bytes();
+	const u32 indexBytes = gpu ? 0 : pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
+	const u32 modVolBytes = modVolList.bytes();
 	u32 vertices, indexes, modVols;
 	u32 end = layGeometry(geometryUsed, vertexBytes, indexBytes, modVolBytes, vertices, indexes, modVols);
 	/* After what the renders before this one have put there, and not over
@@ -523,23 +530,26 @@ bool DX11Renderer::UploadGeometry()
 	if (FAILED(deviceContext->Map(geometry, 0, mode, 0, &mapped)))
 		return false;
 	u8 *base = (u8 *)mapped.pData;
-	memcpy(base + vertices, pvrrc.verts.head(), vertexBytes);
-	u8 *dst = base + indexes;
-	memcpy(dst, pvrrc.idx.head(), pvrrc.idx.bytes());
-	dst += pvrrc.idx.bytes();
-	for (const std::vector<u32>& idx : sortedIndexes)
-		if (!idx.empty())
-		{
-			memcpy(dst, idx.data(), idx.size() * sizeof(u32));
-			dst += idx.size() * sizeof(u32);
-		}
+	if (!gpu)
+	{
+		memcpy(base + vertices, pvrrc.verts.head(), vertexBytes);
+		u8 *dst = base + indexes;
+		memcpy(dst, pvrrc.idx.head(), pvrrc.idx.bytes());
+		dst += pvrrc.idx.bytes();
+		for (const std::vector<u32>& idx : sortedIndexes)
+			if (!idx.empty())
+			{
+				memcpy(dst, idx.data(), idx.size() * sizeof(u32));
+				dst += idx.size() * sizeof(u32);
+			}
+	}
 	if (modVolBytes != 0)
-		memcpy(base + modVols, pvrrc.modtrig.head(), modVolBytes);
+		memcpy(base + modVols, modVolList.head(), modVolBytes);
 	deviceContext->Unmap(geometry, 0);
 	geometryUsed = end;
 
-	vertexBase = (INT)(vertices / sizeof(Vertex));
-	indexBase = indexes / sizeof(u32);
+	vertexBase = gpu ? 0 : (INT)(vertices / sizeof(Vertex));
+	indexBase = gpu ? 0 : indexes / sizeof(u32);
 	modVolBase = modVols / (sizeof(float) * 3);
 	haveModVols = modVolBytes != 0;
 	return true;
@@ -1395,8 +1405,10 @@ void DX11Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, pvrrc.global_param_mvo.head(), param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -1411,20 +1423,20 @@ void DX11Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 		}
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		SetCullMode(param.isp.CullMode);
 		if (!param.isp.VolumeLast && mv_mode > 0)
 			SetDepthStencil(depthStencilStates.Get(true, false, 4, DX11Stencil::Or), 2);	// OR'ing (open volume or quad)
 		else
 			SetDepthStencil(depthStencilStates.Get(true, false, 4, DX11Stencil::Xor), 2);	// XOR'ing (closed volume)
-		deviceContext->Draw(param.count * 3, modVolBase + param.first * 3);
+		deviceContext->Draw(mvCount * 3, modVolBase + mvFirst * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			// Sum the area
 			SetDepthStencil(depthStencilStates.Get(false, false, 7, mv_mode == 1 ? DX11Stencil::Inclusion : DX11Stencil::Exclusion), 1);
-			deviceContext->Draw((param.first + param.count - mod_base) * 3, modVolBase + mod_base * 3);
+			deviceContext->Draw((mvFirst + mvCount - mod_base) * 3, modVolBase + mod_base * 3);
 			mod_base = -1;
 		}
 	}

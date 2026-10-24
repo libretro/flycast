@@ -12,6 +12,7 @@
 #include "rend/ta_gpu.h"
 #include "rend/sorter.h"
 #include "rend/shadows.h"
+#include "rend/modvol_clip.h"
 #include <retro_atomic.h>
 
 /* The larger and the smaller of two, as std::max() and std::min() have
@@ -70,6 +71,15 @@ static bool region_table_wanted;
 void ta_set_region_table(bool on)
 {
 	region_table_wanted = on;
+}
+
+/* Whether the raster renderers' modifier volume triangles are made
+ * (rend_context's mv_clip), from the same thread */
+static bool modvol_clip_wanted;
+
+void ta_set_modvol_clip(bool on)
+{
+	modvol_clip_wanted = on;
 }
 
 /* A colour component given as a float, as the hardware takes it: clamped to
@@ -2194,6 +2204,12 @@ static bool ta_parse_vdrc_full(TA_context* ctx)
       vd_rc.fb_Y_CLIP.max = ta_min(vd_rc.fb_Y_CLIP.max, ymax + 31);
    }
 
+
+	if (rv && !overrun && modvol_clip_wanted)
+	{
+		struct { const ModTriangle *t; ModTriangle operator()(u32 i) const { return t[i]; } void restart() {} } get = { vd_rc.modtrig.head() };
+		mv_clip_build(vd_rc, vd_rc.modtrig.used(), get);
+	}
 
 	vd_ctx->rend = vd_rc;
 	vd_ctx = 0;
@@ -4367,6 +4383,38 @@ static void ta_gpu_shadow_areas(const TaWalkFrame &f, const u8 *root, f32 (*area
 	}
 }
 
+/* The raster renderers' modifier volume triangles (rend/modvol_clip.h),
+ * from the triangles' blocks: each one's nine words after its first
+ * block's control word, as the decode takes them (tag_modtrig_word()) */
+static void ta_gpu_modvol_clip(const TaWalkFrame &f, const u8 *root, rend_context &rc)
+{
+	struct Get
+	{
+		const TaWalkFrame &f;
+		const u8 *root;
+		u32 r;
+		void restart() { r = 0; }
+		ModTriangle operator()(u32 t)
+		{
+			// (the runs of both lists' volumes' triangles, which are numbered together, in their order)
+			if (r >= f.runs || f.run[r].vertex > t)
+				r = 0;
+			while (r < f.runs && (!(f.run[r].header & TA_WALK_MODVOL) || f.run[r].vertex + (f.run[r].blocks + 1) / 2 <= t))
+				r++;
+			ModTriangle tri;
+			if (r == f.runs)
+			{
+				memset(&tri, 0, sizeof(tri));
+				return tri;
+			}
+			const u32 *w = (const u32 *)(root + (size_t)(f.run[r].block + 2 * (t - f.run[r].vertex)) * 32);
+			memcpy(&tri, &w[1], sizeof(tri));
+			return tri;
+		}
+	} get = { f, root, 0 };
+	mv_clip_build(rc, f.modtrig, get);
+}
+
 /* Where flat strips are looked for (SSAA), each header's strips: whether
  * all of them are flat, in its pp's single-rate bit, as the full parse
  * finds it from its vertices. From the frame's own blocks, as the sort
@@ -4809,6 +4857,8 @@ bool ta_gpu_prepare(TA_context *ctx, const TaGpuLayout *layout, u32 *table, u32 
 		rc.fb_Y_CLIP = f.y_clip;
 		rc.gpu = true;
 		rc.gpu_modtrig = f.modtrig;
+		if (modvol_clip_wanted)
+			ta_gpu_modvol_clip(f, ctx->tad.thd_root, rc);
 		ta_parse_cnt++;
 		/* The draw groups the per-triangle renderer draws again for
 		 * shadows (Drawer::DrawShadowed()), each with its render pass's

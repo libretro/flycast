@@ -210,8 +210,10 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		const ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, modVolParams, param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -224,10 +226,10 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 				scissor = clipRect;
 		}
 
-		verify(param.first >= 0 && param.first + param.count <= ModVolTriangles());
+		verify(mvFirst + mvCount <= ModVolTriangles());
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		if (!param.isp.VolumeLast && mv_mode > 0)
 		{
@@ -246,12 +248,12 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 				pipeline = pipelineManager->GetModifierVolumePipeline(ModVolMode::Xor, param.isp.CullMode);
 		}
 		if (Translucent)
-			listDraws.Draw(pipeline, scissor, param.count * 3, param.first * 3);
+			listDraws.Draw(pipeline, scissor, mvCount * 3, mvFirst * 3);
 		else
 		{
 			SetScissor(cmdBuffer, scissor);
 			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-			cmdBuffer.draw(param.count * 3, 1, param.first * 3, 0);
+			cmdBuffer.draw(mvCount * 3, 1, mvFirst * 3, 0);
 		}
 
 		if (mv_mode == 1 || mv_mode == 2)
@@ -261,7 +263,7 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 			{
 				listDraws.Barrier();
 				pipeline = pipelineManager->GetTrModifierVolumePipeline(mv_mode == 1 ? ModVolMode::Inclusion : ModVolMode::Exclusion, param.isp.CullMode);
-				listDraws.Draw(pipeline, scissor, (param.first + param.count - mod_base) * 3, mod_base * 3);
+				listDraws.Draw(pipeline, scissor, (mvFirst + mvCount - mod_base) * 3, mod_base * 3);
 				/* ...and done before the next volume's draws start: this
 				 * draw clears the stencil bit the next volume's toggle, and
 				 * sets the fragments it finds inside from what it read */
@@ -271,7 +273,7 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 			{
 				pipeline = pipelineManager->GetModifierVolumePipeline(mv_mode == 1 ? ModVolMode::Inclusion : ModVolMode::Exclusion, param.isp.CullMode);
 				cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-				cmdBuffer.draw((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
+				cmdBuffer.draw((mvFirst + mvCount - mod_base) * 3, 1, mod_base * 3, 0);
 			}
 
 			mod_base = -1;
@@ -292,7 +294,7 @@ void OITDrawer::UploadMainBuffer(const OITDescriptorSets::FragmentShaderUniforms
 
 	// (a frame decoded on the GPU has its geometry and translucent polygon parameters there)
 	const u32 vertexBytes = pvrrc.gpu ? 0 : pvrrc.verts.bytes();
-	const u32 modVolBytes = pvrrc.gpu ? 0 : pvrrc.modtrig.bytes();
+	const u32 modVolBytes = ModVolsOnCpu() ? ModVolList().bytes() : 0;
 	const u32 indexBytes = pvrrc.gpu ? 0 : pvrrc.idx.bytes();
 
 	// Vertex
@@ -305,7 +307,7 @@ void OITDrawer::UploadMainBuffer(const OITDescriptorSets::FragmentShaderUniforms
 	chunkSizes.push_back(padding);
 
 	// Modifier Volumes
-	chunks.push_back(pvrrc.modtrig.head());
+	chunks.push_back(ModVolList().head());
 	chunkSizes.push_back(modVolBytes);
 	padding = align(offsets.modVolOffset + modVolBytes, 4);
 	offsets.indexOffset = offsets.modVolOffset + modVolBytes + padding;

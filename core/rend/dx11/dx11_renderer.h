@@ -36,6 +36,7 @@
 #include "dx11_texdecoder.h"
 #include "dx11_ta_decoder.h"
 #include <vector>
+#include "rend/modvol_clip.h"
 
 /* The Direct3D 11 renderers. This one sorts translucent polygons by
  * triangle or by strip; the per-pixel one (oit/) is made from it.
@@ -259,7 +260,9 @@ protected:
 		if (pvrrc.gpu)
 		{
 			const DX11TaDraw& gpu = taDecoder.Draw();
-			context->SetGeometry(gpu.vertices, sizeof(Vertex), gpu.modtrig, sizeof(float) * 3, gpu.indices);
+			// (the volumes' triangles cut on the CPU, when the frame has them: in the geometry buffer)
+			context->SetGeometry(gpu.vertices, sizeof(Vertex), pvrrc.mv_clip.used() != 0 ? (ID3D11Buffer *)geometry : (ID3D11Buffer *)gpu.modtrig,
+					sizeof(float) * 3, gpu.indices);
 		}
 		else
 			context->SetGeometry(geometry, sizeof(Vertex), sizeof(float) * 3, geometry);

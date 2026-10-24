@@ -19,6 +19,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #pragma once
+#include "rend/modvol_clip.h"
 #include <memory>
 #include "rend/sorter.h"
 #include "rend/tileclip.h"
@@ -117,22 +118,27 @@ protected:
 			cmdBuffer.bindIndexBuffer(mainBuffer, indexOffset, vk::IndexType::eUint32);
 		}
 	}
-	// ...the modifier volumes' triangles, as the vertex buffer
+	/* ...the modifier volumes' triangles, as the vertex buffer: the main
+	 * buffer's (ModVolList()), or those of the GPU's decode where the frame
+	 * has none cut (rend/modvol_clip.h) */
 	void BindModVolTriangles(const vk::CommandBuffer& cmdBuffer, vk::Buffer mainBuffer, vk::DeviceSize modVolOffset) const
 	{
 		const vk::DeviceSize zero = 0;
-		if (pvrrc.gpu)
+		if (!ModVolsOnCpu())
 			cmdBuffer.bindVertexBuffers(0, 1, &gpuDraw->modtrig, &zero);
 		else
 			cmdBuffer.bindVertexBuffers(0, 1, &mainBuffer, &modVolOffset);
 	}
+	bool ModVolsOnCpu() const { return !pvrrc.gpu || pvrrc.mv_clip.used() != 0; }
+	// the volumes' triangles the main buffer has: the cut ones when the frame has them, else the parse's
+	const List<ModTriangle>& ModVolList() const { return pvrrc.mv_clip.used() != 0 ? pvrrc.mv_clip : pvrrc.modtrig; }
 	// ...and back to the vertices
 	void BindVertices(const vk::CommandBuffer& cmdBuffer, vk::Buffer mainBuffer) const
 	{
 		const vk::DeviceSize zero = 0;
 		cmdBuffer.bindVertexBuffers(0, 1, pvrrc.gpu ? &gpuDraw->vertices : &mainBuffer, &zero);
 	}
-	u32 ModVolTriangles() const { return pvrrc.gpu ? pvrrc.gpu_modtrig : (u32)pvrrc.modtrig.used(); }
+	u32 ModVolTriangles() const { return ModVolsOnCpu() ? (u32)ModVolList().used() : pvrrc.gpu_modtrig; }
 
 	/* How DrawIndices() draws a frame decoded on the GPU: its draw groups;
 	 * the sorted translucent triangles, whose indices the CPU wrote

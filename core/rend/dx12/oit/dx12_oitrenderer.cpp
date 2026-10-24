@@ -990,8 +990,10 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		const ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, modVolParams, param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -1008,7 +1010,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 		}
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		const u32 cull = param.isp.CullMode == 3 ? 2 : param.isp.CullMode == 2 ? 1 : 0;
 		ID3D12PipelineState *pso;
@@ -1025,7 +1027,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			pso = context->Pipelines().Get(key);
 			constants[13] = !param.isp.VolumeLast && mv_mode > 0 ? DX12_OF_MV_OR : DX12_OF_MV_XOR;
 			if (pso != nullptr)
-				listDraws.Draw(pso, scissor, constants, param.count * 3, param.first * 3);
+				listDraws.Draw(pso, scissor, constants, mvCount * 3, mvFirst * 3);
 		}
 		else
 		{
@@ -1037,7 +1039,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			{
 				context->SetPipeline(pso);
 				context->SetStencilRef(2);
-				cmd->DrawInstanced(param.count * 3, 1, param.first * 3, 0);
+				cmd->DrawInstanced(mvCount * 3, 1, mvFirst * 3, 0);
 			}
 		}
 
@@ -1051,7 +1053,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 				constants[13] = mv_mode == 1 ? DX12_OF_MV_INCLUSION : DX12_OF_MV_EXCLUSION;
 				if (pso != nullptr)
 				{
-					listDraws.Draw(pso, scissor, constants, (param.first + param.count - mod_base) * 3, mod_base * 3);
+					listDraws.Draw(pso, scissor, constants, (mvFirst + mvCount - mod_base) * 3, mod_base * 3);
 					listDraws.Barrier();
 				}
 			}
@@ -1062,7 +1064,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 				{
 					context->SetPipeline(pso);
 					context->SetStencilRef(1);
-					cmd->DrawInstanced((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
+					cmd->DrawInstanced((mvFirst + mvCount - mod_base) * 3, 1, mod_base * 3, 0);
 				}
 			}
 			mod_base = -1;

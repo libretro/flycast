@@ -871,7 +871,7 @@ static bool RenderFrame()
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER,pvrrc.idx.bytes(),pvrrc.idx.head(),GL_STREAM_DRAW); glCheck();
 
 		//Modvol VBO
-		if (pvrrc.modtrig.used())
+		if (pvrrc.modtrig.used() && !pvrrc.mv_clip.used())
 		{
 			glBindVertexArray(gl4.vbo.modvol_vao);
 			glBindBuffer(GL_ARRAY_BUFFER, gl4.vbo.modvols); glCheck();
@@ -892,6 +892,16 @@ static bool RenderFrame()
 		glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl4.vbo.tr_poly_params);
 		glBufferData(GL_SHADER_STORAGE_BUFFER, trCount * 8, gl4.trPolyWords.data(), GL_STATIC_DRAW);
 		glCheck();
+	}
+	/* The volumes' triangles with those far off the screen cut
+	 * (rend/modvol_clip.h), however the frame was decoded: the volumes'
+	 * array then draws them, and is set again for the next frame */
+	if (!pvrrc.isRenderFramebuffer && pvrrc.mv_clip.used())
+	{
+		gl4SetupModvolVBO();
+		glBufferData(GL_ARRAY_BUFFER, pvrrc.mv_clip.bytes(), pvrrc.mv_clip.head(), GL_STREAM_DRAW); glCheck();
+		glBindVertexArray(gl4.vbo.main_vao);
+		gl4ForgetFrameBuffers();
 	}
 	if (!pvrrc.isRenderFramebuffer)
 	{
@@ -1105,6 +1115,7 @@ struct gl4rend : Renderer
 		memset(lightgunTextureId, 0, sizeof(lightgunTextureId));
 
 		glTaDecoder.Term();
+		ta_set_modvol_clip(false);
 		termABuffer();
 		if (stencilTexId != 0)
 		{

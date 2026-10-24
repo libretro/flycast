@@ -54,6 +54,9 @@ bool ta_flat_strips(void);
  * tiles (rend_context's region_tiles). Off, the array is walked as it was
  * without it. */
 void ta_set_region_table(bool on);
+/* Whether a frame's modifier volume triangles far off the screen are cut
+ * for the raster renderers (rend_context's mv_clip: rend/modvol_clip.h) */
+void ta_set_modvol_clip(bool on);
 
 /* The control-word walk (GPU-side TA processing, its CPU side). On, every
  * block the tile accelerator is sent that is not a vertex has its place

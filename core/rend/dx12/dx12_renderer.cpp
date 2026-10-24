@@ -255,6 +255,7 @@ void DX12Renderer::Term()
 	FlushBatch();
 	DropSsaa();
 	ta_set_flat_strips(false);
+	ta_set_modvol_clip(false);
 	context->SetFrame(nullptr);
 	context->SetBeforeSubmit(nullptr, nullptr);
 	dx12_rtt_term();
@@ -503,6 +504,8 @@ bool DX12Renderer::ProcessLocked(TA_context* ctx)
 	/* SSAA draws flat strips at a single rate: the parse looks for them
 	 * then, and only then */
 	ta_set_flat_strips(ssaaSamples > 1);
+	// the modifier volumes' triangles far off the screen cut before the GPU clips them (rend/modvol_clip.h)
+	ta_set_modvol_clip(true);
 	/* GPU-side TA processing: the header pass makes the frame ready to be
 	 * drawn from the GPU's decode, in the full parse's place, which is
 	 * recorded now; or it is parsed as ever */
@@ -651,11 +654,28 @@ bool DX12Renderer::UploadGeometry()
 		indexView = gpu.indices;
 		modVolView = gpu.modtrig;
 		haveModVols = pvrrc.gpu_modtrig != 0;
+		/* ...but for the volumes' triangles with those far off the screen
+		 * cut (rend/modvol_clip.h), which are the CPU's */
+		if (pvrrc.mv_clip.used() != 0)
+		{
+			DX12Upload upload;
+			if (!context->Upload(pvrrc.mv_clip.bytes(), 64, upload))
+			{
+				WARN_LOG(RENDERER, "DX12: the render's volumes do not fit the upload ring (%u bytes)", pvrrc.mv_clip.bytes());
+				return false;
+			}
+			memcpy(upload.cpu, pvrrc.mv_clip.head(), pvrrc.mv_clip.bytes());
+			modVolView.BufferLocation = upload.gpu;
+			modVolView.SizeInBytes = pvrrc.mv_clip.bytes();
+			modVolView.StrideInBytes = sizeof(float) * 3;
+			haveModVols = true;
+		}
 		return UploadConstants();
 	}
 	const u32 vertexBytes = pvrrc.verts.bytes();
 	const u32 indexBytes = pvrrc.idx.bytes() + sortedIndexCount * sizeof(u32);
-	const u32 modVolBytes = pvrrc.modtrig.bytes();
+	const List<ModTriangle>& modVolList = pvrrc.mv_clip.used() != 0 ? pvrrc.mv_clip : pvrrc.modtrig;
+	const u32 modVolBytes = modVolList.bytes();
 	/* the vertices, the indexes, the volumes' triangles, each at a multiple
 	 * of its size, in one piece of the ring */
 	const u32 indexes = (vertexBytes + 3) & ~3u;
@@ -678,7 +698,7 @@ bool DX12Renderer::UploadGeometry()
 			dst += idx.size() * sizeof(u32);
 		}
 	if (modVolBytes != 0)
-		memcpy(upload.cpu + modVols, pvrrc.modtrig.head(), modVolBytes);
+		memcpy(upload.cpu + modVols, modVolList.head(), modVolBytes);
 
 	vertexView.BufferLocation = upload.gpu;
 	vertexView.SizeInBytes = vertexBytes;
@@ -1760,8 +1780,10 @@ void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, pvrrc.global_param_mvo.head(), param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -1776,7 +1798,7 @@ void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 		}
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		const u32 cull = param.isp.CullMode == 3 ? 2 : param.isp.CullMode == 2 ? 1 : 0;
 		ID3D12PipelineState *pso;
@@ -1788,7 +1810,7 @@ void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 		{
 			context->SetPipeline(pso);
 			context->SetStencilRef(2);
-			cmd->DrawInstanced(param.count * 3, 1, param.first * 3, 0);
+			cmd->DrawInstanced(mvCount * 3, 1, mvFirst * 3, 0);
 		}
 
 		if (mv_mode == 1 || mv_mode == 2)
@@ -1799,7 +1821,7 @@ void DX12Renderer::DrawModVols(int first, int count, const RenderPass& previous_
 			{
 				context->SetPipeline(pso);
 				context->SetStencilRef(1);
-				cmd->DrawInstanced((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
+				cmd->DrawInstanced((mvFirst + mvCount - mod_base) * 3, 1, mod_base * 3, 0);
 			}
 			mod_base = -1;
 		}

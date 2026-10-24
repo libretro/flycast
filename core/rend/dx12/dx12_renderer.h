@@ -33,6 +33,7 @@
 #include "dx12_texture.h"
 #include "dx12_ta_decoder.h"
 #include <vector>
+#include "rend/modvol_clip.h"
 
 /* The Direct3D 12 renderer: translucent polygons sorted by triangle or by
  * strip. What the game sees is what it sees with the Direct3D 11 renderer

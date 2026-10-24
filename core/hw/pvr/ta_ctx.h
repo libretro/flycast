@@ -181,6 +181,18 @@ struct rend_context
 	/* ...and with TA_GPU_SHADOWS, what each render pass's opaque modifier
 	 * volumes cover (ModVolBounds()): min x, min y, max x, max y */
 	f32 gpu_shadow_area[10][4];
+	/* The raster renderers' modifier volume triangles, when the frame has
+	 * one with a vertex far off the screen (rend/modvol_clip.h): every
+	 * volume's triangles in their order, those far out cut to the square
+	 * about the screen as the fans they make, and each volume's first and
+	 * count in them - two words a volume, global_param_mvo's then
+	 * global_param_mvo_tr's. Built while ta_set_modvol_clip(true) asks for
+	 * it, on both of the TA's ways (the parse's triangles or the frame's
+	 * blocks); empty for a frame with none far out, whose volumes are drawn
+	 * from modtrig or the GPU's as ever. Full: left empty, as with none. */
+	List<ModTriangle> mv_clip;
+	List<u32> mv_clip_range;
+	bool mv_clip_full;
 
 	void Clear()
 	{
@@ -196,6 +208,8 @@ struct rend_context
 		region_tile_count = 0;
 		gpu = false;
 		gpu_modtrig = 0;
+		mv_clip.Clear();
+		mv_clip_range.Clear();
 
 		Overrun=false;
 		fZ_min= 1000000.0f;
@@ -336,6 +350,9 @@ struct TA_context
 #endif
 
 		rend.modtrig.Init(modtrig_size,&rend.Overrun, "modtrig");
+		// (room for a third of them as fans of three; its own flag when full, never the frame's)
+		rend.mv_clip.Init(modtrig_size + modtrig_size / 2, &rend.mv_clip_full, NULL);
+		rend.mv_clip_range.Init(2 * 2 * 4096 * scale, &rend.mv_clip_full, NULL);
 
       rend.render_passes.Init(sizeof(RenderPass) * 10, &rend.Overrun, "render_passes");	// 10 render passes
 		rend.region_tiles = (u32 *)malloc(REGION_TILES_MAX * sizeof(u32));
@@ -347,6 +364,7 @@ struct TA_context
 				|| !rend.global_param_op.daty || !rend.global_param_pt.daty
 				|| !rend.global_param_mvo.daty || !rend.global_param_mvo_tr.daty
 				|| !rend.global_param_tr.daty || !rend.modtrig.daty
+				|| !rend.mv_clip.daty || !rend.mv_clip_range.daty
 				|| !rend.render_passes.daty || !rend.region_tiles || !walk)
 		{
 			Free();
@@ -385,6 +403,8 @@ struct TA_context
 		rend.global_param_pt.Free();
 		rend.global_param_tr.Free();
 		rend.modtrig.Free();
+		rend.mv_clip.Free();
+		rend.mv_clip_range.Free();
 		rend.global_param_mvo.Free();
       rend.global_param_mvo_tr.Free();
       rend.render_passes.Free();

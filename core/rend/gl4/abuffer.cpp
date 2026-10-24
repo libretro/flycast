@@ -18,6 +18,7 @@ static GLuint g_quadBuffer = 0;
 static GLuint g_quadVertexArray = 0;
 
 #include "rend/oit_size.h"
+#include "rend/modvol_clip.h"
 #include <algorithm>
 
 #ifndef GL_COPY_READ_BUFFER
@@ -549,7 +550,7 @@ private:
 void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 {
 	// (of a frame decoded on the GPU, its triangles are the GPU's)
-	const u32 triangles = pvrrc.gpu ? pvrrc.gpu_modtrig : (u32)pvrrc.modtrig.used();
+	const u32 triangles = pvrrc.mv_clip.used() ? (u32)pvrrc.mv_clip.used() : pvrrc.gpu ? pvrrc.gpu_modtrig : (u32)pvrrc.modtrig.used();
 	if (count == 0 || triangles == 0)
 		return;
 	glBindVertexArray(gl4.vbo.modvol_vao);
@@ -568,7 +569,8 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 
 	glCheck();
 
-	ModifierVolumeParam* params = useOpaqueGeom ? &pvrrc.global_param_mvo.head()[first] : &pvrrc.global_param_mvo_tr.head()[first];
+	const ModifierVolumeParam *list = useOpaqueGeom ? pvrrc.global_param_mvo.head() : pvrrc.global_param_mvo_tr.head();
+	const ModifierVolumeParam* params = &list[first];
 
 	// (the lists the translucent polygons' shaders wrote, done before the volumes read them)
 	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -578,31 +580,33 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 
 	for (int cmv = 0; cmv < count; cmv++)
 	{
-		ModifierVolumeParam& param = params[cmv];
+		const ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, list, param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
 
-		verify(param.first >= 0 && param.first + param.count <= triangles);
+		verify(mvFirst + mvCount <= triangles);
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		gl4PipelineShader *shader;
 		if (!param.isp.VolumeLast && mv_mode > 0)
 			shader = &g_abuffer_tr_modvol_shaders[Or];	// OR'ing (open volume or quad)
 		else
 			shader = &g_abuffer_tr_modvol_shaders[Xor];	// XOR'ing (closed volume)
-		listDraws.Draw(shader, param.isp.CullMode, param.first * 3, param.count * 3);
+		listDraws.Draw(shader, param.isp.CullMode, mvFirst * 3, mvCount * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			//Sum the area: once the volume's toggles are done, and done before the next volume's start
 			listDraws.Barrier();
 			shader = &g_abuffer_tr_modvol_shaders[mv_mode == 1 ? Inclusion : Exclusion];
-			listDraws.Draw(shader, param.isp.CullMode, mod_base * 3, (param.first + param.count - mod_base) * 3);
+			listDraws.Draw(shader, param.isp.CullMode, mod_base * 3, (mvFirst + mvCount - mod_base) * 3);
 			listDraws.Barrier();
 			mod_base = -1;
 		}

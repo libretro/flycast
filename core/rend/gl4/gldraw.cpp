@@ -2,6 +2,7 @@
 #include "gl4.h"
 #include "rend/gles/ta_decoder_gl.h"
 #include "rend/gles/glprogram_cache.h"
+#include "rend/modvol_clip.h"
 
 /*
 
@@ -607,8 +608,10 @@ static void DrawModVols(int first, int count)
 	for (int cmv = 0; cmv < count; cmv++)
 	{
 		ModifierVolumeParam& param = params[cmv];
+		u32 mvFirst, mvCount;
+		mv_clip_range_of(pvrrc, pvrrc.global_param_mvo.head(), param, mvFirst, mvCount);
 
-		if (param.count == 0)
+		if (mvCount == 0)
 			continue;
 
 		u32 mv_mode = param.isp.DepthMode;
@@ -627,20 +630,20 @@ static void DrawModVols(int first, int count)
 		}
 
 		if (mod_base == -1)
-			mod_base = param.first;
+			mod_base = mvFirst;
 
 		if (!param.isp.VolumeLast && mv_mode > 0)
 			SetMVS_Mode(Or, param.isp);		// OR'ing (open volume or quad)
 		else
 			SetMVS_Mode(Xor, param.isp);	// XOR'ing (closed volume)
 
-		glDrawArrays(GL_TRIANGLES, param.first * 3, param.count * 3);
+		glDrawArrays(GL_TRIANGLES, mvFirst * 3, mvCount * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			// Sum the area
 			SetMVS_Mode(mv_mode == 1 ? Inclusion : Exclusion, param.isp);
-			glDrawArrays(GL_TRIANGLES, mod_base * 3, (param.first + param.count - mod_base) * 3);
+			glDrawArrays(GL_TRIANGLES, mod_base * 3, (mvFirst + mvCount - mod_base) * 3);
 			mod_base = -1;
 		}
 	}

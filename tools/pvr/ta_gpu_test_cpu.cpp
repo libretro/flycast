@@ -62,6 +62,9 @@ static struct
 	std::vector<double> sort_us, gensorted_us;
 	// the draw groups drawn again for shadows (TA_GPU_SHADOWS), against PolyOverlaps()
 	u32 shadow_frames, shadow_same, shadow_differ;
+	// the raster renderers' volume triangles with those far out cut (rend/modvol_clip.h), from the blocks against the parse's
+	u32 mvclip_frames, mvclip_differ;
+	u64 mvclip_tris;
 	u64 shadow_groups, shadow_drawn;
 } st;
 
@@ -130,10 +133,12 @@ static void report(void)
 			st.sort_frames ? st.prep_area_out / st.sort_frames : 0.0, st.sort_frames ? st.prep_area / st.sort_frames : 0.0);
 	printf("ta_gpu_test: shadows the GPU decides: %u frames, %u the same as the parse's, %u different; %llu groups named, %llu drawn again\n",
 			st.shadow_frames, st.shadow_same, st.shadow_differ, (unsigned long long)st.shadow_groups, (unsigned long long)st.shadow_drawn);
+	printf("ta_gpu_test: volume triangles cut: %u frames with some, %u different from the parse's; %llu triangles drawn for them\n",
+			st.mvclip_frames, st.mvclip_differ, (unsigned long long)st.mvclip_tris);
 	printf("ta_gpu_test: validation errors: %d\n", tgt_validation_errors());
 	printf("ta_gpu_test: %s\n", st.differ == 0 && st.model_differ == 0 && st.scan_differ == 0 && tgt_validation_errors() == 0
 			&& st.overrun == st.overrun_agree && st.compared > 0 && st.draw_differ == 0 && st.edge_agree == st.edge_trials
-			&& st.sort_differ == 0 && st.shadow_differ == 0 ? "PASS" : "FAIL");
+			&& st.sort_differ == 0 && st.shadow_differ == 0 && st.mvclip_differ == 0 ? "PASS" : "FAIL");
 	fflush(stdout);
 }
 
@@ -147,6 +152,8 @@ static void setup(void)
 
 	ta_set_gpu_processing(true);
 	ta_gpu_sort_reserve(true);
+	// (as the raster renderers have it: the cut volume triangles made by the parse and from the blocks, and compared)
+	ta_set_modvol_clip(true);
 	// (TAG_FLAT=1: flat strips looked for, as with SSAA; the draw groups' single-rate bits compared too)
 	if (getenv("TAG_FLAT") != NULL && atoi(getenv("TAG_FLAT")) != 0)
 		ta_set_flat_strips(true);
@@ -894,7 +901,11 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 	static std::vector<PolyParam> parse[3];
 	static std::vector<RenderPass> passes;
 	static std::vector<ModifierVolumeParam> mvo[2];
+	static std::vector<ModTriangle> mvclip;
+	static std::vector<u32> mvclip_range;
 	const rend_context saved = rc;
+	mvclip.assign(rc.mv_clip.head(), rc.mv_clip.head() + rc.mv_clip.used());
+	mvclip_range.assign(rc.mv_clip_range.head(), rc.mv_clip_range.head() + rc.mv_clip_range.used());
 	for (u32 l = 0; l < 3; l++)
 		parse[l].assign(lists[l]->head(), lists[l]->head() + lists[l]->used());
 	passes.assign(rc.render_passes.head(), rc.render_passes.head() + rc.render_passes.used());
@@ -1002,6 +1013,17 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 			d = "the clipping rectangle";
 		if (d == NULL && (!rc.gpu || rc.gpu_modtrig != (u32)saved.modtrig.used()))
 			d = "the modifier volume triangles";
+		if (d == NULL && !mvclip.empty())
+			st.mvclip_frames++, st.mvclip_tris += mvclip.size();
+		if (d == NULL && (rc.mv_clip.used() != (int)mvclip.size() || rc.mv_clip_range.used() != (int)mvclip_range.size()
+				|| memcmp(rc.mv_clip.head(), mvclip.data(), mvclip.size() * sizeof(ModTriangle)) != 0
+				|| memcmp(rc.mv_clip_range.head(), mvclip_range.data(), mvclip_range.size() * sizeof(u32)) != 0))
+		{
+			st.mvclip_differ++;
+			snprintf(why, room, "the cut volume triangles: %d and %d ranges from the blocks, %zu and %zu from the parse",
+					rc.mv_clip.used(), rc.mv_clip_range.used(), mvclip.size(), mvclip_range.size());
+			d = why;
+		}
 		if (d == NULL && (flags & TA_GPU_SORT) && !ref.idx.empty())
 		{
 			st.sort_frames++;
@@ -1048,6 +1070,12 @@ static const char *compare_draw(TA_context *ctx, const tgt_out &o, u32 flags, ch
 		memcpy(rc.global_param_mvo_tr.Append((int)mvo[1].size()), mvo[1].data(), mvo[1].size() * sizeof(ModifierVolumeParam));
 	rc.fb_X_CLIP = saved.fb_X_CLIP;
 	rc.fb_Y_CLIP = saved.fb_Y_CLIP;
+	rc.mv_clip.Clear();
+	if (!mvclip.empty())
+		memcpy(rc.mv_clip.Append((int)mvclip.size()), mvclip.data(), mvclip.size() * sizeof(ModTriangle));
+	rc.mv_clip_range.Clear();
+	if (!mvclip_range.empty())
+		memcpy(rc.mv_clip_range.Append((int)mvclip_range.size()), mvclip_range.data(), mvclip_range.size() * sizeof(u32));
 	rc.gpu = false;
 	rc.gpu_modtrig = 0;
 	return d;

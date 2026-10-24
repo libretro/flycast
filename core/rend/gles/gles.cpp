@@ -1524,11 +1524,17 @@ static bool RenderFrame(void)
 			upload_vertex_indices();
 
 			//Modvol VBO
-			if (pvrrc.modtrig.used())
+			if (pvrrc.modtrig.used() && !pvrrc.mv_clip.used())
 			{
 				glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.modvols); glCheck();
 				glBufferData(GL_ARRAY_BUFFER,pvrrc.modtrig.bytes(),pvrrc.modtrig.head(),GL_STREAM_DRAW); glCheck();
 			}
+		}
+		// the volumes' triangles with those far off the screen cut (rend/modvol_clip.h), however the frame was decoded
+		if (pvrrc.mv_clip.used())
+		{
+			glBindBuffer(GL_ARRAY_BUFFER, gl.vbo.modvols); glCheck();
+			glBufferData(GL_ARRAY_BUFFER, pvrrc.mv_clip.bytes(), pvrrc.mv_clip.head(), GL_STREAM_DRAW); glCheck();
 		}
 
 		if (!wide_screen_on)
@@ -1649,6 +1655,8 @@ bool ProcessFrame(TA_context* ctx, u32 taFlags)
    }
 
    glTaDecoder.BeginFrame();
+   // the modifier volumes' triangles far off the screen cut before the GPU clips them (rend/modvol_clip.h)
+   ta_set_modvol_clip(true);
    if (ctx->rend.isRenderFramebuffer)
 		RenderFramebuffer();
 	else
@@ -1740,6 +1748,7 @@ struct glesrend : Renderer
 		glprog_log("per triangle");
 		glprog_close();
 		glTaDecoder.Term();
+		ta_set_modvol_clip(false);
 		postProcessor.Term();
 	   TexCache.Clear();
 		rtt_watch_term();
