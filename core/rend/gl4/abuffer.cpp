@@ -481,6 +481,71 @@ void abufferDrawQuad()
 	glCheck();
 }
 
+/* The translucent modifier volumes' draws change the lists from their
+ * shaders (tr_modvol_shader_source), and nothing orders what the shaders of
+ * two draws do to the same fragment but a memory barrier between them: a
+ * GPU runs draws at once, in any order, where a software device runs them
+ * one after the other. They go through here. Built with RACE_TEST
+ * (tools/rend/speckle_test.sh; never in a release) the draws between two
+ * barriers are drawn a triangle at a time, the draws' triangles taken in
+ * turn, the last draw's first: one draw's shaders run while another's are
+ * half done, as on a GPU, and a picture that changes then depends on an
+ * order nothing keeps. */
+namespace {
+struct ListDraws
+{
+#ifdef RACE_TEST
+	struct Held { gl4PipelineShader *shader; u32 cull; int first, count; };
+	Held held[256];
+	u32 heldCount = 0;
+#endif
+
+	~ListDraws() { Flush(); }
+
+	void Draw(gl4PipelineShader *shader, u32 cull, int first, int count)
+	{
+#ifdef RACE_TEST
+		if (heldCount == ARRAY_SIZE(held))
+			Flush();
+		held[heldCount++] = { shader, cull, first, count };
+#else
+		Record(shader, cull, first, count);
+#endif
+	}
+	/* what the draws before did to the lists is done before the draws after start */
+	void Barrier()
+	{
+		Flush();
+		glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+	}
+	void Flush()
+	{
+#ifdef RACE_TEST
+		for (int v = 0, more = (int)heldCount; more != 0; v += 3)
+		{
+			more = 0;
+			for (u32 i = heldCount; i-- > 0; )
+				if (v < held[i].count)
+				{
+					Record(held[i].shader, held[i].cull, held[i].first + v, 3);
+					more++;
+				}
+		}
+		heldCount = 0;
+#endif
+	}
+
+private:
+	static void Record(gl4PipelineShader *shader, u32 cull, int first, int count)
+	{
+		glcache.UseProgram(shader->program);
+		gl4ShaderUniforms.Set(shader);
+		SetCull(cull);
+		glDrawArrays(GL_TRIANGLES, first, count); glCheck();
+	}
+};
+}
+
 void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 {
 	// (of a frame decoded on the GPU, its triangles are the GPU's)
@@ -508,6 +573,7 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
 	int mod_base = -1;
+	ListDraws listDraws;
 
 	for (int cmv = 0; cmv < count; cmv++)
 	{
@@ -528,27 +594,19 @@ void DrawTranslucentModVols(int first, int count, bool useOpaqueGeom)
 			shader = &g_abuffer_tr_modvol_shaders[Or];	// OR'ing (open volume or quad)
 		else
 			shader = &g_abuffer_tr_modvol_shaders[Xor];	// XOR'ing (closed volume)
-		glcache.UseProgram(shader->program);
-		gl4ShaderUniforms.Set(shader);
-
-		SetCull(param.isp.CullMode); glCheck();
-
 		glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-
-		glDrawArrays(GL_TRIANGLES, param.first * 3, param.count * 3); glCheck();
+		listDraws.Draw(shader, param.isp.CullMode, param.first * 3, param.count * 3);
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			//Sum the area
 			shader = &g_abuffer_tr_modvol_shaders[mv_mode == 1 ? Inclusion : Exclusion];
-			glcache.UseProgram(shader->program);
-			gl4ShaderUniforms.Set(shader);
-
 			glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-			glDrawArrays(GL_TRIANGLES, mod_base * 3, (param.first + param.count - mod_base) * 3); glCheck();
+			listDraws.Draw(shader, param.isp.CullMode, mod_base * 3, (param.first + param.count - mod_base) * 3);
 			mod_base = -1;
 		}
 	}
+	listDraws.Flush();
 	glBindVertexArray(gl4.vbo.main_vao);
 }
 

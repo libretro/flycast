@@ -899,6 +899,78 @@ void DX12OITRenderer::DrawList(u32 listType, bool autosort, u32 pass, const List
 	FlushBatch();
 }
 
+/* The translucent modifier volumes' draws change the lists from their
+ * shaders, and nothing orders what the shaders of two draws do to the same
+ * fragment but a UAV barrier between them: a GPU runs draws at once, in any
+ * order, where a software device runs them one after the other. They go
+ * through here. Built with RACE_TEST (tools/rend/speckle_test.sh; never in
+ * a release) the draws between two barriers are recorded a triangle at a
+ * time, the draws' triangles taken in turn, the last draw's first: one
+ * draw's shaders run while another's are half done, as on a GPU, and a
+ * picture that changes then depends on an order nothing keeps. */
+namespace {
+struct ListDraws
+{
+	DX12Context *context;
+	ID3D12Resource *lists;
+#ifdef RACE_TEST
+	struct Held { ID3D12PipelineState *pso; D3D12_RECT scissor; u32 constants[DX12Context::PolyConstantCount]; u32 vertices, first; };
+	Held held[256];
+	u32 count = 0;
+#endif
+
+	ListDraws(DX12Context *context, ID3D12Resource *lists) : context(context), lists(lists) {}
+	~ListDraws() { Flush(); }
+
+	void Draw(ID3D12PipelineState *pso, const D3D12_RECT& scissor, const u32 *constants, u32 vertices, u32 first)
+	{
+#ifdef RACE_TEST
+		if (count == ARRAY_SIZE(held))
+			Flush();
+		Held& h = held[count++];
+		h.pso = pso;
+		h.scissor = scissor;
+		memcpy(h.constants, constants, sizeof(h.constants));
+		h.vertices = vertices;
+		h.first = first;
+#else
+		Record(pso, scissor, constants, vertices, first);
+#endif
+	}
+	/* what the draws before did to the lists is done before the draws after start */
+	void Barrier()
+	{
+		Flush();
+		context->UavBarrier(lists);
+	}
+	void Flush()
+	{
+#ifdef RACE_TEST
+		for (u32 v = 0, more = count; more != 0; v += 3)
+		{
+			more = 0;
+			for (u32 i = count; i-- > 0; )
+				if (v < held[i].vertices)
+				{
+					Record(held[i].pso, held[i].scissor, held[i].constants, 3, held[i].first + v);
+					more++;
+				}
+		}
+		count = 0;
+#endif
+	}
+
+private:
+	void Record(ID3D12PipelineState *pso, const D3D12_RECT& scissor, const u32 *constants, u32 vertices, u32 first)
+	{
+		context->SetScissor(scissor);
+		context->SetPipeline(pso);
+		context->SetRootConstants(constants, DX12Context::PolyConstantCount);
+		context->Cmd()->DrawInstanced(vertices, 1, first, 0);
+	}
+};
+}
+
 void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count, const ModifierVolumeParam *modVolParams)
 {
 	if (count == 0 || !haveModVols)
@@ -913,6 +985,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 
 	const ModifierVolumeParam* params = &modVolParams[first];
 	int mod_base = -1;
+	ListDraws listDraws(context, pixels.resource);
 
 	for (int cmv = 0; cmv < count; cmv++)
 	{
@@ -924,12 +997,14 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 		u32 mv_mode = param.isp.DepthMode;
 
 		// clipped like a polygon, to the rectangle it was sent under if it asked to be
+		D3D12_RECT scissor;
 		{
 			D3D12_RECT clipRect;
 			if (SetTileClip(param.tileclip, clipRect) == TileClipping::Outside)
-				context->SetScissor(CutScissor(clipRect));
+				scissor = CutScissor(clipRect);
 			else
-				context->SetScissor(CutScissor(baseScissor));
+				scissor = CutScissor(baseScissor);
+			context->SetScissor(scissor);
 		}
 
 		if (mod_base == -1)
@@ -950,11 +1025,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			pso = context->Pipelines().Get(key);
 			constants[13] = !param.isp.VolumeLast && mv_mode > 0 ? DX12_OF_MV_OR : DX12_OF_MV_XOR;
 			if (pso != nullptr)
-			{
-				context->SetPipeline(pso);
-				context->SetRootConstants(constants, DX12Context::PolyConstantCount);
-				cmd->DrawInstanced(param.count * 3, 1, param.first * 3, 0);
-			}
+				listDraws.Draw(pso, scissor, constants, param.count * 3, param.first * 3);
 		}
 		else
 		{
@@ -976,13 +1047,12 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			if (translucent)
 			{
 				// (what the volumes before did to the lists is done)
-				context->UavBarrier(pixels.resource);
+				listDraws.Barrier();
 				constants[13] = mv_mode == 1 ? DX12_OF_MV_INCLUSION : DX12_OF_MV_EXCLUSION;
 				if (pso != nullptr)
 				{
-					context->SetRootConstants(constants, DX12Context::PolyConstantCount);
-					cmd->DrawInstanced((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
-					context->UavBarrier(pixels.resource);
+					listDraws.Draw(pso, scissor, constants, (param.first + param.count - mod_base) * 3, mod_base * 3);
+					listDraws.Barrier();
 				}
 			}
 			else
@@ -998,6 +1068,7 @@ void DX12OITRenderer::DrawModifierVolumes(bool translucent, int first, int count
 			mod_base = -1;
 		}
 	}
+	listDraws.Flush();
 	context->SetScissor(CutScissor(baseScissor));
 	context->SetVertexBuffer(vertexView);
 }

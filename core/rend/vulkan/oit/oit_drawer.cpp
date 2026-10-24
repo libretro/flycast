@@ -26,6 +26,75 @@
 
 #include <algorithm>
 
+/* The translucent modifier volumes' draws change the per-pixel lists from
+ * their shaders (oit_trmodvol.frag), and nothing orders what the shaders of
+ * two draws do to the same fragment but a barrier between them: a GPU runs
+ * the draws of a subpass at once, in any order, where a software device
+ * runs them one after the other. They go through here. Built with
+ * RACE_TEST (tools/rend/speckle_test.sh; never in a release) the draws
+ * between two barriers are recorded a triangle at a time, the draws'
+ * triangles taken in turn, the last draw's first: one draw's shaders run
+ * while another's are half done, as on a GPU, and a picture that changes
+ * then depends on an order nothing keeps. */
+namespace {
+struct ListDraws
+{
+	OITDrawer& drawer;
+	const vk::CommandBuffer& cmd;
+#ifdef RACE_TEST
+	struct Held { vk::Pipeline pipeline; vk::Rect2D scissor; u32 vertices, first; };
+	Held held[256];
+	u32 count = 0;
+#endif
+
+	ListDraws(OITDrawer& drawer, const vk::CommandBuffer& cmd) : drawer(drawer), cmd(cmd) {}
+	~ListDraws() { Flush(); }
+
+	void Draw(vk::Pipeline pipeline, const vk::Rect2D& scissor, u32 vertices, u32 first)
+	{
+#ifdef RACE_TEST
+		if (count == ARRAY_SIZE(held))
+			Flush();
+		held[count++] = { pipeline, scissor, vertices, first };
+#else
+		Record(pipeline, scissor, vertices, first);
+#endif
+	}
+	/* what the draws before did to the lists is done before the draws after start */
+	void Barrier()
+	{
+		Flush();
+		vk::MemoryBarrier barrier(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead);
+		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eFragmentShader,
+				vk::DependencyFlagBits::eByRegion, barrier, nullptr, nullptr);
+	}
+	void Flush()
+	{
+#ifdef RACE_TEST
+		for (u32 v = 0, more = count; more != 0; v += 3)
+		{
+			more = 0;
+			for (u32 i = count; i-- > 0; )
+				if (v < held[i].vertices)
+				{
+					Record(held[i].pipeline, held[i].scissor, 3, held[i].first + v);
+					more++;
+				}
+		}
+		count = 0;
+#endif
+	}
+
+private:
+	void Record(vk::Pipeline pipeline, const vk::Rect2D& scissor, u32 vertices, u32 first)
+	{
+		drawer.SetScissor(cmd, scissor);
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+		cmd.draw(vertices, 1, first, 0);
+	}
+};
+}
+
 void OITDrawer::DrawPoly(const vk::CommandBuffer& cmdBuffer, u32 listType, bool autosort, Pass pass,
 		const PolyParam& poly, u32 first, u32 count)
 {
@@ -136,6 +205,7 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 
 	int mod_base = -1;
 	vk::Pipeline pipeline;
+	ListDraws listDraws(*this, cmdBuffer);
 
 	for (int cmv = 0; cmv < count; cmv++)
 	{
@@ -147,12 +217,11 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 		u32 mv_mode = param.isp.DepthMode;
 
 		// clipped like a polygon, to the rectangle it was sent under if it asked to be
+		vk::Rect2D scissor = baseScissor;
 		{
 			vk::Rect2D clipRect;
 			if (SetTileClip(param.tileclip, clipRect) == TileClipping::Outside)
-				SetScissor(cmdBuffer, clipRect);
-			else
-				SetScissor(cmdBuffer, baseScissor);
+				scissor = clipRect;
 		}
 
 		verify(param.first >= 0 && param.first + param.count <= ModVolTriangles());
@@ -176,27 +245,35 @@ void OITDrawer::DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int firs
 			else
 				pipeline = pipelineManager->GetModifierVolumePipeline(ModVolMode::Xor, param.isp.CullMode);
 		}
-		cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-		cmdBuffer.draw(param.count * 3, 1, param.first * 3, 0);
+		if (Translucent)
+			listDraws.Draw(pipeline, scissor, param.count * 3, param.first * 3);
+		else
+		{
+			SetScissor(cmdBuffer, scissor);
+			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+			cmdBuffer.draw(param.count * 3, 1, param.first * 3, 0);
+		}
 
 		if (mv_mode == 1 || mv_mode == 2)
 		{
 			//Sum the area
 			if (Translucent)
 			{
-				vk::MemoryBarrier barrier(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead);
-				cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eFragmentShader,
-						vk::DependencyFlagBits::eByRegion, barrier, nullptr, nullptr);
+				listDraws.Barrier();
 				pipeline = pipelineManager->GetTrModifierVolumePipeline(mv_mode == 1 ? ModVolMode::Inclusion : ModVolMode::Exclusion, param.isp.CullMode);
+				listDraws.Draw(pipeline, scissor, (param.first + param.count - mod_base) * 3, mod_base * 3);
 			}
 			else
+			{
 				pipeline = pipelineManager->GetModifierVolumePipeline(mv_mode == 1 ? ModVolMode::Inclusion : ModVolMode::Exclusion, param.isp.CullMode);
-			cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-			cmdBuffer.draw((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
+				cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+				cmdBuffer.draw((param.first + param.count - mod_base) * 3, 1, mod_base * 3, 0);
+			}
 
 			mod_base = -1;
 		}
 	}
+	listDraws.Flush();
 	SetScissor(cmdBuffer, baseScissor);
 	BindVertices(cmdBuffer, buffer);
 }
