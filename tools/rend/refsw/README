@@ -100,6 +100,12 @@ refsw_pixel.cpp
     (PCW bit 7), which the object list entry carries. Without this the
     character on Jet Grind Radio's select screen, whose polygons do not
     take shadows, is drawn half dark inside its own shadow volume.
+    The shadow scales the base colour's red, green and blue, not its
+    alpha (InterpolateBase()): libswirl scaled all four, so a translucent
+    polygon in a shadow was drawn half transparent - on the jgr13 frame a
+    building behind the trees, in the shadow, let the sky through. The
+    offset colour's alpha (the fog's) was already left alone, and every
+    renderer of this core scales the colour only.
   - AlphaTest_tsp() (a punch-through polygon's TSP run from the ISP, for
     the alpha test) takes the entry of tag (tag >> 1) - 1, as
     PixelFlush_tsp() in refsw.cpp does. libswirl took tag - 1, but
