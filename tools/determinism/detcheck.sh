@@ -17,6 +17,11 @@
 #   ahead       run-ahead's way: each frame run, saved, the next run, loaded
 #               again, and the next run once more from there
 #   rollback    netplay's: every D frames, back D frames and those run again
+#   hidden      plain's, with the core told that no frame is shown (as for
+#               fast-forward's frameskip)
+#   raahead     ahead's, with the core told that the frames kept are not
+#               shown and the frames run ahead are, as RetroArch's run-ahead
+#               does it (those two leave the pictures out)
 #
 # Each has to be plain's, frame for frame, and every 50 frames a state
 # saved into memory full of 0x00 has to be the one saved into memory full
@@ -52,7 +57,7 @@ CORE=$(cd "$(dirname "$CORE")" && pwd)/$(basename "$CORE")
 WORK=${WORK:-/tmp/detcheck}
 K=${K:-7}
 D=${D:-4}
-RUNS=${RUNS:-plain again reload ahead rollback}
+RUNS=${RUNS:-plain again reload ahead rollback hidden raahead}
 mkdir -p "$WORK/dir"
 
 if [ "$GL" = egl ]; then
@@ -139,6 +144,8 @@ for R in $RUNS; do
       reload) run reload "reload:$K" "$@" ;;
       ahead) run ahead ahead "$@" ;;
       rollback) run rollback "rollback:$D" "$@" ;;
+      hidden) DET_HIDE=all; export DET_HIDE; run hidden plain "$@"; unset DET_HIDE ;;
+      raahead) DET_HIDE=ahead; export DET_HIDE; run raahead ahead "$@"; unset DET_HIDE ;;
    esac
 done
 

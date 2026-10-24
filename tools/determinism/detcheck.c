@@ -45,6 +45,13 @@
  *               Otherwise the core is given an OpenGL that does nothing,
  *               which detcheck.sh puts in front of the system's.
  *   DET_DIR     the system and save directory (default /tmp)
+ *   DET_HIDE    "all": the core is told the frontend shows none of the
+ *               frames (GET_AUDIO_VIDEO_ENABLE, as for fast-forward's
+ *               frameskip); "ahead": with DET_MODE ahead, it is told so for
+ *               the frames that are kept and not for the frames run ahead,
+ *               as RetroArch's run-ahead has it. A frame not shown has to
+ *               leave the machine as one shown does. The pictures are not
+ *               compared (a frame not shown has none).
  *   DET_GLES    set for a core built for OpenGL ES (with the OpenGL that
  *               does nothing)
  *
@@ -542,10 +549,16 @@ static void log_line(enum retro_log_level level, const char *fmt, ...)
    va_end(ap);
 }
 
+static int video_on = 1;   /* DET_HIDE: whether the frame being run is shown */
+
 static bool environment(unsigned cmd, void *data)
 {
    switch (cmd)
    {
+      case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
+         if (data)
+            *(int *)data = video_on ? 3 : 2;   /* audio always, video when shown */
+         return true;
       case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
          ((struct retro_log_callback *)data)->log = log_line;
          return true;
@@ -813,7 +826,7 @@ int main(int argc, char **argv)
 {
    struct retro_game_info game;
    int frames, i, warm, k = 0, d = 0;
-   int ahead, ahead_pending = 0, ahead_count = 0;
+   int ahead, ahead_pending = 0, ahead_count = 0, hide = 0;
    struct frame_rec ahead_rec;
    uint64_t *ahead_hashes;
    const char *mode;
@@ -831,6 +844,10 @@ int main(int argc, char **argv)
    option_count = argc - 4;
    frames = atoi(argv[3]);
    warm = getenv("DET_WARM") ? atoi(getenv("DET_WARM")) : 1;
+   if (getenv("DET_HIDE"))
+      hide = !strcmp(getenv("DET_HIDE"), "ahead") ? 2 : 1;
+   /* (a frame not shown has no picture to compare) */
+   no_picture = hide != 0 || getenv("DET_NO_PICTURE") != NULL;
    if (getenv("DET_SEED"))
       seed = (uint32_t)strtoul(getenv("DET_SEED"), NULL, 0);
    mode = getenv("DET_MODE") ? getenv("DET_MODE") : "plain";
@@ -967,6 +984,7 @@ int main(int argc, char **argv)
    ahead_hashes = (uint64_t *)calloc(unit_count, 8);
    for (i = 0; i < frames; i++)
    {
+      video_on = !(hide == 1 || (hide == 2 && ahead));
       run_frame(i);
       save(now_state);
       if (i % 50 == 49)
@@ -995,6 +1013,7 @@ int main(int argc, char **argv)
          ahead_pending = 0;
          if (i + 1 < frames)
          {
+            video_on = 1;
             run_frame(i + 1);
             ahead_rec = rec;
             save(spare_state);
