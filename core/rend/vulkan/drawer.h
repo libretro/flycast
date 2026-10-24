@@ -309,6 +309,9 @@ public:
 		ssaaResolve.Term();
 		msQuadPipeline.Term();
 		timer.Term();
+		/* (the pipeline thread finishes what it is making for it now,
+		 * while the shaders those pipelines are made of are still there) */
+		screenPipelineManager.reset();
 	}
 	vk::RenderPass GetRenderPass() const { return *renderPass; }
 	// the subpass the screen's last things are drawn in (the VMUs, the OSD): after the resolve, with SSAA
@@ -357,7 +360,12 @@ class TextureDrawer : public Drawer
 public:
 	// @samples: SSAA's (1: off)
 	void Init(SamplerManager *samplerManager, ShaderManager *shaderManager, TextureCache *textureCache, u32 samples);
-	void Term() { ssaaResolve.Term(); }
+	void Term()
+	{
+		ssaaResolve.Term();
+		// (as the screen's drawer's)
+		rttPipelineManager.reset();
+	}
 	virtual void EndRenderPass() override;
 	// the largest texture rendered to, a side, at this upscale (SSAA's attachments are made that large)
 	static u32 MaxSide() { return 1024u * (u32)std::max(1, settings.rend.RenderToTextureUpscale); }

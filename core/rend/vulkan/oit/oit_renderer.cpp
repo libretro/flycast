@@ -109,12 +109,14 @@ public:
 		GetContext()->ReleasePicture();
 		texCommandPool.WaitAll();
 		computeDrawer.Term();
-		oitShaderManager.Term();
-		rttShaderManager.Term();
 		samplerManager.Term();
 		screenDrawer.Term();
 		lastPicturePipeline.Term();
 		textureDrawer.Term();
+		/* (after the drawers: the pipeline thread may be making pipelines
+		 * of these shaders for them until their pipelines go) */
+		oitShaderManager.Term();
+		rttShaderManager.Term();
 		oitBuffers.Term();
 		BaseVulkanRenderer::Term();
 	}
