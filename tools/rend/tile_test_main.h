@@ -174,6 +174,7 @@ static void write_ppm(const char *dir, const char *name, const unsigned *px, uns
    fclose(f);
 }
 
+#if !defined(TILE_BENCH)	/* (tile_bench.c has its own) */
 int main(int argc, char **argv)
 {
    const char *samples_s = getenv("TILE_SAMPLES") ? getenv("TILE_SAMPLES") : "1 2 4 8";
@@ -269,3 +270,4 @@ int main(int argc, char **argv)
    printf("tile_test: %s\n", differ == 0 && validation_errors == 0 && runs > 0 ? "PASS" : "FAIL");
    return differ == 0 && validation_errors == 0 && runs > 0 ? 0 : 1;
 }
+#endif
