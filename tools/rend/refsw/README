@@ -68,11 +68,25 @@ refsw.h
     register unions and text_info the files expect)
   - Vertex::spc renamed to this core's Vertex::vtx_spc (6 places in
     IPs3::Setup)
+  - a triangle with a vertex REFSW_NEAR (65536) pixels or more off the
+    screen is set up in double precision from its vertices nearer the
+    screen: its half-edge functions (RefswExactEdges, each edge taken from
+    the one of its two vertices nearer the screen) and its plane equations
+    (PlaneStepper3, from the vertex nearest the screen). libswirl's float
+    setup takes an edge's constant as DY * X1 - DX * Y1, whose rounding at
+    X1 = 1e9 is thousands of pixels: a game's shadow volume near the eye
+    (Jet Grind Radio's vertices are 1e9 pixels out) covered pixels the
+    geometry says it does not and had a wrong 1/w, and the jgr13 frame's
+    street shadow had two light stripes through it. A triangle nearer than
+    that is set up as before, to the bit (its float edges are then within
+    about 1/256 pixel of the exact ones)
 refsw.cpp
   - the registration with libswirl's frontend at the end (#if FEAT_TA ==
     TA_LLE ... #endif: rend_refsw, rend_refsw_debug, RegisterRendererBackend)
     replaced by a plain factory, refsw_create(vram), that makes the
     refsw_impl the same way (placement new in 32-byte aligned memory)
+  - RasterizeTriangle(): the cull's area, the edges and the 1/w plane of a
+    triangle with a vertex far out in double precision (see refsw.h above)
   - (cMutex texture_lock stays; refsw_port.h gives it as a do-nothing class:
     one thread draws here)
 refrend_base.h
@@ -103,8 +117,8 @@ refsw_pixel.cpp
     down, made 255 at most 253), and the modulating shading instructions
     multiply by base + 1 over 256 (libswirl's base over 256 made 255 x 255
     254).
-Everything else - the rasterizer, the depth tests, the peeling, the texture
-fetch, the colour combiner, fog, blending - is libswirl's text unchanged
+Everything else - the rasterizer (but for a triangle far out: refsw.h), the
+depth tests, the peeling, the texture fetch, the colour combiner, fog, blending - is libswirl's text unchanged
 (diff the files against libswirl/rend/soft to see).
 
 What the walk takes from the parse, and the known departures
@@ -141,15 +155,13 @@ What the walk takes from the parse, and the known departures
   flag), nor a translucent polygon's own depth compare mode (it forces
   less-or-equal for peeling and greater-or-equal for punch-through and
   modifier volumes, as the comments in PixelFlush_isp say).
-- refsw's rasterizer takes a triangle's edges in 32-bit float from its
-  vertices on the screen, so a triangle with vertices hundreds of millions
-  of pixels out (a game's shadow volumes, near the eye: Jet Grind Radio's
-  are 1e9 pixels out) can be wrong by many pixels: on the jgr13 frame a
-  volume triangle with two vertices that far out covers pixels of the
-  street it does not (the exact geometry says), and the shadow has light
-  stripes there. The compute renderer's coverage is held to the exact geometry
-  by tools/rend/tile_geo.c; where the two pictures differ in a shadow
-  with vertices that far out, refsw is the one that is wrong.
+- The chip's own arithmetic for a triangle's edges is not documented in
+  anything this core has (refsw's libswirl sources, the register notes in
+  this core, MAME's powervr2.cpp, which draws in float with no modifier
+  volumes): refsw takes the exact geometry for a triangle with a vertex far
+  out (refsw.h, REFSW_NEAR), which is what the game's shadow volumes need
+  to draw a shadow without stripes, and what tools/rend/tile_geo.c holds
+  the compute renderer to. REFSW_GEO=1 holds refsw's coverage to it.
 - Render passes (several region array entries for a tile): walked in
   order; the first clears the buffers, a later one when its RenderPass
   says z_clear.
@@ -169,4 +181,11 @@ Using it
      interpolates for it (and its bits), its depth mode, blend and texture
      words and its three vertex depths; and the depth, tag and stencil the
      tile buffers hold after each list and each peeled layer.
+  REFSW_GEO=1 sh tools/rend/refsw_test.sh -f frame.bin
+     the frame drawn with each triangle's coverage held to the exact
+     geometry (refsw_frame.cpp: the same cull and edge test as refsw, and
+     again in long double; within 1.5 pixel of an edge every pixel, one in
+     8 each way elsewhere): a pixel one covers and the other does not is a
+     fault, unless it is within 1/256 pixel of an edge. Ends with "geo:
+     ... PASS" or "FAIL". A second or two of processor time a frame.
 The frames are 9 MB each (video memory is in them). WORK=dir keeps them.

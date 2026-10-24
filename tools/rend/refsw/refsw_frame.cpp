@@ -233,6 +233,16 @@ static bool covers(const Vertex& v1, const Vertex& v2, const Vertex& v3, float x
 {
 	const float X1 = v1.x, X2 = v2.x, X3 = v3.x, Y1 = v1.y, Y2 = v2.y, Y3 = v3.y;
 	int sgn = 1;
+	if (refsw_far(v1, v2, v3))
+	{
+		const double area = ((double)X1 - X3) * ((double)Y2 - Y3) - ((double)Y1 - Y3) * ((double)X2 - X3);
+		if ((float)area > 0)
+			sgn = -1;
+		const float X[3] = { X1, X2, X3 }, Y[3] = { Y1, Y2, Y3 };
+		RefswExactEdges e;
+		e.Setup(sgn, X, Y, 3);
+		return e.In(x_ps, y_ps);
+	}
 	float area = ((X1 - X3) * (Y2 - Y3) - (Y1 - Y3) * (X2 - X3));
 	if (area > 0)
 		sgn = -1;
@@ -383,11 +393,147 @@ static void gap_tile(const taRECT& rect)
 	}
 }
 
+/* REFSW_GEO=1: refsw's coverage held to the exact geometry, as
+ * tools/rend/tile_geo.c holds the compute renderer's. Every triangle drawn
+ * into a tile, polygons and modifier volumes, is culled and tested at
+ * the pixels of the tile the way RasterizeTriangle() does (covers(), its
+ * cull), and again in long double from the half-edge constants as
+ * libswirl writes them (C1 = DY12 X1 - DX12 Y1, whose rounding at 64 bits
+ * is under 1e-10 pixel for a vertex 1e9 pixels out) - every pixel within
+ * 1.5 pixel of an exact edge, and one in 8 each way elsewhere (as
+ * tile_geo.c looks at a band and a grid). A pixel one covers
+ * and the other does not is a fault, unless its sampling position is
+ * within 1/256 pixel of an edge (counted apart); so is a triangle one
+ * culls and the other draws. Analysis only: it changes nothing drawn. */
+static bool geo_on;
+static u64 geo_tris, geo_samples, geo_near, geo_faults, geo_fault_tris, geo_cull_faults;
+
+static bool geo_culled(const DrawParameters *params, int vertex_offset, double area)
+{
+	if (params->isp.CullMode == 0)
+		return false;
+	if (fabs(area) < FPU_CULL_VAL)
+		return true;
+	if (params->isp.CullMode >= 2)
+	{
+		const u32 mode = vertex_offset ^ (params->isp.CullMode & 1);
+		return (mode == 0 && area < 0) || (mode == 1 && area > 0);
+	}
+	return false;
+}
+
+static void geo_triangle(const DrawParameters *params, int vertex_offset, const Vertex& v1, const Vertex& v2, const Vertex& v3, const taRECT *rect)
+{
+	const float X1 = v1.x, X2 = v2.x, X3 = v3.x, Y1 = v1.y, Y2 = v2.y, Y3 = v3.y;
+	if (std::isnan(X1) || std::isnan(X2) || std::isnan(X3) || std::isnan(Y1) || std::isnan(Y2) || std::isnan(Y3))
+		return;
+	/* the pixels of the tile within a pixel of the triangle's box: outside
+	 * it neither covers anything (each end kept to the tile before it is
+	 * an integer: a box billions of pixels out does not fit one) */
+	const float l = (float)rect->left, r = (float)rect->right, t = (float)rect->top, b = (float)rect->bottom;
+	const int x0 = (int)std::min(std::max(l, floorf(std::min(std::min(X1, X2), X3)) - 1), r);
+	const int x1 = (int)std::max(std::min(r, ceilf(std::max(std::max(X1, X2), X3)) + 1), l);
+	const int y0 = (int)std::min(std::max(t, floorf(std::min(std::min(Y1, Y2), Y3)) - 1), b);
+	const int y1 = (int)std::max(std::min(b, ceilf(std::max(std::max(Y1, Y2), Y3)) + 1), t);
+	if (x0 >= x1 || y0 >= y1)
+		return;
+	geo_tris++;
+	/* refsw's cull, in its arithmetic */
+	const bool far = refsw_far(v1, v2, v3);
+	const float area_r = far ? (float)(((double)X1 - X3) * ((double)Y2 - Y3) - ((double)Y1 - Y3) * ((double)X2 - X3))
+	                         : ((X1 - X3) * (Y2 - Y3) - (Y1 - Y3) * (X2 - X3));
+	const long double area_x = ((long double)X1 - X3) * ((long double)Y2 - Y3) - ((long double)Y1 - Y3) * ((long double)X2 - X3);
+	const bool cull_r = geo_culled(params, vertex_offset, area_r);
+	const bool cull_x = geo_culled(params, vertex_offset, (double)area_x);
+	if (cull_r != cull_x)
+	{
+		geo_cull_faults++;
+		printf("geo: tile %d,%d: a triangle refsw %s and the geometry %s: area %.9g (exact %.9Lg), vertices %.9g,%.9g %.9g,%.9g %.9g,%.9g\n",
+				rect->left, rect->top, cull_r ? "culls" : "draws", cull_x ? "culls" : "draws", area_r, area_x, X1, Y1, X2, Y2, X3, Y3);
+		return;
+	}
+	if (cull_r)
+		return;
+	const int sgn = area_x > 0 ? -1 : 1;
+	const long double X[3] = { X1, X2, X3 }, Y[3] = { Y1, Y2, Y3 };
+	long double dx[3], dy[3], c[3], len[3];
+	for (int k = 0; k < 3; k++)
+	{
+		const int a = k, b = (k + 1) % 3;
+		dx[k] = sgn * (X[a] - X[b]);
+		dy[k] = sgn * (Y[a] - Y[b]);
+		c[k] = dy[k] * X[a] - dx[k] * Y[a];
+		len[k] = sqrtl(dx[k] * dx[k] + dy[k] * dy[k]);
+	}
+	const float halfpixel = HALF_OFFSET.fpu_pixel_half_offset ? 0.5f : 0;
+	/* where every pixel of the box lies more than 1.5 pixel inside all the
+	 * edges, or outside one, only a pixel in 8 each way is looked at: a
+	 * misplaced edge's error begins at the exact edge, which the pixels
+	 * near it see, and the grid sees one that is not near (as tile_geo
+	 * looks at a band about the edges and a grid) */
+	int step = 1;
+	{
+		bool all_in = true, all_out = false;
+		for (int k = 0; k < 3 && len[k] > 0; k++)
+		{
+			long double lo = 1e30L, hi = -1e30L;
+			for (int corner = 0; corner < 4; corner++)
+			{
+				const long double px = (corner & 1 ? x1 - 1 : x0) + halfpixel, py = (corner & 2 ? y1 - 1 : y0) + halfpixel;
+				const long double e = (c[k] + dx[k] * py - dy[k] * px) / len[k];
+				lo = std::min(lo, e);
+				hi = std::max(hi, e);
+			}
+			if (lo <= 1.5L)
+				all_in = false;
+			if (hi < -1.5L)
+				all_out = true;
+		}
+		if (all_in || all_out)
+			step = 8;
+	}
+	u32 faults = 0;
+	for (int y = y0; y < y1; y += step)
+		for (int x = x0; x < x1; x += step)
+		{
+			const float x_ps = x + halfpixel, y_ps = y + halfpixel;
+			bool in_x = true;
+			long double nearest = 1e30L;
+			for (int k = 0; k < 3; k++)
+			{
+				const long double e = c[k] + dx[k] * y_ps - dy[k] * x_ps;
+				if (e < 0)
+					in_x = false;
+				if (len[k] > 0 && fabsl(e) / len[k] < nearest)
+					nearest = fabsl(e) / len[k];
+			}
+			/* (and within the box, the same: a pixel 1.5 pixel or more from
+			 * every edge only on the grid) */
+			if (step == 1 && nearest >= 1.5L && ((x - x0) % 8 != 0 || (y - y0) % 8 != 0))
+				continue;
+			geo_samples++;
+			if (covers(v1, v2, v3, x_ps, y_ps) == in_x)
+				continue;
+			if (nearest < 1.0L / 256)
+			{
+				geo_near++;
+				continue;
+			}
+			geo_faults++;
+			if (faults++ == 0 && geo_fault_tris++ < 8)	/* (every triangle at fault counted, the first 8 printed) */
+				printf("geo: tile %d,%d: pixel %d,%d %s by refsw and %s, %.3Lg pixel from an edge; vertices %.9g,%.9g %.9g,%.9g %.9g,%.9g\n",
+						rect->left, rect->top, x, y, in_x ? "not covered" : "covered", in_x ? "covered" : "not covered", nearest,
+						X1, Y1, X2, Y2, X3, Y3);
+		}
+}
+
 /* refrend_base.cpp's RenderTriangle(): a modifier volume's last triangle
  * has the stencil summarized after it */
 static void render_triangle(RefRendInterface *backend, RenderMode render_mode, DrawParameters *params, parameter_tag_t tag, int vertex_offset,
 		const Vertex& v1, const Vertex& v2, const Vertex& v3, const Vertex *v4, taRECT *area)
 {
+	if (geo_on && v4 == NULL)
+		geo_triangle(params, vertex_offset, v1, v2, v3, area);
 	backend->RasterizeTriangle(render_mode, params, tag, vertex_offset, v1, v2, v3, v4, area);
 	if (render_mode == RM_MODIFIER)
 	{
@@ -636,14 +782,16 @@ static void render_tile(RefRendInterface *backend, const Frame& fr, int tx, int 
 				backend->ClearPixelsDrawn();
 				backend->PeelBuffers(FLT_MAX, 0);
 				const float keep_rel = gap_rel;
+				const bool keep_geo = geo_on;
 				if (layer > 0)
-					gap_rel = 0;	// (the list is the same each layer: counted once)
+					gap_rel = 0, geo_on = false;	// (the list is the same each layer: counted once)
 				render_polys(backend, RM_TRANSLUCENT, fr, fr.tr, tr0, rp.tr_count, base[2], first_tri[2], &rect, tx, ty, "translucent");
 				gap_rel = keep_rel;
 				if (rp.mv_op_tr_shared)
 					render_modvols(backend, fr, fr.mvo, mvo0, rp.mvo_count, &rect, tx, ty, "translucent modvol (the opaque ones)");
 				else
 					render_modvols(backend, fr, fr.mvo_tr, mvotr0, rp.mvo_tr_count, &rect, tx, ty, "translucent modvol");
+				geo_on = keep_geo;
 				char when[64];
 				snprintf(when, sizeof(when), "translucent layer %d (%u pixels)", layer, backend->GetPixelsDrawn());
 				probe_buffers(backend, rect, when);
@@ -771,6 +919,7 @@ int main(int argc, char **argv)
 
 	if (getenv("REFSW_GAPS") != NULL)
 		gap_rel = (float)atof(getenv("REFSW_GAPS"));
+	geo_on = getenv("REFSW_GEO") != NULL && atoi(getenv("REFSW_GEO")) != 0;
 	RefRendInterface *backend = refsw_create(fr.vram.data());
 	backend->Init();
 	backend->DebugOnFrameStart(fr.h.frame);
@@ -784,6 +933,11 @@ int main(int argc, char **argv)
 	if (gap_rel != 0)
 		printf("gaps under %g: opaque vs opaque %u pixels (smallest %.3g), translucent vs translucent %u (smallest %.3g), translucent vs opaque %u (smallest %.3g)\n",
 				gap_rel, gap_count_op, gap_min_op, gap_count_tr, gap_min_tr, gap_count_tr_op, gap_min_tr_op);
+	if (geo_on)
+		printf("geo: %llu triangles in tiles, %llu samples: %llu faults in %llu triangles, %llu triangles culled by one and not the other, "
+				"%llu within 1/256 pixel of an edge: %s\n", (unsigned long long)geo_tris, (unsigned long long)geo_samples,
+				(unsigned long long)geo_faults, (unsigned long long)geo_fault_tris, (unsigned long long)geo_cull_faults,
+				(unsigned long long)geo_near, geo_faults == 0 && geo_cull_faults == 0 ? "PASS" : "FAIL");
 
 	FILE *out = fopen(argv[2], "wb");
 	if (out == NULL)

@@ -208,10 +208,15 @@ struct refsw_impl : refsw
 
         int sgn = 1;
 
+        // (this core) a vertex far out: the triangle is set up in double
+        // (see REFSW_NEAR in refsw.h)
+        const bool far = refsw_far(X1, Y1) || refsw_far(X2, Y2) || refsw_far(X3, Y3) || (v4 && refsw_far(X4, Y4));
+
         // cull
         {
             //area: (X1-X3)*(Y2-Y3)-(Y1-Y3)*(X2-X3)
-            float area = ((X1 - X3) * (Y2 - Y3) - (Y1 - Y3) * (X2 - X3));
+            float area = far ? (float)(((double)X1 - X3) * ((double)Y2 - Y3) - ((double)Y1 - Y3) * ((double)X2 - X3))
+                             : ((X1 - X3) * (Y2 - Y3) - (Y1 - Y3) * (X2 - X3));
 
             if (area > 0)
                 sgn = -1;
@@ -261,6 +266,12 @@ struct refsw_impl : refsw
         float C3 = DY31 * X3 - DX31 * Y3;
         float C4 = v4 ? DY41 * X4 - DX41 * Y4 : 1;
 
+        RefswExactEdges exact_edges;
+        if (far)
+        {
+            const float X[4] = { X1, X2, X3, X4 }, Y[4] = { Y1, Y2, Y3, Y4 };
+            exact_edges.Setup(sgn, X, Y, v4 ? 4 : 3);
+        }
 
         u8* cb_y = (u8*)render_buffer;
         cb_y += (miny - area->top) * stride_bytes + (minx - area->left) * 4;
@@ -286,7 +297,8 @@ struct refsw_impl : refsw
                 float Xhs31 = C3 + DX31 * y_ps - DY31 * x_ps;
                 float Xhs41 = C4 + DX41 * y_ps - DY41 * x_ps;
 
-                bool inTriangle = Xhs12 >= 0 && Xhs23 >= 0 && Xhs31 >= 0 && Xhs41 >= 0;
+                bool inTriangle = far ? exact_edges.In(x_ps, y_ps)
+                                      : Xhs12 >= 0 && Xhs23 >= 0 && Xhs31 >= 0 && Xhs41 >= 0;
 
                 if (inTriangle)
                 {
