@@ -41,6 +41,7 @@
 #include "refsw_dump.h"
 #include "refsw.h"
 #include "refsw_pixel.h"
+#include "rend/tile/pvr_scaler.h"
 
 RefRendInterface* refsw_create(u8* vram);
 
@@ -721,7 +722,7 @@ static u32 decode_pvr_vetrices(DrawParameters *params, u32 base, u32 skip, u32 s
  * the region array entries of one tile, one an entry. The first pass
  * clears the buffers; a later one does when its region array entry says
  * (the parse's RenderPass::z_clear). */
-static void render_tile(RefRendInterface *backend, const Frame& fr, int tx, int ty, const std::vector<u32> first_tri[3], const u32 base[3], u8 *picture)
+static void render_tile(RefRendInterface *backend, const Frame& fr, int tx, int ty, const std::vector<u32> first_tri[3], const u32 base[3], u8 *drawn, u32 drawn_w)
 {
 	taRECT rect;
 	rect.top = ty * 32;
@@ -813,25 +814,73 @@ static void render_tile(RefRendInterface *backend, const Frame& fr, int tx, int 
 	}
 	gap_tile(rect);
 
-	/* Copy to vram: here to the picture, 8 bits a channel, BGRA to RGBA;
-	 * the chip writes nothing outside the pixel clip */
-	FB_X_CLIP_type xclip;
-	FB_Y_CLIP_type yclip;
-	xclip.full = fr.h.fb_x_clip;
-	yclip.full = fr.h.fb_y_clip;
+	/* The accumulation buffer, as the chip hands it to its scaler on the
+	 * way to video memory (scaler_write()): here to the picture as drawn,
+	 * 8 bits a channel, BGRA to RGBA */
 	const u8 *src = backend->GetColorOutputBuffer();
 	for (int y = 0; y < 32; y++)
 		for (int x = 0; x < 32; x++, src += 4)
 		{
 			const int px = rect.left + x, py = rect.top + y;
-			if (px >= (int)fr.h.width || py >= (int)fr.h.height)
+			if (px >= (int)drawn_w || py >= (int)fr.h.height)
 				continue;
-			if (px < (int)xclip.min || px > (int)xclip.max || py < (int)yclip.min || py > (int)yclip.max)
-				continue;
-			u8 *dst = picture + ((size_t)py * fr.h.width + px) * 4;
+			u8 *dst = drawn + ((size_t)py * drawn_w + px) * 4;
 			dst[0] = src[2];
 			dst[1] = src[1];
 			dst[2] = src[0];
+			dst[3] = src[3];
+		}
+}
+
+/* The tiles' copy to video memory through the chip's X and Y scalers
+ * (SCALER_CTL, Y_COEFF; rend/tile/pvr_scaler.h has the arithmetic):
+ * with horizontal scaling the game draws twice as wide and each pair of
+ * pixels is averaged into one; when the vertical scale factor reduces
+ * (above 0x400), each line is filtered with the lines above and below,
+ * the picture's first and last lines with themselves in the place of the
+ * line there is not. The pixel clip (FB_X_CLIP, FB_Y_CLIP) is taken on
+ * the way out, in the framebuffer's pixels (a game that draws 1280 wide
+ * through the X scaler clips at 639), the scaler having filtered what
+ * the tiles hold beyond it. The Y scaler's choice of lines (the scale
+ * factor itself) is not applied: the picture is the lines drawn, as the
+ * renderers present them. Alpha is made opaque in the picture. */
+static void scaler_write(const Frame& fr, const u8 *drawn, u32 drawn_w, u8 *picture)
+{
+	SCALER_CTL_type scaler;
+	scaler.full = *(const u32 *)&fr.regs[SCALER_CTL_addr];
+	const u32 ycoeff = *(const u32 *)&fr.regs[Y_COEFF_addr];
+	FB_X_CLIP_type xclip;
+	FB_Y_CLIP_type yclip;
+	xclip.full = fr.h.fb_x_clip;
+	yclip.full = fr.h.fb_y_clip;
+	const u32 w = fr.h.width, h = fr.h.height;
+	const u32 across = scaler.hscale ? 2 : 1;
+	std::vector<u32> line(w * h);
+	for (u32 y = 0; y < h; y++)
+		for (u32 x = 0; x < w; x++)
+		{
+			const u8 *p = drawn + ((size_t)y * drawn_w + x * across) * 4;
+			u32 c;
+			memcpy(&c, p, 4);
+			if (scaler.hscale)
+			{
+				u32 d;
+				memcpy(&d, p + 4, 4);
+				c = pvr_scaler_x(c, d);
+			}
+			line[y * w + x] = c;
+		}
+	const bool filter = pvr_scaler_yfilter(scaler.full) != 0;
+	for (u32 y = 0; y < h; y++)
+		for (u32 x = 0; x < w; x++)
+		{
+			if (x < xclip.min || x > xclip.max || y < yclip.min || y > yclip.max)
+				continue;
+			u32 c = line[y * w + x];
+			if (filter)
+				c = pvr_scaler_y(line[(y == 0 ? 0 : y - 1) * w + x], c, line[(y + 1 == h ? y : y + 1) * w + x], ycoeff);
+			u8 *dst = picture + ((size_t)y * w + x) * 4;
+			memcpy(dst, &c, 4);
 			dst[3] = 0xFF;
 		}
 }
@@ -864,6 +913,11 @@ int main(int argc, char **argv)
 	Frame fr;
 	if (!load(argv[1], fr))
 		return 1;
+	if (fr.regs.size() < pvr_RendRegSize)
+	{
+		fprintf(stderr, "refsw_frame: the frame has %u bytes of registers\n", (unsigned)fr.regs.size());
+		return 1;
+	}
 	if (fr.h.width == 0 || fr.h.height == 0 || fr.h.width > 4096 || fr.h.height > 4096)
 	{
 		fprintf(stderr, "refsw_frame: the frame is %u x %u\n", fr.h.width, fr.h.height);
@@ -924,10 +978,17 @@ int main(int argc, char **argv)
 	backend->Init();
 	backend->DebugOnFrameStart(fr.h.frame);
 	std::vector<u8> picture((size_t)fr.h.width * fr.h.height * 4, 0);
-	const int tiles_x = (fr.h.width + 31) / 32, tiles_y = (fr.h.height + 31) / 32;
+	/* (the game draws twice as wide where the X scaler halves it) */
+	SCALER_CTL_type scaler;
+	scaler.full = *(const u32 *)&fr.regs[SCALER_CTL_addr];
+	const u32 drawn_w = fr.h.width * (scaler.hscale ? 2 : 1);
+	printf("refsw_frame: SCALER_CTL %08x Y_COEFF %08x: drawn %u x %u\n", scaler.full, *(const u32 *)&fr.regs[Y_COEFF_addr], drawn_w, fr.h.height);
+	std::vector<u8> drawn((size_t)drawn_w * fr.h.height * 4, 0);
+	const int tiles_x = (drawn_w + 31) / 32, tiles_y = (fr.h.height + 31) / 32;
 	for (int ty = 0; ty < tiles_y; ty++)
 		for (int tx = 0; tx < tiles_x; tx++)
-			render_tile(backend, fr, tx, ty, first_tri, base, picture.data());
+			render_tile(backend, fr, tx, ty, first_tri, base, drawn.data(), drawn_w);
+	scaler_write(fr, drawn.data(), drawn_w, picture.data());
 	delete backend;
 	textures_clear();
 	if (gap_rel != 0)

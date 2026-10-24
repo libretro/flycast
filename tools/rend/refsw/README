@@ -167,9 +167,21 @@ What the walk takes from the parse, and the known departures
   refuses). Palettes come from the dumped registers (palette_update()).
 - Sprites are the two triangles the parse makes of them, not the chip's
   quad with one plane.
-- The picture is the tile buffers' 8-bit BGRA; the chip's write-out to a
-  16-bit 565 framebuffer (and dithering) is not applied. The pixel clip
-  (FB_X_CLIP/FB_Y_CLIP) is.
+- The picture is the tile buffers' 8-bit BGRA through the chip's X and Y
+  scalers (refsw_frame.cpp's scaler_write(), the arithmetic in
+  core/rend/tile/pvr_scaler.h, which the compute renderer shares): with
+  SCALER_CTL's horizontal scaling the game draws twice as wide and each
+  pair of pixels is averaged into one; with a vertical scale factor that
+  reduces (above 0x400: most of Sega's games set 0x401 and Y_COEFF
+  0x8040 for the flicker filter, VGA or not) each line is filtered with
+  the lines above and below by Y_COEFF's coefficients. Then the pixel
+  clip (FB_X_CLIP/FB_Y_CLIP), in the framebuffer's pixels. Not applied:
+  the Y scaler's choice of lines (the picture keeps every line drawn, as
+  the renderers present it; at 0x401 that is the last line, which the
+  chip leaves unwritten), and the write-out to the framebuffer's 16-bit
+  format and its dithering. What the manual leaves open - the scalers'
+  rounding, whether the clip is taken before or after the X scaler - is
+  said in pvr_scaler.h and in scaler_write().
 - The translucent list is always peeled (autosort); refsw does not model
   the pre-sorted mode (ISP_FEED_CFG bit 0 / the region array's pre-sort
   flag), nor a translucent polygon's own depth compare mode (it forces
