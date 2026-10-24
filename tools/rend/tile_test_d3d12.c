@@ -14,7 +14,8 @@
  *   tile_test_d3d12.exe DXIL_DIR FRAME...
  *
  * DXIL_DIR has the kernels kernels_dx12.sh compute-test made: kK.dxil, the
- * walk k5_SAMPLES_KEEP.dxil for each count and K the test draws with. The
+ * walk k5_SAMPLES_KEEP.dxil for each count and K the test draws with (its
+ * sorted variant; k5u_SAMPLES.dxil its unsorted, dispatched before it). The
  * environment is tile_test.c's (TILE_SAMPLES, TILE_KEEP, TILE_GPU,
  * TILE_PPM, TILE_TIMES, TILE_PROD); TILE_VALIDATE=1 the debug layer, where
  * there is one. A workgroup has the 32 KiB of shared memory Direct3D 12
@@ -47,7 +48,7 @@ static const char *dxil_dir;
 static int validating;
 
 /* The pipelines made for a count of samples and a K, kept */
-struct kernels { unsigned samples, keep; ID3D12PipelineState *k[PVRC_KERNELS + 1]; };
+struct kernels { unsigned samples, keep; ID3D12PipelineState *k[PVRC_KERNELS + 2]; };	/* (the walk's unsorted variant last) */
 static struct kernels made[16];
 static unsigned made_count;
 
@@ -334,6 +335,8 @@ static ID3D12PipelineState **pipelines_for(unsigned samples, unsigned keep)
          snprintf(name, sizeof(name), "k%u.dxil", k);
       made[made_count].k[k] = make_pipeline(name);
    }
+   snprintf(name, sizeof(name), "k%uu_%u.dxil", PVRC_K_WALK, samples);
+   made[made_count].k[PVRC_KERNELS + 1] = make_pipeline(name);
    return made[made_count++].k;
 }
 
@@ -481,6 +484,10 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
       STEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
       STEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS]);
    }
+   /* (the walk's two variants over the same tiles, as the renderer
+    * dispatches them) */
+   ID3D12GraphicsCommandList_SetPipelineState(cl, k[PVRC_KERNELS + 1]);
+   ID3D12GraphicsCommandList_Dispatch(cl, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
    STEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh);
    ARGS();
    ID3D12GraphicsCommandList_SetPipelineState(cl, k[PVRC_K_CLEAR]);

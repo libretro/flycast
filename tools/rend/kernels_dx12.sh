@@ -38,14 +38,18 @@
 #                                 its PVRC_KERNEL; dx12/dx12_compute.cpp):
 #                                 the header's GLSL kernels made HLSL of the
 #                                 same way (compute_source_of()), the walk
-#                                 for 1, 2, 4 and 8 samples a pixel
+#                                 for 1, 2, 4 and 8 samples a pixel, in its
+#                                 two variants (PVRC_V_SORTED, keeping
+#                                 PVRC_KEEP_D3D12; PVRC_V_UNSORTED, keeping
+#                                 1)
 #
 #   sh tools/rend/kernels_dx12.sh update   all made again from the sources
 #   sh tools/rend/kernels_dx12.sh check    whether all are the sources' still
 #   sh tools/rend/kernels_dx12.sh compute-test DIR SAMPLES KEEP
 #        the compute kernels for tools/rend/tile_test (TILE_DEVICE=d3d12):
 #        test mode, nothing fused (PVRC_TEST, PVRC_EXACT), the walk for
-#        SAMPLES and KEEP, as DIR/kK.dxil (the walk DIR/k5_SAMPLES_KEEP.dxil;
+#        SAMPLES and KEEP, as DIR/kK.dxil (the walk's sorted variant
+#        DIR/k5_SAMPLES_KEEP.dxil, its unsorted DIR/k5u_SAMPLES.dxil;
 #        TILE_PROD=1 in the environment: not test mode, for timing)
 #
 # DXBC, shader model 5.1 (descriptor tables indexed in the shader, for the
@@ -107,13 +111,25 @@ COMPUTE_INC=core/rend/dx12/dx12_compute_dxil.inc
 PVRC_SRC=core/rend/tile/pvr_compute.h
 PVRC_KERNELS=$(awk '$1 == "#define" && $2 == "PVRC_KERNELS" { print $3 }' $PVRC_SRC)
 PVRC_K_WALK=$(awk '$1 == "#define" && $2 == "PVRC_K_WALK" { print $3 }' $PVRC_SRC)
-# the kernels made, number:samples (the walk's for each count it draws at)
+# the kernels made, number:samples:variant (the walk's for each count it
+# draws at, each of its two variants: pvr_compute.h's PVRC_V_*)
 COMPUTE_KERNELS=
 k=1
 while [ $k -le "$PVRC_KERNELS" ]; do
-   if [ $k = "$PVRC_K_WALK" ]; then COMPUTE_KERNELS="$COMPUTE_KERNELS $k:1 $k:2 $k:4 $k:8"; else COMPUTE_KERNELS="$COMPUTE_KERNELS $k:0"; fi
+   if [ $k = "$PVRC_K_WALK" ]; then COMPUTE_KERNELS="$COMPUTE_KERNELS $k:1:1 $k:2:1 $k:4:1 $k:8:1 $k:1:2 $k:2:2 $k:4:2 $k:8:2"; else COMPUTE_KERNELS="$COMPUTE_KERNELS $k:0:0"; fi
    k=$((k + 1))
 done
+# a kernel's defines: @1 number:samples:variant
+compute_defines_of() {
+   v=${1##*:}
+   if [ "$v" = 2 ]; then echo "#define PVRC_KEEP 1u"; else echo "#define PVRC_KEEP ${PVRC_KEEP_D3D12}u"; fi
+   echo "#define PVRC_VARIANT ${v}u"
+}
+# ...and its name: number_samples, u after it for the unsorted variant
+compute_name_of() {
+   t=${1%:*}
+   echo "${t%%:*}_${t#*:}$( [ "${1##*:}" = 2 ] && echo u)"
+}
 # (the translucent fragments the walk keeps at a time: pvrc_fragments_kept()
 # of what Direct3D 12 gives a workgroup, 32 KiB)
 PVRC_KEEP_D3D12=4
@@ -219,8 +235,9 @@ dxc_compile() {
 
 compute_sums() {
    for k in $COMPUTE_KERNELS; do
-      compute_source_of ${k%%:*} ${k#*:} "#define PVRC_KEEP ${PVRC_KEEP_D3D12}u" > "$WORK/s.hlsl"
-      echo " * kernel ${k%%:*} ${k#*:} $(sha1sum < "$WORK/s.hlsl" | cut -c1-40)"
+      t=${k%:*}
+      compute_source_of ${t%%:*} ${t#*:} "$(compute_defines_of $k | head -1)" "$(compute_defines_of $k | tail -1)" > "$WORK/s.hlsl"
+      echo " * kernel $(compute_name_of $k) $(sha1sum < "$WORK/s.hlsl" | cut -c1-40)"
    done
 }
 
@@ -228,28 +245,33 @@ compute_sums() {
 make_compute_inc() {
    echo "/* DXIL of the compute renderer's kernels (rend/tile/pvr_compute.h, each"
    echo " * after the shared rules' headers, with PVRC_SHADER_HLSL and its"
-   echo " * PVRC_KERNEL, and the walk for each of 1, 2, 4 and 8 samples a pixel, as"
+   echo " * PVRC_KERNEL, and the walk for each of 1, 2, 4 and 8 samples a pixel, in"
+   echo " * its two variants (PVRC_VARIANT, the unsorted keeping one fragment), as"
    echo " * tools/rend/kernels_dx12.sh makes HLSL of them): made by"
    echo " * tools/rend/kernels_dx12.sh update from them. Not to be edited."
    echo " * dxc $(dxc_version)"
    compute_sums
    echo " */"
    for k in $COMPUTE_KERNELS; do
-      n=${k%%:*}_${k#*:}
-      compute_source_of ${k%%:*} ${k#*:} "#define PVRC_KEEP ${PVRC_KEEP_D3D12}u" > "$WORK/c$n.hlsl"
+      n=$(compute_name_of $k)
+      t=${k%:*}
+      compute_source_of ${t%%:*} ${t#*:} "$(compute_defines_of $k | head -1)" "$(compute_defines_of $k | tail -1)" > "$WORK/c$n.hlsl"
       dxc_compile "$WORK/c$n.hlsl" "$WORK/c$n.dxil"
       echo "static const u32 dx12_compute_dxil_$n[] = {"
       od -An -v -w32 -tx4 --endian=little "$WORK/c$n.dxil" | awk '{ s = ""; for (i = 1; i <= NF; i++) s = s "0x" $i ","; print s }'
       echo "};"
    done
-   echo "// by PVRC_K_* (the walk's by SSAA_LOG2() of its samples, after the last): the words, and their size in bytes"
+   echo "// by PVRC_K_* (the walk's sorted variant by SSAA_LOG2() of its samples, after the last, then its unsorted for 1, 2, 4 and 8): the words, and their size in bytes"
    l="static const u32 * const dx12_compute_dxil[] = { 0"
    z="static const size_t dx12_compute_dxil_size[] = { 0"
    for k in $COMPUTE_KERNELS; do
-      case $k in *:0|*:1) l="$l, dx12_compute_dxil_${k%%:*}_${k#*:}"; z="$z, sizeof(dx12_compute_dxil_${k%%:*}_${k#*:})" ;; esac
+      case $k in *:0:0|*:1:1) n=$(compute_name_of $k); l="$l, dx12_compute_dxil_$n"; z="$z, sizeof(dx12_compute_dxil_$n)" ;; esac
    done
    for k in $COMPUTE_KERNELS; do
-      case $k in *:2|*:4|*:8) l="$l, dx12_compute_dxil_${k%%:*}_${k#*:}"; z="$z, sizeof(dx12_compute_dxil_${k%%:*}_${k#*:})" ;; esac
+      case $k in *:2:1|*:4:1|*:8:1) n=$(compute_name_of $k); l="$l, dx12_compute_dxil_$n"; z="$z, sizeof(dx12_compute_dxil_$n)" ;; esac
+   done
+   for k in $COMPUTE_KERNELS; do
+      case $k in *:2) n=$(compute_name_of $k); l="$l, dx12_compute_dxil_$n"; z="$z, sizeof(dx12_compute_dxil_$n)" ;; esac
    done
    echo "$l };"
    echo "$z };"
@@ -422,9 +444,15 @@ compute-test)
    while [ $k -le "$PVRC_KERNELS" ]; do
       out="$2/k$k.dxil"
       [ $k = "$PVRC_K_WALK" ] && out="$2/k${k}_$3_$4.dxil"
+      if [ -n "$TILE_PROD" ]; then t=0; else t=1; fi
       if [ ! -f "$out" ]; then
-         if [ -n "$TILE_PROD" ]; then t=0; else t=1; fi
-         compute_source_of $k $3 "#define PVRC_KEEP $4u" "#define PVRC_TEST ${t}u" "#define PVRC_EXACT" > "$WORK/t.hlsl"
+         v=0; [ $k = "$PVRC_K_WALK" ] && v=1
+         compute_source_of $k $3 "#define PVRC_KEEP $4u" "#define PVRC_TEST ${t}u" "#define PVRC_EXACT" "#define PVRC_VARIANT ${v}u" > "$WORK/t.hlsl"
+         dxc_compile "$WORK/t.hlsl" "$out"
+      fi
+      out="$2/k${k}u_$3.dxil"
+      if [ $k = "$PVRC_K_WALK" ] && [ ! -f "$out" ]; then
+         compute_source_of $k $3 "#define PVRC_KEEP 1u" "#define PVRC_TEST ${t}u" "#define PVRC_EXACT" "#define PVRC_VARIANT 2u" > "$WORK/t.hlsl"
          dxc_compile "$WORK/t.hlsl" "$out"
       fi
       k=$((k + 1))

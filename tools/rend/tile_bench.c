@@ -23,6 +23,7 @@
 #define BENCH_STAMPS 8
 
 static unsigned char *set_spv[BENCH_SETS][PVRC_KERNELS + 1];
+static int set_variants[BENCH_SETS];	/* (the set's walk has its variants: a file "variants" in its directory) */
 static size_t set_spv_size[BENCH_SETS][PVRC_KERNELS + 1];
 
 static double cpu_ms(void)
@@ -152,7 +153,14 @@ int main(int argc, char **argv)
             snprintf(path, sizeof(path), "%s/k%u.spv", tok, k);
             set_spv[nsets][k] = read_file(path, &set_spv_size[nsets][k]);
          }
-         printf("bench: set %u: %s\n", nsets, tok);
+         snprintf(path, sizeof(path), "%s/variants", tok);
+         {
+            FILE *v = fopen(path, "rb");
+            set_variants[nsets] = v != NULL;
+            if (v)
+               fclose(v);
+         }
+         printf("bench: set %u: %s%s\n", nsets, tok, set_variants[nsets] ? " (the walk's two variants)" : "");
          nsets++;
       }
    }
@@ -244,7 +252,7 @@ int main(int argc, char **argv)
          const unsigned n = (unsigned)strtoul(p, &e, 10);
          const unsigned keep = getenv("BENCH_KEEP") ? (unsigned)atoi(getenv("BENCH_KEEP")) : pvrc_fragments_kept(shared_bytes);
          const unsigned fw = PVRC_FINE_W(n ? n : 1u), fh = PVRC_FINE_H(n ? n : 1u);
-         VkPipeline pipes[BENCH_SETS][PVRC_KERNELS + 1];
+         VkPipeline pipes[BENCH_SETS][PVRC_KERNELS + 2];	/* (the walk's unsorted variant last) */
          double *t[BENCH_SETS][BENCH_STAMPS + 1];
          unsigned r, differ[BENCH_SETS], drawn = 0, far = 0, behind = 0;
          if (e == p)
@@ -255,8 +263,9 @@ int main(int argc, char **argv)
             {
                spv[k] = set_spv[s][k];
                spv_size[k] = set_spv_size[s][k];
-               pipes[s][k] = make_pipeline(k, n, keep);
+               pipes[s][k] = make_pipeline_variant(k, n, keep, k == PVRC_K_WALK && set_variants[s] && !walk_whole() ? PVRC_V_SORTED : PVRC_V_ALL);
             }
+            pipes[s][PVRC_KERNELS + 1] = walk_whole() || !set_variants[s] ? VK_NULL_HANDLE : make_pipeline_variant(PVRC_K_WALK, n, 1, PVRC_V_UNSORTED);
             for (k = 0; k <= BENCH_STAMPS; k++)
                t[s][k] = (double *)calloc(rounds, sizeof(double));
             differ[s] = 0;
@@ -290,6 +299,11 @@ int main(int argc, char **argv)
                BSTEP(PVRC_K_SCAN, 1, 1, 3);
                BSTEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1, 4);
                BSTEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS], 5);
+               if (pipes[ss][PVRC_KERNELS + 1] != VK_NULL_HANDLE)
+               {
+                  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][PVRC_KERNELS + 1]);
+                  vkCmdDispatch(cmd, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
+               }
                BSTEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh, 6);
                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipes[ss][PVRC_K_CLEAR]);
                vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_CLEAR_X) * 4);
@@ -377,6 +391,8 @@ int main(int argc, char **argv)
             }
             for (k = 1; k <= PVRC_KERNELS; k++)
                vkDestroyPipeline(device, pipes[s][k], NULL);
+            if (pipes[s][PVRC_KERNELS + 1] != VK_NULL_HANDLE)
+               vkDestroyPipeline(device, pipes[s][PVRC_KERNELS + 1], NULL);
             for (k = 0; k <= BENCH_STAMPS; k++)
                free(t[s][k]);
          }

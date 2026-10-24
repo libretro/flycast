@@ -341,6 +341,18 @@
 #define PVRC_WG_SETUP 64u
 #define PVRC_WG       256u
 
+/* The walk's variants (spec constant PVRC_VARIANT): the whole walk, for
+ * every tile; or two, dispatched one after the other over the same tiles,
+ * each workgroup leaving the other's tiles to it: the whole walk for the
+ * tiles whose coarse tile has a primitive of a sorted translucent list
+ * (pvrc_tile_sorts()), and for the others the walk without the sorted
+ * translucent fragments - which would do nothing there - and without the
+ * shared memory they take (it keeps 1 at a time: PVRC_KEEP), in fewer
+ * registers. The renderers dispatch the two. */
+#define PVRC_V_ALL      0u
+#define PVRC_V_SORTED   1u
+#define PVRC_V_UNSORTED 2u
+
 /* The fine tile of a workgroup of the walk, for N samples: 256 lanes */
 #define PVRC_FINE_W(n) ((n) <= 2u ? 16u : 8u)
 #define PVRC_FINE_H(n) (256u / (n) / PVRC_FINE_W(n))
@@ -368,6 +380,7 @@ layout(constant_id = 0) const uint PVRC_SAMPLES = 1u;
 layout(constant_id = 1) const uint PVRC_LOG2N = 0u;
 layout(constant_id = 2) const uint PVRC_KEEP = 4u;
 layout(constant_id = 3) const uint PVRC_TEST = 0u;
+layout(constant_id = 4) const uint PVRC_VARIANT = 0u;
 
 #if PVRC_KERNEL == PVRC_K_GPUSRC
 layout(std430, set = 0, binding = 0) coherent buffer Frame { uint w[]; } frm;
@@ -411,6 +424,9 @@ layout(std430, set = 0, binding = 12) readonly buffer DecodeFrame { uint w[]; } 
 #endif
 #ifndef PVRC_TEST
 #define PVRC_TEST 0u
+#endif
+#ifndef PVRC_VARIANT
+#define PVRC_VARIANT 0u
 #endif
 
 #if PVRC_KERNEL == PVRC_K_GPUSRC
@@ -1279,6 +1295,13 @@ vec4 pvrc_texture_grad(uint slot, vec2 uv, vec2 dx, vec2 dy)
 #endif
 #endif
 
+/* (the sorted translucent walk's exchanges between lanes: none in the
+ * variant without it) */
+#if defined(PVRC_SHADER_GLSL)
+const uint PVRC_SORT_LANES = PVRC_VARIANT == PVRC_V_UNSORTED ? 1u : 256u;
+#else
+#define PVRC_SORT_LANES (PVRC_VARIANT == PVRC_V_UNSORTED ? 1u : 256u)
+#endif
 shared uint s_prim[512];	/* the primitives of a batch kept, in order (two batches' in turn, the walk of one going on as the next is read) */
 shared uint s_zlo[512], s_zhi[512];	/* the depth each has over the tile, least and most (float bits) */
 shared uint s_kh[PVRC_KEEP * 256u];
@@ -1287,8 +1310,8 @@ shared uint s_kc[PVRC_KEEP * 256u];	/* (each fragment's colour, as the lists kee
 shared uint s_flag;
 shared uint s_mask[16];	/* the entries of a batch kept, a bit each (two batches' words, in turn) */
 shared uint s_zr[4];	/* the lanes' least and most depth, as pvrc_zkey() has them (and two batches' least, in turn) */
-shared uint s_x[4u * 256u];	/* a word or a translucent fragment (key, colour, samples) from each lane, for the lanes of its pixel */
-shared uint s_xs[5u * 256u];	/* each lane's translucent list as it stands: fragments and whether a round is begun, the boundary, the nearest kept */
+shared uint s_x[4u * PVRC_SORT_LANES];	/* a word or a translucent fragment (key, colour, samples) from each lane, for the lanes of its pixel */
+shared uint s_xs[5u * PVRC_SORT_LANES];	/* each lane's translucent list as it stands: fragments and whether a round is begun, the boundary, the nearest kept */
 
 uint g_tid;
 uint g_ct;	/* the coarse tile */
@@ -1605,6 +1628,34 @@ uint it_next()
       if (it_hiz == HIZ_RUN)
          g_zbound = pvrc_zfrom(s_zr[2u + side]);
    }
+}
+
+/* Whether a sorted translucent list of the frame has a primitive in this
+ * coarse tile's runs (a run walked whole: one in its chunk's range): the
+ * tiles the walk's sorted variant draws */
+bool pvrc_tile_sorts()
+{
+   for (uint pass = 0u; pass < frm.w[PVRC_F_PASSES]; pass++)
+   {
+      const uint pw = PVRC_F_PASS + pass * PVRC_PASS_WORDS;
+      const uint lo = frm.w[pw + PVRC_P_TR], hi = frm.w[pw + PVRC_P_TR_END];
+      if ((frm.w[pw + PVRC_P_FLAGS] & PVRC_PF_AUTOSORT) == 0u || hi <= lo)
+         continue;
+      for (uint c = lo >> PVR_CHUNK_LOG2; c <= (hi - 1u) >> PVR_CHUNK_LOG2; c++)
+      {
+         const uint e = c * pvrc_tiles() + g_ct;
+         const uint count = bin.w[PVRC_B_COUNT(pvrc_runs()) + e];
+         if (count == 0u)
+            continue;
+         const uint start = bin.w[PVRC_B_START(pvrc_runs()) + e];
+         if ((start & PVRC_RUN_SKIP) != 0u)
+            return true;
+         const uint cbase = c << PVR_CHUNK_LOG2;
+         if (pvrc_lower_bound(start, count, max(lo, cbase) - cbase) < pvrc_lower_bound(start, count, min(hi - cbase, 65536u)))
+            return true;
+      }
+   }
+   return false;
 }
 
 /* ---- A primitive at a lane ---- */
@@ -2172,6 +2223,10 @@ void main()
    for (uint c = 0u; c < frm.w[PVRC_F_CHUNKS]; c++)
       binned += bin.w[PVRC_B_COUNT(pvrc_runs()) + c * pvrc_tiles() + g_ct];
    const uint passes = binned == 0u ? 0u : frm.w[PVRC_F_PASSES];
+   /* (a variant's workgroup leaves the other's tiles to it, before any
+    * barrier) */
+   if (PVRC_VARIANT != PVRC_V_ALL && (passes != 0u && pvrc_tile_sorts()) != (PVRC_VARIANT == PVRC_V_SORTED))
+      return;
    for (uint pass = 0u; pass < passes; pass++)
    {
       const uint pw = PVRC_F_PASS + pass * PVRC_PASS_WORDS;
@@ -2282,7 +2337,7 @@ void main()
          }
          if (step == 5u && autosort)
          {
-            if (trHi > trLo)
+            if (PVRC_VARIANT != PVRC_V_UNSORTED && trHi > trLo)
             {
                /* Translucent, sorted: K fragments at a time, the farthest
                 * first, blended in floats onto the colour as the last subpass

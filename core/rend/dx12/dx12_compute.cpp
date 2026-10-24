@@ -23,12 +23,15 @@
 
 #include <algorithm>
 
-/* The kernels, by PVRC_K_* (the walk's for more than one sample after the
- * last, by SSAA_LOG2() of its samples), as DXIL made from
+/* The kernels, by PVRC_K_* (the walk's sorted variant for more than one
+ * sample after the last, by SSAA_LOG2() of its samples, then its unsorted
+ * variant for 1, 2, 4 and 8: pvr_compute.h's PVRC_V_*), as DXIL made from
  * rend/tile/pvr_compute.h when the source was: tools/rend/kernels_dx12.sh,
  * which checks they still are its. Nothing is compiled when the core runs. */
 #include "dx12_compute_dxil.inc"
-static_assert(sizeof(dx12_compute_dxil) / sizeof(dx12_compute_dxil[0]) == PVRC_KERNELS + 4, "a kernel for each PVRC_K_*, and the walk for 2, 4 and 8");
+static_assert(sizeof(dx12_compute_dxil) / sizeof(dx12_compute_dxil[0]) == PVRC_KERNELS + 8, "a kernel for each PVRC_K_*, and the walk's variants");
+// (the walk's unsorted variant for @samples, in the table)
+static inline u32 walkUnsortedDxil(u32 samples) { return PVRC_KERNELS + 4 + SSAA_LOG2(samples); }
 static_assert(PVRC_TAG_C_WORDS == TAG_C_WORDS && PVRC_TAG_C_COUNT == TAG_C_COUNT && PVRC_TAG_C_FIRST == TAG_C_FIRST
 		&& PVRC_TAG_O_OVERRUN == TAG_O_OVERRUN && PVRC_TAG_O_ZSCALE == TAG_O_ZSCALE, "the decode's words, as the kernels read them");
 static_assert(PVRC_TEX_SLOTS <= 0x10000 && DX12_SRV_TABLE_SIZE <= 0x10000 && DX12_SAMPLER_TABLE_SIZE <= 0x10000,
@@ -109,8 +112,10 @@ struct DX12ComputeDrawer::Resources
 {
 	ComPtr<ID3D12RootSignature> root;
 	ComPtr<ID3D12PipelineState> pipelines[PVRC_KERNELS + 1];
-	// with SSAA, the walk for renders to a texture, at one sample a pixel
-	ComPtr<ID3D12PipelineState> walk1;
+	// the walk's unsorted variant (pvr_compute.h: PVRC_V_*; the sorted is pipelines[PVRC_K_WALK])
+	ComPtr<ID3D12PipelineState> walkUnsorted;
+	// with SSAA, the walk for renders to a texture, at one sample a pixel, both variants
+	ComPtr<ID3D12PipelineState> walk1, walk1Unsorted;
 	ComPtr<ID3D12CommandSignature> dispatch;
 	/* the ring: a piece a slot, each the frame's words then the slots' */
 	ComPtr<ID3D12Resource> ring;
@@ -279,7 +284,9 @@ bool DX12ComputeDrawer::Init(u32 width, u32 height, u32 samples)
 	for (u32 k = 1; k <= PVRC_KERNELS; k++)
 		if (!make(k == PVRC_K_WALK && this->samples > 1 ? PVRC_KERNELS + SSAA_LOG2(this->samples) : k, r->pipelines[k]))
 			return fail("a kernel's pipeline could not be made");
-	if (this->samples > 1 && !make(PVRC_K_WALK, r->walk1))
+	if (!make(walkUnsortedDxil(this->samples), r->walkUnsorted))
+		return fail("a kernel's pipeline could not be made");
+	if (this->samples > 1 && (!make(PVRC_K_WALK, r->walk1) || !make(walkUnsortedDxil(1), r->walk1Unsorted)))
 		return fail("a kernel's pipeline could not be made");
 	{
 		D3D12_INDIRECT_ARGUMENT_DESC arg{};
@@ -632,6 +639,10 @@ void DX12ComputeDrawer::Record(ID3D12Resource *picture)
 		step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
 	}
 	const u32 fw = PVRC_FINE_W(n), fh = PVRC_FINE_H(n);
+	/* (the walk's two variants over the same tiles, each drawing its own:
+	 * nothing between them) */
+	cmd->SetPipelineState(n != samples ? r.walk1Unsorted : r.walkUnsorted);
+	cmd->Dispatch((words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh, 1);
 	step(PVRC_K_WALK, (words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh);
 	arguments();
 	indirect(PVRC_K_CLEAR, PVRC_ST_CLEAR_X);

@@ -11,7 +11,9 @@
  * fused operations: tile_test.sh). The environment: TILE_SAMPLES (default
  * "1 2 4 8"), TILE_KEEP (default "0 1": 0 is the device's own K),
  * TILE_VALIDATE=1 the validation layer, any error it reports a failure;
- * TILE_PPM a directory to write the pictures that differ to.
+ * TILE_PPM a directory to write the pictures that differ to. The walk is
+ * dispatched as the renderer dispatches it, its two variants over the same
+ * tiles (pvr_compute.h: PVRC_V_*); TILE_WHOLE=1, the whole walk alone.
  *
  * Each frame is also drawn the way a frame of the GPU's TA decode is
  * (TILE_GPU=0 not): its table of starts made what the CPU writes for one
@@ -296,12 +298,14 @@ static void init(const char *dir, int validate)
    }
 }
 
-static VkPipeline make_pipeline(unsigned k, unsigned samples, unsigned keep)
+/* kernel @k's pipeline at @samples, keeping @keep; the walk's @variant
+ * (PVRC_V_*) */
+static VkPipeline make_pipeline_variant(unsigned k, unsigned samples, unsigned keep, unsigned variant)
 {
    VkShaderModuleCreateInfo mi = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
    VkComputePipelineCreateInfo pi = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-   VkSpecializationMapEntry entries[4] = { { 0, 0, 4 }, { 1, 4, 4 }, { 2, 8, 4 }, { 3, 12, 4 } };
-   unsigned spec[4];
+   VkSpecializationMapEntry entries[5] = { { 0, 0, 4 }, { 1, 4, 4 }, { 2, 8, 4 }, { 3, 12, 4 }, { 4, 16, 4 } };
+   unsigned spec[5];
    VkSpecializationInfo si;
    VkShaderModule module;
    VkPipeline pipeline;
@@ -309,7 +313,8 @@ static VkPipeline make_pipeline(unsigned k, unsigned samples, unsigned keep)
    spec[1] = SSAA_LOG2(samples);
    spec[2] = keep;
    spec[3] = getenv("TILE_PROD") ? 0 : 1;   /* test mode, but for TILE_PROD (no reference then) */
-   si.mapEntryCount = 4;
+   spec[4] = variant;
+   si.mapEntryCount = 5;
    si.pMapEntries = entries;
    si.dataSize = sizeof(spec);
    si.pData = spec;
@@ -325,6 +330,14 @@ static VkPipeline make_pipeline(unsigned k, unsigned samples, unsigned keep)
    CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline));
    vkDestroyShaderModule(device, module, NULL);
    return pipeline;
+}
+
+/* The walk as the renderer dispatches it: its two variants over the same
+ * tiles (the one without sorted translucent fragments keeping 1 at a
+ * time); TILE_WHOLE=1, the whole walk alone */
+static int walk_whole(void)
+{
+   return getenv("TILE_WHOLE") != NULL && atoi(getenv("TILE_WHOLE")) != 0;
 }
 
 static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples, unsigned keep, unsigned *out, unsigned *stats, int gpu)
@@ -345,7 +358,7 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    struct buffer ob = make_buffer((VkDeviceSize)w * h * 4, 0);
    struct image outImage = make_image(w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
    struct image dummy = make_image(1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-   VkPipeline pipelines[PVRC_KERNELS + 1];
+   VkPipeline pipelines[PVRC_KERNELS + 1], walkUnsorted = VK_NULL_HANDLE;
    VkDescriptorBufferInfo bi[9];
    VkDescriptorImageInfo ii[3 + PVRC_TEX_SLOTS];
    VkWriteDescriptorSet wr[13];
@@ -359,7 +372,9 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    memcpy(fb.mapped, frame, (size_t)words * 4);
    memset(bb.mapped, 0, (size_t)binWords * 4);
    for (k = 1; k <= PVRC_KERNELS; k++)
-      pipelines[k] = make_pipeline(k, samples, keep);
+      pipelines[k] = make_pipeline_variant(k, samples, keep, k == PVRC_K_WALK && !walk_whole() ? PVRC_V_SORTED : PVRC_V_ALL);
+   if (!walk_whole())
+      walkUnsorted = make_pipeline_variant(PVRC_K_WALK, samples, 1, PVRC_V_UNSORTED);
    memset(wr, 0, sizeof(wr));
    bi[0].buffer = fb.buffer; bi[0].offset = 0; bi[0].range = VK_WHOLE_SIZE;
    bi[1].buffer = rb.buffer; bi[1].offset = 0; bi[1].range = VK_WHOLE_SIZE;
@@ -433,6 +448,11 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
       STEP(PVRC_K_SCATTER, (prims + PVRC_WG_SETUP - 1) / PVRC_WG_SETUP, 1);
       STEP(PVRC_K_SORT, tiles, frame[PVRC_F_CHUNKS]);
    }
+   if (walkUnsorted != VK_NULL_HANDLE)
+   {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, walkUnsorted);
+      vkCmdDispatch(cmd, (w + fw - 1) / fw, (h + fh - 1) / fh, 1);
+   }
    STEP(PVRC_K_WALK, (w + fw - 1) / fw, (h + fh - 1) / fh);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[PVRC_K_CLEAR]);
    vkCmdDispatchIndirect(cmd, bb.buffer, (VkDeviceSize)(PVRC_B_STATS(runs) + PVRC_ST_CLEAR_X) * 4);
@@ -478,6 +498,8 @@ static double gpu_draw(const unsigned *frame0, unsigned words, unsigned samples,
    }
    for (k = 1; k <= PVRC_KERNELS; k++)
       vkDestroyPipeline(device, pipelines[k], NULL);
+   if (walkUnsorted != VK_NULL_HANDLE)
+      vkDestroyPipeline(device, walkUnsorted, NULL);
    free_image(&outImage);
    free_image(&dummy);
    free_buffer(&fb);

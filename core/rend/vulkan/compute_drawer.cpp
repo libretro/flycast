@@ -15,6 +15,8 @@
  * are its. Nothing is compiled when the core runs. */
 #include "compute_spv.inc"
 static_assert(sizeof(compute_spv) / sizeof(compute_spv[0]) == PVRC_KERNELS + 1, "a kernel for each PVRC_K_*");
+// (the walk's unsorted variant's pipeline, after the kernels')
+static const int WalkUnsorted = PVRC_KERNELS + 1;
 
 /* The bin pool's entries: a run for each tile a primitive touches, for a
  * frame's every primitive (4 MiB) */
@@ -101,9 +103,9 @@ struct ComputeDrawer::Resources
 	bool binsZero = false;
 	vk::UniqueDescriptorSetLayout setLayout;
 	vk::UniquePipelineLayout pipelineLayout;
-	vk::UniquePipeline pipelines[PVRC_KERNELS + 1];
+	vk::UniquePipeline pipelines[PVRC_KERNELS + 2];	// (and the walk's unsorted variant last: WalkUnsorted)
 	// with SSAA, the kernels for renders to a texture, at one sample a pixel
-	vk::UniquePipeline rttPipelines[PVRC_KERNELS + 1];
+	vk::UniquePipeline rttPipelines[PVRC_KERNELS + 2];
 	vk::UniqueDescriptorPool descriptorPool;
 	std::vector<vk::DescriptorSet> sets;
 	// what each set's texture slots, picture and last picture have
@@ -226,20 +228,24 @@ bool ComputeDrawer::Init(vk::Extent2D extent, u32 samples, CommandPool *pool, Sa
 	r->pipelineLayout = device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo(vk::PipelineLayoutCreateFlags(), 1, &r->setLayout.get()));
 
 	/* every kernel, now, for this many samples, and for one when that is
-	 * not one (renders to a texture): none is made while a game runs */
+	 * not one (renders to a texture): none is made while a game runs. The
+	 * walk in its two variants (pvr_compute.h: PVRC_V_*), the one for the
+	 * tiles without sorted translucent fragments keeping none */
 	for (int set = 0; set < (this->samples > 1 ? 2 : 1); set++)
 	{
 		const u32 n = set == 0 ? this->samples : 1;
-		const u32 spec[4] = { n, SSAA_LOG2(n), r->keep, 0 };
-		const vk::SpecializationMapEntry entries[4] = { { 0, 0, 4 }, { 1, 4, 4 }, { 2, 8, 4 }, { 3, 12, 4 } };
-		const vk::SpecializationInfo specInfo(4, entries, sizeof(spec), spec);
-		for (int k = 1; k <= PVRC_KERNELS; k++)
+		for (int k = 1; k <= WalkUnsorted; k++)
 		{
+			const bool walk = k == PVRC_K_WALK || k == WalkUnsorted;
+			const u32 spec[5] = { n, SSAA_LOG2(n), k == WalkUnsorted ? 1u : r->keep, 0,
+					k == WalkUnsorted ? PVRC_V_UNSORTED : k == PVRC_K_WALK ? PVRC_V_SORTED : PVRC_V_ALL };
+			const vk::SpecializationMapEntry entries[5] = { { 0, 0, 4 }, { 1, 4, 4 }, { 2, 8, 4 }, { 3, 12, 4 }, { 4, 16, 4 } };
+			const vk::SpecializationInfo specInfo(5, entries, sizeof(spec), spec);
 			// (the walk's textures taken in turns where the device cannot index them non-uniformly)
-			const bool waterfall = k == PVRC_K_WALK && !context->SupportsNonUniformTextureIndexing();
+			const bool waterfall = walk && !context->SupportsNonUniformTextureIndexing();
 			vk::UniqueShaderModule module = device.createShaderModuleUnique(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(),
-					waterfall ? sizeof(compute_spv_walk_waterfall) : compute_spv_size[k],
-					waterfall ? compute_spv_walk_waterfall : compute_spv[k]));
+					waterfall ? sizeof(compute_spv_walk_waterfall) : compute_spv_size[walk ? PVRC_K_WALK : k],
+					waterfall ? compute_spv_walk_waterfall : compute_spv[walk ? PVRC_K_WALK : k]));
 			const vk::PipelineShaderStageCreateInfo stage(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute, *module, "main", &specInfo);
 			(set == 0 ? r->pipelines : r->rttPipelines)[k] = device.createComputePipelineUnique(context->GetPipelineCache(),
 					vk::ComputePipelineCreateInfo(vk::PipelineCreateFlags(), stage, *r->pipelineLayout));
@@ -532,6 +538,10 @@ void ComputeDrawer::Record(vk::Image image, vk::ImageView view, vk::ImageView la
 		step(PVRC_K_SORT, tiles, words[PVRC_F_CHUNKS]);
 	}
 	const u32 fw = PVRC_FINE_W(n), fh = PVRC_FINE_H(n);
+	/* (the walk's two variants over the same tiles, each drawing its own:
+	 * nothing between them) */
+	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[WalkUnsorted]);
+	cmd.dispatch((words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh, 1);
 	step(PVRC_K_WALK, (words[PVRC_F_WIDTH] + fw - 1) / fw, (words[PVRC_F_HEIGHT] + fh - 1) / fh);
 	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pipelines[PVRC_K_CLEAR]);
 	cmd.dispatchIndirect(bins, (vk::DeviceSize)(PVRC_B_STATS(r.runs) + PVRC_ST_CLEAR_X) * 4);
