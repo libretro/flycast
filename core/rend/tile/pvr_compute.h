@@ -1698,6 +1698,11 @@ bool rec_covers(uint r, int px, int py)
    return rec_near(r) && rec_inside(r, rec_edges(r, px, py));
 }
 
+/* The passes a fragment is shaded for (shade()) */
+#define PVRC_SHADE_DEPTH 0u	/* its depth pass: no stencil */
+#define PVRC_SHADE_COLOR 1u	/* its colour pass: the stencil's shadow */
+#define PVRC_SHADE_OIT 2u	/* into the lists: no stencil */
+
 /* What a fragment is shaded from at a place: its weights, and 1/w there */
 struct Bary
 {
@@ -1741,15 +1746,25 @@ vec4 vtx_color(uint v, uint k)
    return vec4(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u), float(c >> 24)) / 255.0;
 }
 
-/* A fragment's inputs, as the vertex shader hands them over */
+/* A fragment's inputs, as the vertex shader hands them over: those of the
+ * one volume of its polygon it is shaded with (the second, of a polygon
+ * with two, in a shadow: shade(); frag_vol1()), and the first volume's
+ * offset colour, which bump mapping takes whichever it is */
 struct Frag
 {
-   vec4 base, offs, base1, offs1;
-   vec2 uv, uv1;
-   vec2 duvx, duvy, duv1x, duv1y;	/* the coordinates' change a pixel across and down */
+   vec4 base, offs, offs0;
+   vec2 uv;
+   vec2 duvx, duvy;	/* the coordinates' change a pixel across and down */
    float w;
    vec2 pos;	/* gl_FragCoord.xy */
 };
+
+/* Whether polygon @pp's fragment is shaded with its second volume's
+ * inputs: in the colour pass, in a shadow, a polygon with two (shade()) */
+bool frag_vol1(uint pp, uint pass, bool shadowed)
+{
+   return pass == PVRC_SHADE_COLOR && shadowed && (frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_TWO_VOLUMES) != 0u;
+}
 
 /* a polygon triangle's vertex @k's number */
 uint rec_vtx(uint r, uint k)
@@ -1810,7 +1825,7 @@ vec2 frag_duv(uint r, vec3 e, vec3 d, uint ku)
  * the eye) has differences that times 256 do not fit in 32. With a shift
  * (rec_edges() over 2^(2 shift)) the steps and the top left pixel's edges
  * are floats. */
-void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
+void frag_grads(uint r, uint flags, i64vec3 e, bool vol1, inout Frag f)
 {
    if (PVRC_TEST == 0u && (flags & PVRC_QF_TEXTURE) != 0u)
    {
@@ -1846,58 +1861,44 @@ void frag_grads(uint r, uint flags, i64vec3 e, inout Frag f)
          if ((g_py & 1) != 0)
             tl -= dy;
       }
-      f.duvx = frag_duv(r, tl, dx, 5u);
-      f.duvy = frag_duv(r, tl, dy, 5u);
-      if ((flags & PVRC_QF_TWO_VOLUMES) != 0u)
-      {
-         f.duv1x = frag_duv(r, tl, dx, 9u);
-         f.duv1y = frag_duv(r, tl, dy, 9u);
-      }
+      f.duvx = frag_duv(r, tl, dx, vol1 ? 9u : 5u);
+      f.duvy = frag_duv(r, tl, dy, vol1 ? 9u : 5u);
    }
 }
 
-/* The fragment of polygon triangle @r at a place in 24.8, whose edges are @e */
-Frag rec_frag(uint r, uint pp, i64vec3 e, int px, int py)
+/* The fragment of polygon triangle @r at a place in 24.8, whose edges are
+ * @e, for its first volume or (@vol1) its second: frag_vol1() */
+Frag rec_frag(uint r, uint pp, i64vec3 e, int px, int py, bool vol1)
 {
    Frag f;
    const Bary b = rec_bary(r, e);
    const uint flags = frm.w[pp + PVRC_Q_FLAGS];
-   const bool two = (flags & PVRC_QF_TWO_VOLUMES) != 0u;
+   /* (a vertex's words: the colours 3 and 4, the coordinates 5 and 6; the
+    * second volume's 7, 8, 9 and 10) */
+   const uint at = vol1 ? 4u : 0u;
    if ((flags & PVRC_QF_GOURAUD) != 0u)
    {
-      f.base = frag_mix4(r, b, 3u);
-      f.offs = frag_mix4(r, b, 4u);
-      if (two)
-      {
-         f.base1 = frag_mix4(r, b, 7u);
-         f.offs1 = frag_mix4(r, b, 8u);
-      }
+      f.base = frag_mix4(r, b, 3u + at);
+      f.offs = frag_mix4(r, b, 4u + at);
+      f.offs0 = vol1 ? frag_mix4(r, b, 4u) : f.offs;
    }
    else
    {
       const uint v = rec.w[r + PVRC_R_EXTRA] & PVRC_RX_VTX;
-      f.base = vtx_color(v, 3u);
-      f.offs = vtx_color(v, 4u);
-      if (two)
-      {
-         f.base1 = vtx_color(v, 7u);
-         f.offs1 = vtx_color(v, 8u);
-      }
+      f.base = vtx_color(v, 3u + at);
+      f.offs = vtx_color(v, 4u + at);
+      f.offs0 = vol1 ? vtx_color(v, 4u) : f.offs;
    }
-   f.uv = vec2(frag_mix1(r, b, 5u), frag_mix1(r, b, 6u));
-   if (two)
-      f.uv1 = vec2(frag_mix1(r, b, 9u), frag_mix1(r, b, 10u));
+   f.uv = vec2(frag_mix1(r, b, 5u + at), frag_mix1(r, b, 6u + at));
+   f.duvx = f.duvy = vec2(0.0);
    f.w = b.w;
    f.pos = vec2(float(px), float(py)) / 256.0;
-   frag_grads(r, flags, e, f);
+   frag_grads(r, flags, e, vol1, f);
    return f;
 }
 
 /* ---- Shading: vulkan/shaders/oit.frag's ---- */
 
-#define PVRC_SHADE_DEPTH 0u	/* its depth pass: no stencil */
-#define PVRC_SHADE_COLOR 1u	/* its colour pass: the stencil's shadow */
-#define PVRC_SHADE_OIT 2u	/* into the lists: no stencil */
 
 vec4 tex_fetch(uint slot, vec2 uv, vec2 dx, vec2 dy)
 {
@@ -1946,11 +1947,7 @@ vec4 shade(uint pp, Frag f, uint pass, bool shadowed, out bool killed)
    {
       if (two)
       {
-         color = f.base1;
-         offset = f.offs1;
-         uv = f.uv1;
-         dx = f.duv1x;
-         dy = f.duv1y;
+         /* (f is the second volume's: frag_vol1()) */
          area1 = true;
          useAlpha = (flags & PVRC_QF_USE_ALPHA1) != 0u;
          ignoreTexA = (flags & PVRC_QF_IGNORE_TEXA1) != 0u;
@@ -1983,7 +1980,7 @@ vec4 shade(uint pp, Frag f, uint pass, bool shadowed, out bool killed)
       {
          const float s = PI / 2.0 * (texcol.a * 15.0 * 16.0 + texcol.r * 15.0) / 255.0;
          const float r = 2.0 * PI * (texcol.g * 15.0 * 16.0 + texcol.b * 15.0) / 255.0;
-         texcol.a = clamp(f.offs.a + f.offs.r * sin(s) + f.offs.g * cos(s) * cos(r - 2.0 * PI * f.offs.b), 0.0, 1.0);
+         texcol.a = clamp(f.offs0.a + f.offs0.r * sin(s) + f.offs0.g * cos(s) * cos(r - 2.0 * PI * f.offs0.b), 0.0, 1.0);
          texcol.rgb = vec3(1.0);
       }
       else if (ignoreTexA)
@@ -2138,30 +2135,30 @@ ivec2 rate_pos_cov(uint cov)
 
 /* ...its inputs there, with gl_FragCoord (its 1/w for the depth and the
  * fog) and its textures' derivatives at the centre, whose edges are @ec */
-Frag rate_frag_at(uint r, uint pp, i64vec3 ec, ivec2 at)
+Frag rate_frag_at(uint r, uint pp, i64vec3 ec, ivec2 at, bool vol1)
 {
    if (at.x == g_cx && at.y == g_cy)
-      return rec_frag(r, pp, ec, g_cx, g_cy);
-   Frag f = rec_frag(r, pp, rec_edges(r, at.x, at.y), at.x, at.y);
+      return rec_frag(r, pp, ec, g_cx, g_cy, vol1);
+   Frag f = rec_frag(r, pp, rec_edges(r, at.x, at.y), at.x, at.y, vol1);
    f.w = rec_bary(r, ec).w;
    f.pos = vec2(float(g_cx), float(g_cy)) / 256.0;
    /* (its textures filtered with the derivatives at the centre, as the
     * per-pixel renderer's once-a-pixel polygons are under SSAA) */
-   frag_grads(r, frm.w[pp + PVRC_Q_FLAGS], ec, f);
+   frag_grads(r, frm.w[pp + PVRC_Q_FLAGS], ec, vol1, f);
    return f;
 }
 
-Frag rate_frag(uint r, uint pp, i64vec3 ec)
+Frag rate_frag(uint r, uint pp, i64vec3 ec, bool vol1)
 {
-   return rate_frag_at(r, pp, ec, rate_pos(r));
+   return rate_frag_at(r, pp, ec, rate_pos(r), vol1);
 }
 
 /* The fragment lane_cover() found: at the sample, or once a pixel */
-Frag lane_frag(uint r, uint pp, i64vec3 e, ivec2 pos)
+Frag lane_frag(uint r, uint pp, i64vec3 e, ivec2 pos, bool vol1)
 {
    if (PVRC_SAMPLES > 1u && single_rate(pp))
-      return rate_frag(r, pp, e);
-   return rec_frag(r, pp, e, pos.x, pos.y);
+      return rate_frag(r, pp, e, vol1);
+   return rec_frag(r, pp, e, pos.x, pos.y, vol1);
 }
 
 /* A volume triangle's 1/w at the pixel's centre */
@@ -2486,7 +2483,7 @@ void main()
                                  /* shaded now, as the per-pixel renderer shades a
                                   * fragment it puts in its lists */
                                  bool killed;
-                                 xc = col_pack(clamp(shade(pp, rate_frag_at(r, pp, ec, rate_pos_cov(cov)), PVRC_SHADE_OIT, false, killed), 0.0, 1.0));
+                                 xc = col_pack(clamp(shade(pp, rate_frag_at(r, pp, ec, rate_pos_cov(cov), false), PVRC_SHADE_OIT, false, killed), 0.0, 1.0));
                               }
                            }
                         }
@@ -2715,7 +2712,10 @@ void main()
                   bool killed = false;
                   vec4 c = vec4(0.0);
                   if (blends || kind == WALK_DEPTH_PT || (frm.w[pp + PVRC_Q_FLAGS] & PVRC_QF_CLIP_INSIDE) != 0u)
-                     c = shade(pp, lane_frag(r, pp, e, pos), blends ? PVRC_SHADE_COLOR : PVRC_SHADE_DEPTH, blends && shadowed, killed);
+                  {
+                     const uint spass = blends ? PVRC_SHADE_COLOR : PVRC_SHADE_DEPTH;
+                     c = shade(pp, lane_frag(r, pp, e, pos, frag_vol1(pp, spass, blends && shadowed)), spass, blends && shadowed, killed);
+                  }
                   if (depthSub)
                   {
                      if (killed)
