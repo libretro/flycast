@@ -66,6 +66,9 @@ public:
 	/* Before the pictures handed to the frontend are destroyed: when the
 	 * renderer is taken down (another one, or the context going) */
 	void ReleasePicture();
+	/* Everything submitted to the queue the frontend and the core share
+	 * done: for a renderer taken down or resized, never in a frame */
+	void WaitQueueIdle();
 	void SubmitCommandBuffers(u32 bufferCount, vk::CommandBuffer *buffers, vk::Fence fence) {
 		retro_render_if->lock_queue(retro_render_if->handle);
 		queue.submit(vk::SubmitInfo(0, nullptr, nullptr, bufferCount, buffers, 0, nullptr), fence);

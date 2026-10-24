@@ -653,6 +653,13 @@ void VulkanContext::ReleasePicture()
 	if (retro_render_if == nullptr || !device)
 		return;
 	retro_render_if->set_image(retro_render_if->handle, nullptr, 0, nullptr, VK_QUEUE_FAMILY_IGNORED);
+	WaitQueueIdle();
+}
+
+void VulkanContext::WaitQueueIdle()
+{
+	if (retro_render_if == nullptr || !device)
+		return;
 	retro_render_if->lock_queue(retro_render_if->handle);
 	(void)queue.waitIdle();
 	retro_render_if->unlock_queue(retro_render_if->handle);

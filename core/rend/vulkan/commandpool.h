@@ -102,14 +102,17 @@ public:
 	 * the renderer is taken down or resized. The frontend's own wait
 	 * (wait_sync_index) is for the frontend's frames, not these.
 	 *
-	 * It gives up after a second rather than hang on a frame that was begun
-	 * and never submitted. */
+	 * It gives up on the fences after a second rather than hang on a frame
+	 * that was begun and never submitted, and waits for the queue instead:
+	 * a frame that takes longer than that on the GPU is still being drawn,
+	 * and what it uses is not to be destroyed under it. */
 	void WaitAll()
 	{
 		if (fences.empty())
 			return;
 		const std::vector<vk::Fence> all = vk::uniqueToRaw(fences);
-		(void)VulkanContext::Instance()->GetDevice().waitForFences(all, true, 1000000000ull);
+		if (VulkanContext::Instance()->GetDevice().waitForFences(all, true, 1000000000ull) != vk::Result::eSuccess)
+			VulkanContext::Instance()->WaitQueueIdle();
 	}
 
 	vk::Fence GetCurrentFence()
