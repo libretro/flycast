@@ -156,6 +156,67 @@ static unsigned gpu_frame(const unsigned *frame, unsigned words, unsigned *g, un
    return prims;
 }
 
+/* The reference's picture of @frame (@words) at @n samples, and its
+ * counts: drawn, or read from TILE_REF_DIR when it has them from a run
+ * before, and kept there when it has not (tile_test.sh names the directory
+ * by the reference's preprocessed source, so that the pictures in it are
+ * this reference's). Its key is the frame's words' hash and @n. The
+ * milliseconds drawing it took into @ms (0 when read). 0 if there was not
+ * the memory. */
+static int ref_picture(const unsigned *frame, unsigned words, unsigned n, unsigned *ref, struct tile_ref_stats *rst, double *ms)
+{
+   const char *dir = getenv("TILE_REF_DIR");
+   const unsigned w = frame[PVRC_F_WIDTH], h = frame[PVRC_F_HEIGHT];
+   unsigned long long key = 1469598103934665603ull;
+   char path[1024];
+   FILE *f;
+   unsigned i;
+   for (i = 0; i < words; i++)
+      key = (key ^ frame[i]) * 1099511628211ull;
+   if (dir)
+   {
+      snprintf(path, sizeof(path), "%s/%08x%08x_%u.ref", dir, (unsigned)(key >> 32), (unsigned)key, n);
+      f = fopen(path, "rb");
+      if (f)
+      {
+         unsigned head[3];
+         const int ok = fread(head, sizeof(head), 1, f) == 1 && head[0] == w && head[1] == h && head[2] == (unsigned)sizeof(*rst)
+               && fread(rst, sizeof(*rst), 1, f) == 1 && fread(ref, (size_t)w * h * 4, 1, f) == 1;
+         fclose(f);
+         if (ok)
+         {
+            *ms = 0.0;
+            return 1;
+         }
+      }
+   }
+   *ms = now_ms();
+   if (!tile_ref(frame, n, NULL, ref, rst))
+      return 0;
+   *ms = now_ms() - *ms;
+   if (dir)
+   {
+      /* (written whole under another name, then renamed: a run that stops
+       * leaves no half of one) */
+      char tmp[1100];
+      snprintf(tmp, sizeof(tmp), "%s.part", path);
+      f = fopen(tmp, "wb");
+      if (f)
+      {
+         const unsigned head[3] = { w, h, (unsigned)sizeof(*rst) };
+         const int ok = fwrite(head, sizeof(head), 1, f) == 1 && fwrite(rst, sizeof(*rst), 1, f) == 1 && fwrite(ref, (size_t)w * h * 4, 1, f) == 1;
+         if (fclose(f) == 0 && ok)
+         {
+            remove(path);
+            rename(tmp, path);
+         }
+         else
+            remove(tmp);
+      }
+   }
+   return 1;
+}
+
 static void write_ppm(const char *dir, const char *name, const unsigned *px, unsigned w, unsigned h)
 {
    char path[1024];
@@ -218,13 +279,12 @@ int main(int argc, char **argv)
          {
             const unsigned n = sl[si];
             struct tile_ref_stats rst;
-            double ref_ms = now_ms();
-            if (!tile_ref(frame, n, NULL, ref, &rst))
+            double ref_ms;
+            if (!ref_picture(frame, words, n, ref, &rst, &ref_ms))
             {
                printf("tile_test: no memory\n");
                return 2;
             }
-            ref_ms = now_ms() - ref_ms;
             for (ki = 0; ki < nk * (use_gpu ? 2 : 1); ki++)
             {
                const unsigned keep = kl[ki % nk];

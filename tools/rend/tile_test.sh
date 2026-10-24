@@ -23,6 +23,11 @@
 # with KEEP=1 or when $WORK is given. TILE_WATERFALL=1: the walk that takes
 # its textures in turns, for a device without non-uniform indexing.
 #
+# TILE_REF_CACHE: a directory where the reference's pictures are kept and
+# taken again by later runs (in a directory of it named by the reference's
+# preprocessed source, so that a changed reference makes its own): a
+# reference at 8x, 5120 x 3840, takes minutes on a CPU.
+#
 # Each frame is then held against the geometry by tile_geo.c: what the
 # reference covers (the kernels' arithmetic) against the triangles' exact
 # coverage from their float vertices in double precision, at the sample
@@ -121,6 +126,11 @@ WINE=${WINE-wine}
 winpath() {
    if [ -n "$WINE" ]; then echo "Z:$1"; else echo "$1"; fi
 }
+if [ -n "$TILE_REF_CACHE" ]; then
+   d="$TILE_REF_CACHE/$(${CC:-cc} -std=c89 -E -P -Icore/rend/tile -Icore/libretro-common/include tools/rend/tile_ref.c | sha1sum | cut -c1-16)"
+   mkdir -p "$d"
+   if [ "$DEVICE" = vulkan ]; then export TILE_REF_DIR="$d"; else export TILE_REF_DIR="$(winpath "$d")"; fi
+fi
 # @1... the frames
 compare() {
    if [ "$DEVICE" = vulkan ]; then
